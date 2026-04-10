@@ -21,9 +21,11 @@ Two cleanly separated layers:
 ### 2.1 Content layer — git
 
 - **One group = one git repository.** The repo is dumb storage.
-- Memories are Markdown files with YAML frontmatter living inside the group repo.
+- Memories are Markdown files with TOML frontmatter (`+++` delimited) living inside the group repo.
 - Full edit history lives in git commits.
 - No manifest files, no submodules, no server-metadata stuffed into repo files.
+- Default git backend is **native, in-process**: `mmcp-server` owns bare repos on disk via `gix` and serves them to clients over the git smart HTTP protocol on its own `axum` port. No external git service required.
+- Alternative backends (Forgejo, Gitea, GitHub, GitLab) are supported via a `GitBackend` trait; users who prefer an existing forge point mmcp at it and mmcp stores only the group-to-repo mapping.
 
 Git does exactly what it is good at: content, history, diff, merge. Nothing else.
 
@@ -47,17 +49,32 @@ Rust workspace, edition 2024.
 ```
 crates/
   mmcp-core/      Shared types: data model, frontmatter schema, semver logic, ACL rules
-  mmcp-server/    HTTP/SSE MCP server, WebUI backend, auth, DB access
-  mmcp-client/    Local client: MCP stdio server + offline cache + sync engine + hook commands
-  mmcp-webui/     Web frontend (framework TBD)
+  mmcp-git/       Git storage abstraction: GitBackend trait + native gix implementation
+  mmcp-db/        SeaORM entities, migrations, shared queries (Postgres + SQLite)
+  mmcp-auth/      Argon2 + PASETO + axum-login glue
+  mmcp-proto/     MCP tool schemas shared by client and server (built on rmcp)
+  mmcp-session/   Session tracking, transcript inspection, turn counter, compaction detect
+  mmcp-sync/      Push/pull/diff/merge engine layered over mmcp-git
+  mmcp-server/    Binary: HTTP/SSE, WebUI backend, git smart HTTP, auth, Postgres
+  mmcp-client/    Binary: MCP stdio server + sync engine + CLI + hook subcommands
+webui/            Leptos frontend (separate cargo project, not in main workspace)
 ```
 
 ### Crate responsibilities
 
-- **mmcp-core**: no I/O, no network. Pure data model + logic. Used by every other crate.
-- **mmcp-server**: HTTP/SSE endpoints, WebUI serving, auth, database. Depends on `mmcp-core`. `#![forbid(unsafe_code)]`.
-- **mmcp-client**: runs on the user's machine. Acts as (a) an MCP stdio server that Claude Code and other AI clients talk to, (b) a sync engine that pushes/pulls to the remote server, (c) a CLI for `mmcp init`, `mmcp status`, `mmcp sync`, etc. Depends on `mmcp-core`.
-- **mmcp-webui**: human-facing UI for browsing memories, managing orgs/groups/ACLs. Talks to `mmcp-server` over HTTP.
+- **mmcp-core**: pure data model + logic. No I/O, no network, no async. Used by every other crate.
+- **mmcp-git**: `GitBackend` trait and its implementations. Default `NativeBackend` uses `gix` on bare repos. Alternative backends for Forgejo, Gitea, GitHub, GitLab talk to external forges over REST.
+- **mmcp-db**: SeaORM entity definitions and migrations. Same entities target Postgres on the server and SQLite in the client's local mirror.
+- **mmcp-auth**: password hashing, PASETO token issuance/validation, `axum-login` traits, OAuth + passkey wiring.
+- **mmcp-proto**: typed MCP tool request/response shapes built on top of `rmcp`. Shared so client and server never drift on schemas.
+- **mmcp-session**: session key management, transcript file inspection, turn counter, compaction detection, mandatory-memory read tracking.
+- **mmcp-sync**: push/pull/diff/merge engine. Uses `mmcp-git` for repo ops and `mmcp-db` for pending-push state.
+- **mmcp-server** *(binary)*: `axum`-based HTTP/SSE daemon. Hosts MCP-over-HTTP, WebUI REST API, git smart HTTP, auth endpoints. Owns the Postgres database and the bare git repos on disk (when using `NativeBackend`). `#![forbid(unsafe_code)]`.
+- **mmcp-client** *(binary)*: runs on the user's machine. One binary, multiple entry points via `clap` subcommands:
+  - `mmcp serve` — the MCP stdio server that Claude Code and other AI clients talk to
+  - `mmcp init` / `status` / `sync` / `pull` / `push` — CLI workflow commands
+  - `mmcp hook user-prompt` — the command invoked by the Claude Code `UserPromptSubmit` hook
+- **webui** *(separate crate, not in main workspace)*: Leptos fullstack frontend. Talks to `mmcp-server` via its REST API. Shares types with `mmcp-core` via Cargo dependency.
 
 ### Transport
 
@@ -85,21 +102,23 @@ The unit of storage and permissioning. Each memory group is backed by exactly on
 
 ### 4.3 Memory file format
 
-A memory is a single `.md` file inside its group's repo, with YAML frontmatter.
+A memory is a single `.md` file inside its group's repo, with TOML frontmatter delimited by `+++` fences.
 
 ```markdown
----
-name: Rust Coding Rules
-description: Strict Rust coding conventions for this project
-kind: rule                  # see §4.4
-mandatory: true             # must be read at least once per session
-version: 1.3.2              # current semver (managed by server at push time)
-tags: ["rust", "style"]
----
++++
+name = "Rust Coding Rules"
+description = "Strict Rust coding conventions for this project"
+kind = "rule"                  # see §4.4
+mandatory = true               # must be read at least once per session
+version = "1.3.2"              # current semver (managed by server at push time)
+tags = ["rust", "style"]
++++
 
 # Rust Coding Rules
 ...
 ```
+
+TOML is chosen over YAML for consistency with `.mmcp/config.toml` and `Cargo.toml`, for native typed arrays and datetimes, and to avoid YAML's whitespace-significant parsing pitfalls. The `gray_matter` crate handles `+++`-delimited TOML frontmatter out of the box.
 
 Frontmatter fields:
 
@@ -386,22 +405,115 @@ Tool descriptions will include explicit instructions about session-specific expe
 
 ## 12. Auth
 
-TBD in detail. Rough shape:
+Auth is first-class from day one. The mmcp WebUI is a GitHub-style interface for both end users and administrators, so login flows must be complete and polished on initial release.
 
-- Users authenticate to the server via OAuth or password + token.
-- `mmcp-client` stores credentials in the OS keychain (or `~/.mmcp/credentials.toml` as fallback).
-- Tokens are short-lived with refresh.
-- Local-only mode has no auth — the local user is trusted on their own machine.
+### 12.1 Authentication methods
 
-## 13. Open Questions
+Supported at launch:
+
+- **Password + PASETO session token** — baseline login for any account.
+- **OAuth2** — login via GitHub, Google, and any configured provider. Wired via `oauth2-passkey-axum`.
+- **Passkeys (WebAuthn)** — passwordless login and second-factor, supported natively through the same crate.
+
+Password hashing uses `argon2`. Session tokens use `rusty_paseto` (PASETO v4 local tokens for server-held sessions, v4 public tokens if we later expose issuer-verifiable API tokens). JWT is deliberately avoided for internal tokens because mmcp controls both ends and PASETO offers stronger defaults.
+
+### 12.2 Session and authorization middleware
+
+`axum-login` provides the identification/authentication/authorization middleware layer. Applications implement the `AuthUser` and `AuthnBackend` traits over `mmcp-db` entities; `axum-login` handles session lifecycles via `tower-sessions`. Route protection uses `login_required!` and `permission_required!` macros.
+
+Authorization is permission-based. Permissions are derived from mmcp's ACL model (§4.5) and attached to the session on login.
+
+### 12.3 Token storage on the client
+
+- **Preferred**: OS keychain via the `keyring` crate (Windows Credential Manager, macOS Keychain, Secret Service / libsecret on Linux).
+- **Fallback**: encrypted file under `~/.mmcp/credentials.toml`, protected with a user-supplied passphrase.
+
+### 12.4 Local-only mode
+
+When no `[sync]` block is configured, the client skips auth entirely. The local user is trusted on their own machine. Group repos are opened directly; no session tokens, no login flow.
+
+## 13. Git Backend Architecture
+
+Git storage is abstracted behind a `GitBackend` trait defined in `mmcp-git`. The server and client depend on the trait, not any specific implementation, so the storage layer is swappable without touching the control plane.
+
+### 13.1 Trait shape
+
+```rust
+#[async_trait]
+pub trait GitBackend: Send + Sync {
+    async fn create_group_repo(&self, group: &GroupRef) -> Result<RepoHandle>;
+    async fn clone_to(&self, repo: &RepoHandle, dst: &Path) -> Result<()>;
+    async fn fetch(&self, repo: &RepoHandle, refs: &[RefSpec]) -> Result<()>;
+    async fn push(&self, repo: &RepoHandle, refs: &[RefSpec]) -> Result<PushReport>;
+    async fn read_file(&self, repo: &RepoHandle, path: &str, rev: &Rev) -> Result<Bytes>;
+    async fn write_commit(&self, repo: &RepoHandle, commit: CommitSpec) -> Result<CommitId>;
+    async fn tag(&self, repo: &RepoHandle, name: &str, target: &CommitId) -> Result<()>;
+    async fn walk_history(&self, repo: &RepoHandle, path: &str) -> Result<Vec<CommitMeta>>;
+}
+```
+
+### 13.2 Default backend: native in-process git
+
+`NativeBackend` is shipped with `mmcp-server` and used by default. It has no external dependencies beyond the mmcp binary itself.
+
+- **Storage**: bare repositories on disk under `<data_dir>/repos/<group_uuid>.git`, managed directly by `gix`.
+- **In-process access**: the server process uses `gix` APIs directly for all repo operations. No subprocess spawning, no file locks held by other programs.
+- **Network access**: `mmcp-server` exposes the git smart HTTP protocol on its own `axum` port under `/git/<group_uuid>.git/`. Clients run normal `git fetch` / `git push` (or the `mmcp-sync` engine) against that URL.
+- **Auth**: the smart HTTP handler reuses `axum-login` session state. Git-level auth is the same as the rest of the API. No duplicate user database.
+- **ACL enforcement**: happens in the mmcp control layer before the git handler touches the repo. Read/write permission is checked against the ACL rules in §4.5, then the git operation proceeds or is rejected.
+
+**Implementation note on smart HTTP**: `gix` has solid client-side fetch/push/clone, and the server-side smart HTTP responder (upload-pack and receive-pack over HTTP, pkt-line framing) may or may not be complete in the current `gix` release. If it is not, we implement the protocol ourselves on top of `gix`'s object database. This is well-documented (Git's own smart-http-protocol documentation is the spec) and keeps the zero-dependency story intact.
+
+### 13.3 Alternative backends
+
+For users who want their memory storage in an existing forge, mmcp ships the following opt-in backends behind the same trait:
+
+| Backend          | Transport | Notes                                                                 |
+| ---------------- | --------- | --------------------------------------------------------------------- |
+| `ForgejoBackend` | REST API  | Talks to a self-hosted Forgejo instance. mmcp stores only group-to-repo mapping; Forgejo owns git content and repo-level ACLs. |
+| `GiteaBackend`   | REST API  | Nearly identical API to Forgejo; likely one implementation with a config flag. |
+| `GitHubBackend`  | REST API  | For users who want memories in GitHub repos. Subject to GitHub rate limits. |
+| `GitLabBackend`  | REST API  | Same rationale as GitHub.                                             |
+
+Backend selection is a server-side configuration choice. The client is agnostic — it always talks to `mmcp-server`, which proxies git operations through whichever backend is configured.
+
+## 14. Locked Stack Decisions
+
+Recorded here so subsequent design changes have a reference point. See `docs/STACK.md` for the full crate-by-crate inventory and rationale.
+
+| Area                   | Choice                                                                 |
+| ---------------------- | ---------------------------------------------------------------------- |
+| Language               | Rust, edition 2024                                                     |
+| Async runtime          | `tokio`                                                                |
+| HTTP framework         | `axum`                                                                 |
+| MCP SDK                | `rmcp` (official Rust MCP SDK)                                         |
+| WebUI framework        | Leptos (fullstack Rust, fine-grained reactivity, SSR + hydration)      |
+| ORM                    | SeaORM (multi-backend: Postgres on server, SQLite on client mirror)    |
+| Git library            | `gix` (gitoxide)                                                       |
+| Git backend default    | Native in-process (bare repos + smart HTTP served by `mmcp-server`)    |
+| Tokens                 | `rusty_paseto` (PASETO v4)                                             |
+| Auth middleware        | `axum-login` + `tower-sessions`                                        |
+| OAuth + passkeys       | `oauth2-passkey-axum` (day-one feature)                                |
+| Password hashing       | `argon2`                                                               |
+| Client keychain        | `keyring`                                                              |
+| Frontmatter format     | TOML, `+++` delimited                                                  |
+| Markdown+frontmatter   | `gray_matter` (TOML mode)                                              |
+| Date/time              | `jiff`                                                                 |
+| CLI parsing            | `clap` v4 derive                                                       |
+| Error handling         | `thiserror` (libs), `anyhow` (binaries)                                |
+| Logging                | `tracing` + `tracing-subscriber`                                       |
+| UUIDs                  | `uuid` v7 (time-ordered)                                               |
+| Testing                | standard + `proptest` + `criterion` + `wiremock`                       |
+
+## 15. Open Questions
 
 Parked for later, not blocking an initial prototype:
 
-1. **Database choice** for the server — Postgres (richer, operationally heavier) or SQLite (simpler, limits write concurrency but fine for small deployments). Default: Postgres, with SQLite as a single-user deployment option.
-2. **Web framework** for the WebUI — not yet chosen.
-3. **Structured-section merging** for conflict resolution — deferred until line-based proves painful.
-4. **Verification semantics** — should `verify_memory` require the AI to restate key facts, or is a no-arg call sufficient? Restating is stronger but costs tokens.
-5. **Cross-memory atomic updates** — single push can carry multiple independent commits across different group repos, but they are not atomically visible. Do we need a "bundle" concept, or is eventual consistency fine?
-6. **Fork/branch semantics** — when a user wants to propose changes to a group they have read-only access to, how does the PR-like flow work?
-7. **Rate limiting** on elicitation — the spec says SHOULD, we need to pick concrete limits.
-8. **Hook failure behavior** — if the server is unreachable and the local cache is stale, does the hook block, warn, or silently degrade? Probably silently degrade with a cached counter.
+1. **Structured-section merging** for conflict resolution — deferred until line-based proves painful.
+2. **Verification semantics** — should `verify_memory` require the AI to restate key facts, or is a no-arg call sufficient? Restating is stronger but costs tokens.
+3. **Cross-memory atomic updates** — a single push can carry multiple independent commits across different group repos, but they are not atomically visible. Do we need a "bundle" concept, or is eventual consistency fine?
+4. **Fork/branch semantics** — when a user wants to propose changes to a group they have read-only access to, how does the PR-like flow work?
+5. **Rate limiting** on elicitation — the spec says SHOULD, we need to pick concrete limits.
+6. **Hook failure behavior** — if the server is unreachable and the local cache is stale, does the hook block, warn, or silently degrade? Probably silently degrade with a cached counter.
+7. **Smart HTTP server implementation** — confirm whether `gix` ships a ready-to-use server-side responder, or whether we implement the pkt-line framing ourselves. Not a blocker either way; resolved during prototyping.
+8. **Forgejo/Gitea API divergence** — whether one implementation with a config flag is enough, or they need separate backends. Resolved once we prototype against both.
