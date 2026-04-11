@@ -1,0 +1,16 @@
+[package]
+name = "mmcp-sync"
+description = "Push/pull/diff/merge engine for mmcp, layered over mmcp-git and mmcp-db"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+mmcp-core = { workspace = true }
+mmcp-git = { workspace = true }
+mmcp-db = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
