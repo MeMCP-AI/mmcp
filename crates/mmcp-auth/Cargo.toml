@@ -1,0 +1,15 @@
+[package]
+name = "mmcp-auth"
+description = "Authentication and authorization for mmcp: Argon2, PASETO, axum-login glue"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+mmcp-core = { workspace = true }
+mmcp-db = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
