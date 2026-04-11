@@ -1,0 +1,47 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/mmcp-core",
+    "crates/mmcp-git",
+    "crates/mmcp-db",
+    "crates/mmcp-auth",
+    "crates/mmcp-proto",
+    "crates/mmcp-session",
+    "crates/mmcp-sync",
+    "crates/mmcp-server",
+    "crates/mmcp-client",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Gabriel GRONDIN"]
+
+[workspace.dependencies]
+# Workspace member crates
+mmcp-core = { path = "crates/mmcp-core", version = "0.1.0" }
+mmcp-git = { path = "crates/mmcp-git", version = "0.1.0" }
+mmcp-db = { path = "crates/mmcp-db", version = "0.1.0" }
+mmcp-auth = { path = "crates/mmcp-auth", version = "0.1.0" }
+mmcp-proto = { path = "crates/mmcp-proto", version = "0.1.0" }
+mmcp-session = { path = "crates/mmcp-session", version = "0.1.0" }
+mmcp-sync = { path = "crates/mmcp-sync", version = "0.1.0" }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
