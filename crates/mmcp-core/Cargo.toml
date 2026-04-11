@@ -1,0 +1,13 @@
+[package]
+name = "mmcp-core"
+description = "Pure data model and logic for mmcp: types, semver, ACL resolver, load-set resolver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
