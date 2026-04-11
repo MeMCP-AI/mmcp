@@ -1,0 +1,29 @@
+[package]
+name = "mmcp-client"
+description = "mmcp client: MCP stdio server, sync engine, hook handler, and user CLI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "mmcp"
+path = "src/main.rs"
+
+[dependencies]
+mmcp-core = { workspace = true }
+mmcp-git = { workspace = true }
+mmcp-db = { workspace = true }
+mmcp-auth = { workspace = true }
+mmcp-proto = { workspace = true }
+mmcp-session = { workspace = true }
+mmcp-sync = { workspace = true }
+
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+
+[lints]
+workspace = true
