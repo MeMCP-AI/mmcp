@@ -1,0 +1,28 @@
+[package]
+name = "mmcp-server"
+description = "mmcp server daemon: HTTP/SSE MCP, WebUI API, git smart HTTP, auth, database"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "mmcp-server"
+path = "src/main.rs"
+
+[dependencies]
+mmcp-core = { workspace = true }
+mmcp-git = { workspace = true }
+mmcp-db = { workspace = true }
+mmcp-auth = { workspace = true }
+mmcp-proto = { workspace = true }
+mmcp-session = { workspace = true }
+mmcp-sync = { workspace = true }
+
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true
