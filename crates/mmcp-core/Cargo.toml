@@ -12,6 +12,7 @@ serde = { workspace = true }
 uuid = { workspace = true }
 jiff = { workspace = true }
 semver = { workspace = true }
+toml = { workspace = true }
 
 [lints]
 workspace = true

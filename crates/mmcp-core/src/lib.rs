@@ -8,6 +8,7 @@
 //! below it in the dependency tree can be unit-tested without a runtime.
 
 pub mod acl;
+pub mod config;
 pub mod id;
 pub mod identity;
 pub mod memory;
