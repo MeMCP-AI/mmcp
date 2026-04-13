@@ -58,5 +58,9 @@ semver = { version = "1", features = ["serde"] }
 # TOML parsing and rendering
 toml = "0.9"
 
+# Database (SeaORM with sqlx backend)
+sea-orm = { version = "1.1", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls", "macros", "with-uuid"] }
+sea-orm-migration = { version = "1.1", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls", "with-uuid"] }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
