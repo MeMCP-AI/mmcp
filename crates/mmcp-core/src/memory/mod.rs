@@ -13,10 +13,12 @@ mod bump;
 mod entry;
 mod frontmatter;
 mod kind;
+mod parser;
 mod version;
 
 pub use bump::BumpIntent;
 pub use entry::Memory;
 pub use frontmatter::MemoryFrontmatter;
 pub use kind::MemoryKind;
+pub use parser::{MemoryFile, MemoryParseError};
 pub use version::Version;
