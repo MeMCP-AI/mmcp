@@ -10,6 +10,14 @@ authors.workspace = true
 mmcp-core = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
+gix = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true
