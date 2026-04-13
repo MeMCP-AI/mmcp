@@ -9,6 +9,14 @@ authors.workspace = true
 [dependencies]
 mmcp-core = { workspace = true }
 thiserror = { workspace = true }
+sea-orm = { workspace = true }
+sea-orm-migration = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
 
 [lints]
 workspace = true
