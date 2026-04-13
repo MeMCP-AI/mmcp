@@ -14,8 +14,8 @@ mod org;
 mod role;
 mod user;
 
-pub use group::Group;
-pub use membership::Membership;
+pub use group::{Group, GroupOwner};
+pub use membership::{Membership, Principal};
 pub use org::Org;
 pub use role::Role;
 pub use user::User;
