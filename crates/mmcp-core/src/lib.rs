@@ -6,3 +6,6 @@
 //!
 //! This crate performs no I/O and has no async entry points. Everything
 //! below it in the dependency tree can be unit-tested without a runtime.
+
+pub mod id;
+pub mod identity;
