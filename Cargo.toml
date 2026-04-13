@@ -43,5 +43,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # CLI
 clap = { version = "4", features = ["derive"] }
 
+# Serialization
+serde = { version = "1", features = ["derive"] }
+
+# Identifiers
+uuid = { version = "1", features = ["v7", "serde"] }
+
+# Date and time
+jiff = { version = "0.2", features = ["serde"] }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
