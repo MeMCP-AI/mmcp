@@ -55,5 +55,8 @@ jiff = { version = "0.2", features = ["serde"] }
 # Semantic versioning
 semver = { version = "1", features = ["serde"] }
 
+# TOML parsing and rendering
+toml = "0.9"
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
