@@ -9,3 +9,4 @@
 
 pub mod id;
 pub mod identity;
+pub mod memory;
