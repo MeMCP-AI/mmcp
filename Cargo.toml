@@ -52,5 +52,8 @@ uuid = { version = "1", features = ["v7", "serde"] }
 # Date and time
 jiff = { version = "0.2", features = ["serde"] }
 
+# Semantic versioning
+semver = { version = "1", features = ["serde"] }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
