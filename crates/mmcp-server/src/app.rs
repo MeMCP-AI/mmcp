@@ -13,6 +13,8 @@ pub fn build_router(state: ServerState) -> Router {
         .merge(routes::health::router())
         .merge(routes::mcp::router())
         .merge(routes::auth::router())
+        .merge(routes::sync::router())
+        .merge(routes::git_http::router())
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }
