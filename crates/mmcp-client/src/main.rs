@@ -10,6 +10,7 @@ use clap::{Parser, Subcommand};
 
 mod commands;
 mod config;
+mod state;
 
 #[derive(Parser)]
 #[command(name = "mmcp", version, about = "mmcp memory client")]
