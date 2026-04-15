@@ -1,24 +1,39 @@
 //! Sync engine for mmcp.
 //!
-//! Owns two bounded responsibilities today:
+//! Two layers, clearly separated:
 //!
-//! - The **pending push queue**: an in-process list of local edits
-//!   waiting to be pushed to the remote server. Clients enqueue
-//!   edits as soon as they are committed locally and the sync task
-//!   drains the queue the next time the server is reachable.
-//! - The **version bump negotiator**: the pure function that turns
-//!   a current canonical version plus an editor-supplied
-//!   [`BumpIntent`](mmcp_core::memory::BumpIntent) into the next
-//!   version number the server should assign.
+//! - The **control plane**: a typed `SyncClient` wrapping the
+//!   HTTP endpoints that `mmcp-server` serves under `/sync/*`.
+//!   It lists the caller's groups, reads advertised refs, and
+//!   registers version bumps when local edits ship.
+//! - The **content plane**: a `GitBackend` handle that moves the
+//!   actual git objects. The engine calls `backend.push` and
+//!   `backend.fetch` once the control-plane decision has been
+//!   recorded, so content transfer and metadata registration
+//!   stay in lockstep.
 //!
-//! Actual git push operations are delegated to a
-//! [`GitBackend`](mmcp_git::GitBackend) implementation supplied by
-//! the caller, so the sync engine stays backend-agnostic.
+//! `SyncEngine` orchestrates both. Tests drive the engine through
+//! `wiremock` + an in-process native backend so every path except
+//! real network transport is covered without a running
+//! `mmcp-server`.
+//!
+//! The crate also holds the pending push queue (`PendingQueue`)
+//! and the pure version bump math (`negotiate_next_version`)
+//! used by the server when it assigns a new version to an edit.
 
+pub mod client;
+pub mod engine;
 pub mod error;
 pub mod pending;
 pub mod version;
 
+pub use client::{
+    ConflictBody, ManifestResponse, PushRequest, PushResponse, RefEntry, RefsResponse,
+    RemoteGroup, SyncClient,
+};
+pub use engine::{
+    DrainedPush, GroupHandleResolver, PullReport, PushReport, SyncEngine, SyncReport,
+};
 pub use error::SyncError;
 pub use pending::{PendingEdit, PendingQueue};
 pub use version::negotiate_next_version;
