@@ -2189,10 +2189,14 @@ dependencies = [
 name = "mmcp-sync"
 version = "0.1.0"
 dependencies = [
+ "jiff",
  "mmcp-core",
  "mmcp-db",
  "mmcp-git",
+ "semver",
+ "serde",
  "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]
