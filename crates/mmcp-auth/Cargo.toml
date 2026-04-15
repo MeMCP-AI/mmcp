@@ -10,6 +10,11 @@ authors.workspace = true
 mmcp-core = { workspace = true }
 mmcp-db = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
+argon2 = { workspace = true }
+rusty_paseto = { workspace = true }
+serde_json = "1"
 
 [lints]
 workspace = true
