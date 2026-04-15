@@ -1,22 +1,17 @@
 [package]
 name = "mmcp-session"
-description = "Session tracking for mmcp: turn counting, compaction detection, mandatory memory state"
+description = "Session primitives for mmcp: transcript signatures and compaction detection"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 
 [dependencies]
-mmcp-core = { workspace = true }
-mmcp-db = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
-uuid = { workspace = true }
-jiff = { workspace = true }
 sha2 = "0.10"
 
 [dev-dependencies]
-tokio = { workspace = true }
 tempfile = "3"
 
 [lints]
