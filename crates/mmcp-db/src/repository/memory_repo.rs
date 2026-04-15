@@ -104,3 +104,28 @@ pub async fn list_versions(
         .all(conn)
         .await?)
 }
+
+/// Case-insensitive substring search over memory slugs.
+///
+/// Returns at most `limit` rows. Matching is performed in SQL via
+/// `LIKE` with both sides lowered so SQLite and Postgres behave the
+/// same without depending on per-backend collation settings.
+pub async fn search_by_slug(
+    conn: &sea_orm::DatabaseConnection,
+    needle: &str,
+    limit: u64,
+) -> Result<Vec<Model>, DbError> {
+    use sea_orm::{QueryOrder, QuerySelect};
+    let pattern = format!("%{}%", needle.to_lowercase());
+    Ok(Entity::find()
+        .filter(
+            sea_orm::sea_query::Expr::expr(sea_orm::sea_query::Func::lower(
+                sea_orm::sea_query::Expr::col(Column::Slug),
+            ))
+            .like(pattern),
+        )
+        .order_by_asc(Column::Slug)
+        .limit(limit)
+        .all(conn)
+        .await?)
+}
