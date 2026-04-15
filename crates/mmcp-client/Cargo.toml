@@ -20,6 +20,7 @@ mmcp-session = { workspace = true }
 mmcp-sync = { workspace = true }
 
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -30,6 +31,10 @@ toml = { workspace = true }
 uuid = { workspace = true }
 jiff = { workspace = true }
 rmcp = { workspace = true }
+notify = "8"
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true
