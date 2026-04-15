@@ -1,24 +1,21 @@
 //! `mmcp serve` implementation: MCP stdio server.
 //!
 //! Speaks real JSON-RPC 2.0 through the official `rmcp` crate.
-//! Every exposed tool performs an actual operation against the
-//! local mmcp state (the SQLite mirror under `~/.mmcp/local.db`
-//! and the native git backend under `~/.mmcp/repos`). Tools that
-//! cannot yet be served with the data available locally are not
-//! exposed at all, so callers never see a placeholder response.
+//! Every exposed tool answers from real git content read via the
+//! [`NativeBackend`] at `~/.mmcp/repos/`. No database is opened,
+//! no placeholder responses are returned. Tools that need
+//! per-session state (verification, compaction acknowledgement)
+//! are deferred until Phase 5 of the implementation plan, when
+//! the stdio server learns which session id it is serving.
 
 use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
-use jiff::Timestamp;
-use mmcp_db::entities::group::OwnerKind;
-use mmcp_db::entities::memory::MemoryKind;
-use mmcp_db::repository::{group_repo, memory_repo};
-use mmcp_db::{Database, connect};
-use mmcp_git::NativeBackend;
-use mmcp_session::SessionTracker;
+use mmcp_core::id::GroupId;
+use mmcp_core::memory::{MemoryFile, MemoryFrontmatter, MemoryKind};
+use mmcp_git::{GitBackend, NativeBackend, Rev};
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -33,6 +30,20 @@ use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::config::{PROJECT_CONFIG_DIR, PROJECT_CONFIG_FILE, find_project_root};
+use crate::state::{GroupEntry, GroupIndex, SessionStore, WatcherHandle, spawn_watcher};
+
+/// Directory name under the user's home that holds mmcp state.
+const MMCP_HOME_DIR: &str = ".mmcp";
+/// Subdirectory holding bare group repositories.
+const MMCP_REPOS_SUBDIR: &str = "repos";
+/// Subdirectory holding per-session TOML state files.
+const MMCP_SESSIONS_SUBDIR: &str = "sessions";
+/// Subdirectory inside every group repo holding memory files.
+const MEMORIES_PATH_PREFIX: &str = "memories";
+/// File extension memory files use.
+const MEMORY_EXTENSION: &str = ".md";
+
 /// Run the MCP stdio server loop until the client disconnects.
 pub async fn run() -> Result<()> {
     tracing::info!("mmcp stdio MCP server starting");
@@ -43,15 +54,15 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
-/// Everything the MCP server needs to answer tool calls against
-/// local state: the SQLite mirror and the bare-repo backend rooted
-/// under `~/.mmcp`.
+/// Everything the MCP server needs to answer tool calls from local
+/// state. No database. Git and flat session files only.
 struct ClientStateInner {
-    database: Database,
-    #[allow(dead_code)] // NOTE: wired into read/write handlers in a follow-up.
-    git: NativeBackend,
-    #[allow(dead_code)] // NOTE: wired into verify/session-scoped handlers in a follow-up.
-    sessions: SessionTracker,
+    backend: Arc<NativeBackend>,
+    groups: GroupIndex,
+    #[allow(dead_code)] // NOTE: consumed by session-scoped tools added in Phase 5.
+    sessions: SessionStore,
+    #[allow(dead_code)] // NOTE: held to keep the notify watcher alive for the process lifetime.
+    watcher: WatcherHandle,
 }
 
 #[derive(Clone)]
@@ -60,27 +71,37 @@ struct ClientState(Arc<ClientStateInner>);
 impl ClientState {
     async fn initialize() -> Result<Self> {
         let home = local_home()?;
-        let dir = home.join(".mmcp");
-        std::fs::create_dir_all(&dir)
-            .with_context(|| format!("creating {}", dir.display()))?;
+        let mmcp_root = home.join(MMCP_HOME_DIR);
+        std::fs::create_dir_all(&mmcp_root)
+            .with_context(|| format!("creating {}", mmcp_root.display()))?;
 
-        let db_path = dir.join("local.db");
-        let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
-        let database = connect(&db_url)
+        let repos_root = mmcp_root.join(MMCP_REPOS_SUBDIR);
+        let backend = Arc::new(
+            NativeBackend::new(&repos_root)
+                .with_context(|| format!("initializing repo root {}", repos_root.display()))?,
+        );
+
+        let sessions_root = mmcp_root.join(MMCP_SESSIONS_SUBDIR);
+        let sessions = SessionStore::open(&sessions_root)
+            .with_context(|| format!("opening session store at {}", sessions_root.display()))?;
+
+        let groups = GroupIndex::build(repos_root.clone(), backend.clone())
             .await
-            .with_context(|| format!("opening {}", db_path.display()))?;
-        database.migrate().await.context("running local migrations")?;
+            .with_context(|| format!("building group index at {}", repos_root.display()))?;
 
-        let repos_root = dir.join("repos");
-        let git = NativeBackend::new(&repos_root)
-            .with_context(|| format!("initializing repo root {}", repos_root.display()))?;
-
-        let sessions = SessionTracker::new(database.connection().clone());
+        // If the serve process was spawned inside an mmcp project,
+        // hand the project config path to the watcher so edits to
+        // the load set trigger a rescan. Outside a project, only
+        // the repos root is watched.
+        let project_config_path = find_current_project_config();
+        let watcher = spawn_watcher(repos_root, project_config_path, groups.clone())
+            .context("spawning filesystem watcher")?;
 
         Ok(Self(Arc::new(ClientStateInner {
-            database,
-            git,
+            backend,
+            groups,
             sessions,
+            watcher,
         })))
     }
 }
@@ -104,14 +125,19 @@ fn local_home() -> Result<PathBuf> {
     ))
 }
 
-/// MCP server exposing the mmcp tools that can be served purely
-/// from local state.
+fn find_current_project_config() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let root = find_project_root(&cwd)?;
+    Some(root.join(PROJECT_CONFIG_DIR).join(PROJECT_CONFIG_FILE))
+}
+
+/// MCP server exposing the stateless mmcp tools that can be served
+/// purely from local git repos.
 #[derive(Clone)]
 struct McpServer {
     state: ClientState,
     // NOTE: `tool_router` is read through the `#[tool_handler]`
-    // macro's generated plumbing, not from our own code. The
-    // dead-code warning is a framework quirk scoped to this field.
+    // macro's generated plumbing, not from our own code.
     #[allow(dead_code)]
     tool_router: ToolRouter<McpServer>,
 }
@@ -125,9 +151,23 @@ struct ListMemoriesArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+struct ReadMemoryArgs {
+    /// Group UUID that owns the memory.
+    pub group: String,
+    /// Memory slug (file name under `memories/` without the `.md` extension).
+    pub slug: String,
+    /// Optional branch name, tag name, or commit hex. Defaults to `main`.
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
 struct ListVersionsArgs {
-    /// Memory UUID to query.
-    pub memory: String,
+    /// Group UUID that owns the memory.
+    pub group: String,
+    /// Memory slug.
+    pub slug: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -140,7 +180,8 @@ struct GroupInfoArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct SearchMemoriesArgs {
-    /// Substring matched against memory slugs, case-insensitive.
+    /// Substring matched against memory slug and frontmatter name,
+    /// case-insensitive.
     pub query: String,
     /// Optional maximum number of hits. Defaults to 50.
     #[serde(default)]
@@ -157,134 +198,200 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List memories that live in the specified group (UUID). Returns an empty list if the group is unknown to the local mirror."
+        description = "List memories that live in the specified group. The group argument is the group UUID. Returns an empty list if the group is unknown or contains no memories."
     )]
     async fn list_memories(
         &self,
         Parameters(args): Parameters<ListMemoriesArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let group_id = parse_uuid(&args.group, "group")?;
-        let rows = memory_repo::list_in_group(self.state.database.connection(), group_id)
-            .await
-            .map_err(db_error)?;
-        let descriptors: Vec<serde_json::Value> = rows
-            .into_iter()
-            .map(|m| {
-                json!({
-                    "id": m.id,
-                    "group": m.group_id,
-                    "slug": m.slug,
-                    "kind": kind_to_string(m.kind),
-                    "mandatory": m.mandatory,
-                    "latest_version": m.latest_version,
-                    "updated_at": m.updated_at,
-                })
-            })
-            .collect();
-        Ok(ok_json(json!({ "memories": descriptors })))
+        let group_id = parse_group_id(&args.group)?;
+        let Some(entry) = self.state.groups.get(&group_id).await else {
+            return Ok(ok_json(json!({ "memories": [] })));
+        };
+        let files = list_memory_files(&self.state.backend, &entry).await?;
+        let mut memories = Vec::with_capacity(files.len());
+        for slug in files {
+            let descriptor = read_memory_descriptor(&self.state.backend, &entry, &slug, None)
+                .await
+                .map_err(git_error)?;
+            memories.push(descriptor);
+        }
+        Ok(ok_json(json!({
+            "group": entry.manifest.group_id,
+            "memories": memories,
+        })))
     }
 
     #[tool(
-        description = "List the published version history of a memory by UUID, oldest first."
+        description = "Read a memory by group and slug. Returns the TOML frontmatter and the Markdown body exactly as stored in git. Set `version` to a branch name, tag, or commit hex to read a specific revision; defaults to the latest `main`."
+    )]
+    async fn read_memory(
+        &self,
+        Parameters(args): Parameters<ReadMemoryArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let group_id = parse_group_id(&args.group)?;
+        let entry = self.state.groups.get(&group_id).await.ok_or_else(|| {
+            McpError::invalid_params(
+                "group not found in local mirror",
+                Some(json!({ "group": group_id.to_string() })),
+            )
+        })?;
+        let rev = parse_rev(args.version.as_deref());
+        let path = memory_path(&args.slug);
+        let bytes = self
+            .state
+            .backend
+            .read_file(&entry.handle, &path, &rev)
+            .await
+            .map_err(|e| match e {
+                mmcp_git::GitError::PathNotFound(p) => McpError::invalid_params(
+                    "memory not found in group",
+                    Some(json!({ "group": group_id.to_string(), "path": p })),
+                ),
+                mmcp_git::GitError::RevNotFound(r) => McpError::invalid_params(
+                    "revision not found",
+                    Some(json!({ "revision": r })),
+                ),
+                other => git_error(other),
+            })?;
+        let text = std::str::from_utf8(&bytes).map_err(|e| {
+            McpError::internal_error(
+                Cow::Owned(format!("memory file is not valid UTF-8: {e}")),
+                None,
+            )
+        })?;
+        let file = MemoryFile::parse(text).map_err(|e| {
+            McpError::invalid_params(
+                Cow::Owned(format!("memory frontmatter did not parse: {e}")),
+                Some(json!({ "slug": args.slug })),
+            )
+        })?;
+        Ok(ok_json(json!({
+            "group": entry.manifest.group_id,
+            "slug": args.slug,
+            "version": rev_label(&rev),
+            "frontmatter": frontmatter_to_json(&file.frontmatter),
+            "body": file.body,
+        })))
+    }
+
+    #[tool(
+        description = "List the commit history of a single memory, most recent first. Each entry includes the commit id, author, message, and timestamp."
     )]
     async fn list_versions(
         &self,
         Parameters(args): Parameters<ListVersionsArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let memory_id = parse_uuid(&args.memory, "memory")?;
-        let rows = memory_repo::list_versions(self.state.database.connection(), memory_id)
+        let group_id = parse_group_id(&args.group)?;
+        let entry = self.state.groups.get(&group_id).await.ok_or_else(|| {
+            McpError::invalid_params(
+                "group not found in local mirror",
+                Some(json!({ "group": group_id.to_string() })),
+            )
+        })?;
+        let path = memory_path(&args.slug);
+        let history = self
+            .state
+            .backend
+            .walk_history(&entry.handle, &path)
             .await
-            .map_err(db_error)?;
-        let versions: Vec<serde_json::Value> = rows
+            .map_err(git_error)?;
+        let versions: Vec<serde_json::Value> = history
             .into_iter()
-            .map(|v| {
+            .map(|c| {
                 json!({
-                    "version": v.version,
-                    "commit": v.commit,
-                    "author": v.author_id,
-                    "published_at": v.published_at,
-                    "summary": v.summary,
+                    "commit": c.id,
+                    "subject": c.subject,
+                    "message": c.message,
+                    "author_name": c.author_name,
+                    "author_email": c.author_email,
+                    "timestamp": c.timestamp,
                 })
             })
             .collect();
         Ok(ok_json(json!({
-            "memory": memory_id,
+            "group": entry.manifest.group_id,
+            "slug": args.slug,
             "versions": versions,
         })))
     }
 
     #[tool(
-        description = "Return metadata about a group: slug, owner, display name, and the number of memories currently known to the local mirror."
+        description = "Return the manifest metadata for a group: slug, display name, owner kind and id, creation timestamp, and the number of memories currently stored in the group."
     )]
     async fn group_info(
         &self,
         Parameters(args): Parameters<GroupInfoArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let group_id = parse_uuid(&args.group, "group")?;
-        let conn = self.state.database.connection();
-        let group = group_repo::find_by_id(conn, group_id)
-            .await
-            .map_err(db_error)?
-            .ok_or_else(|| {
-                McpError::invalid_params(
-                    "group not found in local mirror",
-                    Some(json!({ "group": group_id.to_string() })),
-                )
-            })?;
-        let memories = memory_repo::list_in_group(conn, group_id)
-            .await
-            .map_err(db_error)?;
-        let owner = match group.owner_kind {
-            OwnerKind::User => format!("user:{}", group.owner_id),
-            OwnerKind::Org => format!("org:{}", group.owner_id),
-        };
+        let group_id = parse_group_id(&args.group)?;
+        let entry = self.state.groups.get(&group_id).await.ok_or_else(|| {
+            McpError::invalid_params(
+                "group not found in local mirror",
+                Some(json!({ "group": group_id.to_string() })),
+            )
+        })?;
+        let files = list_memory_files(&self.state.backend, &entry).await?;
+        let owner = owner_hint_to_json(&entry.manifest.owner);
         Ok(ok_json(json!({
-            "id": group.id,
-            "slug": group.slug,
+            "id": entry.manifest.group_id,
+            "slug": entry.manifest.slug,
+            "display_name": entry.manifest.display_name,
             "owner": owner,
-            "display_name": group.display_name,
-            "memory_count": memories.len(),
-            "created_at": group.created_at,
+            "schema_version": entry.manifest.schema_version,
+            "created_at": entry.manifest.created_at,
+            "memory_count": files.len(),
         })))
     }
 
     #[tool(
-        description = "Substring search against memory slugs in the local mirror. Matching is case-insensitive."
+        description = "Case-insensitive substring search across every group in the local mirror. Matches against the memory slug and the frontmatter `name` field. Returns up to `limit` hits (default 50)."
     )]
     async fn search_memories(
         &self,
         Parameters(args): Parameters<SearchMemoriesArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let needle = args.query.to_lowercase();
+        let needle = args.query.trim().to_lowercase();
         if needle.is_empty() {
             return Err(McpError::invalid_params("query must not be empty", None));
         }
-        let limit = args.limit.unwrap_or(50).max(1) as u64;
-        let rows = memory_repo::search_by_slug(
-            self.state.database.connection(),
-            &needle,
-            limit,
-        )
-        .await
-        .map_err(db_error)?;
-
-        let hits: Vec<serde_json::Value> = rows
-            .into_iter()
-            .map(|m| {
-                json!({
-                    "id": m.id,
-                    "group": m.group_id,
-                    "slug": m.slug,
-                    "kind": kind_to_string(m.kind),
-                    "mandatory": m.mandatory,
-                    "latest_version": m.latest_version,
-                })
-            })
-            .collect();
-        let timestamp = Timestamp::now().as_millisecond();
+        let limit = args.limit.unwrap_or(50).max(1) as usize;
+        let mut hits: Vec<serde_json::Value> = Vec::new();
+        for entry in self.state.groups.list().await {
+            if hits.len() >= limit {
+                break;
+            }
+            let slugs = list_memory_files(&self.state.backend, &entry).await?;
+            for slug in slugs {
+                if hits.len() >= limit {
+                    break;
+                }
+                let matches_slug = slug.to_lowercase().contains(&needle);
+                let descriptor = match read_memory_descriptor(
+                    &self.state.backend,
+                    &entry,
+                    &slug,
+                    None,
+                )
+                .await
+                {
+                    Ok(d) => d,
+                    Err(err) => {
+                        tracing::warn!(slug = %slug, error = %err, "search: descriptor read failed, skipping");
+                        continue;
+                    }
+                };
+                let matches_name = descriptor
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(|n| n.to_lowercase().contains(&needle))
+                    .unwrap_or(false);
+                if matches_slug || matches_name {
+                    hits.push(descriptor);
+                }
+            }
+        }
         Ok(ok_json(json!({
             "hits": hits,
-            "queried_at": timestamp,
         })))
     }
 }
@@ -296,31 +403,105 @@ impl ServerHandler for McpServer {
             .with_server_info(Implementation::from_build_env())
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
             .with_instructions(
-                "mmcp memory server (local-mirror mode). Exposes list_memories, list_versions, group_info, and search_memories backed by the SQLite mirror under ~/.mmcp/local.db. Tools requiring sync with a remote server or git content reads are not yet exposed in this build."
+                "mmcp memory server. Reads memories directly from git repositories under ~/.mmcp/repos. Exposes list_memories, read_memory, list_versions, group_info, and search_memories. Session-scoped tools (verify, acknowledge compaction) land in a follow-up build when the stdio server learns its session id."
                     .to_string(),
             )
     }
 }
 
-fn parse_uuid(value: &str, field: &str) -> Result<Uuid, McpError> {
-    Uuid::parse_str(value).map_err(|_| {
-        McpError::invalid_params(
-            Cow::Owned(format!("{field} is not a valid UUID")),
-            Some(json!({ field: value })),
+/// List every `memories/<slug>.md` blob in the group's repo at
+/// `main` and return the slugs without the `.md` extension.
+async fn list_memory_files(
+    backend: &NativeBackend,
+    entry: &GroupEntry,
+) -> Result<Vec<String>, McpError> {
+    let files = backend
+        .list_tree(
+            &entry.handle,
+            MEMORIES_PATH_PREFIX,
+            &Rev::Branch("main".to_string()),
         )
-    })
+        .await
+        .map_err(git_error)?;
+    Ok(files
+        .into_iter()
+        .filter_map(|name| name.strip_suffix(MEMORY_EXTENSION).map(str::to_string))
+        .collect())
 }
 
-fn db_error(err: mmcp_db::DbError) -> McpError {
-    McpError::internal_error(
-        Cow::Owned(format!("database error: {err}")),
-        None,
-    )
+/// Read one memory and return a compact descriptor including the
+/// slug, the parsed frontmatter fields, and a short summary.
+async fn read_memory_descriptor(
+    backend: &NativeBackend,
+    entry: &GroupEntry,
+    slug: &str,
+    version: Option<&str>,
+) -> Result<serde_json::Value, mmcp_git::GitError> {
+    let rev = parse_rev(version);
+    let path = memory_path(slug);
+    let bytes = backend.read_file(&entry.handle, &path, &rev).await?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let (name, description, kind, mandatory, version_str, tags) = match MemoryFile::parse(&text) {
+        Ok(file) => (
+            Some(file.frontmatter.name),
+            Some(file.frontmatter.description),
+            kind_to_string(file.frontmatter.kind).to_string(),
+            file.frontmatter.mandatory,
+            file.frontmatter.version.map(|v| v.to_string()),
+            file.frontmatter.tags,
+        ),
+        Err(_) => (None, None, "rule".to_string(), false, None, Vec::new()),
+    };
+    Ok(json!({
+        "group": entry.manifest.group_id,
+        "slug": slug,
+        "name": name,
+        "description": description,
+        "kind": kind,
+        "mandatory": mandatory,
+        "latest_version": version_str,
+        "tags": tags,
+    }))
 }
 
-fn ok_json(value: serde_json::Value) -> CallToolResult {
-    let text = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
-    CallToolResult::success(vec![Content::text(Cow::Owned(text))])
+fn parse_group_id(value: &str) -> Result<GroupId, McpError> {
+    let uuid = Uuid::parse_str(value).map_err(|_| {
+        McpError::invalid_params(
+            "group is not a valid UUID",
+            Some(json!({ "group": value })),
+        )
+    })?;
+    Ok(GroupId::from_uuid(uuid))
+}
+
+fn parse_rev(value: Option<&str>) -> Rev {
+    match value {
+        None => Rev::Branch("main".to_string()),
+        Some(v) => {
+            // Heuristic: 40-char hex string -> commit, otherwise branch.
+            if v.len() == 40 && v.chars().all(|c| c.is_ascii_hexdigit()) {
+                Rev::Commit(v.to_string())
+            } else {
+                Rev::Branch(v.to_string())
+            }
+        }
+    }
+}
+
+fn rev_label(rev: &Rev) -> String {
+    match rev {
+        Rev::Branch(b) => format!("branch:{b}"),
+        Rev::Tag(t) => format!("tag:{t}"),
+        Rev::Commit(c) => format!("commit:{c}"),
+    }
+}
+
+fn memory_path(slug: &str) -> String {
+    format!("{MEMORIES_PATH_PREFIX}/{slug}{MEMORY_EXTENSION}")
+}
+
+fn git_error(err: mmcp_git::GitError) -> McpError {
+    McpError::internal_error(Cow::Owned(format!("git error: {err}")), None)
 }
 
 fn kind_to_string(kind: MemoryKind) -> &'static str {
@@ -331,4 +512,29 @@ fn kind_to_string(kind: MemoryKind) -> &'static str {
         MemoryKind::Reference => "reference",
         MemoryKind::Scratch => "scratch",
     }
+}
+
+fn frontmatter_to_json(fm: &MemoryFrontmatter) -> serde_json::Value {
+    json!({
+        "name": fm.name,
+        "description": fm.description,
+        "kind": kind_to_string(fm.kind),
+        "mandatory": fm.mandatory,
+        "version": fm.version.as_ref().map(|v| v.to_string()),
+        "tags": fm.tags,
+        "bump_intent": fm.bump_intent,
+    })
+}
+
+fn owner_hint_to_json(owner: &mmcp_core::manifest::GroupOwnerHint) -> serde_json::Value {
+    use mmcp_core::manifest::GroupOwnerHint;
+    match owner {
+        GroupOwnerHint::User(id) => json!({ "kind": "user", "id": id }),
+        GroupOwnerHint::Org(id) => json!({ "kind": "org", "id": id }),
+    }
+}
+
+fn ok_json(value: serde_json::Value) -> CallToolResult {
+    let text = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
+    CallToolResult::success(vec![Content::text(Cow::Owned(text))])
 }
