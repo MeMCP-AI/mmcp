@@ -13,3 +13,7 @@ pub mod repository;
 
 pub use connection::{Database, connect};
 pub use error::DbError;
+
+/// Re-export of the SeaORM connection type so downstream crates do
+/// not need a direct dependency on `sea-orm`.
+pub type Connection = sea_orm::DatabaseConnection;
