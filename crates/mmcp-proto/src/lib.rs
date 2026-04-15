@@ -1,9 +1,24 @@
 //! MCP tool schemas for mmcp.
 //!
-//! Defines the typed request and response shapes for every tool exposed
-//! by the MCP surface (`list_memories`, `read_memory`, `write_memory`,
-//! `verify_memory`, `list_versions`, `diff_memory`, `search_memories`,
-//! `group_info`). Shared between `mmcp-server` and `mmcp-client` so the
-//! two sides cannot drift.
+//! Defines the typed request and response shapes for every tool
+//! exposed by the MCP surface. Shared between `mmcp-server` and
+//! `mmcp-client` so the two sides cannot drift on wire format.
 //!
-//! Built on top of the `rmcp` crate, the official Rust MCP SDK.
+//! This crate deliberately does not depend on `rmcp` yet. The server
+//! and client binaries are the only places where the `rmcp`
+//! `#[tool]` attributes land, because keeping the schemas free of
+//! framework wiring lets them stay pure data that is easy to test.
+
+pub mod error;
+pub mod tools;
+pub mod warnings;
+
+pub use error::ProtoError;
+pub use tools::{
+    DiffMemoryRequest, DiffMemoryResponse, GroupInfoRequest, GroupInfoResponse,
+    ListMemoriesRequest, ListMemoriesResponse, ListVersionsRequest, ListVersionsResponse,
+    MemoryDescriptor, ReadMemoryRequest, ReadMemoryResponse, SearchMemoriesRequest,
+    SearchMemoriesResponse, SearchMemoryHit, ToolName, VerifyMemoryRequest,
+    VerifyMemoryResponse, VersionEntry, WriteMemoryRequest, WriteMemoryResponse,
+};
+pub use warnings::{Warning, WarningKind};
