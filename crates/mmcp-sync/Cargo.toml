@@ -11,6 +11,10 @@ mmcp-core = { workspace = true }
 mmcp-git = { workspace = true }
 mmcp-db = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
+semver = { workspace = true }
+jiff = { workspace = true }
 
 [lints]
 workspace = true
