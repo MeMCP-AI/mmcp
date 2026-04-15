@@ -10,6 +10,14 @@ authors.workspace = true
 mmcp-core = { workspace = true }
 mmcp-db = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
+jiff = { workspace = true }
+sha2 = "0.10"
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = "3"
 
 [lints]
 workspace = true
