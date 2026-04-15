@@ -13,7 +13,6 @@ path = "src/main.rs"
 [dependencies]
 mmcp-core = { workspace = true }
 mmcp-git = { workspace = true }
-mmcp-db = { workspace = true }
 mmcp-auth = { workspace = true }
 mmcp-proto = { workspace = true }
 mmcp-session = { workspace = true }
