@@ -64,17 +64,18 @@ webui/            Leptos frontend (separate cargo project, not in main workspace
 ### Crate responsibilities
 
 - **mmcp-core**: pure data model + logic. No I/O, no network, no async. Used by every other crate.
-- **mmcp-git**: `GitBackend` trait and its implementations. Default `NativeBackend` uses `gix` on bare repos. Alternative backends for Forgejo, Gitea, GitHub, GitLab talk to external forges over REST.
-- **mmcp-db**: SeaORM entity definitions and migrations. Same entities target Postgres on the server and SQLite in the client's local mirror.
+- **mmcp-git**: `GitBackend` trait and its implementations. Default `NativeBackend` uses `gix` on bare repos and persists the per-group `.mmcp.toml` manifest as a real commit on `main`. Alternative backends for Forgejo, Gitea, GitHub, GitLab talk to external forges over REST.
+- **mmcp-db**: SeaORM entity definitions and migrations. **Server-only**: the server uses it for users, orgs, ACLs, and memory version metadata. The client intentionally does not depend on it — its state lives in git repos and flat per-session files under `~/.mmcp/`.
 - **mmcp-auth**: password hashing, PASETO token issuance/validation, `axum-login` traits, OAuth + passkey wiring.
-- **mmcp-proto**: typed MCP tool request/response shapes built on top of `rmcp`. Shared so client and server never drift on schemas.
-- **mmcp-session**: session key management, transcript file inspection, turn counter, compaction detection, mandatory-memory read tracking.
-- **mmcp-sync**: push/pull/diff/merge engine. Uses `mmcp-git` for repo ops and `mmcp-db` for pending-push state.
+- **mmcp-proto**: typed MCP tool request/response shapes and a structured `ProtoError` surface (including `NotImplemented` for gaps). Shared so client and server never drift on schemas.
+- **mmcp-session**: pure compaction-detection primitives (`TranscriptSignature`, `compute_signature`, `detect_compaction`). Persistence of per-session state lives next to the consumer that owns it — the client keeps it in flat files, a future server-side representation will keep it in the database.
+- **mmcp-sync**: push/pull/diff/merge engine. Uses `mmcp-git` for repo ops and `mmcp-db` for pending-push state on the server side.
 - **mmcp-server** *(binary)*: `axum`-based HTTP/SSE daemon. Hosts MCP-over-HTTP, WebUI REST API, git smart HTTP, auth endpoints. Owns the Postgres database and the bare git repos on disk (when using `NativeBackend`). `#![forbid(unsafe_code)]`.
-- **mmcp-client** *(binary)*: runs on the user's machine. One binary, multiple entry points via `clap` subcommands:
+- **mmcp-client** *(binary + library)*: runs on the user's machine. Reads memories directly from git repositories via `mmcp-git` and keeps per-session state in flat TOML files under `~/.mmcp/sessions/`. Does **not** depend on `mmcp-db`. One binary, multiple entry points via `clap` subcommands:
   - `mmcp serve` — the MCP stdio server that Claude Code and other AI clients talk to
   - `mmcp init` / `status` / `sync` / `pull` / `push` — CLI workflow commands
   - `mmcp hook user-prompt` — the command invoked by the Claude Code `UserPromptSubmit` hook
+  - A library target (`mmcp_client`) exposes the `commands`, `config`, and `state` modules so integration tests under `tests/` can drive them without spawning the binary.
 - **webui** *(separate crate, not in main workspace)*: Leptos fullstack frontend. Talks to `mmcp-server` via its REST API. Shares types with `mmcp-core` via Cargo dependency.
 
 ### Transport
@@ -202,11 +203,15 @@ The client can fetch the full history of any memory (from the underlying git rep
 
 ## 6. Session Tracking
 
-### 6.1 Session identity
+### 6.1 Session identity and on-disk layout
 
 Claude Code passes a stable `session_id` to MCP servers on every tool call. This is the thread identifier, stable across all turns and tool calls, including `/compact`, `--resume`, and `--continue`. Only `fork_session: true` generates a new id.
 
-mmcp uses `session_id` directly as its session key. No machine id, no user id hashing. Server maintains a `sessions` table.
+mmcp uses `session_id` directly as its session key. No machine id, no user id hashing.
+
+Client-side, per-session state lives in flat TOML files at **`~/.mmcp/sessions/<session_id>.toml`**, one file per Claude Code session. Each file holds the session id, the owning user (when authenticated), the project UUID, the turn counter, the transcript path and its last-seen signature, the post-compaction flag, creation and last-seen timestamps, and every per-memory read the session has recorded so far. Writes are atomic via temp-file-rename so the hook process and the serve process can share a file without tearing each other's edits. There is no database on the client.
+
+Server-side session tracking for multi-session views and shared dashboards will live in the Postgres database once those features are needed; today there is no server-side session table.
 
 ### 6.2 Per-turn granularity via hook
 
@@ -214,9 +219,9 @@ The raw MCP protocol does not expose per-message ids. mmcp fills the gap with a 
 
 1. Claude Code fires `UserPromptSubmit` on every user prompt, before the model sees it.
 2. The hook calls `mmcp-client hook user-prompt`, passing the hook JSON on stdin (`session_id`, `cwd`, `transcript_path`, prompt text).
-3. `mmcp-client` contacts the server (or local cache if offline), increments a per-session message counter, and gets back `{turn: N, message_id: <uuid>}`.
-4. The hook emits a small context injection into the prompt: `[mmcp turn #N id=<uuid>]`. This is visible to the model.
-5. The server now knows the current turn number for this session.
+3. The client opens the flat `SessionStore` at `~/.mmcp/sessions/`, upserts the session row, inspects the transcript for compaction, and increments the turn counter.
+4. The hook emits a small context injection into the prompt: `[mmcp session=<id> turn=#N id=<message-uuid>]`. This is visible to the model so it can correlate later tool calls with the session state file.
+5. Any mmcp tool call in that turn can reference the session via the id the model just saw.
 
 Every subsequent mmcp tool call in that turn can be tagged with `turn = N` for audit, "first touch this turn" detection, and mandatory-memory enforcement.
 

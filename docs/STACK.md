@@ -10,20 +10,20 @@ Rust workspace, edition 2024. All crates live under `crates/` except the web fro
 
 | Crate            | Role                                                                                          | Depends on                                           |
 | ---------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `mmcp-core`      | Pure data model: `User`, `Org`, `Group`, `Memory`, `Version`, `Acl`, `MemoryKind`, frontmatter schema, semver bump logic, ACL resolver, load-set resolver. No I/O, no async. | (leaf)                                               |
-| `mmcp-git`       | `GitBackend` trait + `NativeBackend` (via `gix`) + external forge backends (Forgejo, Gitea, GitHub, GitLab). Abstracts all git storage. | `mmcp-core`                                          |
-| `mmcp-db`        | SeaORM entity definitions, migrations, shared query helpers. Targets Postgres and SQLite with one codebase. | `mmcp-core`                                          |
+| `mmcp-core`      | Pure data model: `User`, `Org`, `Group`, `Memory`, `Version`, `Acl`, `MemoryKind`, frontmatter schema, semver bump logic, ACL resolver, load-set resolver, `.mmcp.toml` group manifest. No I/O, no async. | (leaf)                                               |
+| `mmcp-git`       | `GitBackend` trait + `NativeBackend` (via `gix`) + external forge backends (Forgejo, Gitea, GitHub, GitLab). Abstracts all git storage, including read/write of the per-group `.mmcp.toml` manifest. | `mmcp-core`                                          |
+| `mmcp-db`        | **Server-only** SeaORM entity definitions, migrations, and repository helpers. Targets Postgres (production) and SQLite (single-user deployments). The client does not depend on this crate. | `mmcp-core`                                          |
 | `mmcp-auth`      | Password hashing, PASETO tokens, `axum-login` trait impls, OAuth and passkey wiring.          | `mmcp-core`, `mmcp-db`                               |
-| `mmcp-proto`     | MCP tool schemas (request + response types) built on `rmcp`. Shared by client and server so they never drift. | `mmcp-core`                                          |
-| `mmcp-session`   | Session key management, transcript file inspection, turn counter, compaction detection, mandatory-memory read tracking. | `mmcp-core`, `mmcp-db`                               |
-| `mmcp-sync`      | Push/pull/diff/merge engine. Drives `mmcp-git` for repo ops and `mmcp-db` for pending-push state. | `mmcp-core`, `mmcp-git`, `mmcp-db`                   |
+| `mmcp-proto`     | MCP tool schemas (request + response types) and a `ProtoError` surface (including `NotImplemented`). Shared by client and server so they never drift. | `mmcp-core`                                          |
+| `mmcp-session`   | Compaction detection primitives: `TranscriptSignature`, `compute_signature`, `detect_compaction`. Pure, dependency-light, consumed by whichever storage layer wants them. | (leaf — no mmcp deps)                                |
+| `mmcp-sync`      | Push/pull/diff/merge engine. Drives `mmcp-git` for repo ops and `mmcp-db` for pending-push state on the server side. | `mmcp-core`, `mmcp-git`, `mmcp-db`                   |
 
 ### 1.2 Binaries
 
 | Crate         | Role                                                                                                                    | Depends on                                                                                     |
 | ------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | `mmcp-server` | `axum`-based HTTP/SSE daemon. Hosts MCP-over-HTTP, WebUI REST API, git smart HTTP, auth endpoints. Owns the Postgres DB and the bare git repos on disk (when using `NativeBackend`). | `mmcp-core`, `mmcp-git`, `mmcp-db`, `mmcp-auth`, `mmcp-proto`, `mmcp-session`, `mmcp-sync`     |
-| `mmcp-client` | One binary, multiple entry points via `clap` subcommands. Acts as the MCP stdio server, the sync engine, the hook command, and the user-facing CLI. | `mmcp-core`, `mmcp-git`, `mmcp-db`, `mmcp-auth`, `mmcp-proto`, `mmcp-session`, `mmcp-sync`     |
+| `mmcp-client` | Binary plus library target. Runs as the MCP stdio server, the sync engine, the hook command, and the user-facing CLI. Reads memories directly from git repositories and keeps per-session state in flat TOML files under `~/.mmcp/`. **Does not depend on `mmcp-db`.** | `mmcp-core`, `mmcp-git`, `mmcp-auth`, `mmcp-proto`, `mmcp-session`, `mmcp-sync`                 |
 
 ### 1.3 Frontend
 
@@ -81,9 +81,11 @@ Grouped by concern. "Consumers" lists which mmcp crates use the dependency direc
 | `tracing-subscriber`              | `tracing` output formatting and filtering.                                                    | `mmcp-server`, `mmcp-client` |
 | `clap` v4 (derive feature)        | CLI parsing for `mmcp-client` subcommands.                                                    | `mmcp-client`              |
 | `semver`                          | Semantic version parsing and bumping. Drives the version-assignment logic in `mmcp-sync`.    | `mmcp-core`, `mmcp-sync`   |
-| `jiff`                            | Modern date/time library. Chosen over `chrono` and `time` for better API and correctness.    | `mmcp-core`, `mmcp-session`, `mmcp-db` |
+| `jiff`                            | Modern date/time library. Chosen over `chrono` and `time` for better API and correctness.    | `mmcp-core`, `mmcp-client`, `mmcp-sync` |
 | `bytes`                           | Efficient byte buffers for git object reads and HTTP payloads.                                | `mmcp-git`, `mmcp-server`  |
 | `async-trait`                     | Async trait methods until Rust's native support covers all our cases.                        | `mmcp-git`, `mmcp-auth`    |
+| `notify`                          | Cross-platform filesystem watcher. The client uses it to rebuild its in-memory group index when `~/.mmcp/repos/` or the project `.mmcp/config.toml` changes. | `mmcp-client`              |
+| `sha2`                            | SHA-256 digest used by `mmcp-session::compute_signature` for transcript fingerprints.        | `mmcp-session`             |
 
 ### 2.5 Frontend (Leptos)
 
