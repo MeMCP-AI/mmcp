@@ -1,18 +1,21 @@
 //! MCP tool dispatch over a single JSON-RPC style HTTP endpoint.
 //!
-//! This cut exposes the full `mmcp-proto` tool surface behind one
-//! `POST /mcp/tool` route that takes a `{ tool, request }` envelope
-//! and dispatches on the `ToolName`. Full rmcp wire protocol with
-//! stdio and SSE transports lives in `mmcp-client` and in a future
-//! server-side integration, which can reuse every handler in this
-//! module without changing their signatures.
+//! This cut exposes the `mmcp-proto` tool surface that the server
+//! can actually answer today behind one `POST /mcp/tool` route
+//! that takes a `{ tool, request }` envelope and dispatches on
+//! the `ToolName`. Tools whose control plane lives in the client
+//! (read, write, verify, diff, search) return a structured
+//! `ProtoError::NotImplemented` so clients see a real capability
+//! gap rather than a fake success.
 
-use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
-use mmcp_proto::{
-    DiffMemoryRequest, GroupInfoRequest, ListMemoriesRequest, ListVersionsRequest,
-    ReadMemoryRequest, SearchMemoriesRequest, ToolName, VerifyMemoryRequest,
-    WriteMemoryRequest,
+use axum::{
+    Json, Router,
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::post,
 };
+use mmcp_proto::{GroupInfoRequest, ListMemoriesRequest, ListVersionsRequest, ProtoError, ToolName};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -34,84 +37,93 @@ struct ToolSuccess {
     response: Value,
 }
 
+/// Dispatch a `{ tool, request }` envelope.
+///
+/// Successful tool calls return HTTP 200 with the tool name and
+/// serialized response payload. Protocol-level errors (validation
+/// failures, unimplemented tools, internal failures) surface as
+/// `ProtoError` values serialized into HTTP responses with the
+/// conventional status code: 400 for request validation, 501 for
+/// unimplemented, 500 for internal failures.
 async fn dispatch(
     State(state): State<ServerState>,
     Json(envelope): Json<ToolEnvelope>,
-) -> Result<Json<ToolSuccess>, (StatusCode, String)> {
-    let response = match envelope.tool {
+) -> Result<Json<ToolSuccess>, ToolErrorResponse> {
+    let tool = envelope.tool;
+    let response = match tool {
         ToolName::ListMemories => {
-            let req: ListMemoriesRequest = parse(envelope.request)?;
-            let res = crate::routes::mcp::handlers::list_memories(&state, req)
+            let req: ListMemoriesRequest = parse_request(envelope.request)?;
+            let res = handlers::list_memories(&state, req)
                 .await
-                .map_err(internal)?;
-            serialize(res)
-        }
-        ToolName::ReadMemory => {
-            let req: ReadMemoryRequest = parse(envelope.request)?;
-            let res = crate::routes::mcp::handlers::read_memory(&state, req)
-                .await
-                .map_err(internal)?;
-            serialize(res)
-        }
-        ToolName::WriteMemory => {
-            let req: WriteMemoryRequest = parse(envelope.request)?;
-            let res = crate::routes::mcp::handlers::write_memory(&state, req)
-                .await
-                .map_err(internal)?;
-            serialize(res)
-        }
-        ToolName::VerifyMemory => {
-            let req: VerifyMemoryRequest = parse(envelope.request)?;
-            let res = crate::routes::mcp::handlers::verify_memory(&state, req)
-                .await
-                .map_err(internal)?;
-            serialize(res)
+                .map_err(internal_error)?;
+            serialize_response(&res)?
         }
         ToolName::ListVersions => {
-            let req: ListVersionsRequest = parse(envelope.request)?;
-            let res = crate::routes::mcp::handlers::list_versions(&state, req)
+            let req: ListVersionsRequest = parse_request(envelope.request)?;
+            let res = handlers::list_versions(&state, req)
                 .await
-                .map_err(internal)?;
-            serialize(res)
-        }
-        ToolName::DiffMemory => {
-            let req: DiffMemoryRequest = parse(envelope.request)?;
-            let res = crate::routes::mcp::handlers::diff_memory(&state, req)
-                .await
-                .map_err(internal)?;
-            serialize(res)
-        }
-        ToolName::SearchMemories => {
-            let req: SearchMemoriesRequest = parse(envelope.request)?;
-            let res = crate::routes::mcp::handlers::search_memories(&state, req)
-                .await
-                .map_err(internal)?;
-            serialize(res)
+                .map_err(internal_error)?;
+            serialize_response(&res)?
         }
         ToolName::GroupInfo => {
-            let req: GroupInfoRequest = parse(envelope.request)?;
-            let res = crate::routes::mcp::handlers::group_info(&state, req)
+            let req: GroupInfoRequest = parse_request(envelope.request)?;
+            let res = handlers::group_info(&state, req)
                 .await
-                .map_err(internal)?;
-            serialize(res)
+                .map_err(internal_error)?;
+            serialize_response(&res)?
         }
-    }?;
-    Ok(Json(ToolSuccess {
-        tool: envelope.tool,
-        response,
-    }))
+        ToolName::ReadMemory
+        | ToolName::WriteMemory
+        | ToolName::VerifyMemory
+        | ToolName::DiffMemory
+        | ToolName::SearchMemories => {
+            return Err(ToolErrorResponse {
+                status: StatusCode::NOT_IMPLEMENTED,
+                error: ProtoError::NotImplemented(format!(
+                    "{name} is served by the client against local git state, not by the server",
+                    name = tool.as_str()
+                )),
+            });
+        }
+    };
+    Ok(Json(ToolSuccess { tool, response }))
 }
 
-fn parse<T: for<'de> Deserialize<'de>>(value: Value) -> Result<T, (StatusCode, String)> {
-    serde_json::from_value(value).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+/// Envelope for an error response from `dispatch`.
+///
+/// Serializes as `{ "tool": ..., "error": { "kind": ..., "message": ... } }`
+/// so clients get a structured payload regardless of HTTP status.
+pub(crate) struct ToolErrorResponse {
+    status: StatusCode,
+    error: ProtoError,
 }
 
-fn serialize<T: Serialize>(value: T) -> Result<Value, (StatusCode, String)> {
-    serde_json::to_value(&value).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+impl IntoResponse for ToolErrorResponse {
+    fn into_response(self) -> Response {
+        let body = serde_json::json!({ "error": self.error });
+        (self.status, Json(body)).into_response()
+    }
 }
 
-fn internal(err: anyhow::Error) -> (StatusCode, String) {
-    (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+fn parse_request<T: for<'de> Deserialize<'de>>(value: Value) -> Result<T, ToolErrorResponse> {
+    serde_json::from_value(value).map_err(|e| ToolErrorResponse {
+        status: StatusCode::BAD_REQUEST,
+        error: ProtoError::InvalidRequest(e.to_string()),
+    })
+}
+
+fn serialize_response<T: Serialize>(value: &T) -> Result<Value, ToolErrorResponse> {
+    serde_json::to_value(value).map_err(|e| ToolErrorResponse {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        error: ProtoError::Internal(format!("response serialization failed: {e}")),
+    })
+}
+
+fn internal_error(err: anyhow::Error) -> ToolErrorResponse {
+    ToolErrorResponse {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        error: ProtoError::Internal(err.to_string()),
+    }
 }
 
 mod handlers {
@@ -120,15 +132,14 @@ mod handlers {
     use mmcp_db::entities::memory::MemoryKind;
     use mmcp_db::repository::{group_repo, memory_repo};
     use mmcp_proto::{
-        DiffMemoryRequest, DiffMemoryResponse, GroupInfoRequest, GroupInfoResponse,
-        ListMemoriesRequest, ListMemoriesResponse, ListVersionsRequest, ListVersionsResponse,
-        MemoryDescriptor, ReadMemoryRequest, ReadMemoryResponse, SearchMemoriesRequest,
-        SearchMemoriesResponse, VerifyMemoryRequest, VerifyMemoryResponse, VersionEntry,
-        WriteMemoryRequest, WriteMemoryResponse,
+        GroupInfoRequest, GroupInfoResponse, ListMemoriesRequest, ListMemoriesResponse,
+        ListVersionsRequest, ListVersionsResponse, MemoryDescriptor, VersionEntry,
     };
 
     use crate::state::ServerState;
 
+    /// Return a metadata listing of every memory in the given group,
+    /// filtered by optional kind and mandatory toggles.
     pub async fn list_memories(
         state: &ServerState,
         req: ListMemoriesRequest,
@@ -149,34 +160,9 @@ mod handlers {
         Ok(ListMemoriesResponse { memories: filtered })
     }
 
-    pub async fn read_memory(
-        _state: &ServerState,
-        _req: ReadMemoryRequest,
-    ) -> Result<ReadMemoryResponse> {
-        // Reading the git content requires an effective group load
-        // set resolver which is a job for the client; on the server
-        // this route will be wired once we have a concrete load-set
-        // handshake.
-        Err(anyhow!("read_memory not yet wired on the server"))
-    }
-
-    pub async fn write_memory(
-        _state: &ServerState,
-        _req: WriteMemoryRequest,
-    ) -> Result<WriteMemoryResponse> {
-        Err(anyhow!("write_memory not yet wired on the server"))
-    }
-
-    pub async fn verify_memory(
-        _state: &ServerState,
-        req: VerifyMemoryRequest,
-    ) -> Result<VerifyMemoryResponse> {
-        Ok(VerifyMemoryResponse {
-            memory: req.memory,
-            verified_at: jiff::Timestamp::now().as_millisecond(),
-        })
-    }
-
+    /// Return every published version row recorded for the given
+    /// memory, oldest first. The caller is responsible for sorting
+    /// into presentation order.
     pub async fn list_versions(
         state: &ServerState,
         req: ListVersionsRequest,
@@ -199,25 +185,10 @@ mod handlers {
         })
     }
 
-    pub async fn diff_memory(
-        _state: &ServerState,
-        req: DiffMemoryRequest,
-    ) -> Result<DiffMemoryResponse> {
-        Ok(DiffMemoryResponse {
-            memory: req.memory,
-            from_version: req.from_version,
-            to_version: req.to_version,
-            diff: String::new(),
-        })
-    }
-
-    pub async fn search_memories(
-        _state: &ServerState,
-        _req: SearchMemoriesRequest,
-    ) -> Result<SearchMemoriesResponse> {
-        Ok(SearchMemoriesResponse { hits: Vec::new() })
-    }
-
+    /// Return metadata about a group as held in the server's
+    /// control plane: slug, owner, display name, and the memory
+    /// count computed from the index table. `effective_role` is
+    /// populated once the ACL handshake lands in a later phase.
     pub async fn group_info(
         state: &ServerState,
         req: GroupInfoRequest,
