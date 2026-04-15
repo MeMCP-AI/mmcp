@@ -95,6 +95,81 @@ fn find_blob_in_tree(
     Ok(None)
 }
 
+/// List the blob names directly under `path_prefix` at the given
+/// revision.
+///
+/// Empty prefix means the root tree. Missing prefix returns an
+/// empty vector rather than an error.
+pub fn list_tree(
+    repo_path: &Path,
+    path_prefix: &str,
+    rev: &Rev,
+) -> Result<Vec<String>, GitError> {
+    let repo = open_bare(repo_path)?;
+    let commit_id = match resolve_rev(&repo, rev) {
+        Ok(id) => id,
+        // A brand-new repo with no `main` branch yet has nothing to
+        // list; that is an empty tree, not an error.
+        Err(GitError::RevNotFound(_)) => return Ok(Vec::new()),
+        Err(other) => return Err(other),
+    };
+    let commit_obj = repo.find_object(commit_id).map_err(gix_err)?;
+    let commit: gix::objs::Commit = commit_obj.into_commit().decode().map_err(gix_err)?.into();
+
+    // Walk from the commit's root tree down into `path_prefix`.
+    let target_tree_id = match resolve_tree_prefix(&repo, commit.tree, path_prefix)? {
+        Some(id) => id,
+        None => return Ok(Vec::new()),
+    };
+
+    let obj = repo.find_object(target_tree_id).map_err(gix_err)?;
+    let tree: gix::objs::Tree = obj.into_tree().decode().map_err(gix_err)?.into();
+    let mut out = Vec::new();
+    for entry in tree.entries {
+        if matches!(
+            entry.mode.kind(),
+            EntryKind::Blob | EntryKind::BlobExecutable
+        ) {
+            let name = String::from_utf8_lossy(&entry.filename).into_owned();
+            out.push(name);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Walk from `root_tree_id` into the subtree at `path_prefix`,
+/// returning its tree id or `None` if the prefix does not resolve
+/// to an existing subtree.
+fn resolve_tree_prefix(
+    repo: &gix::Repository,
+    root_tree_id: gix::ObjectId,
+    path_prefix: &str,
+) -> Result<Option<gix::ObjectId>, GitError> {
+    let components: Vec<&str> = path_prefix.split('/').filter(|c| !c.is_empty()).collect();
+    if components.is_empty() {
+        return Ok(Some(root_tree_id));
+    }
+    let mut current = root_tree_id;
+    for name in components {
+        let obj = repo.find_object(current).map_err(gix_err)?;
+        let tree: gix::objs::Tree = obj.into_tree().decode().map_err(gix_err)?.into();
+        let name_bytes = name.as_bytes();
+        let entry = tree
+            .entries
+            .iter()
+            .find(|e| AsRef::<[u8]>::as_ref(&e.filename) == name_bytes);
+        match entry {
+            None => return Ok(None),
+            Some(entry) if entry.mode.kind() == EntryKind::Tree => {
+                current = entry.oid;
+            }
+            Some(_) => return Ok(None),
+        }
+    }
+    Ok(Some(current))
+}
+
 /// Read the contents of `path` inside the commit at `rev`.
 pub fn read_file(repo_path: &Path, path: &str, rev: &Rev) -> Result<Bytes, GitError> {
     let repo = open_bare(repo_path)?;

@@ -77,4 +77,22 @@ pub trait GitBackend: Send + Sync {
         repo: &RepoHandle,
         path: &str,
     ) -> Result<Vec<CommitMeta>, GitError>;
+
+    /// List every blob directly under `path_prefix` at the given
+    /// revision.
+    ///
+    /// Returned values are the file names *relative to* `path_prefix`
+    /// (i.e. without the prefix itself). Subtrees under the prefix
+    /// are not recursed into. Use an empty `path_prefix` for the
+    /// tree root.
+    ///
+    /// An empty tree or a prefix that does not exist at the given
+    /// revision returns an empty vector, not an error, so callers
+    /// can treat "no memories yet" as the normal case.
+    async fn list_tree(
+        &self,
+        repo: &RepoHandle,
+        path_prefix: &str,
+        rev: &Rev,
+    ) -> Result<Vec<String>, GitError>;
 }

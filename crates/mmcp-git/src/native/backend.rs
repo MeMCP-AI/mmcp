@@ -135,4 +135,18 @@ impl GitBackend for NativeBackend {
             .await
             .map_err(|e| GitError::Gix(format!("join error: {e}")))?
     }
+
+    async fn list_tree(
+        &self,
+        repo: &RepoHandle,
+        path_prefix: &str,
+        rev: &Rev,
+    ) -> Result<Vec<String>, GitError> {
+        let repo_path = Self::handle_path(repo).to_path_buf();
+        let prefix = path_prefix.to_string();
+        let rev = rev.clone();
+        tokio::task::spawn_blocking(move || repo_ops::list_tree(&repo_path, &prefix, &rev))
+            .await
+            .map_err(|e| GitError::Gix(format!("join error: {e}")))?
+    }
 }
