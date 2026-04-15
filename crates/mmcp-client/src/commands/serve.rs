@@ -550,8 +550,8 @@ fn ok_json(value: serde_json::Value) -> CallToolResult {
 mod tests {
     use super::*;
     use mmcp_core::id::GroupId;
-    use mmcp_core::manifest::{GroupManifest, MANIFEST_FILENAME};
-    use mmcp_git::{CommitSpec, GitBackend, GroupRef};
+    use mmcp_core::manifest::GroupManifest;
+    use mmcp_git::{CommitSpec, GitBackend};
     use tempfile::TempDir;
 
     /// Build a `ClientState` rooted inside a fresh tempdir so the
@@ -565,7 +565,8 @@ mod tests {
     }
 
     /// Seed a real group repository in the client's repos root with
-    /// a manifest and one memory file committed on `main`.
+    /// a manifest (via `create_group_repo`) and one memory file
+    /// committed on `main`.
     async fn seed_group_with_memory(
         state: &ClientState,
         slug: &str,
@@ -574,14 +575,12 @@ mod tests {
     ) -> GroupId {
         let owner = Uuid::now_v7();
         let group_id = GroupId::new();
-        let uuid = *group_id.as_uuid();
+        let manifest = GroupManifest::new_user_owned(group_id, slug, owner);
         let handle = state
             .backend
-            .create_group_repo(&GroupRef::new(uuid, slug))
+            .create_group_repo(&manifest)
             .await
             .expect("create group repo");
-        let manifest = GroupManifest::new_user_owned(group_id, slug, owner);
-        let rendered = manifest.to_toml().expect("render manifest");
         state
             .backend
             .write_commit(
@@ -590,14 +589,11 @@ mod tests {
                     branch: "main".to_string(),
                     author_name: "test".into(),
                     author_email: "test@example.com".into(),
-                    message: "seed manifest".into(),
-                    files: vec![
-                        (MANIFEST_FILENAME.to_string(), Some(rendered.into_bytes())),
-                        (
-                            format!("{MEMORIES_PATH_PREFIX}/{memory_slug}{MEMORY_EXTENSION}"),
-                            Some(memory_body.as_bytes().to_vec()),
-                        ),
-                    ],
+                    message: format!("seed memory {memory_slug}"),
+                    files: vec![(
+                        format!("{MEMORIES_PATH_PREFIX}/{memory_slug}{MEMORY_EXTENSION}"),
+                        Some(memory_body.as_bytes().to_vec()),
+                    )],
                 },
             )
             .await

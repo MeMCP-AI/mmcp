@@ -4,18 +4,20 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use mmcp_core::manifest::GroupManifest;
 
 use crate::backend::GitBackend;
 use crate::error::GitError;
 use crate::native::repo_ops;
-use crate::types::{CommitMeta, CommitSpec, GroupRef, PushReport, RefSpec, RepoHandle, Rev};
+use crate::types::{CommitMeta, CommitSpec, PushReport, RefSpec, RepoHandle, Rev};
 
 /// Native backend serving bare repositories from a root directory on
 /// the local filesystem.
 ///
 /// The on-disk layout is `<root>/<group_uuid>.git`. Each call to
-/// [`NativeBackend::create_group_repo`] creates a fresh bare
-/// repository; subsequent calls open the existing one.
+/// [`NativeBackend::create_group_repo`] initialises a bare repo if
+/// needed and commits the initial `.mmcp.toml` manifest on `main`
+/// if the repo does not already have one.
 #[derive(Debug, Clone)]
 pub struct NativeBackend {
     root: PathBuf,
@@ -43,16 +45,66 @@ impl NativeBackend {
 
 #[async_trait]
 impl GitBackend for NativeBackend {
-    async fn create_group_repo(&self, group: &GroupRef) -> Result<RepoHandle, GitError> {
-        let path = self.repo_path(group.group_id);
+    async fn create_group_repo(
+        &self,
+        manifest: &GroupManifest,
+    ) -> Result<RepoHandle, GitError> {
+        let uuid = *manifest.group_id.as_uuid();
+        let path = self.repo_path(uuid);
         let path_clone = path.clone();
         tokio::task::spawn_blocking(move || repo_ops::init_bare(&path_clone))
             .await
             .map_err(|e| GitError::Gix(format!("join error: {e}")))??;
-        Ok(RepoHandle::new(
-            group.group_id,
-            path.to_string_lossy().into_owned(),
-        ))
+        let handle = RepoHandle::new(uuid, path.to_string_lossy().into_owned());
+
+        // Only write an initial manifest if the repo does not
+        // already carry one. This keeps `create_group_repo`
+        // idempotent against re-runs with the same manifest.
+        let already_has_manifest = self.read_manifest(&handle).await.is_ok();
+        if !already_has_manifest {
+            self.write_manifest(&handle, manifest).await?;
+        }
+        Ok(handle)
+    }
+
+    async fn read_manifest(
+        &self,
+        repo: &RepoHandle,
+    ) -> Result<GroupManifest, GitError> {
+        let bytes = self
+            .read_file(
+                repo,
+                mmcp_core::manifest::MANIFEST_FILENAME,
+                &Rev::Branch("main".to_string()),
+            )
+            .await?;
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|e| GitError::Gix(format!("manifest is not valid UTF-8: {e}")))?;
+        GroupManifest::from_toml(text).map_err(|e| GitError::Gix(format!("manifest parse: {e}")))
+    }
+
+    async fn write_manifest(
+        &self,
+        repo: &RepoHandle,
+        manifest: &GroupManifest,
+    ) -> Result<String, GitError> {
+        let rendered = manifest
+            .to_toml()
+            .map_err(|e| GitError::Gix(format!("manifest render: {e}")))?;
+        self.write_commit(
+            repo,
+            CommitSpec {
+                branch: "main".to_string(),
+                author_name: "mmcp".to_string(),
+                author_email: "mmcp@mmcp.invalid".to_string(),
+                message: "mmcp: initialize group manifest".to_string(),
+                files: vec![(
+                    mmcp_core::manifest::MANIFEST_FILENAME.to_string(),
+                    Some(rendered.into_bytes()),
+                )],
+            },
+        )
+        .await
     }
 
     async fn clone_to(

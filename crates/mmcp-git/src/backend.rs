@@ -2,9 +2,10 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use mmcp_core::manifest::GroupManifest;
 
 use crate::error::GitError;
-use crate::types::{CommitMeta, CommitSpec, GroupRef, PushReport, RefSpec, RepoHandle, Rev};
+use crate::types::{CommitMeta, CommitSpec, PushReport, RefSpec, RepoHandle, Rev};
 
 /// A pluggable git storage backend.
 ///
@@ -14,8 +15,33 @@ use crate::types::{CommitMeta, CommitSpec, GroupRef, PushReport, RefSpec, RepoHa
 /// calls in `spawn_blocking`.
 #[async_trait]
 pub trait GitBackend: Send + Sync {
-    /// Create a new empty group repository.
-    async fn create_group_repo(&self, group: &GroupRef) -> Result<RepoHandle, GitError>;
+    /// Create a new group repository and commit its initial
+    /// `.mmcp.toml` manifest on the `main` branch.
+    ///
+    /// The method is idempotent with respect to repository
+    /// initialization: calling it again with the same manifest on
+    /// an existing repo returns the same handle without writing a
+    /// new commit.
+    async fn create_group_repo(
+        &self,
+        manifest: &GroupManifest,
+    ) -> Result<RepoHandle, GitError>;
+
+    /// Read and parse the `.mmcp.toml` manifest from the repo's
+    /// `main` branch.
+    async fn read_manifest(
+        &self,
+        repo: &RepoHandle,
+    ) -> Result<GroupManifest, GitError>;
+
+    /// Commit a new revision of the `.mmcp.toml` manifest on the
+    /// repo's `main` branch. Used by disaster recovery and by
+    /// admin flows that need to rename or reclassify a group.
+    async fn write_manifest(
+        &self,
+        repo: &RepoHandle,
+        manifest: &GroupManifest,
+    ) -> Result<String, GitError>;
 
     /// Clone an existing repository into the provided directory.
     ///

@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use jiff::Timestamp;
 use mmcp_core::id::GroupId;
-use mmcp_core::manifest::{GroupManifest, MANIFEST_FILENAME};
-use mmcp_git::{GitBackend, NativeBackend, RepoHandle, Rev};
+use mmcp_core::manifest::GroupManifest;
+use mmcp_git::{GitBackend, NativeBackend, RepoHandle};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -153,31 +153,14 @@ async fn scan_repos_root(
         };
 
         let handle = RepoHandle::new(uuid, path.to_string_lossy().into_owned());
-        let bytes = match backend
-            .read_file(&handle, MANIFEST_FILENAME, &Rev::Branch("main".to_string()))
-            .await
-        {
-            Ok(bytes) => bytes,
+        let manifest = match backend.read_manifest(&handle).await {
+            Ok(m) => m,
             Err(err) => {
                 tracing::warn!(
                     dir = %dir_name,
                     error = %err,
                     "group repo missing or unreadable manifest, skipping"
                 );
-                continue;
-            }
-        };
-        let text = match std::str::from_utf8(&bytes) {
-            Ok(t) => t,
-            Err(_) => {
-                tracing::warn!(dir = %dir_name, "manifest is not valid UTF-8, skipping");
-                continue;
-            }
-        };
-        let manifest = match GroupManifest::from_toml(text) {
-            Ok(m) => m,
-            Err(err) => {
-                tracing::warn!(dir = %dir_name, error = %err, "manifest parse failed, skipping");
                 continue;
             }
         };

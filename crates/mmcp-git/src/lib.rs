@@ -16,6 +16,4 @@ pub mod types;
 pub use backend::GitBackend;
 pub use error::GitError;
 pub use native::NativeBackend;
-pub use types::{
-    CommitMeta, CommitSpec, GroupRef, PushReport, RefSpec, RepoHandle, Rev,
-};
+pub use types::{CommitMeta, CommitSpec, PushReport, RefSpec, RepoHandle, Rev};

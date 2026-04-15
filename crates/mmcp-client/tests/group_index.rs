@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use mmcp_client::state::GroupIndex;
 use mmcp_core::id::GroupId;
-use mmcp_core::manifest::{GroupManifest, MANIFEST_FILENAME};
-use mmcp_git::{CommitSpec, GitBackend, GroupRef, NativeBackend};
+use mmcp_core::manifest::GroupManifest;
+use mmcp_git::{GitBackend, NativeBackend};
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -30,25 +30,11 @@ async fn seed_group(
 ) -> (GroupManifest, Uuid) {
     let group_id = GroupId::new();
     let uuid = *group_id.as_uuid();
-    let handle = backend
-        .create_group_repo(&GroupRef::new(uuid, slug))
+    let manifest = GroupManifest::new_user_owned(group_id, slug, owner);
+    backend
+        .create_group_repo(&manifest)
         .await
         .expect("create repo");
-    let manifest = GroupManifest::new_user_owned(group_id, slug, owner);
-    let rendered = manifest.to_toml().expect("render manifest");
-    backend
-        .write_commit(
-            &handle,
-            CommitSpec {
-                branch: "main".to_string(),
-                author_name: "test".into(),
-                author_email: "test@example.com".into(),
-                message: "seed manifest".into(),
-                files: vec![(MANIFEST_FILENAME.to_string(), Some(rendered.into_bytes()))],
-            },
-        )
-        .await
-        .expect("write commit");
     (manifest, uuid)
 }
 
@@ -99,20 +85,26 @@ async fn multiple_repos_are_all_indexed() {
 }
 
 #[tokio::test]
-async fn repo_without_manifest_is_skipped() {
-    let (backend, root, _tmp) = make_backend();
-    // Create a bare repo via the backend but never commit a manifest.
-    let group_id = GroupId::new();
-    let uuid = *group_id.as_uuid();
-    backend
-        .create_group_repo(&GroupRef::new(uuid, "orphan"))
-        .await
-        .expect("create repo");
+async fn broken_repo_directory_is_skipped() {
+    let (_backend, root, _tmp) = make_backend();
+    // Drop a directory named like a bare repo but containing no
+    // actual git state. The scanner should log the open failure
+    // and skip it rather than erroring the whole index.
+    let broken_uuid = Uuid::now_v7();
+    let broken_dir = root.join(format!("{broken_uuid}.git"));
+    std::fs::create_dir_all(&broken_dir).expect("mkdir broken repo");
 
-    let index = GroupIndex::build(root, backend).await.expect("build");
-    // The bare repo has no main branch yet, so the manifest read
-    // fails and the scanner logs + skips it. The index stays empty.
-    assert!(index.list().await.is_empty());
+    // Also seed a healthy neighbour so we can prove the scan
+    // continues past the broken repo.
+    let (_, healthy_uuid) = seed_group(&_backend, "healthy", Uuid::now_v7()).await;
+
+    let index = GroupIndex::build(root, _backend).await.expect("build");
+    let entries = index.list().await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0].handle.group_id, healthy_uuid,
+        "only the healthy repo should survive the scan"
+    );
 }
 
 #[tokio::test]

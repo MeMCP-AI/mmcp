@@ -4,29 +4,6 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Symbolic reference to a group repository.
-///
-/// Independent of the concrete backend: a `NativeBackend` maps it to
-/// a directory path, a forge-backed backend maps it to a REST URL.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct GroupRef {
-    /// Stable group identifier.
-    pub group_id: Uuid,
-
-    /// Human-readable slug used for logs and diagnostics.
-    pub slug: String,
-}
-
-impl GroupRef {
-    #[must_use]
-    pub fn new(group_id: Uuid, slug: impl Into<String>) -> Self {
-        Self {
-            group_id,
-            slug: slug.into(),
-        }
-    }
-}
-
 /// Opaque handle to a repository returned by a backend.
 ///
 /// Holds whatever addressing information the backend needs to operate
