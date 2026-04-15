@@ -121,9 +121,15 @@ mod tests {
 
     #[test]
     fn missing_file_produces_no_signature() {
+        // Use a process-local unique name; no need to pull the
+        // uuid crate just for a probe path.
         let path = std::env::temp_dir().join(format!(
-            "mmcp-nonexistent-{}.jsonl",
-            uuid::Uuid::now_v7()
+            "mmcp-nonexistent-{}-{}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
         ));
         let sig = compute_signature(&path).unwrap();
         assert!(sig.is_none());
