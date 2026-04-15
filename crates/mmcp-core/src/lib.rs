@@ -12,4 +12,5 @@ pub mod config;
 pub mod id;
 pub mod identity;
 pub mod loadset;
+pub mod manifest;
 pub mod memory;
