@@ -2247,6 +2247,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "jiff",
  "mmcp-auth",
  "mmcp-core",
  "mmcp-db",
@@ -2254,9 +2255,13 @@ dependencies = [
  "mmcp-proto",
  "mmcp-session",
  "mmcp-sync",
+ "serde",
+ "serde_json",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
