@@ -36,4 +36,35 @@ pub enum ProtoError {
     /// for display; the full error is logged server-side.
     #[error("internal error: {0}")]
     Internal(String),
+
+    /// The requested tool exists in the protocol but is not
+    /// implemented on this peer yet. Callers should treat it as a
+    /// capability gap to surface to the user, not as a transient
+    /// failure.
+    #[error("not implemented: {0}")]
+    NotImplemented(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn not_implemented_serializes_with_tagged_kind() {
+        let err = ProtoError::NotImplemented("verify_memory".to_string());
+        let json = serde_json::to_string(&err).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"not_implemented","message":"verify_memory"}"#
+        );
+    }
+
+    #[test]
+    fn not_implemented_round_trips_through_json() {
+        let err = ProtoError::NotImplemented("diff_memory is wired by the client".to_string());
+        let json = serde_json::to_string(&err).unwrap();
+        let parsed: ProtoError = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, err);
+    }
+}
+
