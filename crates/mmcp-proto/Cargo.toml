@@ -9,6 +9,11 @@ authors.workspace = true
 [dependencies]
 mmcp-core = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+serde_json = "1"
 
 [lints]
 workspace = true
