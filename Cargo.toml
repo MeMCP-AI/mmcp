@@ -73,7 +73,7 @@ argon2 = "0.5"
 rusty_paseto = { version = "0.7", default-features = false, features = ["v4_local", "batteries_included"] }
 
 # HTTP framework
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "macros"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "macros", "query"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 
