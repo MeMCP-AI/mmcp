@@ -2363,7 +2363,6 @@ dependencies = [
  "jiff",
  "mmcp-auth",
  "mmcp-core",
- "mmcp-db",
  "mmcp-git",
  "mmcp-proto",
  "mmcp-session",
