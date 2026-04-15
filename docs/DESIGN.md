@@ -20,10 +20,11 @@ Two cleanly separated layers:
 
 ### 2.1 Content layer — git
 
-- **One group = one git repository.** The repo is dumb storage.
-- Memories are Markdown files with TOML frontmatter (`+++` delimited) living inside the group repo.
+- **One group = one git repository.**
+- Memories are Markdown files with TOML frontmatter (`+++` delimited) living inside the group repo under `memories/`.
+- Each group repo also carries a single self-describing `.mmcp.toml` manifest at its root (schema version, group id, slug, display name, owner hint, creation timestamp). The manifest is the only data file in the repo that is not a user-authored memory, and it exists so each repo stays self-describing for disaster recovery, forks, exports, and the client's local group enumeration walk.
+- No other manifest files, no submodules, no other server metadata is stuffed into repo files.
 - Full edit history lives in git commits.
-- No manifest files, no submodules, no server-metadata stuffed into repo files.
 - Default git backend is **native, in-process**: `mmcp-server` owns bare repos on disk via `gix` and serves them to clients over the git smart HTTP protocol on its own `axum` port. No external git service required.
 - Alternative backends (Forgejo, Gitea, GitHub, GitLab) are supported via a `GitBackend` trait; users who prefer an existing forge point mmcp at it and mmcp stores only the group-to-repo mapping.
 
@@ -476,6 +477,34 @@ For users who want their memory storage in an existing forge, mmcp ships the fol
 | `GitLabBackend`  | REST API  | Same rationale as GitHub.                                             |
 
 Backend selection is a server-side configuration choice. The client is agnostic — it always talks to `mmcp-server`, which proxies git operations through whichever backend is configured.
+
+### 13.4 Group manifest
+
+Every group repository carries a self-describing `.mmcp.toml` file at its tree root on the `main` branch. The file is an mmcp-managed artifact committed during `GitBackend::create_group_repo` and updated through `GitBackend::write_manifest`. Its schema lives in `mmcp_core::manifest::GroupManifest`:
+
+```toml
+schema_version = 1
+group_id       = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
+slug           = "team-rust"
+display_name   = "Rust team memories"
+created_at     = 1776000000000
+
+[owner]
+kind = "user"
+id   = "018f7b12-0000-7000-8000-000000000000"
+```
+
+The manifest exists to:
+
+- Let any consumer walk a filesystem of bare repos and rebuild the groups index without a database. The client's `GroupIndex` uses exactly this walk to discover every group under `~/.mmcp/repos/` on startup.
+- Preserve group identity when a repo is forked to another host or exported to an external forge. The group id travels with the content.
+- Refuse manifests from newer mmcp builds explicitly via the `schema_version` field so users see a clear upgrade prompt rather than silent field loss.
+
+`GitBackend` exposes three methods that manage the manifest:
+
+- `create_group_repo(&self, manifest: &GroupManifest) -> RepoHandle` — initializes the bare repo and commits the initial manifest if one is not already present. Idempotent against rerunning with the same manifest.
+- `read_manifest(&self, repo: &RepoHandle) -> GroupManifest` — reads `HEAD:.mmcp.toml`, decodes UTF-8, and parses via `GroupManifest::from_toml`.
+- `write_manifest(&self, repo: &RepoHandle, manifest: &GroupManifest) -> String` — commits a new manifest revision on `main` with a fixed message and returns the new commit id.
 
 ## 14. Locked Stack Decisions
 
