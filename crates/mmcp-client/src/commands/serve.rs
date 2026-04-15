@@ -72,6 +72,18 @@ impl ClientState {
     async fn initialize() -> Result<Self> {
         let home = local_home()?;
         let mmcp_root = home.join(MMCP_HOME_DIR);
+        let project_config_path = find_current_project_config();
+        Self::initialize_at(mmcp_root, project_config_path).await
+    }
+
+    /// Initialize the client state rooted at an explicit directory.
+    ///
+    /// Used by `initialize()` above (rooted at the user's home) and
+    /// by test helpers that want a tempdir-backed instance.
+    async fn initialize_at(
+        mmcp_root: PathBuf,
+        project_config_path: Option<PathBuf>,
+    ) -> Result<Self> {
         std::fs::create_dir_all(&mmcp_root)
             .with_context(|| format!("creating {}", mmcp_root.display()))?;
 
@@ -89,11 +101,6 @@ impl ClientState {
             .await
             .with_context(|| format!("building group index at {}", repos_root.display()))?;
 
-        // If the serve process was spawned inside an mmcp project,
-        // hand the project config path to the watcher so edits to
-        // the load set trigger a rescan. Outside a project, only
-        // the repos root is watched.
-        let project_config_path = find_current_project_config();
         let watcher = spawn_watcher(repos_root, project_config_path, groups.clone())
             .context("spawning filesystem watcher")?;
 
@@ -537,4 +544,262 @@ fn owner_hint_to_json(owner: &mmcp_core::manifest::GroupOwnerHint) -> serde_json
 fn ok_json(value: serde_json::Value) -> CallToolResult {
     let text = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
     CallToolResult::success(vec![Content::text(Cow::Owned(text))])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mmcp_core::id::GroupId;
+    use mmcp_core::manifest::{GroupManifest, MANIFEST_FILENAME};
+    use mmcp_git::{CommitSpec, GitBackend, GroupRef};
+    use tempfile::TempDir;
+
+    /// Build a `ClientState` rooted inside a fresh tempdir so the
+    /// test never touches the real user home.
+    async fn test_state() -> (ClientState, TempDir) {
+        let tmp = TempDir::new().expect("tempdir");
+        let state = ClientState::initialize_at(tmp.path().join(".mmcp"), None)
+            .await
+            .expect("initialize_at");
+        (state, tmp)
+    }
+
+    /// Seed a real group repository in the client's repos root with
+    /// a manifest and one memory file committed on `main`.
+    async fn seed_group_with_memory(
+        state: &ClientState,
+        slug: &str,
+        memory_slug: &str,
+        memory_body: &str,
+    ) -> GroupId {
+        let owner = Uuid::now_v7();
+        let group_id = GroupId::new();
+        let uuid = *group_id.as_uuid();
+        let handle = state
+            .backend
+            .create_group_repo(&GroupRef::new(uuid, slug))
+            .await
+            .expect("create group repo");
+        let manifest = GroupManifest::new_user_owned(group_id, slug, owner);
+        let rendered = manifest.to_toml().expect("render manifest");
+        state
+            .backend
+            .write_commit(
+                &handle,
+                CommitSpec {
+                    branch: "main".to_string(),
+                    author_name: "test".into(),
+                    author_email: "test@example.com".into(),
+                    message: "seed manifest".into(),
+                    files: vec![
+                        (MANIFEST_FILENAME.to_string(), Some(rendered.into_bytes())),
+                        (
+                            format!("{MEMORIES_PATH_PREFIX}/{memory_slug}{MEMORY_EXTENSION}"),
+                            Some(memory_body.as_bytes().to_vec()),
+                        ),
+                    ],
+                },
+            )
+            .await
+            .expect("write commit");
+        state.groups.refresh().await.expect("refresh");
+        group_id
+    }
+
+    fn parse_ok_json(result: CallToolResult) -> serde_json::Value {
+        assert!(!result.content.is_empty(), "tool result has no content");
+        let text = result.content[0]
+            .as_text()
+            .expect("text content")
+            .text
+            .clone();
+        serde_json::from_str(&text).expect("json parse")
+    }
+
+    const SAMPLE_MEMORY: &str = "+++\nname = \"Sample\"\ndescription = \"A sample memory\"\nkind = \"rule\"\nmandatory = false\ntags = [\"sample\"]\n+++\n# Sample\nBody text.\n";
+
+    #[tokio::test]
+    async fn list_memories_returns_real_entries_from_git() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+
+        let res = server
+            .list_memories(Parameters(ListMemoriesArgs {
+                group: group.to_string(),
+            }))
+            .await
+            .expect("list_memories");
+        let parsed = parse_ok_json(res);
+        let memories = parsed
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .expect("memories array");
+        assert_eq!(memories.len(), 1);
+        let first = &memories[0];
+        assert_eq!(first.get("slug").and_then(|v| v.as_str()), Some("rules"));
+        assert_eq!(
+            first.get("name").and_then(|v| v.as_str()),
+            Some("Sample"),
+            "frontmatter name should be parsed"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_memory_returns_frontmatter_and_body() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+
+        let res = server
+            .read_memory(Parameters(ReadMemoryArgs {
+                group: group.to_string(),
+                slug: "rules".into(),
+                version: None,
+            }))
+            .await
+            .expect("read_memory");
+        let parsed = parse_ok_json(res);
+        assert_eq!(
+            parsed
+                .get("frontmatter")
+                .and_then(|v| v.get("name"))
+                .and_then(|v| v.as_str()),
+            Some("Sample")
+        );
+        let body = parsed
+            .get("body")
+            .and_then(|v| v.as_str())
+            .expect("body string");
+        assert!(body.contains("# Sample"));
+        assert!(body.contains("Body text."));
+    }
+
+    #[tokio::test]
+    async fn read_memory_rejects_unknown_slug() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+
+        let err = server
+            .read_memory(Parameters(ReadMemoryArgs {
+                group: group.to_string(),
+                slug: "missing".into(),
+                version: None,
+            }))
+            .await
+            .expect_err("should be an error");
+        assert!(
+            err.message.contains("memory not found"),
+            "expected memory-not-found error, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn group_info_reports_manifest_and_memory_count() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+
+        let res = server
+            .group_info(Parameters(GroupInfoArgs {
+                group: group.to_string(),
+            }))
+            .await
+            .expect("group_info");
+        let parsed = parse_ok_json(res);
+        assert_eq!(
+            parsed.get("slug").and_then(|v| v.as_str()),
+            Some("team-rust")
+        );
+        assert_eq!(
+            parsed.get("memory_count").and_then(|v| v.as_u64()),
+            Some(1)
+        );
+        let owner_kind = parsed
+            .get("owner")
+            .and_then(|v| v.get("kind"))
+            .and_then(|v| v.as_str());
+        assert_eq!(owner_kind, Some("user"));
+    }
+
+    #[tokio::test]
+    async fn search_memories_matches_slug_substring() {
+        let (state, _tmp) = test_state().await;
+        seed_group_with_memory(&state, "team-rust", "coding-rules", SAMPLE_MEMORY).await;
+        seed_group_with_memory(&state, "team-python", "style-guide", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+
+        let res = server
+            .search_memories(Parameters(SearchMemoriesArgs {
+                query: "coding".into(),
+                limit: None,
+            }))
+            .await
+            .expect("search_memories");
+        let parsed = parse_ok_json(res);
+        let hits = parsed
+            .get("hits")
+            .and_then(|v| v.as_array())
+            .expect("hits array");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            hits[0].get("slug").and_then(|v| v.as_str()),
+            Some("coding-rules")
+        );
+    }
+
+    #[tokio::test]
+    async fn list_versions_returns_commit_history_for_memory() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+
+        let res = server
+            .list_versions(Parameters(ListVersionsArgs {
+                group: group.to_string(),
+                slug: "rules".into(),
+            }))
+            .await
+            .expect("list_versions");
+        let parsed = parse_ok_json(res);
+        let versions = parsed
+            .get("versions")
+            .and_then(|v| v.as_array())
+            .expect("versions array");
+        assert_eq!(versions.len(), 1);
+        let commit = versions[0]
+            .get("commit")
+            .and_then(|v| v.as_str())
+            .expect("commit string");
+        assert_eq!(commit.len(), 40, "commit should be a 40-char hex id");
+    }
+
+    #[tokio::test]
+    async fn unknown_group_id_returns_empty_list_or_invalid_params() {
+        let (state, _tmp) = test_state().await;
+        let server = McpServer::new(state);
+        let unknown = Uuid::now_v7();
+
+        let res = server
+            .list_memories(Parameters(ListMemoriesArgs {
+                group: unknown.to_string(),
+            }))
+            .await
+            .expect("list_memories");
+        let parsed = parse_ok_json(res);
+        let memories = parsed
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .expect("memories array");
+        assert!(memories.is_empty());
+
+        let err = server
+            .group_info(Parameters(GroupInfoArgs {
+                group: unknown.to_string(),
+            }))
+            .await
+            .expect_err("group_info on unknown id should error");
+        assert!(err.message.contains("group not found"));
+    }
 }
