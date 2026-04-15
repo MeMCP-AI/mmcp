@@ -2,11 +2,14 @@
 //!
 //! A single binary with multiple entry points dispatched via clap
 //! subcommands. Each subcommand corresponds to one hat the client
-//! wears: MCP stdio server, project CLI, sync engine, or hook handler.
-//! All subcommands are scaffold stubs for now.
+//! wears: MCP stdio server, project CLI, sync engine, or hook
+//! handler.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+
+mod commands;
+mod config;
 
 #[derive(Parser)]
 #[command(name = "mmcp", version, about = "mmcp memory client")]
@@ -53,24 +56,22 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,mmcp=info")),
         )
+        .with_writer(std::io::stderr)
         .init();
 
     let cli = Cli::parse();
 
-    // TODO(GGLinnk 2026-04-11): replace stubs with real implementations
     match cli.command {
-        Command::Serve => tracing::info!("serve: not yet implemented"),
-        Command::Init => tracing::info!("init: not yet implemented"),
-        Command::Status => tracing::info!("status: not yet implemented"),
-        Command::Sync => tracing::info!("sync: not yet implemented"),
-        Command::Pull => tracing::info!("pull: not yet implemented"),
-        Command::Push => tracing::info!("push: not yet implemented"),
+        Command::Serve => commands::serve::run().await?,
+        Command::Init => commands::init::run().await?,
+        Command::Status => commands::status::run().await?,
+        Command::Sync => commands::sync::run(true, true).await?,
+        Command::Pull => commands::sync::run(true, false).await?,
+        Command::Push => commands::sync::run(false, true).await?,
         Command::Hook { command } => match command {
-            HookCommand::UserPrompt => {
-                tracing::info!("hook user-prompt: not yet implemented");
-            }
+            HookCommand::UserPrompt => commands::hook::user_prompt().await?,
         },
     }
 
