@@ -77,5 +77,8 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 
+# MCP SDK (official Rust implementation)
+rmcp = { version = "1", features = ["server", "macros", "transport-io"] }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
