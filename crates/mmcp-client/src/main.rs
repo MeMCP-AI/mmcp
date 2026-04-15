@@ -3,14 +3,14 @@
 //! A single binary with multiple entry points dispatched via clap
 //! subcommands. Each subcommand corresponds to one hat the client
 //! wears: MCP stdio server, project CLI, sync engine, or hook
-//! handler.
+//! handler. The command implementations themselves live in the
+//! library target of this crate so integration tests can exercise
+//! them directly.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-mod commands;
-mod config;
-mod state;
+use mmcp_client::commands;
 
 #[derive(Parser)]
 #[command(name = "mmcp", version, about = "mmcp memory client")]
