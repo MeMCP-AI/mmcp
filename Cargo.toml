@@ -48,6 +48,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+inquire = { version = "0.9", default-features = false, features = ["crossterm"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

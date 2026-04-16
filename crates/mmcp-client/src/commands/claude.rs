@@ -5,11 +5,13 @@
 //! live only in [`run`], so the MCP side can reuse the pure pieces
 //! without pulling stdin/TTY behavior into tool calls.
 
-use std::io::{self, BufRead, Write};
+use std::fmt;
+use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
 use anyhow::{Context, Result, anyhow, bail};
+use inquire::{InquireError, Select};
 use mmcp_core::memory::{FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryKind};
 use mmcp_git::{CommitSpec, GitBackend};
 
@@ -210,27 +212,44 @@ fn resolve_action(args: &ClaudeArgs, is_tty: bool) -> Result<Action> {
     }
 }
 
+/// Menu options for the top-level action prompt. `Cancel` is rendered
+/// by `inquire` alongside the real actions; user pressing ESC also
+/// maps to a cancel (via `InquireError::OperationCanceled`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActionChoice {
+    Override,
+    Append,
+    Convert,
+    Cancel,
+}
+
+impl fmt::Display for ActionChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            ActionChoice::Override => "override — replace CLAUDE.md with a fresh mmcp stub",
+            ActionChoice::Append => "append — insert/replace the mmcp block inside CLAUDE.md",
+            ActionChoice::Convert => "convert — split CLAUDE.md into typed memories, then stub",
+            ActionChoice::Cancel => "cancel",
+        };
+        f.write_str(s)
+    }
+}
+
 fn prompt_action_interactive() -> Result<Action> {
-    eprintln!("mmcp init claude — pick an action:");
-    eprintln!("  1) override  — replace CLAUDE.md with a fresh mmcp stub");
-    eprintln!("  2) append    — insert/replace the mmcp block inside CLAUDE.md");
-    eprintln!("  3) convert   — split CLAUDE.md into typed memories, then stub");
-    eprintln!("  4) cancel");
-    loop {
-        eprint!("choice [1-4]: ");
-        io::stderr().flush().ok();
-        let mut line = String::new();
-        io::stdin()
-            .lock()
-            .read_line(&mut line)
-            .context("read stdin")?;
-        match line.trim() {
-            "1" | "override" => return Ok(Action::Override),
-            "2" | "append" => return Ok(Action::Append),
-            "3" | "convert" => return Ok(Action::Convert),
-            "4" | "cancel" | "q" => bail!("cancelled"),
-            _ => eprintln!("enter 1, 2, 3, or 4"),
-        }
+    let options = vec![
+        ActionChoice::Override,
+        ActionChoice::Append,
+        ActionChoice::Convert,
+        ActionChoice::Cancel,
+    ];
+    match Select::new("mmcp init claude — pick an action:", options).prompt() {
+        Ok(ActionChoice::Override) => Ok(Action::Override),
+        Ok(ActionChoice::Append) => Ok(Action::Append),
+        Ok(ActionChoice::Convert) => Ok(Action::Convert),
+        Ok(ActionChoice::Cancel)
+        | Err(InquireError::OperationCanceled)
+        | Err(InquireError::OperationInterrupted) => bail!("cancelled"),
+        Err(e) => Err(anyhow!(e).context("reading action choice")),
     }
 }
 
@@ -321,34 +340,46 @@ fn resolve_conflict(
     prompt_conflict_interactive(*state)
 }
 
-fn prompt_conflict_interactive(state: FileState) -> Result<ConflictChoice> {
-    eprintln!();
-    match state {
-        FileState::Untracked => {
-            eprintln!("CLAUDE.md is untracked (not committed to git).");
-        }
-        FileState::TrackedDirty => {
-            eprintln!("CLAUDE.md has uncommitted changes.");
-        }
-        _ => unreachable!(),
+/// Menu options for the dirty/untracked conflict prompt. Kept
+/// separate from [`ConflictChoice`] because the menu has no
+/// `NotApplicable` variant — the caller only prompts when the file
+/// actually conflicts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConflictMenu {
+    BackupOverride,
+    Override,
+    Cancel,
+}
+
+impl fmt::Display for ConflictMenu {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            ConflictMenu::BackupOverride => "backup (.bak) and override  (recommended)",
+            ConflictMenu::Override => "override without backup  (dangerous)",
+            ConflictMenu::Cancel => "cancel",
+        };
+        f.write_str(s)
     }
-    eprintln!("  1) override without backup  (dangerous)");
-    eprintln!("  2) backup (.bak) and override  (recommended)");
-    eprintln!("  3) cancel");
-    loop {
-        eprint!("choice [1-3]: ");
-        io::stderr().flush().ok();
-        let mut line = String::new();
-        io::stdin()
-            .lock()
-            .read_line(&mut line)
-            .context("read stdin")?;
-        match line.trim() {
-            "1" => return Ok(ConflictChoice::Override),
-            "2" | "" => return Ok(ConflictChoice::BackupOverride),
-            "3" | "cancel" | "q" => return Ok(ConflictChoice::Cancel),
-            _ => eprintln!("enter 1, 2, or 3"),
-        }
+}
+
+fn prompt_conflict_interactive(state: FileState) -> Result<ConflictChoice> {
+    let message = match state {
+        FileState::Untracked => "CLAUDE.md is untracked (not committed to git). How to proceed?",
+        FileState::TrackedDirty => "CLAUDE.md has uncommitted changes. How to proceed?",
+        _ => unreachable!(),
+    };
+    let options = vec![
+        ConflictMenu::BackupOverride,
+        ConflictMenu::Override,
+        ConflictMenu::Cancel,
+    ];
+    match Select::new(message, options).prompt() {
+        Ok(ConflictMenu::BackupOverride) => Ok(ConflictChoice::BackupOverride),
+        Ok(ConflictMenu::Override) => Ok(ConflictChoice::Override),
+        Ok(ConflictMenu::Cancel)
+        | Err(InquireError::OperationCanceled)
+        | Err(InquireError::OperationInterrupted) => Ok(ConflictChoice::Cancel),
+        Err(e) => Err(anyhow!(e).context("reading conflict choice")),
     }
 }
 
@@ -795,10 +826,6 @@ fn print_report(report: &ClaudeReport) {
         );
     }
 }
-
-// Small compat shim: `is_terminal` moved around across std versions.
-// Use std::io::IsTerminal (stable since 1.70) via trait import.
-use std::io::IsTerminal;
 
 // ── Tests ────────────────────────────────────────────────────────────
 
