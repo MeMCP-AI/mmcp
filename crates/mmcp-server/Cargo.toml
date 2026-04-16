@@ -33,7 +33,6 @@ jiff = { workspace = true }
 sea-orm = { workspace = true }
 axum-login = { workspace = true }
 tower-sessions = { workspace = true }
-oauth2 = { workspace = true }
 webauthn-rs = { workspace = true }
 reqwest = { workspace = true }
 urlencoding = "2"

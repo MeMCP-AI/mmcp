@@ -2675,7 +2675,6 @@ name = "mmcp-auth"
 version = "0.1.0"
 dependencies = [
  "argon2",
- "async-trait",
  "axum-login",
  "jiff",
  "mmcp-core",
@@ -2697,6 +2696,7 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "clap",
+ "gix",
  "jiff",
  "mmcp-auth",
  "mmcp-core",
@@ -2727,6 +2727,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "serde_yaml",
  "thiserror 2.0.18",
  "toml 0.9.12+spec-1.1.0",
  "uuid",
@@ -2787,7 +2788,6 @@ dependencies = [
  "mmcp-proto",
  "mmcp-session",
  "mmcp-sync",
- "oauth2",
  "reqwest",
  "sea-orm",
  "serde",
@@ -2818,7 +2818,6 @@ dependencies = [
 name = "mmcp-sync"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "jiff",
  "mmcp-core",
  "mmcp-git",
@@ -2965,26 +2964,6 @@ checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
 dependencies = [
  "hermit-abi",
  "libc",
-]
-
-[[package]]
-name = "oauth2"
-version = "5.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "getrandom 0.2.17",
- "http",
- "rand 0.8.5",
- "reqwest",
- "serde",
- "serde_json",
- "serde_path_to_error",
- "sha2",
- "thiserror 1.0.69",
- "url",
 ]
 
 [[package]]
@@ -4025,6 +4004,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_yaml"
+version = "0.9.34+deprecated"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4546,7 +4538,6 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",
@@ -4878,6 +4869,12 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+
+[[package]]
+name = "unsafe-libyaml"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"

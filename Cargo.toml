@@ -34,7 +34,7 @@ thiserror = "2"
 anyhow = "1"
 
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "io-util", "process", "time", "fs"] }
 async-trait = "0.1"
 
 # Logging
@@ -74,7 +74,6 @@ argon2 = "0.5"
 rusty_paseto = { version = "0.7", default-features = false, features = ["v4_local", "batteries_included"] }
 axum-login = "0.18"
 tower-sessions = "0.14"
-oauth2 = "5"
 webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
 
 # HTTP framework

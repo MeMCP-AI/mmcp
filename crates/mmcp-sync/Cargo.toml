@@ -17,7 +17,6 @@ uuid = { workspace = true }
 semver = { workspace = true }
 jiff = { workspace = true }
 reqwest = { workspace = true }
-async-trait = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

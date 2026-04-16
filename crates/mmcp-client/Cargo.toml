@@ -18,6 +18,8 @@ mmcp-proto = { workspace = true }
 mmcp-session = { workspace = true }
 mmcp-sync = { workspace = true }
 
+gix = { workspace = true }
+
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

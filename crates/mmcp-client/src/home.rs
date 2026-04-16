@@ -62,26 +62,31 @@ impl MmcpHome {
 
     /// Build from an explicit root path. Used by tests and by
     /// callers that already know the root (e.g. `initialize_at`).
+    #[must_use]
     pub fn from_root(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
 
     /// The mmcp home root directory (e.g. `~/.mmcp`).
+    #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
 
     /// Path to the bare group repositories directory.
+    #[must_use]
     pub fn repos_root(&self) -> PathBuf {
         self.root.join(REPOS_SUBDIR)
     }
 
     /// Path to the flat session state directory.
+    #[must_use]
     pub fn sessions_root(&self) -> PathBuf {
         self.root.join(SESSIONS_SUBDIR)
     }
 
     /// Path to the user-level config file (`~/.mmcp/config.toml`).
+    #[must_use]
     pub fn user_config_path(&self) -> PathBuf {
         self.root.join(USER_CONFIG_FILE)
     }
@@ -104,6 +109,7 @@ impl MmcpHome {
     /// 1. `~/.mmcp/config.toml` `[author].name` / `[author].email`
     /// 2. `git config --global user.name/email` (only if `git_fallback == true`)
     /// 3. Hardcoded constants (final fallback)
+    #[must_use]
     pub fn resolve_author(&self) -> ResolvedAuthor {
         let cfg = self.load_user_config().unwrap_or_default();
         let author_cfg = cfg.author.as_ref();
@@ -158,20 +164,15 @@ impl MmcpHome {
     }
 }
 
-/// Read a single value from git's global config.
-/// Returns `None` if git is not installed or the key is unset.
+/// Read a single value from git's global config via gix (no subprocess).
+/// Returns `None` if the config file is missing, unreadable, or the key is unset.
 fn read_git_config(key: &str) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .arg("config")
-        .arg("--global")
-        .arg(key)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if value.is_empty() { None } else { Some(value) }
+    let file = gix::config::File::from_globals().ok()?;
+    // Keys are dotted: "user.name" -> section "user", name "name"
+    let (section, name) = key.split_once('.')?;
+    let value = file.string_by(section, None, name)?;
+    let s = value.to_string();
+    if s.is_empty() { None } else { Some(s) }
 }
 
 /// Resolve the user's home directory from environment variables.

@@ -74,6 +74,12 @@ impl From<serde_json::Error> for MemoryParseError {
     }
 }
 
+impl From<serde_yaml::Error> for MemoryParseError {
+    fn from(e: serde_yaml::Error) -> Self {
+        MemoryParseError::Render(e.to_string())
+    }
+}
+
 impl MemoryFile {
     /// Parse a memory file from raw text.
     ///
@@ -158,7 +164,7 @@ impl MemoryFile {
         let front = match engine {
             RenderEngine::Toml => toml::to_string_pretty(&self.frontmatter)?,
             RenderEngine::Json => serde_json::to_string_pretty(&self.frontmatter)?,
-            RenderEngine::Yaml => render_yaml_frontmatter(&self.frontmatter),
+            RenderEngine::Yaml => serde_yaml::to_string(&self.frontmatter)?,
         };
         let mut out = String::with_capacity(front.len() + self.body.len() + 16);
         out.push_str(delimiter);
@@ -178,28 +184,6 @@ enum RenderEngine {
     Toml,
     Json,
     Yaml,
-}
-
-/// Simple YAML render of frontmatter fields.
-// TODO(2026-04-16): replace with serde_yaml for proper YAML output
-fn render_yaml_frontmatter(fm: &MemoryFrontmatter) -> String {
-    let mut out = String::new();
-    out.push_str(&format!("name: \"{}\"\n", fm.name));
-    out.push_str(&format!("description: \"{}\"\n", fm.description));
-    out.push_str(&format!("kind: {}\n", fm.kind.as_str()));
-    if fm.mandatory {
-        out.push_str("mandatory: true\n");
-    }
-    if let Some(ref v) = fm.version {
-        out.push_str(&format!("version: \"{v}\"\n"));
-    }
-    if !fm.tags.is_empty() {
-        out.push_str("tags:\n");
-        for tag in &fm.tags {
-            out.push_str(&format!("  - {tag}\n"));
-        }
-    }
-    out
 }
 
 #[cfg(test)]
