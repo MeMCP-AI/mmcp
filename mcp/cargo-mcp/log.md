@@ -9,3 +9,4 @@
 **Workaround**: Re-fetched the tool schema via `ToolSearch`, then re-invoked. Second call succeeded — likely a transient serialization mismatch after the tool was initially loaded from the deferred list.
 
 **Status**: Resolved on retry. Root cause unclear — may be a race between schema loading and invocation.
+
