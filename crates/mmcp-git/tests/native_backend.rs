@@ -178,10 +178,10 @@ async fn remote_operations_fail_fast_without_a_remote() {
         .fetch(&repo, "http://127.0.0.1:1/no-such.git", &[])
         .await
         .unwrap_err();
-    assert!(matches!(err, mmcp_git::GitError::Transport(_)));
+    assert!(matches!(err, mmcp_git::GitError::Transport { .. }));
     let err = backend
         .push(&repo, "http://127.0.0.1:1/no-such.git", &[])
         .await
         .unwrap_err();
-    assert!(matches!(err, mmcp_git::GitError::Transport(_)));
+    assert!(matches!(err, mmcp_git::GitError::Transport { .. }));
 }

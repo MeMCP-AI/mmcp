@@ -113,7 +113,7 @@ impl SyncEngine {
                 match self.backend.push(&handle, &remote_url, &refs).await {
                     Ok(_) => true,
                     Err(mmcp_git::GitError::Unsupported(_)) => false,
-                    Err(mmcp_git::GitError::Transport(_msg)) => false,
+                    Err(mmcp_git::GitError::Transport { .. }) => false,
                     Err(other) => return Err(SyncError::Git(other)),
                 }
             }
@@ -151,7 +151,7 @@ impl SyncEngine {
                     match self.backend.fetch(&handle, &remote_url, &refs).await {
                         Ok(()) => updated.push(remote),
                         Err(mmcp_git::GitError::Unsupported(_))
-                        | Err(mmcp_git::GitError::Transport(_)) => {
+                        | Err(mmcp_git::GitError::Transport { .. }) => {
                             // Content plane deferred: the remote is
                             // unreachable or the backend can't push
                             // bytes yet. The control-plane view is

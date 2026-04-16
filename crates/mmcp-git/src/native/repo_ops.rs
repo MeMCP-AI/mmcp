@@ -72,10 +72,11 @@ pub fn clone(remote_url: &str, dst: &Path) -> Result<(), GitError> {
         .output()
         .map_err(|e| GitError::Gix(format!("spawn git clone: {e}")))?;
     if !output.status.success() {
-        return Err(GitError::Transport(format!(
-            "git clone failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
+        return Err(GitError::transport(
+            "clone",
+            remote_url,
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ));
     }
     Ok(())
 }
@@ -97,10 +98,11 @@ pub fn fetch(repo_path: &Path, remote_url: &str, refspecs: &[String]) -> Result<
         .output()
         .map_err(|e| GitError::Gix(format!("spawn git fetch: {e}")))?;
     if !output.status.success() {
-        return Err(GitError::Transport(format!(
-            "git fetch failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
+        return Err(GitError::transport(
+            "fetch",
+            remote_url,
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ));
     }
     Ok(())
 }
@@ -127,8 +129,11 @@ pub fn push(
         .output()
         .map_err(|e| GitError::Gix(format!("spawn git push: {e}")))?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        return Err(GitError::Transport(format!("git push failed: {stderr}")));
+        return Err(GitError::transport(
+            "push",
+            remote_url,
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ));
     }
     let report = PushReport {
         updated: refspecs
