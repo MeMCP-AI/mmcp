@@ -296,6 +296,33 @@ struct DebugWriteFileArgs {
     pub message: Option<String>,
 }
 
+/// Which memories `bootstrap_context` should return. Defaults to
+/// `all` (union of mandatory and project). Callers pick `mandatory`
+/// or `project` when they want to reload only one side without
+/// re-paying the cost of the other.
+#[derive(Debug, Default, Clone, Copy, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(rename_all = "snake_case")]
+enum BootstrapScope {
+    /// Memories with `frontmatter.mandatory == true`, across every
+    /// group the local mirror knows about.
+    Mandatory,
+    /// Memories inside the group whose UUID matches the project's
+    /// `project_uuid` from `.mmcp.toml`.
+    Project,
+    /// Union of mandatory and project.
+    #[default]
+    All,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct BootstrapContextArgs {
+    /// Which memories to include. Defaults to `all`.
+    #[serde(default)]
+    pub scope: Option<BootstrapScope>,
+}
+
 #[tool_router]
 impl McpServer {
     fn new(state: ClientState) -> Self {
@@ -772,6 +799,102 @@ impl McpServer {
             "commit_id": commit_id,
         })))
     }
+
+    #[tool(
+        description = "Initialize the AI's context for this session. Returns the curated set of memories (mandatory, project-scoped, or both) with their bodies inline, plus advisory diagnostics about the project's CLAUDE.md state. Call at session start, after context compaction, before starting a new phase or task, and before/after each commit cycle. This tool never writes files — CLAUDE.md advice appears in `diagnostics` and must be acted on by calling `init_claude` explicitly."
+    )]
+    async fn bootstrap_context(
+        &self,
+        Parameters(args): Parameters<BootstrapContextArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let scope = args.scope.unwrap_or_default();
+
+        // Resolve the project group (if any) from the cwd's .mmcp.toml.
+        let project_root = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| crate::config::find_project_root(&cwd));
+        let project_uuid = project_root
+            .as_ref()
+            .and_then(|root| crate::config::load(root).ok())
+            .map(|cfg| *cfg.project_uuid.as_uuid());
+
+        let wants_project = matches!(scope, BootstrapScope::Project | BootstrapScope::All);
+        let wants_mandatory = matches!(scope, BootstrapScope::Mandatory | BootstrapScope::All);
+
+        // Walk every local group, collecting memories that match scope.
+        let mut memories: Vec<serde_json::Value> = Vec::new();
+        for entry in self.state.groups.list().await {
+            let entry_uuid = *entry.manifest.group_id.as_uuid();
+            let is_project = project_uuid == Some(entry_uuid);
+            let slugs = list_memory_files(&self.state.backend, &entry)
+                .await
+                .unwrap_or_default();
+            for slug in slugs {
+                let path = mmcp_core::conventions::memory_path(&slug);
+                let bytes = match self
+                    .state
+                    .backend
+                    .read_file(&entry.handle, &path, &Rev::head())
+                    .await
+                {
+                    Ok(b) => b,
+                    Err(err) => {
+                        tracing::warn!(
+                            slug = %slug,
+                            group = %entry_uuid,
+                            error = %err,
+                            "bootstrap_context: skipping unreadable memory"
+                        );
+                        continue;
+                    }
+                };
+                let Ok(text) = std::str::from_utf8(&bytes) else {
+                    continue;
+                };
+                let Ok(file) = MemoryFile::parse(text) else {
+                    continue;
+                };
+                let is_mandatory = file.frontmatter.mandatory;
+
+                let include = (wants_mandatory && is_mandatory)
+                    || (wants_project && is_project);
+                if !include {
+                    continue;
+                }
+                let reason = match (
+                    wants_mandatory && is_mandatory,
+                    wants_project && is_project,
+                ) {
+                    (true, true) => "mandatory,project",
+                    (true, false) => "mandatory",
+                    (false, true) => "project",
+                    (false, false) => unreachable!("include guard above"),
+                };
+                memories.push(json!({
+                    "group": entry_uuid,
+                    "slug": slug,
+                    "name": file.frontmatter.name,
+                    "description": file.frontmatter.description,
+                    "kind": file.frontmatter.kind.as_str(),
+                    "tags": file.frontmatter.tags,
+                    "mandatory": is_mandatory,
+                    "reason": reason,
+                    "body": file.body,
+                }));
+            }
+        }
+
+        // Advisory diagnostics about CLAUDE.md. These never block the
+        // call and never write anything; the AI or operator decides.
+        let diagnostics = build_claude_diagnostics(project_root.as_deref());
+
+        Ok(ok_json(json!({
+            "memories": memories,
+            "project_root": project_root.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            "project_uuid": project_uuid.map(|u| u.to_string()),
+            "diagnostics": diagnostics,
+        })))
+    }
 }
 
 impl McpServer {
@@ -892,6 +1015,61 @@ fn rev_label(rev: &Rev) -> String {
 
 fn git_error(err: mmcp_git::GitError) -> McpError {
     McpError::internal_error(Cow::Owned(format!("git error: {err}")), None)
+}
+
+/// Current version of the mmcp-managed block embedded in CLAUDE.md.
+/// Bumping this value lets `init_claude` detect stale blocks and lets
+/// `bootstrap_context` emit a `claude_md_stale` diagnostic when a
+/// project carries an older fence.
+const CLAUDE_MD_BLOCK_VERSION: &str = "v1";
+
+/// Compute advisory diagnostics about the project's CLAUDE.md state.
+///
+/// Read-only: the function inspects the file on disk but never writes
+/// anything. `bootstrap_context` emits these so the AI can decide to
+/// call `init_claude`. An empty vector means either no project root
+/// was resolved (nothing to diagnose) or the file is already healthy.
+fn build_claude_diagnostics(project_root: Option<&std::path::Path>) -> Vec<serde_json::Value> {
+    let Some(root) = project_root else {
+        return Vec::new();
+    };
+    let claude_md = root.join("CLAUDE.md");
+    if !claude_md.exists() {
+        return vec![json!({
+            "severity": "warning",
+            "code": "claude_md_missing",
+            "message": "CLAUDE.md is missing at the project root. Running `init_claude` (action=override) bootstraps it with the mmcp pointer template so future sessions see the checkpoint protocol.",
+            "suggested_tool": "init_claude",
+            "suggested_args": { "action": "override" },
+        })];
+    }
+    let Ok(body) = std::fs::read_to_string(&claude_md) else {
+        return Vec::new();
+    };
+    let begin_marker = format!("<!-- mmcp:begin {CLAUDE_MD_BLOCK_VERSION} -->");
+    if body.contains(&begin_marker) {
+        return Vec::new();
+    }
+    // Older-version fence present? Flag as stale so init_claude can upgrade.
+    if body.contains("<!-- mmcp:begin ") {
+        return vec![json!({
+            "severity": "info",
+            "code": "claude_md_stale",
+            "message": format!(
+                "CLAUDE.md carries an older mmcp block; current version is {CLAUDE_MD_BLOCK_VERSION}. Re-run `init_claude` (action=append) to upgrade the fenced region in place."
+            ),
+            "suggested_tool": "init_claude",
+            "suggested_args": { "action": "append" },
+        })];
+    }
+    // No fence at all — file is unmanaged.
+    vec![json!({
+        "severity": "warning",
+        "code": "claude_md_unmanaged",
+        "message": "CLAUDE.md has no mmcp-managed block. Run `init_claude` (action=append) to insert the session-start protocol without touching user-authored content, or (action=convert) to split existing rule content into typed memories and replace the file with a stub.",
+        "suggested_tool": "init_claude",
+        "suggested_args": { "action": "append" },
+    })]
 }
 
 fn frontmatter_to_json(fm: &MemoryFrontmatter) -> serde_json::Value {
@@ -1171,5 +1349,114 @@ mod tests {
             .await
             .expect_err("group_info on unknown id should error");
         assert!(err.message.contains("group not found"));
+    }
+
+    const MANDATORY_MEMORY: &str = "+++\nname = \"Mandatory Rule\"\ndescription = \"A rule that must be read every session\"\nkind = \"rule\"\nmandatory = true\ntags = [\"global\",\"rule\"]\n+++\n\nAlways follow this rule.\n";
+
+    const OPTIONAL_MEMORY: &str = "+++\nname = \"Optional Note\"\ndescription = \"Nice to read but not required\"\nkind = \"reference\"\nmandatory = false\ntags = [\"reference\"]\n+++\n\nSome background.\n";
+
+    #[tokio::test]
+    async fn bootstrap_context_mandatory_scope_returns_only_mandatory_with_body() {
+        let (state, _tmp) = test_state().await;
+        seed_group_with_memory(&state, "globals", "mandatory-rule", MANDATORY_MEMORY).await;
+        seed_group_with_memory(&state, "globals2", "optional-note", OPTIONAL_MEMORY).await;
+        let server = McpServer::new(state);
+
+        let res = server
+            .bootstrap_context(Parameters(BootstrapContextArgs {
+                scope: Some(BootstrapScope::Mandatory),
+            }))
+            .await
+            .expect("bootstrap_context");
+        let parsed = parse_ok_json(res);
+        let memories = parsed
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .expect("memories array");
+        assert_eq!(memories.len(), 1, "only the mandatory memory should qualify");
+        let m = &memories[0];
+        assert_eq!(m.get("slug").and_then(|v| v.as_str()), Some("mandatory-rule"));
+        assert_eq!(m.get("mandatory").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(m.get("reason").and_then(|v| v.as_str()), Some("mandatory"));
+        let body = m
+            .get("body")
+            .and_then(|v| v.as_str())
+            .expect("body inline");
+        assert!(body.contains("Always follow this rule."));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_context_all_scope_includes_mandatory_when_no_project_configured() {
+        let (state, _tmp) = test_state().await;
+        seed_group_with_memory(&state, "globals", "rule-one", MANDATORY_MEMORY).await;
+        seed_group_with_memory(&state, "globals", "optional", OPTIONAL_MEMORY).await;
+        let server = McpServer::new(state);
+
+        // No project config reachable from cwd → `All` collapses to mandatory-only.
+        let res = server
+            .bootstrap_context(Parameters(BootstrapContextArgs { scope: None }))
+            .await
+            .expect("bootstrap_context");
+        let parsed = parse_ok_json(res);
+        let memories = parsed
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .expect("memories array");
+        let mandatory_count = memories
+            .iter()
+            .filter(|m| m.get("mandatory").and_then(|v| v.as_bool()) == Some(true))
+            .count();
+        assert!(
+            mandatory_count >= 1,
+            "mandatory memories must flow through All scope; saw: {memories:?}"
+        );
+    }
+
+    #[test]
+    fn build_claude_diagnostics_flags_missing_file() {
+        let tmp = TempDir::new().expect("tempdir");
+        let diagnostics = build_claude_diagnostics(Some(tmp.path()));
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0]
+                .get("code")
+                .and_then(|v| v.as_str()),
+            Some("claude_md_missing")
+        );
+    }
+
+    #[test]
+    fn build_claude_diagnostics_flags_unmanaged_file() {
+        let tmp = TempDir::new().expect("tempdir");
+        std::fs::write(
+            tmp.path().join("CLAUDE.md"),
+            "# Legacy\n\nHand-authored without any mmcp fence.\n",
+        )
+        .expect("write claude");
+        let diagnostics = build_claude_diagnostics(Some(tmp.path()));
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0]
+                .get("code")
+                .and_then(|v| v.as_str()),
+            Some("claude_md_unmanaged")
+        );
+    }
+
+    #[test]
+    fn build_claude_diagnostics_is_silent_when_fence_matches_current_version() {
+        let tmp = TempDir::new().expect("tempdir");
+        std::fs::write(
+            tmp.path().join("CLAUDE.md"),
+            format!("# Managed\n\n<!-- mmcp:begin {CLAUDE_MD_BLOCK_VERSION} -->\n...\n<!-- mmcp:end {CLAUDE_MD_BLOCK_VERSION} -->\n"),
+        )
+        .expect("write claude");
+        let diagnostics = build_claude_diagnostics(Some(tmp.path()));
+        assert!(diagnostics.is_empty(), "current-version fence should produce no diagnostics");
+    }
+
+    #[test]
+    fn build_claude_diagnostics_is_silent_without_project_root() {
+        assert!(build_claude_diagnostics(None).is_empty());
     }
 }
