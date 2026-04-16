@@ -2,12 +2,13 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use anyhow::Result;
 use mmcp_auth::{MmcpAuthBackend, TokenIssuer, TokenVerifier};
 use mmcp_db::{Database, connect};
 use mmcp_git::NativeBackend;
+use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 use webauthn_rs::prelude::*;
 
@@ -27,6 +28,13 @@ pub struct ServerStateInner {
     pub webauthn: Arc<Webauthn>,
     pub oauth_providers: HashMap<String, OAuthProviderConfig>,
     pub origin: String,
+
+    /// Per-group async mutex set used to serialize writes (git
+    /// `receive-pack`) against the same bare repository. Reads
+    /// (`upload-pack`) stay unserialized. Created lazily on first
+    /// access for a given group; `std::sync::Mutex` guards only the
+    /// HashMap insertion, never a subprocess.
+    pub repo_locks: StdMutex<HashMap<Uuid, Arc<AsyncMutex<()>>>>,
 }
 
 impl ServerState {
@@ -68,7 +76,25 @@ impl ServerState {
             webauthn,
             oauth_providers,
             origin: cfg.origin.clone(),
+            repo_locks: StdMutex::new(HashMap::new()),
         })))
+    }
+
+    /// Get (or lazily create) the per-group write lock. The handle
+    /// is meant to be held for the duration of a `receive-pack`
+    /// invocation so two simultaneous pushes against the same group
+    /// repo cannot race and corrupt refs.
+    #[must_use]
+    pub fn repo_write_lock(&self, group_id: Uuid) -> Arc<AsyncMutex<()>> {
+        let mut locks = self
+            .0
+            .repo_locks
+            .lock()
+            .expect("repo_locks mutex poisoned");
+        locks
+            .entry(group_id)
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
     }
 
     /// Filesystem path of the bare repository for a group.

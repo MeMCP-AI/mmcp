@@ -139,6 +139,12 @@ async fn receive_pack(
     let uuid = parse_group_path(&group_id)?;
     enforce_write(&headers, uuid)?;
     let repo_path = ensure_group(&state, uuid).await?;
+    // Serialize writes per-group so two concurrent pushes cannot
+    // race `git receive-pack` and leave refs in an inconsistent state.
+    // Reads (`upload-pack`) stay unserialized — they only observe the
+    // on-disk tree and tolerate concurrent writers safely.
+    let write_lock = state.repo_write_lock(uuid);
+    let _guard = write_lock.lock_owned().await;
     run_pack_command("receive-pack", &repo_path, body.to_vec(), "application/x-git-receive-pack-result").await
 }
 
