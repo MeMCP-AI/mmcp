@@ -916,12 +916,59 @@ impl ServerHandler for McpServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
-            .with_instructions(
-                "mmcp memory server. Reads and writes memories directly from git repositories under ~/.mmcp/repos. Exposes list_memories, read_memory, list_versions, group_info, search_memories, and write_memory. All metadata is typed - the server builds frontmatter from structured parameters."
-                    .to_string(),
-            )
+            .with_instructions(SESSION_INSTRUCTIONS.to_string())
     }
 }
+
+/// Session-start protocol delivered to every MCP client on handshake.
+///
+/// This text is the authoritative reading order — CLAUDE.md points at
+/// it rather than duplicating it. When the checkpoint list or tool
+/// usage changes, update this constant; no other surface repeats the
+/// protocol.
+const SESSION_INSTRUCTIONS: &str = concat!(
+    "mmcp memory server — the project's single source of truth for coding rules, ",
+    "conventions, and project notes. Memories live in git repositories under ",
+    "~/.mmcp/repos and are surfaced through typed MCP tools; never hand-edit TOML.\n\n",
+    "## Session-start protocol (MANDATORY)\n\n",
+    "Call `bootstrap_context` at the start of every session and again at EACH of ",
+    "the following checkpoints. These are not suggestions; skipping any of them ",
+    "leaves you working against stale rules.\n\n",
+    "- Session start, before any other tool call or file write.\n",
+    "- After ANY context compaction. Compaction summaries are NOT authoritative; ",
+    "the memories are. Never trust a compaction report.\n",
+    "- Before starting a new phase or task.\n",
+    "- Before a commit cycle (git conventions may have shipped updates).\n",
+    "- After a commit cycle (re-align before picking up the next step).\n",
+    "- Any time a rule is corrected, added, or discussed — the memory may have ",
+    "been updated; re-read it.\n\n",
+    "`bootstrap_context` returns every mandatory and project-scoped memory with ",
+    "its body inline in a single round trip. Call with no args for `scope=all`; ",
+    "pass `scope=mandatory` or `scope=project` to reload one side.\n\n",
+    "## On-demand lookups\n\n",
+    "Outside the mandatory set, use `search_memories(query)` for cross-group ",
+    "substring matches, `list_memories(group)` to enumerate a group, and ",
+    "`read_memory(group, slug[, version])` for a specific entry (optionally at ",
+    "a branch, tag, or commit hex). `group_info(group)` returns manifest ",
+    "metadata. `list_versions(group, slug)` walks the memory's commit history.\n\n",
+    "## Authoring and maintenance\n\n",
+    "`write_memory(group, slug, name, description, kind, body[, tags, mandatory])` ",
+    "authors or updates a memory. The server builds frontmatter from typed ",
+    "parameters — you never construct fence blocks by hand. Use `check_health` ",
+    "for surface validation (manifest readable, memories parse), `diagnose` for ",
+    "deep structural checks (missing fields, empty bodies, cross-group slug ",
+    "collisions, config gaps).\n\n",
+    "## CLAUDE.md management\n\n",
+    "Never hand-edit CLAUDE.md to add rules. If `bootstrap_context` emits a ",
+    "`claude_md_missing` / `claude_md_unmanaged` / `claude_md_stale` diagnostic, ",
+    "act on it by calling `init_claude` explicitly; otherwise leave the file ",
+    "alone. Rules live in memories, not in CLAUDE.md.\n\n",
+    "## Debug tools\n\n",
+    "`debug_toggle` / `debug_read_file` / `debug_write_file` / `debug_list_tree` ",
+    "/ `debug_git_log` provide raw git access for troubleshooting. They require ",
+    "`debug_toggle(enabled=true)` to be active and should stay off outside of ",
+    "repair scenarios."
+);
 
 /// List every `memories/<slug>.md` blob in the group's repo at the
 /// current `HEAD` and return the slugs without the `.md` extension.
