@@ -9,11 +9,11 @@
 
 FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
 WORKDIR /build
-# cargo-binstall avoids a cold compile of cargo-leptos from source.
-RUN curl -L --proto '=https' --tlsv1.2 -sSf \
-      https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh \
-    | bash \
- && cargo binstall -y --no-confirm cargo-leptos \
+# Install cargo-leptos from crates.io with the lockfile pinned. This
+# takes a cold compile on the first image build but drops the
+# curl-pipe-to-bash installer, gives reproducible output, and lets
+# buildx cache the resulting layer across CI runs.
+RUN cargo install cargo-leptos --locked \
  && rustup target add wasm32-unknown-unknown
 
 FROM chef AS planner

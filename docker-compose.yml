@@ -5,6 +5,7 @@
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-mmcp}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mmcp}
@@ -21,6 +22,7 @@ services:
     build:
       context: .
       dockerfile: docker/server.Dockerfile
+    restart: unless-stopped
     # NOTE: tower-sessions is currently backed by MemoryStore (see
     # crates/mmcp-server/src/app.rs), so sessions do not survive a
     # container restart. Swap to a persistent store before production.
@@ -28,7 +30,11 @@ services:
       MMCP_BIND: 0.0.0.0:8787
       MMCP_DATABASE_URL: postgres://${POSTGRES_USER:-mmcp}:${POSTGRES_PASSWORD:-mmcp}@postgres:5432/${POSTGRES_DB:-mmcp}
       MMCP_REPO_ROOT: /data/repos
-      MMCP_TOKEN_KEY_HEX: ${MMCP_TOKEN_KEY_HEX}
+      # Must be set in `.env` (64 hex chars). See .env.example for
+      # how to generate one; the server seeds a random key if this
+      # is missing, but that key does not survive restarts so every
+      # reboot would invalidate all live sessions.
+      MMCP_TOKEN_KEY_HEX: ${MMCP_TOKEN_KEY_HEX:?set MMCP_TOKEN_KEY_HEX in .env (openssl rand -hex 32)}
       MMCP_ORIGIN: ${MMCP_ORIGIN:-http://localhost:8787}
       MMCP_OAUTH_GITHUB_CLIENT_ID: ${MMCP_OAUTH_GITHUB_CLIENT_ID:-}
       MMCP_OAUTH_GITHUB_CLIENT_SECRET: ${MMCP_OAUTH_GITHUB_CLIENT_SECRET:-}
@@ -36,6 +42,17 @@ services:
       - mmcp-repos:/data/repos
     ports:
       - "8787:8787"
+    # The server binary's `healthcheck` subcommand reads MMCP_BIND
+    # from the container env, then does an HTTP GET against loopback
+    # at the resolved port. Avoids shipping curl/wget in the runtime
+    # image — distroless has neither — and gates the webui on a
+    # genuine readiness signal rather than mere container start.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/mmcp-server", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,12 +61,14 @@ services:
     build:
       context: .
       dockerfile: docker/webui.Dockerfile
+    restart: unless-stopped
     environment:
       LEPTOS_SITE_ADDR: 0.0.0.0:3000
     ports:
       - "3000:3000"
     depends_on:
-      - server
+      server:
+        condition: service_healthy
 
 volumes:
   postgres-data:
