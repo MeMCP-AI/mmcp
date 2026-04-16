@@ -3,6 +3,7 @@
 //! These functions are invoked from `spawn_blocking` inside the async
 //! backend so the whole `gix` call tree stays synchronous.
 
+use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
 
@@ -17,6 +18,42 @@ fn gix_err<E: std::fmt::Display>(err: E) -> GitError {
     GitError::Gix(err.to_string())
 }
 
+/// Name of the env var that overrides the `git` binary path.
+///
+/// Lets operators point mmcp at a specific git install without
+/// touching `PATH` — useful on Windows where Git for Windows often
+/// lives under `C:\Program Files\Git\cmd\git.exe`, and in containers
+/// where multiple git versions coexist.
+pub const GIT_BIN_ENV: &str = "MMCP_GIT_BIN";
+
+/// Resolve the `git` binary path, honouring the `MMCP_GIT_BIN` env
+/// override. Returns `git` when the env var is unset or empty so
+/// the OS's `PATH` lookup kicks in.
+pub(crate) fn git_binary() -> OsString {
+    std::env::var_os(GIT_BIN_ENV)
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| OsString::from("git"))
+}
+
+/// Probe `git --version` to verify the configured binary is present
+/// and executable. Returns `GitError::GitBinaryMissing` with an
+/// actionable message on any failure.
+pub fn probe_git_binary() -> Result<(), GitError> {
+    let bin = git_binary();
+    match Command::new(&bin).arg("--version").output() {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => Err(GitError::GitBinaryMissing(format!(
+            "`{} --version` exited with status {}",
+            bin.to_string_lossy(),
+            out.status
+        ))),
+        Err(e) => Err(GitError::GitBinaryMissing(format!(
+            "cannot invoke `{}`: {e} (set `{GIT_BIN_ENV}` to point at your git install)",
+            bin.to_string_lossy()
+        ))),
+    }
+}
+
 /// Initialize a bare repository at `path`, idempotent.
 pub fn init_bare(path: &Path) -> Result<(), GitError> {
     if path.exists() {
@@ -28,7 +65,7 @@ pub fn init_bare(path: &Path) -> Result<(), GitError> {
 
 /// Clone `remote_url` into `dst` via the user-installed git binary.
 pub fn clone(remote_url: &str, dst: &Path) -> Result<(), GitError> {
-    let output = Command::new("git")
+    let output = Command::new(git_binary())
         .arg("clone")
         .arg(remote_url)
         .arg(dst)
@@ -48,7 +85,7 @@ pub fn clone(remote_url: &str, dst: &Path) -> Result<(), GitError> {
 /// subsequent fetches reuse it.
 pub fn fetch(repo_path: &Path, remote_url: &str, refspecs: &[String]) -> Result<(), GitError> {
     ensure_remote(repo_path, remote_url)?;
-    let mut cmd = Command::new("git");
+    let mut cmd = Command::new(git_binary());
     cmd.arg("-C")
         .arg(repo_path)
         .arg("fetch")
@@ -76,7 +113,7 @@ pub fn push(
     refspecs: &[(String, String, bool)],
 ) -> Result<PushReport, GitError> {
     ensure_remote(repo_path, remote_url)?;
-    let mut cmd = Command::new("git");
+    let mut cmd = Command::new(git_binary());
     cmd.arg("-C").arg(repo_path).arg("push").arg("origin");
     for (local, remote, force) in refspecs {
         let spec = if *force {
@@ -108,7 +145,7 @@ pub fn push(
 fn ensure_remote(repo_path: &Path, remote_url: &str) -> Result<(), GitError> {
     // Try to set the URL first; if the remote does not exist,
     // fall back to adding it.
-    let set = Command::new("git")
+    let set = Command::new(git_binary())
         .arg("-C")
         .arg(repo_path)
         .arg("remote")
@@ -120,7 +157,7 @@ fn ensure_remote(repo_path: &Path, remote_url: &str) -> Result<(), GitError> {
     if set.status.success() {
         return Ok(());
     }
-    let add = Command::new("git")
+    let add = Command::new(git_binary())
         .arg("-C")
         .arg(repo_path)
         .arg("remote")

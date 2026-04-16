@@ -25,10 +25,14 @@ pub struct NativeBackend {
 
 impl NativeBackend {
     /// Create a new native backend rooted at `root`. The directory is
-    /// created if it does not exist.
+    /// created if it does not exist, and the `git` binary (resolved
+    /// via `MMCP_GIT_BIN` or the OS `PATH`) is probed once so that
+    /// startup fails fast with a clear error if git is unavailable,
+    /// rather than obscurely failing each fetch/push later.
     pub fn new(root: impl Into<PathBuf>) -> Result<Self, GitError> {
         let root = root.into();
         std::fs::create_dir_all(&root)?;
+        repo_ops::probe_git_binary()?;
         Ok(Self { root })
     }
 
