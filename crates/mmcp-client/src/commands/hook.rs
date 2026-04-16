@@ -9,18 +9,13 @@
 //! own session state.
 
 use std::io::Read;
-use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::home::MmcpHome;
 use crate::state::SessionStore;
-
-/// Directory name under the user's home that holds mmcp state.
-const MMCP_HOME_DIR: &str = ".mmcp";
-/// Subdirectory holding per-session TOML state files.
-const MMCP_SESSIONS_SUBDIR: &str = "sessions";
 
 #[derive(Deserialize)]
 struct HookPayload {
@@ -39,7 +34,8 @@ pub async fn user_prompt() -> Result<()> {
         .context("reading hook payload from stdin")?;
     let payload: HookPayload = serde_json::from_str(&raw).context("parsing hook payload")?;
 
-    let sessions_root = sessions_dir()?;
+    let mmcp_home = MmcpHome::discover()?;
+    let sessions_root = mmcp_home.sessions_root();
     let store = SessionStore::open(&sessions_root)
         .with_context(|| format!("opening session store at {}", sessions_root.display()))?;
 
@@ -60,10 +56,6 @@ pub async fn user_prompt() -> Result<()> {
         .context("bumping turn counter")?;
     let message_id = Uuid::now_v7();
 
-    // Printed to stdout so Claude Code injects it into the prompt
-    // the model sees on its next turn. The session id is included
-    // explicitly so tools that need per-session state can pull it
-    // out of the visible context without guessing.
     println!(
         "[mmcp session={session} turn=#{turn} id={message_id}{compaction_marker}]",
         session = payload.session_id,
@@ -81,19 +73,4 @@ fn project_uuid_from_cwd(cwd: Option<&str>) -> Option<Uuid> {
     let root = crate::config::find_project_root(cwd)?;
     let cfg = crate::config::load(&root).ok()?;
     Some(*cfg.project_uuid.as_uuid())
-}
-
-fn sessions_dir() -> Result<PathBuf> {
-    let home = home_dir()?;
-    Ok(home.join(MMCP_HOME_DIR).join(MMCP_SESSIONS_SUBDIR))
-}
-
-fn home_dir() -> Result<PathBuf> {
-    if let Ok(home) = std::env::var("HOME") {
-        return Ok(PathBuf::from(home));
-    }
-    if let Ok(profile) = std::env::var("USERPROFILE") {
-        return Ok(PathBuf::from(profile));
-    }
-    bail!("cannot determine home directory: set HOME or USERPROFILE");
 }

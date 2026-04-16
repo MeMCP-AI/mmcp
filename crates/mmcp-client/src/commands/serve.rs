@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use mmcp_core::id::GroupId;
 use mmcp_core::memory::{MemoryFile, MemoryFrontmatter, MemoryKind};
 use mmcp_git::{GitBackend, NativeBackend, Rev};
@@ -31,14 +31,8 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::config::{PROJECT_MANIFEST, find_project_root};
+use crate::home::MmcpHome;
 use crate::state::{GroupEntry, GroupIndex, SessionStore, WatcherHandle, spawn_watcher};
-
-/// Directory name under the user's home that holds mmcp state.
-const MMCP_HOME_DIR: &str = ".mmcp";
-/// Subdirectory holding bare group repositories.
-const MMCP_REPOS_SUBDIR: &str = "repos";
-/// Subdirectory holding per-session TOML state files.
-const MMCP_SESSIONS_SUBDIR: &str = "sessions";
 /// Subdirectory inside every group repo holding memory files.
 const MEMORIES_PATH_PREFIX: &str = "memories";
 /// File extension memory files use.
@@ -70,30 +64,29 @@ struct ClientState(Arc<ClientStateInner>);
 
 impl ClientState {
     async fn initialize() -> Result<Self> {
-        let home = local_home()?;
-        let mmcp_root = home.join(MMCP_HOME_DIR);
+        let home = MmcpHome::discover()?;
         let project_config_path = find_current_project_config();
-        Self::initialize_at(mmcp_root, project_config_path).await
+        Self::initialize_from(home, project_config_path).await
     }
 
-    /// Initialize the client state rooted at an explicit directory.
+    /// Initialize the client state from a resolved [`MmcpHome`].
     ///
-    /// Used by `initialize()` above (rooted at the user's home) and
-    /// by test helpers that want a tempdir-backed instance.
-    async fn initialize_at(
-        mmcp_root: PathBuf,
+    /// Used by `initialize()` above (discovers from env) and by
+    /// test helpers that supply a tempdir-backed home.
+    async fn initialize_from(
+        home: MmcpHome,
         project_config_path: Option<PathBuf>,
     ) -> Result<Self> {
-        std::fs::create_dir_all(&mmcp_root)
-            .with_context(|| format!("creating {}", mmcp_root.display()))?;
+        std::fs::create_dir_all(home.root())
+            .with_context(|| format!("creating {}", home.root().display()))?;
 
-        let repos_root = mmcp_root.join(MMCP_REPOS_SUBDIR);
+        let repos_root = home.repos_root();
         let backend = Arc::new(
             NativeBackend::new(&repos_root)
                 .with_context(|| format!("initializing repo root {}", repos_root.display()))?,
         );
 
-        let sessions_root = mmcp_root.join(MMCP_SESSIONS_SUBDIR);
+        let sessions_root = home.sessions_root();
         let sessions = SessionStore::open(&sessions_root)
             .with_context(|| format!("opening session store at {}", sessions_root.display()))?;
 
@@ -118,18 +111,6 @@ impl std::ops::Deref for ClientState {
     fn deref(&self) -> &Self::Target {
         &self.0
     }
-}
-
-fn local_home() -> Result<PathBuf> {
-    if let Ok(home) = std::env::var("HOME") {
-        return Ok(PathBuf::from(home));
-    }
-    if let Ok(profile) = std::env::var("USERPROFILE") {
-        return Ok(PathBuf::from(profile));
-    }
-    Err(anyhow!(
-        "cannot determine home directory: set HOME or USERPROFILE"
-    ))
 }
 
 fn find_current_project_config() -> Option<PathBuf> {
@@ -600,9 +581,10 @@ mod tests {
     /// test never touches the real user home.
     async fn test_state() -> (ClientState, TempDir) {
         let tmp = TempDir::new().expect("tempdir");
-        let state = ClientState::initialize_at(tmp.path().join(".mmcp"), None)
+        let home = crate::home::MmcpHome::from_root(tmp.path().join("mmcp-home"));
+        let state = ClientState::initialize_from(home, None)
             .await
-            .expect("initialize_at");
+            .expect("initialize_from");
         (state, tmp)
     }
 

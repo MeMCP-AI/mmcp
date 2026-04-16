@@ -5,7 +5,6 @@
 //! body opens a real `SyncClient` pointed at the project's
 //! configured server and calls through to `SyncEngine`.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
@@ -14,12 +13,8 @@ use mmcp_sync::{GroupHandleResolver, PendingQueue, SyncClient, SyncEngine, SyncE
 use uuid::Uuid;
 
 use crate::config::{find_project_root, load};
+use crate::home::MmcpHome;
 use crate::state::GroupIndex;
-
-/// Directory name under the user's home that holds mmcp state.
-const MMCP_HOME_DIR: &str = ".mmcp";
-/// Subdirectory holding bare group repositories.
-const MMCP_REPOS_SUBDIR: &str = "repos";
 
 /// Run the sync engine.
 ///
@@ -45,8 +40,8 @@ pub async fn run(pull: bool, push: bool) -> Result<()> {
         );
     };
 
-    let home = home_dir()?;
-    let repos_root = home.join(MMCP_HOME_DIR).join(MMCP_REPOS_SUBDIR);
+    let mmcp_home = MmcpHome::discover()?;
+    let repos_root = mmcp_home.repos_root();
     let backend = Arc::new(
         NativeBackend::new(&repos_root)
             .with_context(|| format!("initializing repo root {}", repos_root.display()))?,
@@ -151,12 +146,3 @@ fn to_anyhow(err: SyncError) -> anyhow::Error {
     anyhow::Error::from(err)
 }
 
-fn home_dir() -> Result<PathBuf> {
-    if let Ok(home) = std::env::var("HOME") {
-        return Ok(PathBuf::from(home));
-    }
-    if let Ok(profile) = std::env::var("USERPROFILE") {
-        return Ok(PathBuf::from(profile));
-    }
-    bail!("cannot determine home directory: set HOME or USERPROFILE")
-}

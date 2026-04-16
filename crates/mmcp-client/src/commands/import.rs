@@ -187,9 +187,6 @@ pub async fn resolve_group(
 
 // ── CLI entry point ─────────────────────────────────────────────
 
-const MMCP_HOME_DIR: &str = ".mmcp";
-const MMCP_REPOS_SUBDIR: &str = "repos";
-
 /// CLI entry point for `mmcp import`.
 pub async fn run(
     group: String,
@@ -200,8 +197,8 @@ pub async fn run(
     description: Option<String>,
     kind: Option<String>,
 ) -> Result<()> {
-    let home = home_dir()?;
-    let repos_root = home.join(MMCP_HOME_DIR).join(MMCP_REPOS_SUBDIR);
+    let mmcp_home = crate::home::MmcpHome::discover()?;
+    let repos_root = mmcp_home.repos_root();
     let backend = Arc::new(
         NativeBackend::new(&repos_root)
             .with_context(|| format!("initializing repo root {}", repos_root.display()))?,
@@ -274,16 +271,6 @@ pub async fn run(
     }
 
     Ok(())
-}
-
-fn home_dir() -> Result<PathBuf> {
-    if let Ok(home) = std::env::var("HOME") {
-        return Ok(PathBuf::from(home));
-    }
-    if let Ok(profile) = std::env::var("USERPROFILE") {
-        return Ok(PathBuf::from(profile));
-    }
-    bail!("cannot determine home directory: set HOME or USERPROFILE")
 }
 
 #[cfg(test)]

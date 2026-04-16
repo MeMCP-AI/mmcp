@@ -8,4 +8,5 @@
 
 pub mod commands;
 pub mod config;
+pub mod home;
 pub mod state;
