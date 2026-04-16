@@ -24,6 +24,7 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 futures-util = { workspace = true }
 getrandom = { workspace = true }
+clap = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 axum = { workspace = true }
