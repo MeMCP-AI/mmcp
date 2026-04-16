@@ -1,0 +1,18 @@
+# Keep the build context small. Without this, `target/` alone ships
+# hundreds of MB into every `docker build` invocation.
+
+target/
+webui/target/
+
+.git/
+.github/
+.vscode/
+.idea/
+
+docs/
+mcp/
+
+*.log
+.env
+.env.*
+!.env.example
