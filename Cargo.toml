@@ -50,6 +50,11 @@ serde = { version = "1", features = ["derive"] }
 # Identifiers
 uuid = { version = "1", features = ["v7", "serde"] }
 
+# OS CSPRNG for token keys and one-shot nonces (thin wrapper over
+# getrandom / BCryptGenRandom — the same primitive every other
+# random-byte consumer in the graph already uses).
+getrandom = "0.3"
+
 # Date and time
 jiff = { version = "0.2", features = ["serde"] }
 

@@ -98,17 +98,13 @@ fn parse_hex_key(hex: &str) -> Option<[u8; 32]> {
 }
 
 fn random_key() -> [u8; 32] {
-    // We only need enough entropy to make a running server hand out
-    // unique tokens; admins that care about reproducibility set
-    // `MMCP_TOKEN_KEY_HEX` explicitly.
+    // Pull 32 bytes straight from the OS CSPRNG (getrandom defers to
+    // `getrandom(2)` on Linux, `BCryptGenRandom` on Windows, etc.).
+    // If the platform cannot satisfy that — sandboxes with no
+    // entropy source — panic at startup rather than hand out
+    // guessable tokens. Admins set `MMCP_TOKEN_KEY_HEX` explicitly
+    // when they need a stable key across restarts.
     let mut out = [0u8; 32];
-    let t = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or_default();
-    let bytes = t.to_le_bytes();
-    for (i, slot) in out.iter_mut().enumerate() {
-        *slot = bytes[i % bytes.len()] ^ (i as u8).wrapping_mul(37);
-    }
+    getrandom::fill(&mut out).expect("OS CSPRNG unavailable; set MMCP_TOKEN_KEY_HEX explicitly");
     out
 }

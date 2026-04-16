@@ -2782,6 +2782,7 @@ dependencies = [
  "axum",
  "axum-login",
  "futures-util",
+ "getrandom 0.3.4",
  "jiff",
  "mmcp-auth",
  "mmcp-core",
