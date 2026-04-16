@@ -33,7 +33,7 @@ pub struct GroupEntry {
     pub manifest: GroupManifest,
 
     /// When the entry was last (re-)scanned, ms since epoch.
-    /// Exposed for diagnostic tools that will land in a later phase.
+    /// Currently unread; reserved for staleness hints in `diagnose`.
     #[allow(dead_code)]
     pub last_rescan: i64,
 }

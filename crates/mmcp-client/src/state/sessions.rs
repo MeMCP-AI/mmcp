@@ -227,10 +227,9 @@ impl SessionStore {
 
     /// Clear the post-compaction flag. Called by the caller once it
     /// has re-read every mandatory memory.
-    // NOTE: wired into the session-scoped tools (verify, refresh)
-    // that land in Phase 5 of the implementation plan. Kept public
-    // now so the `SessionStore` API is stable before those tools
-    // arrive.
+    // NOTE: part of the session-scoped tool surface (verify, refresh).
+    // Kept public so callers can depend on a stable API before those
+    // tools are wired onto the MCP router.
     #[allow(dead_code)]
     pub fn acknowledge_compaction(&self, session_id: &str) -> Result<(), StateError> {
         let now = now_ms();
@@ -243,7 +242,7 @@ impl SessionStore {
 
     /// Record that the session read (and optionally verified) a
     /// memory on a given turn.
-    #[allow(dead_code)] // Phase 5 session-scoped tool writes here.
+    #[allow(dead_code)] // Session-scoped write tool will call this once wired.
     pub fn record_read(
         &self,
         session_id: &str,
@@ -268,7 +267,7 @@ impl SessionStore {
 
     /// True if the session has recorded at least one read for the
     /// given memory.
-    #[allow(dead_code)] // Phase 5 session-scoped tool queries here.
+    #[allow(dead_code)] // Session-scoped query tool will call this once wired.
     pub fn has_read(&self, session_id: &str, memory_id: Uuid) -> Result<bool, StateError> {
         let Some(state) = self.load(session_id)? else {
             return Ok(false);
@@ -277,7 +276,7 @@ impl SessionStore {
     }
 
     /// True if the session is currently flagged as post-compaction.
-    #[allow(dead_code)] // Phase 5 session-scoped tool queries here.
+    #[allow(dead_code)] // Session-scoped query tool will call this once wired.
     pub fn is_post_compaction(&self, session_id: &str) -> Result<bool, StateError> {
         let Some(state) = self.load(session_id)? else {
             return Ok(false);

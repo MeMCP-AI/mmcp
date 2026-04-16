@@ -29,8 +29,8 @@ pub enum StateError {
     /// NOTE: the group scanner currently logs manifest parse
     /// failures and skips the offending repo rather than failing
     /// the whole index rebuild, so this variant is unused today.
-    /// Phase 5 wires a stricter failure path for `mmcp import` and
-    /// similar tools where a broken manifest must be fatal.
+    /// Reserved for stricter flows (e.g. `mmcp import`) where a
+    /// broken manifest must be fatal rather than skipped.
     #[error("manifest error: {0}")]
     #[allow(dead_code)]
     Manifest(#[from] mmcp_core::manifest::ManifestError),
