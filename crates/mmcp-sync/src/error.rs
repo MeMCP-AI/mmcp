@@ -48,3 +48,70 @@ impl SyncError {
         Self::Transport(e.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transport_constructor_formats_via_display() {
+        let err = SyncError::transport("connection refused");
+        match err {
+            SyncError::Transport(msg) => assert_eq!(msg, "connection refused"),
+            other => panic!("expected Transport, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn display_impls_emit_expected_prefixes() {
+        assert_eq!(
+            SyncError::NotFound("abc".into()).to_string(),
+            "pending edit not found: abc"
+        );
+        assert_eq!(
+            SyncError::Transport("boom".into()).to_string(),
+            "transport error: boom"
+        );
+        assert_eq!(
+            SyncError::Remote {
+                status: 500,
+                message: "oops".into()
+            }
+            .to_string(),
+            "remote error (500): oops"
+        );
+        let mem = Uuid::nil();
+        let conflict = SyncError::Conflict {
+            memory: mem,
+            local_commit: "abc".into(),
+            remote_commit: "def".into(),
+        }
+        .to_string();
+        assert!(conflict.contains("push rejected"));
+        assert!(conflict.contains(&mem.to_string()));
+    }
+
+    #[test]
+    fn semver_error_is_converted_via_from() {
+        // A clearly invalid semver trips `semver::Version::parse`,
+        // which `?`-propagates into `SyncError::InvalidVersion`
+        // through the `#[from]` derive.
+        let result: Result<semver::Version, SyncError> = "not-a-version"
+            .parse::<semver::Version>()
+            .map_err(Into::into);
+        match result {
+            Err(SyncError::InvalidVersion(_)) => {}
+            other => panic!("expected InvalidVersion, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn git_error_is_converted_via_from() {
+        let git_err = mmcp_git::GitError::RepoNotFound("/nowhere".into());
+        let sync_err: SyncError = git_err.into();
+        match sync_err {
+            SyncError::Git(mmcp_git::GitError::RepoNotFound(p)) => assert_eq!(p, "/nowhere"),
+            other => panic!("expected Git(RepoNotFound), got {other:?}"),
+        }
+    }
+}
