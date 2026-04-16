@@ -28,8 +28,10 @@ enum Command {
         debug: bool,
     },
 
-    /// Initialize a new mmcp project in the current directory.
-    Init,
+    /// Initialize mmcp-managed files for the current directory. With
+    /// no subcommand, writes `.mmcp.toml`. Subcommands manage other
+    /// project-level files (currently: `claude`).
+    Init(InitArgs),
 
     /// Show local mmcp state for the current project.
     Status,
@@ -104,6 +106,18 @@ enum HookCommand {
     UserPrompt,
 }
 
+#[derive(clap::Args)]
+struct InitArgs {
+    #[command(subcommand)]
+    cmd: Option<InitCommand>,
+}
+
+#[derive(Subcommand)]
+enum InitCommand {
+    /// Generate, append to, or convert the project's CLAUDE.md.
+    Claude(commands::claude::ClaudeArgs),
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -120,7 +134,10 @@ async fn main() -> Result<()> {
         Command::Serve { debug } => commands::serve::run(debug).await?,
         Command::Check { group } => commands::health::run_check(group).await?,
         Command::Diagnose { group } => commands::health::run_diagnose(group).await?,
-        Command::Init => commands::init::run().await?,
+        Command::Init(InitArgs { cmd: None }) => commands::init::run().await?,
+        Command::Init(InitArgs {
+            cmd: Some(InitCommand::Claude(args)),
+        }) => commands::claude::run(args).await?,
         Command::Status => commands::status::run().await?,
         Command::Sync => commands::sync::run(true, true).await?,
         Command::Pull => commands::sync::run(true, false).await?,

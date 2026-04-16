@@ -1,0 +1,928 @@
+//! `mmcp init claude` — generate, append to, or convert CLAUDE.md.
+//!
+//! The CLI and the MCP `init_claude` tool share this module's core
+//! (`plan` + `execute`). Interactive prompts and process-exit logic
+//! live only in [`run`], so the MCP side can reuse the pure pieces
+//! without pulling stdin/TTY behavior into tool calls.
+
+use std::io::{self, BufRead, Write};
+use std::path::{Path, PathBuf};
+use std::process::Command as StdCommand;
+
+use anyhow::{Context, Result, anyhow, bail};
+use mmcp_core::memory::{FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryKind};
+use mmcp_git::{CommitSpec, GitBackend};
+
+use crate::config::{self, PROJECT_MANIFEST};
+use crate::home::{MmcpHome, ResolvedAuthor};
+
+// ── Public CLI entry point ───────────────────────────────────────────
+
+/// Flags accepted by `mmcp init claude`.
+#[derive(Debug, Clone, clap::Args)]
+pub struct ClaudeArgs {
+    /// Overwrite CLAUDE.md with a fresh mmcp stub.
+    #[arg(long, group = "action")]
+    pub r#override: bool,
+
+    /// Split existing CLAUDE.md into typed project memories, then
+    /// replace the file with the stub.
+    #[arg(long, group = "action")]
+    pub convert: bool,
+
+    /// Insert (or replace) the mmcp-managed block inside an existing
+    /// CLAUDE.md without touching content outside the fence.
+    #[arg(long, group = "action")]
+    pub append: bool,
+
+    /// Always write a `.bak` copy before modifying CLAUDE.md. Default
+    /// policy: back up only when the file is untracked or dirty.
+    #[arg(long, conflicts_with = "no_backup")]
+    pub backup: bool,
+
+    /// Never write a `.bak` copy.
+    #[arg(long, conflicts_with = "backup")]
+    pub no_backup: bool,
+
+    /// Print the intended action and exit without touching the file
+    /// or writing any memories.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Skip safety prompts. Required on non-TTY stdin when the file
+    /// state would otherwise prompt.
+    #[arg(long)]
+    pub force: bool,
+
+    /// Path to the CLAUDE.md file to manage. Defaults to `./CLAUDE.md`.
+    #[arg(long, default_value = "CLAUDE.md")]
+    pub path: PathBuf,
+}
+
+/// CLI entry. Resolves a plan, runs safety prompts if needed, then
+/// executes the plan (or prints it on `--dry-run`).
+pub async fn run(args: ClaudeArgs) -> Result<()> {
+    let cwd = std::env::current_dir().context("reading current working directory")?;
+    let home = MmcpHome::discover()?;
+    let author = home.resolve_author();
+
+    let action = resolve_action(&args, io::stdin().is_terminal())?;
+    let state = inspect(&args.path);
+
+    // Resolve backup policy and confirmation up front so the caller
+    // sees one question, not three.
+    let mut backup = default_backup(&args, &state);
+    let conflict = resolve_conflict(&args, &state, io::stdin().is_terminal())?;
+    match conflict {
+        ConflictChoice::Cancel => {
+            eprintln!("Cancelled; CLAUDE.md is unchanged.");
+            return Ok(());
+        }
+        ConflictChoice::BackupOverride => backup = true,
+        ConflictChoice::Override | ConflictChoice::NotApplicable => {}
+    }
+
+    let plan = ClaudePlan {
+        action,
+        backup,
+        dry_run: args.dry_run,
+        path: args.path.clone(),
+        state,
+        cwd,
+    };
+
+    if plan.dry_run {
+        print_plan(&plan);
+        return Ok(());
+    }
+
+    let report = execute(&plan, &home, &author).await?;
+    print_report(&report);
+    Ok(())
+}
+
+// ── Shared types ─────────────────────────────────────────────────────
+
+/// Resolved intent for the command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    Override,
+    Append,
+    Convert,
+}
+
+/// Observed state of the target file, relative to git.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileState {
+    Missing,
+    Untracked,
+    TrackedClean,
+    TrackedDirty,
+}
+
+impl FileState {
+    pub fn is_conflict(&self) -> bool {
+        matches!(self, FileState::Untracked | FileState::TrackedDirty)
+    }
+
+    pub fn as_wire_str(&self) -> &'static str {
+        match self {
+            FileState::Missing => "missing",
+            FileState::Untracked => "untracked",
+            FileState::TrackedClean => "tracked_clean",
+            FileState::TrackedDirty => "tracked_dirty",
+        }
+    }
+}
+
+/// How a dirty/untracked conflict was (or should be) resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictChoice {
+    /// File state does not trigger a conflict (missing + override, or clean).
+    NotApplicable,
+    /// Overwrite without backup.
+    Override,
+    /// Write a `.bak` first, then overwrite.
+    BackupOverride,
+    /// Do nothing.
+    Cancel,
+}
+
+/// Plan for the command. Pure data — no I/O.
+#[derive(Debug, Clone)]
+pub struct ClaudePlan {
+    pub action: Action,
+    pub backup: bool,
+    pub dry_run: bool,
+    pub path: PathBuf,
+    pub state: FileState,
+    pub cwd: PathBuf,
+}
+
+/// Post-execution report.
+#[derive(Debug, Clone)]
+pub struct ClaudeReport {
+    pub action: Action,
+    pub state_before: FileState,
+    pub backup_path: Option<PathBuf>,
+    pub wrote: Option<PathBuf>,
+    pub memories_created: Vec<MemoryCreated>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MemoryCreated {
+    pub slug: String,
+    pub commit_id: String,
+    pub source_section: String,
+}
+
+// ── Constants the MCP side also reaches for ──────────────────────────
+
+/// Version of the mmcp-managed block fence. Must match the value
+/// `bootstrap_context` uses to flag stale fences.
+pub const BLOCK_VERSION: &str = "v1";
+
+pub fn begin_marker() -> String {
+    format!("<!-- mmcp:begin {BLOCK_VERSION} -->")
+}
+
+pub fn end_marker() -> String {
+    format!("<!-- mmcp:end {BLOCK_VERSION} -->")
+}
+
+// ── Action resolution ────────────────────────────────────────────────
+
+fn resolve_action(args: &ClaudeArgs, is_tty: bool) -> Result<Action> {
+    match (args.r#override, args.convert, args.append) {
+        (true, false, false) => Ok(Action::Override),
+        (false, true, false) => Ok(Action::Convert),
+        (false, false, true) => Ok(Action::Append),
+        (false, false, false) => {
+            if is_tty {
+                prompt_action_interactive()
+            } else {
+                bail!(
+                    "no action flag given on a non-TTY invocation; pass one of --override, --convert, --append"
+                )
+            }
+        }
+        _ => bail!("--override, --convert, --append are mutually exclusive"),
+    }
+}
+
+fn prompt_action_interactive() -> Result<Action> {
+    eprintln!("mmcp init claude — pick an action:");
+    eprintln!("  1) override  — replace CLAUDE.md with a fresh mmcp stub");
+    eprintln!("  2) append    — insert/replace the mmcp block inside CLAUDE.md");
+    eprintln!("  3) convert   — split CLAUDE.md into typed memories, then stub");
+    eprintln!("  4) cancel");
+    loop {
+        eprint!("choice [1-4]: ");
+        io::stderr().flush().ok();
+        let mut line = String::new();
+        io::stdin()
+            .lock()
+            .read_line(&mut line)
+            .context("read stdin")?;
+        match line.trim() {
+            "1" | "override" => return Ok(Action::Override),
+            "2" | "append" => return Ok(Action::Append),
+            "3" | "convert" => return Ok(Action::Convert),
+            "4" | "cancel" | "q" => bail!("cancelled"),
+            _ => eprintln!("enter 1, 2, 3, or 4"),
+        }
+    }
+}
+
+// ── File state detection ─────────────────────────────────────────────
+
+/// Inspect the file on disk and report its state relative to git.
+pub fn inspect(path: &Path) -> FileState {
+    if !path.exists() {
+        return FileState::Missing;
+    }
+    match git_status_of(path) {
+        GitStatus::NotTracked => FileState::Untracked,
+        GitStatus::Clean => FileState::TrackedClean,
+        GitStatus::Dirty => FileState::TrackedDirty,
+        GitStatus::OutsideRepo => FileState::Untracked,
+    }
+}
+
+enum GitStatus {
+    NotTracked,
+    Clean,
+    Dirty,
+    OutsideRepo,
+}
+
+fn git_status_of(path: &Path) -> GitStatus {
+    // Resolve `git` via the same env shim the native backend uses so
+    // `MMCP_GIT_BIN` overrides are honored here too.
+    let bin = std::env::var_os("MMCP_GIT_BIN").unwrap_or_else(|| "git".into());
+    let output = StdCommand::new(bin)
+        .arg("status")
+        .arg("--porcelain=v1")
+        .arg("--")
+        .arg(path)
+        .output();
+    let Ok(out) = output else {
+        return GitStatus::OutsideRepo;
+    };
+    if !out.status.success() {
+        return GitStatus::OutsideRepo;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    if text.trim().is_empty() {
+        return GitStatus::Clean;
+    }
+    let first_line = text.lines().next().unwrap_or("");
+    if first_line.starts_with("??") {
+        GitStatus::NotTracked
+    } else {
+        GitStatus::Dirty
+    }
+}
+
+// ── Safety prompts ───────────────────────────────────────────────────
+
+fn default_backup(args: &ClaudeArgs, state: &FileState) -> bool {
+    if args.backup {
+        return true;
+    }
+    if args.no_backup {
+        return false;
+    }
+    // Default: back up iff the file would lose uncommitted work.
+    state.is_conflict()
+}
+
+fn resolve_conflict(
+    args: &ClaudeArgs,
+    state: &FileState,
+    is_tty: bool,
+) -> Result<ConflictChoice> {
+    if !state.is_conflict() {
+        return Ok(ConflictChoice::NotApplicable);
+    }
+    if args.force {
+        return Ok(if args.no_backup {
+            ConflictChoice::Override
+        } else {
+            ConflictChoice::BackupOverride
+        });
+    }
+    if !is_tty {
+        bail!(
+            "CLAUDE.md is {} and --force was not given; pass --force (and --backup or --no-backup if desired) on non-TTY invocations",
+            state.as_wire_str()
+        );
+    }
+    prompt_conflict_interactive(*state)
+}
+
+fn prompt_conflict_interactive(state: FileState) -> Result<ConflictChoice> {
+    eprintln!();
+    match state {
+        FileState::Untracked => {
+            eprintln!("CLAUDE.md is untracked (not committed to git).");
+        }
+        FileState::TrackedDirty => {
+            eprintln!("CLAUDE.md has uncommitted changes.");
+        }
+        _ => unreachable!(),
+    }
+    eprintln!("  1) override without backup  (dangerous)");
+    eprintln!("  2) backup (.bak) and override  (recommended)");
+    eprintln!("  3) cancel");
+    loop {
+        eprint!("choice [1-3]: ");
+        io::stderr().flush().ok();
+        let mut line = String::new();
+        io::stdin()
+            .lock()
+            .read_line(&mut line)
+            .context("read stdin")?;
+        match line.trim() {
+            "1" => return Ok(ConflictChoice::Override),
+            "2" | "" => return Ok(ConflictChoice::BackupOverride),
+            "3" | "cancel" | "q" => return Ok(ConflictChoice::Cancel),
+            _ => eprintln!("enter 1, 2, or 3"),
+        }
+    }
+}
+
+// ── Execution ────────────────────────────────────────────────────────
+
+pub async fn execute(
+    plan: &ClaudePlan,
+    home: &MmcpHome,
+    author: &ResolvedAuthor,
+) -> Result<ClaudeReport> {
+    // Validate action-vs-state combos that only make sense with
+    // certain preconditions.
+    if matches!(plan.action, Action::Append | Action::Convert)
+        && matches!(plan.state, FileState::Missing)
+    {
+        bail!(
+            "cannot {} a missing CLAUDE.md — run with --override to write the stub first",
+            match plan.action {
+                Action::Append => "append to",
+                Action::Convert => "convert",
+                Action::Override => unreachable!(),
+            }
+        );
+    }
+
+    let backup_path = if plan.backup && !matches!(plan.state, FileState::Missing) {
+        Some(backup_file(&plan.path)?)
+    } else {
+        None
+    };
+
+    let (wrote, memories_created) = match plan.action {
+        Action::Override => {
+            std::fs::write(&plan.path, stub_contents())
+                .with_context(|| format!("writing stub to {}", plan.path.display()))?;
+            (Some(plan.path.clone()), Vec::new())
+        }
+        Action::Append => {
+            let existing = std::fs::read_to_string(&plan.path)
+                .with_context(|| format!("reading {}", plan.path.display()))?;
+            let new = splice_block(&existing)?;
+            std::fs::write(&plan.path, new)
+                .with_context(|| format!("writing {}", plan.path.display()))?;
+            (Some(plan.path.clone()), Vec::new())
+        }
+        Action::Convert => {
+            let existing = std::fs::read_to_string(&plan.path)
+                .with_context(|| format!("reading {}", plan.path.display()))?;
+            let (created, wrote) =
+                convert_and_write(&existing, &plan.path, &plan.cwd, home, author).await?;
+            (wrote, created)
+        }
+    };
+
+    Ok(ClaudeReport {
+        action: plan.action,
+        state_before: plan.state,
+        backup_path,
+        wrote,
+        memories_created,
+    })
+}
+
+fn backup_file(path: &Path) -> Result<PathBuf> {
+    let mut bak = path.as_os_str().to_owned();
+    bak.push(".bak");
+    let bak = PathBuf::from(bak);
+    std::fs::copy(path, &bak)
+        .with_context(|| format!("backing {} to {}", path.display(), bak.display()))?;
+    Ok(bak)
+}
+
+// ── Stub content (override mode) ─────────────────────────────────────
+
+/// The generated CLAUDE.md body. Short and insistent: it points at
+/// mmcp and lists the hard checkpoints where the AI MUST re-read
+/// rules. Slugs, flags, and project-stack matrices live in the tool,
+/// not here.
+pub fn stub_contents() -> String {
+    let begin = begin_marker();
+    let end = end_marker();
+    format!(
+        "# CLAUDE.md
+
+This file is managed by mmcp. Everything between the fence below is
+regenerated on every `mmcp init claude` run — do not edit inside the
+fence. Content outside the fence is preserved verbatim.
+
+{begin}
+<!-- DO NOT EDIT inside this block. Regenerated by `mmcp init claude`. Edit memories via `mmcp__write_memory`. -->
+
+## CRITICAL: mmcp is mandatory — NO EXCEPTIONS
+
+mmcp is this project's single source of truth for every coding rule,
+convention, and project note. **If mmcp is unreachable, STOP
+IMMEDIATELY.** Do not write code, do not attempt workarounds, do not
+proceed on any task. Inform the user and halt until mmcp is restored.
+
+## MANDATORY: Re-read rules at every checkpoint
+
+The mandatory / project / language filter policy lives in the mmcp
+tool, not here. **Do not hardcode slugs or YES/NO flags in this file.**
+Call `mmcp__bootstrap_context` and read every returned memory body at
+**EACH** of the following checkpoints. These are NOT suggestions.
+
+- **Session start** — before any tool call or file write.
+- **After ANY context compaction** — compaction summaries are NOT
+  authoritative; the memories are. NEVER trust a compaction report.
+- **Before starting a new phase or task** — refresh context every
+  time, not once per session.
+- **Before a commit cycle** — git conventions and coding rules may
+  have shipped updates mid-session.
+- **After a commit cycle** — re-align against the latest rules before
+  picking up the next step.
+- **Any time a rule is corrected, added, or discussed** — the memory
+  may have been updated; re-read it.
+
+Skipping any of these leaves your context stale against rules that
+may have changed. Every checkpoint call is cheap: one tool
+invocation, all memory bodies inline. Run it.
+
+## Authoring rules
+
+Use `mmcp__write_memory` to add or update rules. **Never** add project
+rules directly to this file — CLAUDE.md's only job is to point at
+mmcp. If this block says something is missing or stale, call
+`mmcp__init_claude` explicitly; never hand-edit the managed region.
+{end}
+"
+    )
+}
+
+// ── Append mode (fenced mmcp block) ──────────────────────────────────
+
+/// Insert or replace the mmcp-managed block inside `existing`.
+pub fn splice_block(existing: &str) -> Result<String> {
+    let begin = begin_marker();
+    let end = end_marker();
+    let block = mmcp_block();
+
+    // Case 1: current-version fence present on both ends → replace body.
+    if let (Some(b), Some(e)) = (existing.find(&begin), existing.rfind(&end))
+        && b < e
+    {
+        let mut out = String::with_capacity(existing.len());
+        out.push_str(&existing[..b]);
+        out.push_str(&block);
+        out.push_str(&existing[e + end.len()..]);
+        return Ok(out);
+    }
+
+    // Case 2: any older fence present → refuse; user must upgrade intentionally.
+    if existing.contains("<!-- mmcp:begin ") || existing.contains("<!-- mmcp:end ") {
+        return Err(anyhow!(
+            "CLAUDE.md carries an mmcp fence of a different version; run with --override to regenerate the file fresh, or remove the old fence manually"
+        ));
+    }
+
+    // Case 3: no fence → append the block at end of file with a separator.
+    let mut out = existing.to_string();
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push('\n');
+    out.push_str(&block);
+    Ok(out)
+}
+
+/// Body of the managed block (between the fences, inclusive).
+fn mmcp_block() -> String {
+    let begin = begin_marker();
+    let end = end_marker();
+    format!(
+        "{begin}
+<!-- DO NOT EDIT inside this block. Regenerated by `mmcp init claude`. Edit memories via `mmcp__write_memory`. -->
+
+## MANDATORY: Re-read rules at every checkpoint
+
+Call `mmcp__bootstrap_context` at session start, after ANY compaction,
+before and after every commit cycle, and at every phase boundary. The
+tool owns the curated memory list; do not hardcode slugs.
+
+Never trust a compaction summary. Never hand-edit this block.
+{end}
+"
+    )
+}
+
+// ── Convert mode ─────────────────────────────────────────────────────
+
+async fn convert_and_write(
+    existing: &str,
+    path: &Path,
+    cwd: &Path,
+    home: &MmcpHome,
+    author: &ResolvedAuthor,
+) -> Result<(Vec<MemoryCreated>, Option<PathBuf>)> {
+    let sections = split_sections(existing);
+    if sections.is_empty() {
+        bail!("CLAUDE.md has no convertible content; run --override to write the stub instead");
+    }
+
+    // Target group: the project's own group from .mmcp.toml.
+    let root = config::find_project_root(cwd).ok_or_else(|| {
+        anyhow!(
+            "convert requires a project with a {PROJECT_MANIFEST} at the cwd or an ancestor directory; run `mmcp init` first"
+        )
+    })?;
+    let project_cfg = config::load(&root)
+        .with_context(|| format!("loading project config from {}", root.display()))?;
+    let project_uuid = *project_cfg.project_uuid.as_uuid();
+
+    let (backend, groups) = home.init_backend().await?;
+    let group_id = mmcp_core::id::GroupId::from_uuid(project_uuid);
+    let entry = groups.get(&group_id).await.ok_or_else(|| {
+        anyhow!(
+            "project group {project_uuid} is not present in the local mirror; push or clone the project repo first"
+        )
+    })?;
+
+    // Announce the plan before writing anything.
+    eprintln!(
+        "convert will write {} memory(ies) into group `{}` ({}):",
+        sections.len(),
+        entry.manifest.slug,
+        project_uuid
+    );
+    for section in &sections {
+        eprintln!(
+            "  - {} → {} ({})",
+            section.title,
+            section.slug,
+            section.kind.as_str()
+        );
+    }
+
+    let mut created = Vec::with_capacity(sections.len());
+    for section in sections {
+        let file = MemoryFile {
+            frontmatter: MemoryFrontmatter {
+                name: section.title.clone(),
+                description: section.description.clone(),
+                kind: section.kind,
+                mandatory: section.mandatory,
+                version: None,
+                tags: section.tags.clone(),
+                bump_intent: None,
+            },
+            body: section.body.clone(),
+            format: FrontmatterFormat::TomlPlus,
+        };
+        let rendered = file
+            .to_string()
+            .map_err(|e| anyhow!("rendering frontmatter for `{}`: {e}", section.slug))?;
+        let commit_id = backend
+            .write_commit(
+                &entry.handle,
+                CommitSpec::mmcp_commit(
+                    format!("convert CLAUDE.md section: {}", section.title),
+                    vec![(
+                        mmcp_core::conventions::memory_path(&section.slug),
+                        Some(rendered.into_bytes()),
+                    )],
+                    &author.name,
+                    &author.email,
+                ),
+            )
+            .await
+            .with_context(|| format!("writing memory {}", section.slug))?;
+        created.push(MemoryCreated {
+            slug: section.slug,
+            commit_id,
+            source_section: section.title,
+        });
+    }
+
+    std::fs::write(path, stub_contents())
+        .with_context(|| format!("writing stub to {}", path.display()))?;
+
+    Ok((created, Some(path.to_path_buf())))
+}
+
+/// Section of CLAUDE.md that converts to one memory.
+#[derive(Debug, Clone)]
+struct Section {
+    title: String,
+    slug: String,
+    description: String,
+    kind: MemoryKind,
+    mandatory: bool,
+    tags: Vec<String>,
+    body: String,
+}
+
+/// Split CLAUDE.md on top-level (`##`) headers. Content before the
+/// first H2 becomes a `Preamble` section.
+fn split_sections(input: &str) -> Vec<Section> {
+    let mut sections: Vec<(String, String)> = Vec::new(); // (title, body)
+    let mut current_title = String::from("Preamble");
+    let mut current_body = String::new();
+    for line in input.lines() {
+        if let Some(rest) = line.strip_prefix("## ") {
+            // Flush previous section if it has content.
+            if !current_body.trim().is_empty() {
+                sections.push((std::mem::take(&mut current_title), std::mem::take(&mut current_body)));
+            } else {
+                // Discard empty preamble.
+                current_body.clear();
+            }
+            current_title = rest.trim().to_string();
+            continue;
+        }
+        current_body.push_str(line);
+        current_body.push('\n');
+    }
+    if !current_body.trim().is_empty() {
+        sections.push((current_title, current_body));
+    }
+
+    let mut out = Vec::with_capacity(sections.len());
+    let mut used_slugs: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (title, body) in sections {
+        let base_slug = slugify(&title);
+        let slug = uniquify(&base_slug, &mut used_slugs);
+        let description = first_paragraph(&body);
+        let upper = body.to_uppercase();
+        let is_rule = upper.contains("MUST") || upper.contains("MANDATORY") || upper.contains("NEVER");
+        let kind = if is_rule { MemoryKind::Rule } else { MemoryKind::Reference };
+        let mandatory = is_rule;
+        let mut tags = vec!["imported".to_string(), "claude-md".to_string()];
+        for h3 in collect_h3_tags(&body) {
+            tags.push(h3);
+        }
+        out.push(Section {
+            title,
+            slug,
+            description,
+            kind,
+            mandatory,
+            tags,
+            body: body.trim_end().to_string(),
+        });
+    }
+    out
+}
+
+fn slugify(text: &str) -> String {
+    let mut slug = String::with_capacity(text.len());
+    let mut prev_dash = false;
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !slug.is_empty() && !prev_dash {
+            slug.push('-');
+            prev_dash = true;
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        slug.push_str("section");
+    }
+    format!("imported-{slug}")
+}
+
+fn uniquify(base: &str, used: &mut std::collections::HashSet<String>) -> String {
+    if used.insert(base.to_string()) {
+        return base.to_string();
+    }
+    let mut n = 2u32;
+    loop {
+        let candidate = format!("{base}-{n}");
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+fn first_paragraph(body: &str) -> String {
+    let mut buf = String::new();
+    for line in body.lines() {
+        if line.trim().is_empty() {
+            if !buf.is_empty() {
+                break;
+            }
+            continue;
+        }
+        if !buf.is_empty() {
+            buf.push(' ');
+        }
+        buf.push_str(line.trim());
+    }
+    if buf.len() > 160 {
+        buf.truncate(157);
+        buf.push_str("...");
+    }
+    if buf.is_empty() {
+        buf.push_str("Imported from CLAUDE.md");
+    }
+    buf
+}
+
+fn collect_h3_tags(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in body.lines() {
+        if let Some(rest) = line.strip_prefix("### ") {
+            let tag = slugify(rest.trim());
+            // Drop the "imported-" prefix slugify added so tags are clean.
+            let tag = tag.trim_start_matches("imported-").to_string();
+            if !tag.is_empty() {
+                out.push(tag);
+            }
+        }
+    }
+    out
+}
+
+// ── Reporting ────────────────────────────────────────────────────────
+
+fn print_plan(plan: &ClaudePlan) {
+    eprintln!("--dry-run: would apply plan:");
+    eprintln!("  action:   {:?}", plan.action);
+    eprintln!("  path:     {}", plan.path.display());
+    eprintln!("  state:    {}", plan.state.as_wire_str());
+    eprintln!("  backup:   {}", plan.backup);
+}
+
+fn print_report(report: &ClaudeReport) {
+    eprintln!("{:?} applied:", report.action);
+    eprintln!("  state before: {}", report.state_before.as_wire_str());
+    if let Some(bak) = &report.backup_path {
+        eprintln!("  backup:       {}", bak.display());
+    }
+    if let Some(wrote) = &report.wrote {
+        eprintln!("  wrote:        {}", wrote.display());
+    }
+    for mem in &report.memories_created {
+        eprintln!(
+            "  memory:       {} ({})  ← section `{}`",
+            mem.slug, mem.commit_id, mem.source_section
+        );
+    }
+}
+
+// Small compat shim: `is_terminal` moved around across std versions.
+// Use std::io::IsTerminal (stable since 1.70) via trait import.
+use std::io::IsTerminal;
+
+// ── Tests ────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn default_args() -> ClaudeArgs {
+        ClaudeArgs {
+            r#override: false,
+            convert: false,
+            append: false,
+            backup: false,
+            no_backup: false,
+            dry_run: false,
+            force: false,
+            path: PathBuf::from("CLAUDE.md"),
+        }
+    }
+
+    #[test]
+    fn resolve_action_uses_explicit_flag_when_set() {
+        let mut args = default_args();
+        args.r#override = true;
+        assert_eq!(resolve_action(&args, false).unwrap(), Action::Override);
+    }
+
+    #[test]
+    fn resolve_action_rejects_conflicting_flags() {
+        let mut args = default_args();
+        args.r#override = true;
+        args.convert = true;
+        assert!(resolve_action(&args, false).is_err());
+    }
+
+    #[test]
+    fn resolve_action_errors_on_non_tty_with_no_flags() {
+        let args = default_args();
+        let err = resolve_action(&args, false).unwrap_err();
+        assert!(err.to_string().contains("non-TTY"));
+    }
+
+    #[test]
+    fn default_backup_is_true_for_dirty_and_false_for_clean() {
+        let args = default_args();
+        assert!(default_backup(&args, &FileState::Untracked));
+        assert!(default_backup(&args, &FileState::TrackedDirty));
+        assert!(!default_backup(&args, &FileState::TrackedClean));
+        assert!(!default_backup(&args, &FileState::Missing));
+    }
+
+    #[test]
+    fn default_backup_honors_explicit_flag() {
+        let mut args = default_args();
+        args.backup = true;
+        assert!(default_backup(&args, &FileState::TrackedClean));
+        args.backup = false;
+        args.no_backup = true;
+        assert!(!default_backup(&args, &FileState::TrackedDirty));
+    }
+
+    #[test]
+    fn splice_block_appends_when_no_fence_present() {
+        let input = "# Hello\n\nSome intro.\n";
+        let out = splice_block(input).unwrap();
+        assert!(out.contains(&begin_marker()));
+        assert!(out.contains(&end_marker()));
+        assert!(out.starts_with("# Hello"));
+    }
+
+    #[test]
+    fn splice_block_replaces_existing_current_version_fence() {
+        let input = format!(
+            "# Hello\n\nIntro.\n\n{begin}\nstale body\n{end}\n\nTrailer.\n",
+            begin = begin_marker(),
+            end = end_marker()
+        );
+        let out = splice_block(&input).unwrap();
+        assert!(!out.contains("stale body"));
+        assert!(out.contains("Trailer."));
+        assert!(out.contains("MANDATORY: Re-read rules at every checkpoint"));
+    }
+
+    #[test]
+    fn splice_block_refuses_older_fence_version() {
+        let input = "# X\n\n<!-- mmcp:begin v0 -->\nold\n<!-- mmcp:end v0 -->\n";
+        let err = splice_block(input).unwrap_err();
+        assert!(err.to_string().contains("different version"));
+    }
+
+    #[test]
+    fn split_sections_preserves_h2_headers() {
+        let input = "## Alpha\n\nMUST do alpha.\n\n## Beta\n\nBeta note.\n";
+        let sections = split_sections(input);
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0].title, "Alpha");
+        assert_eq!(sections[0].kind, MemoryKind::Rule);
+        assert!(sections[0].mandatory);
+        assert_eq!(sections[1].title, "Beta");
+        assert_eq!(sections[1].kind, MemoryKind::Reference);
+        assert!(!sections[1].mandatory);
+    }
+
+    #[test]
+    fn split_sections_derives_unique_slugs() {
+        let input = "## Rules\n\nX\n\n## Rules\n\nY\n";
+        let sections = split_sections(input);
+        assert_eq!(sections[0].slug, "imported-rules");
+        assert_eq!(sections[1].slug, "imported-rules-2");
+    }
+
+    #[test]
+    fn split_sections_captures_h3_subheaders_as_tags() {
+        let input = "## Git\n\n### Commits\n\nMUST commit with signed keys.\n";
+        let sections = split_sections(input);
+        assert!(sections[0].tags.iter().any(|t| t == "commits"));
+    }
+
+    #[test]
+    fn stub_contains_fenced_block() {
+        let stub = stub_contents();
+        assert!(stub.contains(&begin_marker()));
+        assert!(stub.contains(&end_marker()));
+        assert!(stub.contains("CRITICAL: mmcp is mandatory"));
+        assert!(stub.contains("bootstrap_context"));
+    }
+}
