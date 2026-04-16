@@ -12,7 +12,7 @@ use gix::bstr::BString;
 use gix::objs::tree::EntryKind;
 
 use crate::error::GitError;
-use crate::types::{CommitMeta, CommitSpec, PushReport, Rev};
+use crate::types::{CommitMeta, CommitSpec, Credentials, PushReport, Rev};
 
 fn gix_err<E: std::fmt::Display>(err: E) -> GitError {
     GitError::Gix(err.to_string())
@@ -33,6 +33,32 @@ pub(crate) fn git_binary() -> OsString {
     std::env::var_os(GIT_BIN_ENV)
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| OsString::from("git"))
+}
+
+/// Apply [`Credentials`] to a `git` command by prepending global
+/// `-c` config flags and setting env vars. Does nothing for
+/// [`Credentials::None`] so the ambient git env (SSH agent,
+/// credential helper, `.netrc`) remains in charge.
+///
+/// For `BearerHttp`, emits `-c http.extraHeader=Authorization: Bearer <token>`
+/// which is the documented way to push a bearer token through the
+/// subprocess without leaking it into the URL or on-disk config.
+/// For `SshCommand`, sets `GIT_SSH_COMMAND`.
+///
+/// Any `-c` flags must appear *before* the git subcommand, so this
+/// helper is called on a freshly-constructed `Command` before its
+/// `.arg("clone")` / `.arg("fetch")` / etc.
+fn apply_credentials(cmd: &mut Command, creds: &Credentials) {
+    match creds {
+        Credentials::None => {}
+        Credentials::BearerHttp(token) => {
+            cmd.arg("-c")
+                .arg(format!("http.extraHeader=Authorization: Bearer {token}"));
+        }
+        Credentials::SshCommand(value) => {
+            cmd.env("GIT_SSH_COMMAND", value);
+        }
+    }
 }
 
 /// Probe `git --version` to verify the configured binary is present
@@ -64,8 +90,10 @@ pub fn init_bare(path: &Path) -> Result<(), GitError> {
 }
 
 /// Clone `remote_url` into `dst` via the user-installed git binary.
-pub fn clone(remote_url: &str, dst: &Path) -> Result<(), GitError> {
-    let output = Command::new(git_binary())
+pub fn clone(remote_url: &str, dst: &Path, creds: &Credentials) -> Result<(), GitError> {
+    let mut cmd = Command::new(git_binary());
+    apply_credentials(&mut cmd, creds);
+    let output = cmd
         .arg("clone")
         .arg(remote_url)
         .arg(dst)
@@ -84,9 +112,15 @@ pub fn clone(remote_url: &str, dst: &Path) -> Result<(), GitError> {
 /// Fetch `refspecs` from `remote_url` into the bare repo at
 /// `repo_path`. An `origin` remote is configured on the fly so
 /// subsequent fetches reuse it.
-pub fn fetch(repo_path: &Path, remote_url: &str, refspecs: &[String]) -> Result<(), GitError> {
+pub fn fetch(
+    repo_path: &Path,
+    remote_url: &str,
+    refspecs: &[String],
+    creds: &Credentials,
+) -> Result<(), GitError> {
     ensure_remote(repo_path, remote_url)?;
     let mut cmd = Command::new(git_binary());
+    apply_credentials(&mut cmd, creds);
     cmd.arg("-C")
         .arg(repo_path)
         .arg("fetch")
@@ -113,9 +147,11 @@ pub fn push(
     repo_path: &Path,
     remote_url: &str,
     refspecs: &[(String, String, bool)],
+    creds: &Credentials,
 ) -> Result<PushReport, GitError> {
     ensure_remote(repo_path, remote_url)?;
     let mut cmd = Command::new(git_binary());
+    apply_credentials(&mut cmd, creds);
     cmd.arg("-C").arg(repo_path).arg("push").arg("origin");
     for (local, remote, force) in refspecs {
         let spec = if *force {

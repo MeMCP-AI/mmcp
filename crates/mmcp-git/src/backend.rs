@@ -5,7 +5,7 @@ use bytes::Bytes;
 use mmcp_core::manifest::GroupManifest;
 
 use crate::error::GitError;
-use crate::types::{CommitMeta, CommitSpec, PushReport, RefSpec, RepoHandle, Rev};
+use crate::types::{CommitMeta, CommitSpec, Credentials, PushReport, RefSpec, RepoHandle, Rev};
 
 /// A pluggable git storage backend.
 ///
@@ -45,15 +45,20 @@ pub trait GitBackend: Send + Sync {
 
     /// Clone a remote repository into the provided directory.
     ///
-    /// `remote_url` is the HTTP(S) endpoint of the mmcp-server
-    /// (or any git host) that serves the bare repo. The native
+    /// `remote_url` is any git-compatible endpoint (mmcp-server,
+    /// GitHub, Gitea, self-hosted, `file://`, …). The native
     /// backend shells out to the user-installed `git` binary so
     /// the operation works against any smart-HTTP-capable server
     /// without bringing in an HTTP client dependency.
+    ///
+    /// `creds` selects the authentication mechanism — see
+    /// [`Credentials`] for the variants. Use [`Credentials::None`]
+    /// to rely on the ambient git environment.
     async fn clone_to(
         &self,
         remote_url: &str,
         dst: &std::path::Path,
+        creds: &Credentials,
     ) -> Result<(), GitError>;
 
     /// Fetch the named refs from `remote_url` into `repo`. The
@@ -64,6 +69,7 @@ pub trait GitBackend: Send + Sync {
         repo: &RepoHandle,
         remote_url: &str,
         refs: &[RefSpec],
+        creds: &Credentials,
     ) -> Result<(), GitError>;
 
     /// Push the named refs from `repo` to `remote_url`. Same
@@ -75,6 +81,7 @@ pub trait GitBackend: Send + Sync {
         repo: &RepoHandle,
         remote_url: &str,
         refs: &[RefSpec],
+        creds: &Credentials,
     ) -> Result<PushReport, GitError>;
 
     /// Read the raw bytes of a file inside the repository at a

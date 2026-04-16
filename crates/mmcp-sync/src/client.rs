@@ -139,6 +139,19 @@ impl SyncClient {
         format!("{}/git/{}.git", self.inner.base_url, group_id)
     }
 
+    /// Derive git content-plane credentials from the control-plane
+    /// bearer token, if any. Returning the same auth for both planes
+    /// means a user who configures `--token` once gets authenticated
+    /// pushes to mmcp-server's smart-HTTP endpoint for free, without
+    /// a second credential source to keep in sync.
+    #[must_use]
+    pub fn git_credentials(&self) -> mmcp_git::Credentials {
+        match self.inner.bearer_token.as_deref() {
+            Some(token) if !token.is_empty() => mmcp_git::Credentials::bearer(token),
+            _ => mmcp_git::Credentials::None,
+        }
+    }
+
     fn request_builder(
         &self,
         method: reqwest::Method,

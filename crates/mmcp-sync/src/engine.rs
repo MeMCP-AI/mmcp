@@ -110,7 +110,8 @@ impl SyncEngine {
                         mmcp_core::conventions::MAIN_BRANCH_REF,
                     )];
                 let remote_url = self.client.git_url_for(edit.memory);
-                match self.backend.push(&handle, &remote_url, &refs).await {
+                let creds = self.client.git_credentials();
+                match self.backend.push(&handle, &remote_url, &refs, &creds).await {
                     Ok(_) => true,
                     Err(mmcp_git::GitError::Unsupported(_)) => false,
                     Err(mmcp_git::GitError::Transport { .. }) => false,
@@ -148,7 +149,8 @@ impl SyncEngine {
                         mmcp_core::conventions::MAIN_BRANCH_REF,
                     )];
                     let remote_url = self.client.git_url_for(remote.group_id);
-                    match self.backend.fetch(&handle, &remote_url, &refs).await {
+                    let creds = self.client.git_credentials();
+                    match self.backend.fetch(&handle, &remote_url, &refs, &creds).await {
                         Ok(()) => updated.push(remote),
                         Err(mmcp_git::GitError::Unsupported(_))
                         | Err(mmcp_git::GitError::Transport { .. }) => {

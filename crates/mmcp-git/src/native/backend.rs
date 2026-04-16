@@ -9,7 +9,7 @@ use mmcp_core::manifest::GroupManifest;
 use crate::backend::GitBackend;
 use crate::error::GitError;
 use crate::native::repo_ops;
-use crate::types::{CommitMeta, CommitSpec, PushReport, RefSpec, RepoHandle, Rev};
+use crate::types::{CommitMeta, CommitSpec, Credentials, PushReport, RefSpec, RepoHandle, Rev};
 
 /// Native backend serving bare repositories from a root directory on
 /// the local filesystem.
@@ -114,10 +114,12 @@ impl GitBackend for NativeBackend {
         &self,
         remote_url: &str,
         dst: &Path,
+        creds: &Credentials,
     ) -> Result<(), GitError> {
         let dst = dst.to_path_buf();
         let remote_url = remote_url.to_string();
-        tokio::task::spawn_blocking(move || repo_ops::clone(&remote_url, &dst))
+        let creds = creds.clone();
+        tokio::task::spawn_blocking(move || repo_ops::clone(&remote_url, &dst, &creds))
             .await
             .map_err(|e| GitError::Gix(format!("join error: {e}")))?
     }
@@ -127,6 +129,7 @@ impl GitBackend for NativeBackend {
         repo: &RepoHandle,
         remote_url: &str,
         refs: &[RefSpec],
+        creds: &Credentials,
     ) -> Result<(), GitError> {
         let repo_path = Self::handle_path(repo).to_path_buf();
         let remote_url = remote_url.to_string();
@@ -134,9 +137,12 @@ impl GitBackend for NativeBackend {
             .iter()
             .map(|r| format!("{}:{}", r.local, r.remote))
             .collect();
-        tokio::task::spawn_blocking(move || repo_ops::fetch(&repo_path, &remote_url, &refspecs))
-            .await
-            .map_err(|e| GitError::Gix(format!("join error: {e}")))?
+        let creds = creds.clone();
+        tokio::task::spawn_blocking(move || {
+            repo_ops::fetch(&repo_path, &remote_url, &refspecs, &creds)
+        })
+        .await
+        .map_err(|e| GitError::Gix(format!("join error: {e}")))?
     }
 
     async fn push(
@@ -144,6 +150,7 @@ impl GitBackend for NativeBackend {
         repo: &RepoHandle,
         remote_url: &str,
         refs: &[RefSpec],
+        creds: &Credentials,
     ) -> Result<PushReport, GitError> {
         let repo_path = Self::handle_path(repo).to_path_buf();
         let remote_url = remote_url.to_string();
@@ -151,9 +158,12 @@ impl GitBackend for NativeBackend {
             .iter()
             .map(|r| (r.local.clone(), r.remote.clone(), r.force))
             .collect();
-        tokio::task::spawn_blocking(move || repo_ops::push(&repo_path, &remote_url, &refspecs))
-            .await
-            .map_err(|e| GitError::Gix(format!("join error: {e}")))?
+        let creds = creds.clone();
+        tokio::task::spawn_blocking(move || {
+            repo_ops::push(&repo_path, &remote_url, &refspecs, &creds)
+        })
+        .await
+        .map_err(|e| GitError::Gix(format!("join error: {e}")))?
     }
 
     async fn read_file(

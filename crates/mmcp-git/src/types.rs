@@ -156,6 +156,52 @@ impl CommitSpec {
     }
 }
 
+/// Credentials for outbound git transport operations.
+///
+/// The native backend applies these to the `git` subprocess it
+/// spawns: [`Credentials::BearerHttp`] maps to an HTTP bearer header
+/// via `-c http.extraHeader=...`, [`Credentials::SshCommand`] sets
+/// `GIT_SSH_COMMAND`, and [`Credentials::None`] lets the user's
+/// environment (SSH agent, credential helper, `.netrc`) decide —
+/// the sensible default when mmcp is a plain git CLI wrapper.
+///
+/// Keep the enum non-exhaustive so backends that understand richer
+/// credential shapes (mTLS, workload identity, forge-specific
+/// tokens) can add variants later without breaking callers.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Credentials {
+    /// No explicit credentials; rely on the ambient git environment
+    /// (SSH agent, credential helper, `.netrc`, GCM, etc.). This is
+    /// the default and the right choice for interactive use.
+    #[default]
+    None,
+
+    /// HTTP bearer token. The backend sends `Authorization: Bearer <token>`
+    /// with every request to the remote. Correct for GitHub/GitLab/Gitea
+    /// personal access tokens and for mmcp-server's own push flow.
+    BearerHttp(String),
+
+    /// Exact value for the `GIT_SSH_COMMAND` env var — typically
+    /// `ssh -i /path/to/key -o IdentitiesOnly=yes`. Lets callers point
+    /// git at a specific key without touching the ambient SSH config.
+    SshCommand(String),
+}
+
+impl Credentials {
+    /// Shortcut for the most common case.
+    #[must_use]
+    pub fn none() -> Self {
+        Credentials::None
+    }
+
+    /// Build HTTP bearer credentials from any string-like token.
+    #[must_use]
+    pub fn bearer(token: impl Into<String>) -> Self {
+        Credentials::BearerHttp(token.into())
+    }
+}
+
 /// Report returned from a push operation.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PushReport {

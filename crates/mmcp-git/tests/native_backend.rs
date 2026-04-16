@@ -174,13 +174,14 @@ async fn remote_operations_fail_fast_without_a_remote() {
     let manifest = sample_manifest();
     let repo = backend.create_group_repo(&manifest).await.unwrap();
 
+    let creds = mmcp_git::Credentials::None;
     let err = backend
-        .fetch(&repo, "http://127.0.0.1:1/no-such.git", &[])
+        .fetch(&repo, "http://127.0.0.1:1/no-such.git", &[], &creds)
         .await
         .unwrap_err();
     assert!(matches!(err, mmcp_git::GitError::Transport { .. }));
     let err = backend
-        .push(&repo, "http://127.0.0.1:1/no-such.git", &[])
+        .push(&repo, "http://127.0.0.1:1/no-such.git", &[], &creds)
         .await
         .unwrap_err();
     assert!(matches!(err, mmcp_git::GitError::Transport { .. }));
