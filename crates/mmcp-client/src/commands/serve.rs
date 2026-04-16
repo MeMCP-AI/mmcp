@@ -30,7 +30,7 @@ use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::config::{PROJECT_CONFIG_DIR, PROJECT_CONFIG_FILE, find_project_root};
+use crate::config::{PROJECT_MANIFEST, find_project_root};
 use crate::state::{GroupEntry, GroupIndex, SessionStore, WatcherHandle, spawn_watcher};
 
 /// Directory name under the user's home that holds mmcp state.
@@ -135,7 +135,7 @@ fn local_home() -> Result<PathBuf> {
 fn find_current_project_config() -> Option<PathBuf> {
     let cwd = std::env::current_dir().ok()?;
     let root = find_project_root(&cwd)?;
-    Some(root.join(PROJECT_CONFIG_DIR).join(PROJECT_CONFIG_FILE))
+    Some(root.join(PROJECT_MANIFEST))
 }
 
 /// MCP server exposing the stateless mmcp tools that can be served

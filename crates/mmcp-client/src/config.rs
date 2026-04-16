@@ -5,21 +5,18 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use mmcp_core::config::ProjectConfig;
 
-/// Project-level configuration directory (committed to the
-/// project's own version control).
-pub const PROJECT_CONFIG_DIR: &str = ".mmcp";
+/// Project-level manifest file name. Placed at the project root,
+/// matching the `.mmcp.toml` convention used inside group
+/// repositories.
+pub const PROJECT_MANIFEST: &str = ".mmcp.toml";
 
-/// Per-project configuration file name inside [`PROJECT_CONFIG_DIR`].
-pub const PROJECT_CONFIG_FILE: &str = "config.toml";
-
-/// Locate the `.mmcp` directory by walking up from the current
-/// working directory until one is found. Returns `None` when no
-/// ancestor contains a `.mmcp/config.toml`.
+/// Locate the project root by walking up from `start` until a
+/// `.mmcp.toml` file is found. Returns `None` when no ancestor
+/// contains the manifest.
 pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     let mut cursor = Some(start.to_path_buf());
     while let Some(dir) = cursor {
-        let candidate = dir.join(PROJECT_CONFIG_DIR).join(PROJECT_CONFIG_FILE);
-        if candidate.exists() {
+        if dir.join(PROJECT_MANIFEST).exists() {
             return Some(dir);
         }
         cursor = dir.parent().map(Path::to_path_buf);
@@ -27,13 +24,13 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Full path to the config file inside a project root.
+/// Full path to the manifest file inside a project root.
 #[must_use]
 pub fn config_path_for(root: &Path) -> PathBuf {
-    root.join(PROJECT_CONFIG_DIR).join(PROJECT_CONFIG_FILE)
+    root.join(PROJECT_MANIFEST)
 }
 
-/// Load the `ProjectConfig` anchored at `root`.
+/// Load the `ProjectConfig` from `root/.mmcp.toml`.
 pub fn load(root: &Path) -> Result<ProjectConfig> {
     let path = config_path_for(root);
     let text = std::fs::read_to_string(&path)
@@ -42,13 +39,9 @@ pub fn load(root: &Path) -> Result<ProjectConfig> {
         .with_context(|| format!("parsing {}", path.display()))
 }
 
-/// Render `config` into the project's config file, creating the
-/// `.mmcp` directory if it does not yet exist. Overwrites any
-/// existing file.
+/// Render `config` into the project's `.mmcp.toml`. Overwrites
+/// any existing file.
 pub fn save(root: &Path, config: &ProjectConfig) -> Result<()> {
-    let dir = root.join(PROJECT_CONFIG_DIR);
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("creating {}", dir.display()))?;
     let path = config_path_for(root);
     let text = config
         .to_toml()

@@ -36,8 +36,8 @@ fn init_in_tempdir_creates_config() {
         .assert()
         .success();
 
-    let config_path = tmp.path().join(".mmcp").join("config.toml");
-    assert!(config_path.exists(), "init should create .mmcp/config.toml");
+    let config_path = tmp.path().join(".mmcp.toml");
+    assert!(config_path.exists(), "init should create .mmcp.toml");
 }
 
 #[test]
