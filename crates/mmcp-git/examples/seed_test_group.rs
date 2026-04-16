@@ -1,4 +1,7 @@
-//! Seed a test group with two memories for offline testing.
+//! Seed a test group with two memories in a TEMPORARY directory.
+//!
+//! This example is for development testing ONLY. It never touches
+//! the real ~/.mmcp/repos/ directory.
 //!
 //! Usage: cargo run --package mmcp-git --example seed_test_group
 
@@ -10,19 +13,16 @@ use uuid::Uuid;
 
 #[tokio::main]
 async fn main() {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .expect("HOME or USERPROFILE");
-    let repos_root = std::path::PathBuf::from(home).join(".mmcp").join("repos");
-    let backend = NativeBackend::new(&repos_root).expect("init repos root");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let backend = NativeBackend::new(tmp.path()).expect("init repos root");
 
     let group_id = GroupId::new();
     let owner = Uuid::now_v7();
     let manifest = GroupManifest::new_user_owned(group_id, "test-offline", owner);
     let handle = backend.create_group_repo(&manifest).await.expect("create group");
     println!("Created group: {} (slug: test-offline)", group_id.as_uuid());
+    println!("Temp dir: {}", tmp.path().display());
 
-    // Write memory 1: a coding rule
     let mem1_content = r#"+++
 name = "always-use-result"
 description = "Enforce Result return types for all fallible functions"
@@ -32,7 +32,7 @@ tags = ["rust", "error-handling"]
 +++
 
 Always return `Result` from fallible functions. Never use `.unwrap()` in
-library code — reserve it for tests and examples.
+library code - reserve it for tests and examples.
 "#;
     backend.write_commit(&handle, CommitSpec {
         branch: "main".to_string(),
@@ -45,7 +45,6 @@ library code — reserve it for tests and examples.
     }).await.expect("write memory 1");
     println!("Wrote memory: always-use-result");
 
-    // Write memory 2: a project note
     let mem2_content = r#"+++
 name = "offline-test-note"
 description = "Seed memory for verifying offline MCP tool reads"
@@ -68,6 +67,6 @@ It verifies that the mmcp MCP tools can read real content from git.
     }).await.expect("write memory 2");
     println!("Wrote memory: offline-test-note");
 
-    println!("\nDone. Group UUID: {}", group_id.as_uuid());
-    println!("Run `mmcp serve` and test the MCP tools with this group.");
+    println!("\nDone. Temp dir will be cleaned up on exit.");
+    println!("To inspect: run before this process exits, or use --nocapture.");
 }
