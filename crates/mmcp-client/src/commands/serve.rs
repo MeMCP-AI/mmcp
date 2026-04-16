@@ -5,8 +5,8 @@
 //! [`NativeBackend`] at `~/.mmcp/repos/`. No database is opened,
 //! no placeholder responses are returned. Tools that need
 //! per-session state (verification, compaction acknowledgement)
-//! are deferred until Phase 5 of the implementation plan, when
-//! the stdio server learns which session id it is serving.
+//! are not yet exposed on the MCP router — the `SessionStore` is
+//! wired through so they can land without touching initialization.
 
 use std::borrow::Cow;
 use std::path::PathBuf;
@@ -35,7 +35,7 @@ use crate::config::{PROJECT_MANIFEST, find_project_root};
 use crate::home::MmcpHome;
 use crate::state::{GroupEntry, GroupIndex, SessionStore, WatcherHandle, spawn_watcher};
 
-use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION};
+use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION, memory_path};
 
 /// Run the MCP stdio server loop until the client disconnects.
 pub async fn run(debug_mode: bool) -> Result<()> {
@@ -56,7 +56,7 @@ pub async fn run(debug_mode: bool) -> Result<()> {
 struct ClientStateInner {
     backend: Arc<NativeBackend>,
     groups: GroupIndex,
-    #[allow(dead_code)] // NOTE: consumed by session-scoped tools added in Phase 5.
+    #[allow(dead_code)] // NOTE: consumed by session-scoped tools once they're wired onto the router.
     sessions: SessionStore,
     #[allow(dead_code)] // NOTE: held to keep the notify watcher alive for the process lifetime.
     watcher: WatcherHandle,
@@ -810,7 +810,7 @@ async fn list_memory_files(
         .list_tree(
             &entry.handle,
             MEMORIES_DIR,
-            &Rev::Branch(mmcp_core::conventions::MAIN_BRANCH.to_string()),
+            &Rev::main(),
         )
         .await
         .map_err(git_error)?;
@@ -867,7 +867,7 @@ fn parse_group_id(value: &str) -> Result<GroupId, McpError> {
 
 fn parse_rev(value: Option<&str>) -> Rev {
     match value {
-        None => Rev::Branch(mmcp_core::conventions::MAIN_BRANCH.to_string()),
+        None => Rev::main(),
         Some(v) => {
             // Heuristic: 40-char hex string -> commit, otherwise branch.
             if v.len() == 40 && v.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -887,14 +887,9 @@ fn rev_label(rev: &Rev) -> String {
     }
 }
 
-fn memory_path(slug: &str) -> String {
-    mmcp_core::conventions::memory_path(slug)
-}
-
 fn git_error(err: mmcp_git::GitError) -> McpError {
     McpError::internal_error(Cow::Owned(format!("git error: {err}")), None)
 }
-
 
 fn frontmatter_to_json(fm: &MemoryFrontmatter) -> serde_json::Value {
     json!({
@@ -967,7 +962,7 @@ mod tests {
                     author_email: "test@example.com".into(),
                     message: format!("seed memory {memory_slug}"),
                     files: vec![(
-                        format!("{MEMORIES_DIR}/{memory_slug}{MEMORY_EXTENSION}"),
+                        memory_path(memory_slug),
                         Some(memory_body.as_bytes().to_vec()),
                     )],
                 },
