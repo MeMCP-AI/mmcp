@@ -131,6 +131,14 @@ impl SyncClient {
         format!("{}{}", self.inner.base_url, path)
     }
 
+    /// Build the git smart HTTP URL for a group's bare repo on the
+    /// configured server. Used by the sync engine to feed the git
+    /// content-plane subprocess a remote to push to or fetch from.
+    #[must_use]
+    pub fn git_url_for(&self, group_id: Uuid) -> String {
+        format!("{}/git/{}.git", self.inner.base_url, group_id)
+    }
+
     fn request_builder(
         &self,
         method: reqwest::Method,

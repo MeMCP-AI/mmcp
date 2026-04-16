@@ -32,6 +32,17 @@ pub enum GitError {
     #[error("operation not supported by this backend: {0}")]
     Unsupported(&'static str),
 
+    /// Network / remote transport failure while talking to a git
+    /// remote. The native backend returns this when the `git`
+    /// subprocess driving `fetch`, `push`, or `clone` exits
+    /// non-zero — typically because the remote does not exist,
+    /// refused the connection, or rejected the ref update. The sync
+    /// engine treats this as a "content plane deferred" signal so a
+    /// successful control-plane push is still reported even when
+    /// bytes cannot reach the remote yet.
+    #[error("git transport error: {0}")]
+    Transport(String),
+
     /// UTF-8 decoding error when reading a text file.
     #[error("invalid UTF-8 in file: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),

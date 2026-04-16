@@ -43,31 +43,37 @@ pub trait GitBackend: Send + Sync {
         manifest: &GroupManifest,
     ) -> Result<String, GitError>;
 
-    /// Clone an existing repository into the provided directory.
+    /// Clone a remote repository into the provided directory.
     ///
-    /// The native backend treats this as "make a non-bare working
-    /// copy" and uses local filesystem operations. Remote clones are
-    /// currently unsupported in the native backend and return
-    /// [`GitError::Unsupported`].
+    /// `remote_url` is the HTTP(S) endpoint of the mmcp-server
+    /// (or any git host) that serves the bare repo. The native
+    /// backend shells out to the user-installed `git` binary so
+    /// the operation works against any smart-HTTP-capable server
+    /// without bringing in an HTTP client dependency.
     async fn clone_to(
         &self,
-        repo: &RepoHandle,
+        remote_url: &str,
         dst: &std::path::Path,
     ) -> Result<(), GitError>;
 
-    /// Fetch updates for the named refs. A no-op on the native
-    /// backend because there is no remote to fetch from.
+    /// Fetch the named refs from `remote_url` into `repo`. The
+    /// native backend registers (or updates) an `origin` remote
+    /// pointing at `remote_url` and invokes `git fetch` on it.
     async fn fetch(
         &self,
         repo: &RepoHandle,
+        remote_url: &str,
         refs: &[RefSpec],
     ) -> Result<(), GitError>;
 
-    /// Push local refs to the backend. On the native backend this
-    /// updates refs in the bare repo directly.
+    /// Push the named refs from `repo` to `remote_url`. Same
+    /// mechanism as `fetch`: the native backend shells out to
+    /// `git push origin <refs>` after ensuring the `origin`
+    /// remote points at `remote_url`.
     async fn push(
         &self,
         repo: &RepoHandle,
+        remote_url: &str,
         refs: &[RefSpec],
     ) -> Result<PushReport, GitError>;
 

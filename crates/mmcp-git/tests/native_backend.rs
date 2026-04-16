@@ -164,17 +164,24 @@ async fn read_missing_file_returns_path_not_found() {
 }
 
 #[tokio::test]
-async fn remote_operations_are_unsupported() {
+async fn remote_operations_fail_fast_without_a_remote() {
+    // `NativeBackend::fetch` and `push` shell out to the user's git
+    // binary. When the remote URL points at nothing, the subprocess
+    // exits non-zero and the backend returns a `Gix` error carrying
+    // git's stderr. A full content-plane round-trip is covered by
+    // the integration suite in phase 9.
     let (backend, _tmp) = backend_in_tempdir();
     let manifest = sample_manifest();
     let repo = backend.create_group_repo(&manifest).await.unwrap();
 
-    assert!(matches!(
-        backend.fetch(&repo, &[]).await.unwrap_err(),
-        mmcp_git::GitError::Unsupported(_)
-    ));
-    assert!(matches!(
-        backend.push(&repo, &[]).await.unwrap_err(),
-        mmcp_git::GitError::Unsupported(_)
-    ));
+    let err = backend
+        .fetch(&repo, "http://127.0.0.1:1/no-such.git", &[])
+        .await
+        .unwrap_err();
+    assert!(matches!(err, mmcp_git::GitError::Transport(_)));
+    let err = backend
+        .push(&repo, "http://127.0.0.1:1/no-such.git", &[])
+        .await
+        .unwrap_err();
+    assert!(matches!(err, mmcp_git::GitError::Transport(_)));
 }

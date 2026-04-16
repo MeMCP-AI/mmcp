@@ -4,13 +4,14 @@
 //! backend so the whole `gix` call tree stays synchronous.
 
 use std::path::Path;
+use std::process::Command;
 
 use bytes::Bytes;
 use gix::bstr::BString;
 use gix::objs::tree::EntryKind;
 
 use crate::error::GitError;
-use crate::types::{CommitMeta, CommitSpec, Rev};
+use crate::types::{CommitMeta, CommitSpec, PushReport, Rev};
 
 fn gix_err<E: std::fmt::Display>(err: E) -> GitError {
     GitError::Gix(err.to_string())
@@ -22,6 +23,118 @@ pub fn init_bare(path: &Path) -> Result<(), GitError> {
         return Ok(());
     }
     gix::init_bare(path).map_err(gix_err)?;
+    Ok(())
+}
+
+/// Clone `remote_url` into `dst` via the user-installed git binary.
+pub fn clone(remote_url: &str, dst: &Path) -> Result<(), GitError> {
+    let output = Command::new("git")
+        .arg("clone")
+        .arg(remote_url)
+        .arg(dst)
+        .output()
+        .map_err(|e| GitError::Gix(format!("spawn git clone: {e}")))?;
+    if !output.status.success() {
+        return Err(GitError::Transport(format!(
+            "git clone failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    Ok(())
+}
+
+/// Fetch `refspecs` from `remote_url` into the bare repo at
+/// `repo_path`. An `origin` remote is configured on the fly so
+/// subsequent fetches reuse it.
+pub fn fetch(repo_path: &Path, remote_url: &str, refspecs: &[String]) -> Result<(), GitError> {
+    ensure_remote(repo_path, remote_url)?;
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(repo_path)
+        .arg("fetch")
+        .arg("origin");
+    for spec in refspecs {
+        cmd.arg(spec);
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| GitError::Gix(format!("spawn git fetch: {e}")))?;
+    if !output.status.success() {
+        return Err(GitError::Transport(format!(
+            "git fetch failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    Ok(())
+}
+
+/// Push `refspecs` (local, remote, force) from the bare repo at
+/// `repo_path` to `remote_url`.
+pub fn push(
+    repo_path: &Path,
+    remote_url: &str,
+    refspecs: &[(String, String, bool)],
+) -> Result<PushReport, GitError> {
+    ensure_remote(repo_path, remote_url)?;
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(repo_path).arg("push").arg("origin");
+    for (local, remote, force) in refspecs {
+        let spec = if *force {
+            format!("+{local}:{remote}")
+        } else {
+            format!("{local}:{remote}")
+        };
+        cmd.arg(spec);
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| GitError::Gix(format!("spawn git push: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        return Err(GitError::Transport(format!("git push failed: {stderr}")));
+    }
+    let report = PushReport {
+        updated: refspecs
+            .iter()
+            .map(|(local, remote, _)| (remote.clone(), local.clone()))
+            .collect(),
+        rejected: Vec::new(),
+    };
+    Ok(report)
+}
+
+/// Ensure the repo at `repo_path` has an `origin` remote pointing
+/// at `remote_url`. Safe to call repeatedly.
+fn ensure_remote(repo_path: &Path, remote_url: &str) -> Result<(), GitError> {
+    // Try to set the URL first; if the remote does not exist,
+    // fall back to adding it.
+    let set = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .arg("remote")
+        .arg("set-url")
+        .arg("origin")
+        .arg(remote_url)
+        .output()
+        .map_err(|e| GitError::Gix(format!("spawn git remote set-url: {e}")))?;
+    if set.status.success() {
+        return Ok(());
+    }
+    let add = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .arg("remote")
+        .arg("add")
+        .arg("origin")
+        .arg(remote_url)
+        .output()
+        .map_err(|e| GitError::Gix(format!("spawn git remote add: {e}")))?;
+    if !add.status.success() {
+        return Err(GitError::Gix(format!(
+            "git remote add origin failed: {}",
+            String::from_utf8_lossy(&add.stderr)
+        )));
+    }
     Ok(())
 }
 

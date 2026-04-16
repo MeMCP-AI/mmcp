@@ -109,32 +109,48 @@ impl GitBackend for NativeBackend {
 
     async fn clone_to(
         &self,
-        _repo: &RepoHandle,
-        _dst: &Path,
+        remote_url: &str,
+        dst: &Path,
     ) -> Result<(), GitError> {
-        Err(GitError::Unsupported(
-            "native backend clone_to requires smart HTTP support",
-        ))
+        let dst = dst.to_path_buf();
+        let remote_url = remote_url.to_string();
+        tokio::task::spawn_blocking(move || repo_ops::clone(&remote_url, &dst))
+            .await
+            .map_err(|e| GitError::Gix(format!("join error: {e}")))?
     }
 
     async fn fetch(
         &self,
-        _repo: &RepoHandle,
-        _refs: &[RefSpec],
+        repo: &RepoHandle,
+        remote_url: &str,
+        refs: &[RefSpec],
     ) -> Result<(), GitError> {
-        Err(GitError::Unsupported(
-            "native backend fetch requires a remote endpoint",
-        ))
+        let repo_path = Self::handle_path(repo).to_path_buf();
+        let remote_url = remote_url.to_string();
+        let refspecs: Vec<String> = refs
+            .iter()
+            .map(|r| format!("{}:{}", r.local, r.remote))
+            .collect();
+        tokio::task::spawn_blocking(move || repo_ops::fetch(&repo_path, &remote_url, &refspecs))
+            .await
+            .map_err(|e| GitError::Gix(format!("join error: {e}")))?
     }
 
     async fn push(
         &self,
-        _repo: &RepoHandle,
-        _refs: &[RefSpec],
+        repo: &RepoHandle,
+        remote_url: &str,
+        refs: &[RefSpec],
     ) -> Result<PushReport, GitError> {
-        Err(GitError::Unsupported(
-            "native backend push requires a remote endpoint",
-        ))
+        let repo_path = Self::handle_path(repo).to_path_buf();
+        let remote_url = remote_url.to_string();
+        let refspecs: Vec<(String, String, bool)> = refs
+            .iter()
+            .map(|r| (r.local.clone(), r.remote.clone(), r.force))
+            .collect();
+        tokio::task::spawn_blocking(move || repo_ops::push(&repo_path, &remote_url, &refspecs))
+            .await
+            .map_err(|e| GitError::Gix(format!("join error: {e}")))?
     }
 
     async fn read_file(

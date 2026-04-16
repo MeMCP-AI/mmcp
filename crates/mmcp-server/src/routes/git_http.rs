@@ -93,7 +93,7 @@ async fn info_refs(
     let mut body = service_announcement(&query.service);
 
     let mut cmd = tokio::process::Command::new("git");
-    cmd.arg(&query.service.trim_start_matches("git-"))
+    cmd.arg(query.service.trim_start_matches("git-"))
         .arg("--stateless-rpc")
         .arg("--advertise-refs")
         .arg(&repo_path)

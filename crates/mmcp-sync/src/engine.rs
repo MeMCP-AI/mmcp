@@ -106,9 +106,11 @@ impl SyncEngine {
         let content_transferred = match group_handles.resolve(edit.memory) {
             Some(handle) => {
                 let refs = vec![RefSpec::new("refs/heads/main", "refs/heads/main")];
-                match self.backend.push(&handle, &refs).await {
+                let remote_url = self.client.git_url_for(edit.memory);
+                match self.backend.push(&handle, &remote_url, &refs).await {
                     Ok(_) => true,
                     Err(mmcp_git::GitError::Unsupported(_)) => false,
+                    Err(mmcp_git::GitError::Transport(_msg)) => false,
                     Err(other) => return Err(SyncError::Git(other)),
                 }
             }
@@ -139,11 +141,16 @@ impl SyncEngine {
                 None => new_groups.push(remote),
                 Some(handle) => {
                     let refs = vec![RefSpec::new("refs/heads/main", "refs/heads/main")];
-                    match self.backend.fetch(&handle, &refs).await {
+                    let remote_url = self.client.git_url_for(remote.group_id);
+                    match self.backend.fetch(&handle, &remote_url, &refs).await {
                         Ok(()) => updated.push(remote),
-                        Err(mmcp_git::GitError::Unsupported(_)) => {
-                            // Content plane not yet wired; control
-                            // plane view is still returned.
+                        Err(mmcp_git::GitError::Unsupported(_))
+                        | Err(mmcp_git::GitError::Transport(_)) => {
+                            // Content plane deferred: the remote is
+                            // unreachable or the backend can't push
+                            // bytes yet. The control-plane view is
+                            // still meaningful, so surface the group
+                            // in `updated` rather than hiding it.
                             updated.push(remote);
                         }
                         Err(other) => return Err(SyncError::Git(other)),
