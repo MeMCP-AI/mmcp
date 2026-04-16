@@ -77,6 +77,22 @@
 
 **Status**: Open.
 
+### FR-014: Expose `sync_pull` / `sync_push` / `sync` MCP tools (2026-04-17)
+
+**Need**: The sync engine in `mmcp-sync` already powers three CLI subcommands (`mmcp pull`, `mmcp push`, `mmcp sync`) but none of them are reachable through MCP. An AI session can write memories into the local mirror via `write_memory`, but has no way to propagate those commits to the configured `[sync] server_url` without the operator dropping to a shell and running the CLI. Symmetric gap on reads: the session cannot refresh the local mirror against upstream, so edits made elsewhere stay invisible until a manual `mmcp pull` runs.
+
+**How to apply**: Add three MCP tools mirroring the CLI shapes — `sync_pull(group?)`, `sync_push(group?)`, `sync(group?)` (pull-then-push). Each returns the same per-group summary the CLI prints today (`updated`, `new_groups`, `pushed`, `conflicts`), plus a structured error when `[sync]` is absent from `.mmcp.toml` so the tool can tell the AI to run `init` or configure `server_url`. Reuse `mmcp_sync::Engine` directly; no logic duplicated between CLI and MCP.
+
+**Status**: Open.
+
+### FR-015: Expose `status` MCP tool for local sync state (2026-04-17)
+
+**Need**: `mmcp status` prints the local project's sync state (configured server, groups mirrored, pending commits, last push). Without an MCP equivalent an AI session has to either read `.mmcp.toml` manually or call several tools in sequence (`bootstrap_context` + `group_info` per group + `list_versions`) to approximate the same picture. Adds friction before every pull/push decision.
+
+**How to apply**: One tool `status()` that returns `{ server_url, project_uuid, groups: [{ slug, uuid, latest_commit, ahead_of_upstream }], sync_configured: bool }`. Cheap — reads only local state, no network.
+
+**Status**: Open. Unblocks FR-014 because `sync_pull/push` responses reference the same shape.
+
 ### FR-013: `list_memories` should signal "group not in local mirror" (2026-04-16)
 
 **Need**: Today `list_memories(group)` returns `{"memories": []}` in two very different situations: (a) the group is mirrored locally but contains no memories, and (b) the group is not in the local mirror at all. `group_info(group)` on the same UUID errors with `group not found in local mirror`. That asymmetry is easy to misread from an AI session — an empty list looks like "nothing to do" when the real state is "you are looking at the wrong place." Surfaces as wasted checkpoints and skipped rule reads.
