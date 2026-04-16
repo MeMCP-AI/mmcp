@@ -163,6 +163,88 @@ async fn read_missing_file_returns_path_not_found() {
     assert!(matches!(err, mmcp_git::GitError::PathNotFound(_)));
 }
 
+/// End-to-end round trip: push from one `NativeBackend` to a bare
+/// `file://` remote, then fetch from the remote into a second
+/// `NativeBackend`, and check that the commit id moved across.
+///
+/// This is the "any git forge" smoke test. The `file://` transport
+/// uses the same smart-protocol code path as HTTPS/SSH against stock
+/// git hosts, so a passing round-trip here means the outbound side
+/// of the workspace holds up against any git-compatible endpoint,
+/// not just mmcp-server.
+#[tokio::test]
+async fn push_and_fetch_round_trip_through_file_url() {
+    // Source backend: create a group repo and commit some content.
+    let (backend_src, _tmp_src) = backend_in_tempdir();
+    let manifest = sample_manifest();
+    let handle_src = backend_src.create_group_repo(&manifest).await.unwrap();
+    let commit_id = backend_src
+        .write_commit(
+            &handle_src,
+            sample_commit("alice", "main", "memories/a.md", "hello"),
+        )
+        .await
+        .unwrap();
+
+    // Bare remote acting as a neutral git host. `gix::init_bare`
+    // creates the same shape any forge would expose, so the
+    // refspecs and transport below are exercised end-to-end.
+    let remote_tmp = TempDir::new().expect("remote tempdir");
+    let remote_path = remote_tmp.path().join("bare.git");
+    gix::init_bare(&remote_path).expect("init bare remote");
+    let remote_url = format!(
+        "file://{}",
+        remote_path.to_string_lossy().replace('\\', "/")
+    );
+
+    // Destination backend: a fresh mirror with its own group repo
+    // so fetch writes into a distinct filesystem tree.
+    let (backend_dst, _tmp_dst) = backend_in_tempdir();
+    let handle_dst = backend_dst.create_group_repo(&manifest).await.unwrap();
+
+    let refs = vec![mmcp_git::RefSpec::new(
+        "refs/heads/main",
+        "refs/heads/main",
+    )
+    .forced()];
+    let creds = mmcp_git::Credentials::None;
+
+    // Push source → remote. Forced to overwrite the manifest commit
+    // the destination tempdir's bootstrap planted on its own `main`.
+    backend_src
+        .push(&handle_src, &remote_url, &refs, &creds)
+        .await
+        .expect("push to file:// remote");
+
+    // Fetch remote → destination. Force-update the local main so
+    // the remote's tip replaces the destination's bootstrap commit.
+    let fetch_refs = vec![
+        mmcp_git::RefSpec::new("refs/heads/main", "refs/heads/main").forced(),
+    ];
+    backend_dst
+        .fetch(&handle_dst, &remote_url, &fetch_refs, &creds)
+        .await
+        .expect("fetch from file:// remote");
+
+    // The destination repo should now contain the source commit.
+    let bytes = backend_dst
+        .read_file(&handle_dst, "memories/a.md", &Rev::Branch("main".into()))
+        .await
+        .expect("read file fetched from remote");
+    assert_eq!(bytes.as_ref(), b"hello");
+
+    // Spot-check the commit id matches what we pushed.
+    let history = backend_dst
+        .walk_history(&handle_dst, "memories/a.md")
+        .await
+        .expect("walk history");
+    assert!(
+        history.iter().any(|c| c.id == commit_id),
+        "fetched history missing commit {commit_id}; saw: {:?}",
+        history.iter().map(|c| &c.id).collect::<Vec<_>>()
+    );
+}
+
 #[tokio::test]
 async fn remote_operations_fail_fast_without_a_remote() {
     // `NativeBackend::fetch` and `push` shell out to the user's git
