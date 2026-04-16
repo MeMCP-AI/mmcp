@@ -323,6 +323,64 @@ struct BootstrapContextArgs {
     pub scope: Option<BootstrapScope>,
 }
 
+/// Action for `init_claude`. Matches the CLI's mutually-exclusive flag
+/// set (override / append / convert).
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(rename_all = "snake_case")]
+enum InitClaudeAction {
+    /// Replace CLAUDE.md with a fresh mmcp stub.
+    Override,
+    /// Insert or replace the mmcp-managed fence inside CLAUDE.md.
+    Append,
+    /// Split CLAUDE.md into typed memories, then replace with stub.
+    Convert,
+}
+
+/// Pre-supplied answer to the dirty-file conflict question. Callers
+/// who know they want to override / backup+override / cancel up front
+/// set this on the first call; otherwise the tool returns a
+/// `conflict_unresolved` error listing the required follow-up.
+///
+/// This is the serializable counterpart to the CLI's interactive
+/// prompt. Future rmcp releases that expose `ElicitationRequest` can
+/// replace the error-then-retry contract with a synchronous prompt —
+/// the argument's shape stays the same.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(rename_all = "snake_case")]
+enum InitClaudeConflict {
+    /// Overwrite the existing file without writing a .bak copy.
+    Override,
+    /// Write CLAUDE.md.bak, then overwrite.
+    BackupOverride,
+    /// Abort; do not touch CLAUDE.md.
+    Cancel,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct InitClaudeArgs {
+    /// Which action to apply.
+    pub action: InitClaudeAction,
+    /// Always write a .bak copy before modifying (true) or never (false).
+    /// Omitted → back up iff file is dirty or untracked.
+    #[serde(default)]
+    pub backup: Option<bool>,
+    /// Print the resolved plan and touch nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Pre-resolved answer to the dirty/untracked conflict question.
+    /// Required when `action` is append/convert/override against an
+    /// untracked or dirty file; otherwise the tool returns an error
+    /// naming the state so the caller can pick a resolution.
+    #[serde(default)]
+    pub on_conflict: Option<InitClaudeConflict>,
+    /// Path to the CLAUDE.md file. Defaults to `./CLAUDE.md`.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
 #[tool_router]
 impl McpServer {
     fn new(state: ClientState) -> Self {
@@ -895,6 +953,135 @@ impl McpServer {
             "diagnostics": diagnostics,
         })))
     }
+
+    #[tool(
+        description = "Manage CLAUDE.md for the current project. Actions: `override` writes a fresh mmcp stub, `append` inserts or replaces the mmcp-managed fence block, `convert` splits existing CLAUDE.md into typed project memories and replaces the file with a stub. When the file is dirty or untracked and `on_conflict` is not set, the call errors with a structured `conflict_unresolved` payload naming the observed state so the caller can retry with a choice. Default backup policy writes `.bak` only when the file is dirty or untracked."
+    )]
+    async fn init_claude(
+        &self,
+        Parameters(args): Parameters<InitClaudeArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let path = args
+            .path
+            .as_deref()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("CLAUDE.md"));
+        let state = crate::commands::claude::inspect(&path);
+
+        // Convert/append need an existing file; override may write from
+        // scratch. This mirrors the CLI's execute-time check but
+        // catches the error before we even compute a backup.
+        if matches!(
+            args.action,
+            InitClaudeAction::Append | InitClaudeAction::Convert
+        ) && matches!(state, crate::commands::claude::FileState::Missing)
+        {
+            return Err(McpError::invalid_params(
+                "cannot append/convert a missing CLAUDE.md; call with action=override first",
+                Some(json!({ "state": state.as_wire_str() })),
+            ));
+        }
+
+        // Resolve the conflict question (or demand an answer).
+        let conflict = match (state.is_conflict(), args.on_conflict) {
+            (false, _) => crate::commands::claude::ConflictChoice::NotApplicable,
+            (true, Some(InitClaudeConflict::Override)) => {
+                crate::commands::claude::ConflictChoice::Override
+            }
+            (true, Some(InitClaudeConflict::BackupOverride)) => {
+                crate::commands::claude::ConflictChoice::BackupOverride
+            }
+            (true, Some(InitClaudeConflict::Cancel)) => {
+                return Ok(ok_json(json!({
+                    "action": action_wire(args.action),
+                    "state_before": state.as_wire_str(),
+                    "cancelled": true,
+                    "wrote": null,
+                    "memories_created": [],
+                })));
+            }
+            (true, None) => {
+                // Structured error: caller decides how to resolve and
+                // re-invokes with `on_conflict` set. Future elicitation
+                // support turns this into a prompt instead of an error.
+                return Err(McpError::invalid_params(
+                    "CLAUDE.md state requires an explicit conflict resolution",
+                    Some(json!({
+                        "code": "conflict_unresolved",
+                        "state": state.as_wire_str(),
+                        "choices": [
+                            { "value": "override", "description": "overwrite without backup (lose local changes)" },
+                            { "value": "backup_override", "description": "write .bak, then overwrite (recommended)" },
+                            { "value": "cancel", "description": "abort; do not touch CLAUDE.md" }
+                        ],
+                        "retry_with": { "on_conflict": "backup_override" }
+                    })),
+                ));
+            }
+        };
+
+        // Backup policy: explicit arg > default (dirty ⇒ backup) >
+        // conflict-driven force (backup_override always backs up).
+        let backup = match args.backup {
+            Some(explicit) => explicit,
+            None => state.is_conflict(),
+        };
+        let backup = matches!(
+            conflict,
+            crate::commands::claude::ConflictChoice::BackupOverride
+        ) || backup;
+
+        let action = match args.action {
+            InitClaudeAction::Override => crate::commands::claude::Action::Override,
+            InitClaudeAction::Append => crate::commands::claude::Action::Append,
+            InitClaudeAction::Convert => crate::commands::claude::Action::Convert,
+        };
+
+        let cwd = std::env::current_dir()
+            .map_err(|e| McpError::internal_error(Cow::Owned(format!("cwd: {e}")), None))?;
+        let plan = crate::commands::claude::ClaudePlan {
+            action,
+            backup,
+            dry_run: args.dry_run,
+            path: path.clone(),
+            state,
+            cwd,
+        };
+
+        if plan.dry_run {
+            return Ok(ok_json(json!({
+                "action": action_wire(args.action),
+                "state_before": state.as_wire_str(),
+                "plan": {
+                    "backup": plan.backup,
+                    "path": plan.path.to_string_lossy(),
+                },
+                "wrote": null,
+                "memories_created": [],
+                "dry_run": true,
+            })));
+        }
+
+        // Resolve the author and run the shared execute path.
+        let home = crate::home::MmcpHome::discover()
+            .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
+        let author = home.resolve_author();
+        let report = crate::commands::claude::execute(&plan, &home, &author)
+            .await
+            .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
+
+        Ok(ok_json(json!({
+            "action": action_wire(args.action),
+            "state_before": report.state_before.as_wire_str(),
+            "backup_path": report.backup_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            "wrote": report.wrote.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            "memories_created": report.memories_created.iter().map(|m| json!({
+                "slug": m.slug,
+                "commit": m.commit_id,
+                "source_section": m.source_section,
+            })).collect::<Vec<_>>(),
+        })))
+    }
 }
 
 impl McpServer {
@@ -1062,6 +1249,15 @@ fn rev_label(rev: &Rev) -> String {
 
 fn git_error(err: mmcp_git::GitError) -> McpError {
     McpError::internal_error(Cow::Owned(format!("git error: {err}")), None)
+}
+
+/// Map `InitClaudeAction` onto the wire string used in tool responses.
+fn action_wire(action: InitClaudeAction) -> &'static str {
+    match action {
+        InitClaudeAction::Override => "override",
+        InitClaudeAction::Append => "append",
+        InitClaudeAction::Convert => "convert",
+    }
 }
 
 /// Current version of the mmcp-managed block embedded in CLAUDE.md.
@@ -1505,5 +1701,81 @@ mod tests {
     #[test]
     fn build_claude_diagnostics_is_silent_without_project_root() {
         assert!(build_claude_diagnostics(None).is_empty());
+    }
+
+    #[tokio::test]
+    async fn init_claude_dry_run_override_against_missing_file_reports_plan() {
+        let (state, tmp) = test_state().await;
+        let server = McpServer::new(state);
+        let target = tmp.path().join("CLAUDE.md");
+
+        let res = server
+            .init_claude(Parameters(InitClaudeArgs {
+                action: InitClaudeAction::Override,
+                backup: None,
+                dry_run: true,
+                on_conflict: None,
+                path: Some(target.to_string_lossy().into_owned()),
+            }))
+            .await
+            .expect("init_claude dry_run");
+        let parsed = parse_ok_json(res);
+        assert_eq!(parsed.get("action").and_then(|v| v.as_str()), Some("override"));
+        assert_eq!(parsed.get("state_before").and_then(|v| v.as_str()), Some("missing"));
+        assert_eq!(parsed.get("dry_run").and_then(|v| v.as_bool()), Some(true));
+        assert!(parsed.get("wrote").map(|v| v.is_null()).unwrap_or(false));
+        assert!(!target.exists(), "dry run must not write the file");
+    }
+
+    #[tokio::test]
+    async fn init_claude_refuses_dirty_file_without_on_conflict_with_structured_error() {
+        let (state, tmp) = test_state().await;
+        let server = McpServer::new(state);
+        let target = tmp.path().join("CLAUDE.md");
+        std::fs::write(&target, "# existing\n").expect("write fixture");
+
+        let err = server
+            .init_claude(Parameters(InitClaudeArgs {
+                action: InitClaudeAction::Override,
+                backup: None,
+                dry_run: false,
+                on_conflict: None,
+                path: Some(target.to_string_lossy().into_owned()),
+            }))
+            .await
+            .expect_err("must surface conflict");
+        // Error data carries the structured code the client uses to
+        // decide how to retry; payload shape matches the documented
+        // contract.
+        let payload = err.data.as_ref().expect("error data");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("conflict_unresolved")
+        );
+        assert!(payload.get("choices").is_some(), "choices list must be present");
+    }
+
+    #[tokio::test]
+    async fn init_claude_writes_stub_when_file_is_missing() {
+        let (state, tmp) = test_state().await;
+        let server = McpServer::new(state);
+        let target = tmp.path().join("CLAUDE.md");
+
+        let res = server
+            .init_claude(Parameters(InitClaudeArgs {
+                action: InitClaudeAction::Override,
+                backup: None,
+                dry_run: false,
+                on_conflict: None,
+                path: Some(target.to_string_lossy().into_owned()),
+            }))
+            .await
+            .expect("init_claude override");
+        let parsed = parse_ok_json(res);
+        assert_eq!(parsed.get("action").and_then(|v| v.as_str()), Some("override"));
+        assert!(target.exists(), "stub must have been written");
+        let body = std::fs::read_to_string(&target).expect("read stub");
+        assert!(body.contains("mmcp is mandatory"));
+        assert!(body.contains("bootstrap_context"));
     }
 }
