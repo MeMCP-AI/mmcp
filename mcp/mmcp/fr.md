@@ -76,3 +76,11 @@
 **Need**: `bootstrap_context` discovers the project group by reading `.mmcp.toml` from the MCP server's current working directory. That's correct for the common case but fragile: if the server is launched from a different cwd than the project, the project_uuid resolution fails silently and `scope=project` returns empty. Consider accepting an optional explicit `project_root` arg, or an explicit `project_uuid`, in `bootstrap_context`.
 
 **Status**: Open.
+
+### FR-013: `list_memories` should signal "group not in local mirror" (2026-04-16)
+
+**Need**: Today `list_memories(group)` returns `{"memories": []}` in two very different situations: (a) the group is mirrored locally but contains no memories, and (b) the group is not in the local mirror at all. `group_info(group)` on the same UUID errors with `group not found in local mirror`. That asymmetry is easy to misread from an AI session — an empty list looks like "nothing to do" when the real state is "you are looking at the wrong place." Surfaces as wasted checkpoints and skipped rule reads.
+
+**How to apply**: Either mirror `group_info`'s error path in `list_memories` (return the same "not found" error when the group is absent from the index), or extend the response shape to `{"memories": [...], "mirrored": true|false}` so callers can distinguish the two states without a second call.
+
+**Status**: Open. Discovered while running the re-read checkpoint against the project group, which is not mirrored locally yet — the empty response led to a premature stop.
