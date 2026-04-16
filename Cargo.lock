@@ -2738,6 +2738,7 @@ name = "mmcp-db"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "libsqlite3-sys",
  "mmcp-core",
  "sea-orm",
  "sea-orm-migration",
