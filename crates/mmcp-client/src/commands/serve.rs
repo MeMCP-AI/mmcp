@@ -155,6 +155,31 @@ struct GroupInfoArgs {
     pub group: String,
 }
 
+/// Memory kind enum exposed to the MCP JSON schema so AI clients
+/// see the valid variants in the tool definition, never free-form.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(rename_all = "snake_case")]
+enum ToolMemoryKind {
+    Rule,
+    Snapshot,
+    Log,
+    Reference,
+    Scratch,
+}
+
+impl ToolMemoryKind {
+    fn into_core(self) -> mmcp_core::memory::MemoryKind {
+        match self {
+            ToolMemoryKind::Rule => mmcp_core::memory::MemoryKind::Rule,
+            ToolMemoryKind::Snapshot => mmcp_core::memory::MemoryKind::Snapshot,
+            ToolMemoryKind::Log => mmcp_core::memory::MemoryKind::Log,
+            ToolMemoryKind::Reference => mmcp_core::memory::MemoryKind::Reference,
+            ToolMemoryKind::Scratch => mmcp_core::memory::MemoryKind::Scratch,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct WriteMemoryArgs {
@@ -166,8 +191,8 @@ struct WriteMemoryArgs {
     pub name: String,
     /// One-line summary for relevance inference.
     pub description: String,
-    /// Memory kind: rule, snapshot, log, reference, or scratch.
-    pub kind: String,
+    /// Memory kind.
+    pub kind: ToolMemoryKind,
     /// Markdown body content (no frontmatter - the server builds it).
     pub body: String,
     /// Free-form classification tags.
@@ -411,22 +436,14 @@ impl McpServer {
             .await
             .ok_or_else(|| McpError::invalid_params("group not found", None))?;
 
-        let kind = crate::commands::import::parse_kind(&args.kind)
-            .map_err(|e| McpError::invalid_params(Cow::Owned(e.to_string()), None))?;
+        let kind = args.kind.into_core();
 
-        let synth = crate::commands::import::SynthFrontmatter {
-            name: args.name,
-            description: args.description,
-            kind,
-        };
-
-        // Build content with tags and mandatory if provided.
         use mmcp_core::memory::{MemoryFile, MemoryFrontmatter};
         let file = MemoryFile {
             frontmatter: MemoryFrontmatter {
-                name: synth.name,
-                description: synth.description,
-                kind: synth.kind,
+                name: args.name,
+                description: args.description,
+                kind,
                 mandatory: args.mandatory,
                 version: None,
                 tags: args.tags,
