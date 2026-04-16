@@ -116,9 +116,11 @@ impl MemoryFile {
 
     /// Parse using gray_matter with a specific engine and delimiter.
     ///
-    /// Uses `parse()` + manual deserialization instead of
-    /// `parse_with_struct()` so deserialization errors are
-    /// captured with detail rather than swallowed as `None`.
+    /// `Matter::parse::<T>` (0.3+) deserializes into the target type
+    /// inline and surfaces both frontmatter-extraction errors and
+    /// `serde` errors through the same `Result`. We still map
+    /// `data = None` to an explicit `Deserialize` error because the
+    /// type signature differs ("frontmatter absent" vs "malformed").
     fn parse_with<E: gray_matter::engine::Engine>(
         input: &str,
         delimiter: &str,
@@ -126,13 +128,12 @@ impl MemoryFile {
     ) -> Result<Self, MemoryParseError> {
         let mut matter = Matter::<E>::new();
         matter.delimiter = delimiter.to_string();
-        let parsed = matter.parse(input);
-        let data = parsed
-            .data
-            .ok_or_else(|| MemoryParseError::Deserialize(format!("{fmt:?}: no frontmatter data found")))?;
-        let frontmatter: MemoryFrontmatter = data
-            .deserialize()
+        let parsed = matter
+            .parse::<MemoryFrontmatter>(input)
             .map_err(|e| MemoryParseError::Deserialize(format!("{fmt:?}: {e}")))?;
+        let frontmatter = parsed.data.ok_or_else(|| {
+            MemoryParseError::Deserialize(format!("{fmt:?}: no frontmatter data found"))
+        })?;
         Ok(Self {
             frontmatter,
             body: parsed.content,
