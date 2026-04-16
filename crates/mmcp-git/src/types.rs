@@ -233,3 +233,113 @@ pub struct CommitMeta {
     /// Seconds since the Unix epoch.
     pub timestamp: i64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    #[test]
+    fn repo_handle_new_stores_group_id_and_locator() {
+        let uuid = Uuid::now_v7();
+        let handle = RepoHandle::new(uuid, "/tmp/repo.git");
+        assert_eq!(handle.group_id, uuid);
+        assert_eq!(handle.locator, "/tmp/repo.git");
+    }
+
+    #[test]
+    fn refspec_new_defaults_to_non_forced() {
+        let r = RefSpec::new("refs/heads/main", "refs/heads/main");
+        assert_eq!(r.local, "refs/heads/main");
+        assert_eq!(r.remote, "refs/heads/main");
+        assert!(!r.force);
+    }
+
+    #[test]
+    fn refspec_forced_flips_the_flag() {
+        let r = RefSpec::new("a", "b").forced();
+        assert!(r.force);
+    }
+
+    #[test]
+    fn rev_main_wraps_the_convention_constant() {
+        assert_eq!(
+            Rev::main(),
+            Rev::Branch(mmcp_core::conventions::MAIN_BRANCH.to_string())
+        );
+    }
+
+    #[test]
+    fn rev_head_constructor_is_the_head_variant() {
+        assert_eq!(Rev::head(), Rev::Head);
+    }
+
+    #[test]
+    fn rev_canonical_covers_every_variant() {
+        assert_eq!(Rev::Branch("main".into()).canonical(), "refs/heads/main");
+        assert_eq!(Rev::Tag("v1.0.0".into()).canonical(), "refs/tags/v1.0.0");
+        let hex = "deadbeef".repeat(5); // 40-char-ish hex
+        assert_eq!(Rev::Commit(hex.clone()).canonical(), hex);
+        assert_eq!(Rev::Head.canonical(), "HEAD");
+    }
+
+    #[test]
+    fn rev_round_trips_through_serde_json() {
+        for rev in [
+            Rev::Branch("main".into()),
+            Rev::Tag("v1".into()),
+            Rev::Commit("abc".into()),
+            Rev::Head,
+        ] {
+            let encoded = serde_json::to_string(&rev).expect("serialize Rev");
+            let decoded: Rev = serde_json::from_str(&encoded).expect("deserialize Rev");
+            assert_eq!(decoded, rev);
+        }
+    }
+
+    #[test]
+    fn commit_spec_mmcp_commit_targets_main_with_explicit_author() {
+        let spec = CommitSpec::mmcp_commit(
+            "test commit",
+            vec![("memories/a.md".into(), Some(b"body".to_vec()))],
+            "alice",
+            "alice@example.com",
+        );
+        assert_eq!(spec.branch, mmcp_core::conventions::MAIN_BRANCH);
+        assert_eq!(spec.author_name, "alice");
+        assert_eq!(spec.author_email, "alice@example.com");
+        assert_eq!(spec.message, "test commit");
+        assert_eq!(spec.files.len(), 1);
+        assert_eq!(spec.files[0].0, "memories/a.md");
+    }
+
+    #[test]
+    fn credentials_default_is_none() {
+        assert_eq!(Credentials::default(), Credentials::None);
+        assert_eq!(Credentials::none(), Credentials::None);
+    }
+
+    #[test]
+    fn credentials_bearer_wraps_the_token_verbatim() {
+        let c = Credentials::bearer("ghp_test");
+        assert_eq!(c, Credentials::BearerHttp("ghp_test".to_string()));
+    }
+
+    #[test]
+    fn push_report_default_is_empty() {
+        let report = PushReport::default();
+        assert!(report.updated.is_empty());
+        assert!(report.rejected.is_empty());
+    }
+
+    #[test]
+    fn push_report_round_trips_through_serde_json() {
+        let report = PushReport {
+            updated: vec![("refs/heads/main".into(), "abc123".into())],
+            rejected: vec![("refs/heads/stale".into(), "non-fast-forward".into())],
+        };
+        let encoded = serde_json::to_string(&report).expect("serialize");
+        let decoded: PushReport = serde_json::from_str(&encoded).expect("deserialize");
+        assert_eq!(decoded, report);
+    }
+}
