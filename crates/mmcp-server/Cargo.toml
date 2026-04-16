@@ -21,6 +21,8 @@ mmcp-sync = { workspace = true }
 
 anyhow = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 axum = { workspace = true }

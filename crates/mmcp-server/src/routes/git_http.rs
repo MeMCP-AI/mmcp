@@ -27,15 +27,16 @@ use std::str::FromStr;
 
 use axum::{
     Router,
-    body::Bytes,
+    body::Body,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use futures_util::TryStreamExt;
 use mmcp_db::repository::group_repo;
 use serde::Deserialize;
-use tokio::io::AsyncWriteExt;
+use tokio_util::io::{ReaderStream, StreamReader};
 use uuid::Uuid;
 
 use crate::state::ServerState;
@@ -123,18 +124,18 @@ async fn info_refs(
 async fn upload_pack(
     State(state): State<ServerState>,
     Path(group_id): Path<String>,
-    body: Bytes,
+    body: Body,
 ) -> Result<Response, GitHttpError> {
     let uuid = parse_group_path(&group_id)?;
     let repo_path = ensure_group(&state, uuid).await?;
-    run_pack_command("upload-pack", &repo_path, body.to_vec(), "application/x-git-upload-pack-result").await
+    stream_pack_command("upload-pack", &repo_path, body, "application/x-git-upload-pack-result").await
 }
 
 async fn receive_pack(
     State(state): State<ServerState>,
     Path(group_id): Path<String>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Body,
 ) -> Result<Response, GitHttpError> {
     let uuid = parse_group_path(&group_id)?;
     enforce_write(&headers, uuid)?;
@@ -144,18 +145,43 @@ async fn receive_pack(
     // Reads (`upload-pack`) stay unserialized — they only observe the
     // on-disk tree and tolerate concurrent writers safely.
     let write_lock = state.repo_write_lock(uuid);
-    let _guard = write_lock.lock_owned().await;
-    run_pack_command("receive-pack", &repo_path, body.to_vec(), "application/x-git-receive-pack-result").await
+    let guard = write_lock.lock_owned().await;
+    stream_pack_command_guarded(
+        "receive-pack",
+        &repo_path,
+        body,
+        "application/x-git-receive-pack-result",
+        Some(guard),
+    )
+    .await
 }
 
 /// Run `git <subcommand> --stateless-rpc <repo>` with the request
-/// body piped into stdin, and stream the stdout back as the HTTP
-/// response body.
-async fn run_pack_command(
-    subcommand: &str,
+/// body streamed into stdin and the subprocess's stdout streamed
+/// back as the HTTP response body.
+///
+/// Memory footprint stays bounded regardless of pack size: bytes
+/// flow client → axum → child stdin in one direction and child
+/// stdout → axum → client in the other, with a small ring buffer
+/// at each hop.
+async fn stream_pack_command(
+    subcommand: &'static str,
     repo_path: &std::path::Path,
-    body: Vec<u8>,
+    body: Body,
     content_type: &'static str,
+) -> Result<Response, GitHttpError> {
+    stream_pack_command_guarded(subcommand, repo_path, body, content_type, None).await
+}
+
+/// Same as [`stream_pack_command`] but holds an optional write-lock
+/// guard alongside the child process so the lock stays acquired for
+/// the whole streaming lifetime.
+async fn stream_pack_command_guarded(
+    subcommand: &'static str,
+    repo_path: &std::path::Path,
+    body: Body,
+    content_type: &'static str,
+    write_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
 ) -> Result<Response, GitHttpError> {
     let mut child = tokio::process::Command::new("git")
         .arg(subcommand)
@@ -167,18 +193,46 @@ async fn run_pack_command(
         .spawn()
         .map_err(GitHttpError::internal)?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(&body).await.map_err(GitHttpError::internal)?;
-        stdin.shutdown().await.map_err(GitHttpError::internal)?;
-    }
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
 
-    let output = child.wait_with_output().await.map_err(GitHttpError::internal)?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        return Err(GitHttpError::Internal(format!(
-            "git {subcommand} failed: {stderr}"
-        )));
-    }
+    // Pump request body into git's stdin. Stream end triggers EOF
+    // on stdin via drop, which is how git knows the push/fetch
+    // request is complete.
+    tokio::spawn(async move {
+        let body_stream = body.into_data_stream().map_err(std::io::Error::other);
+        let mut body_reader = StreamReader::new(body_stream);
+        let _ = tokio::io::copy(&mut body_reader, &mut stdin).await;
+        // stdin drops here → EOF to git.
+    });
+
+    // Capture stderr into a log so subprocess failures are visible
+    // when the streamed stdout response gets truncated.
+    tokio::spawn(async move {
+        let mut buf = Vec::new();
+        let mut stderr = stderr;
+        if tokio::io::AsyncReadExt::read_to_end(&mut stderr, &mut buf)
+            .await
+            .is_ok()
+            && !buf.is_empty()
+        {
+            let text = String::from_utf8_lossy(&buf).into_owned();
+            tracing::warn!(target: "mmcp_server::git_http", subcommand, stderr = %text, "git subprocess produced stderr");
+        }
+    });
+
+    // Reap the child once stdout closes so it doesn't linger as a
+    // zombie. The write-lock guard is moved into the waiting task
+    // so the lock releases only after the subprocess exits — not
+    // when the response starts streaming.
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+        drop(write_guard);
+    });
+
+    let stdout_stream = ReaderStream::new(stdout);
+    let response_body = Body::from_stream(stdout_stream);
 
     Ok((
         StatusCode::OK,
@@ -186,7 +240,7 @@ async fn run_pack_command(
             ("Content-Type", content_type),
             ("Cache-Control", "no-cache"),
         ],
-        output.stdout,
+        response_body,
     )
         .into_response())
 }
