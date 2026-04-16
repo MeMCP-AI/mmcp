@@ -11,6 +11,7 @@
 use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use mmcp_core::id::GroupId;
@@ -37,9 +38,13 @@ use crate::state::{GroupEntry, GroupIndex, SessionStore, WatcherHandle, spawn_wa
 use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION};
 
 /// Run the MCP stdio server loop until the client disconnects.
-pub async fn run() -> Result<()> {
-    tracing::info!("mmcp stdio MCP server starting");
-    let state = ClientState::initialize().await?;
+pub async fn run(debug_mode: bool) -> Result<()> {
+    if debug_mode {
+        tracing::info!("mmcp stdio MCP server starting (debug tools enabled)");
+    } else {
+        tracing::info!("mmcp stdio MCP server starting");
+    }
+    let state = ClientState::initialize(debug_mode).await?;
     let server = McpServer::new(state);
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
@@ -55,16 +60,19 @@ struct ClientStateInner {
     sessions: SessionStore,
     #[allow(dead_code)] // NOTE: held to keep the notify watcher alive for the process lifetime.
     watcher: WatcherHandle,
+    /// Debug mode flag. When true, raw git access tools are enabled.
+    /// Can be toggled at runtime via the `debug_toggle` tool.
+    debug: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
 struct ClientState(Arc<ClientStateInner>);
 
 impl ClientState {
-    async fn initialize() -> Result<Self> {
+    async fn initialize(debug: bool) -> Result<Self> {
         let home = MmcpHome::discover()?;
         let project_config_path = find_current_project_config();
-        Self::initialize_from(home, project_config_path).await
+        Self::initialize_from(home, project_config_path, debug).await
     }
 
     /// Initialize the client state from a resolved [`MmcpHome`].
@@ -74,6 +82,7 @@ impl ClientState {
     async fn initialize_from(
         home: MmcpHome,
         project_config_path: Option<PathBuf>,
+        debug: bool,
     ) -> Result<Self> {
         std::fs::create_dir_all(home.root())
             .with_context(|| format!("creating {}", home.root().display()))?;
@@ -92,6 +101,7 @@ impl ClientState {
             groups,
             sessions,
             watcher,
+            debug: Arc::new(AtomicBool::new(debug)),
         })))
     }
 }
@@ -212,6 +222,65 @@ struct SearchMemoriesArgs {
     /// Optional maximum number of hits. Defaults to 50.
     #[serde(default)]
     pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct DebugToggleArgs {
+    /// Set to true to enable debug tools, false to disable.
+    pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct DebugReadFileArgs {
+    /// Group UUID.
+    pub group: String,
+    /// File path inside the repo (e.g. "memories/my-mem.md" or ".mmcp.toml").
+    pub path: String,
+    /// Optional revision (branch, tag, or commit hex). Defaults to main.
+    #[serde(default)]
+    pub rev: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct DebugListTreeArgs {
+    /// Group UUID.
+    pub group: String,
+    /// Path prefix to list under. Empty string for repo root.
+    #[serde(default)]
+    pub prefix: Option<String>,
+    /// Optional revision. Defaults to main.
+    #[serde(default)]
+    pub rev: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct DebugGitLogArgs {
+    /// Group UUID.
+    pub group: String,
+    /// Optional file path to filter history by. Defaults to .mmcp.toml.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Max commits to return. Defaults to 20.
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct DebugWriteFileArgs {
+    /// Group UUID.
+    pub group: String,
+    /// File path inside the repo.
+    pub path: String,
+    /// File content as a string.
+    pub content: String,
+    /// Optional commit message.
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 #[tool_router]
@@ -470,6 +539,172 @@ impl McpServer {
             "group": args.group,
         })))
     }
+
+    // ── Debug tools ─────────────────────────────────────────
+
+    #[tool(
+        description = "Enable or disable debug tools. Debug tools provide raw git access for troubleshooting. Pass enabled=true to activate, enabled=false to deactivate. Returns the new state."
+    )]
+    async fn debug_toggle(
+        &self,
+        Parameters(args): Parameters<DebugToggleArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.state.debug.store(args.enabled, Ordering::Relaxed);
+        Ok(ok_json(json!({
+            "debug": args.enabled,
+            "message": if args.enabled { "debug tools enabled" } else { "debug tools disabled" },
+        })))
+    }
+
+    #[tool(
+        description = "Read any file at any path in a group's git repo. Requires debug mode. Use for inspecting raw repo state."
+    )]
+    async fn debug_read_file(
+        &self,
+        Parameters(args): Parameters<DebugReadFileArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.require_debug()?;
+        let group_id = parse_group_id(&args.group)?;
+        let entry = self
+            .state
+            .groups
+            .get(&group_id)
+            .await
+            .ok_or_else(|| McpError::invalid_params("group not found", None))?;
+        let rev = parse_rev(args.rev.as_deref());
+        let bytes = self
+            .state
+            .backend
+            .read_file(&entry.handle, &args.path, &rev)
+            .await
+            .map_err(git_error)?;
+        let text = String::from_utf8_lossy(&bytes);
+        Ok(ok_json(json!({
+            "path": args.path,
+            "rev": rev_label(&rev),
+            "content": text,
+            "size_bytes": bytes.len(),
+        })))
+    }
+
+    #[tool(
+        description = "List all files (blobs) under a path prefix in a group's git repo. Requires debug mode."
+    )]
+    async fn debug_list_tree(
+        &self,
+        Parameters(args): Parameters<DebugListTreeArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.require_debug()?;
+        let group_id = parse_group_id(&args.group)?;
+        let entry = self
+            .state
+            .groups
+            .get(&group_id)
+            .await
+            .ok_or_else(|| McpError::invalid_params("group not found", None))?;
+        let rev = parse_rev(args.rev.as_deref());
+        let prefix = args.prefix.as_deref().unwrap_or("");
+        let files = self
+            .state
+            .backend
+            .list_tree(&entry.handle, prefix, &rev)
+            .await
+            .map_err(git_error)?;
+        Ok(ok_json(json!({
+            "prefix": prefix,
+            "rev": rev_label(&rev),
+            "files": files,
+            "count": files.len(),
+        })))
+    }
+
+    #[tool(
+        description = "Show raw git commit history for the entire repo or a specific path. Requires debug mode."
+    )]
+    async fn debug_git_log(
+        &self,
+        Parameters(args): Parameters<DebugGitLogArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.require_debug()?;
+        let group_id = parse_group_id(&args.group)?;
+        let entry = self
+            .state
+            .groups
+            .get(&group_id)
+            .await
+            .ok_or_else(|| McpError::invalid_params("group not found", None))?;
+        let path = args.path.as_deref().unwrap_or(mmcp_core::manifest::MANIFEST_FILENAME);
+        let history = self
+            .state
+            .backend
+            .walk_history(&entry.handle, path)
+            .await
+            .map_err(git_error)?;
+        let limit = args.limit.unwrap_or(20) as usize;
+        let commits: Vec<_> = history
+            .into_iter()
+            .take(limit)
+            .map(|c| {
+                json!({
+                    "id": c.id,
+                    "subject": c.subject,
+                    "author": c.author_name,
+                    "timestamp": c.timestamp,
+                })
+            })
+            .collect();
+        Ok(ok_json(json!({
+            "path": path,
+            "commits": commits,
+            "count": commits.len(),
+        })))
+    }
+
+    #[tool(
+        description = "Write any file at any path in a group's git repo. Requires debug mode. Use for low-level repairs."
+    )]
+    async fn debug_write_file(
+        &self,
+        Parameters(args): Parameters<DebugWriteFileArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.require_debug()?;
+        let group_id = parse_group_id(&args.group)?;
+        let entry = self
+            .state
+            .groups
+            .get(&group_id)
+            .await
+            .ok_or_else(|| McpError::invalid_params("group not found", None))?;
+        let commit_id = self
+            .state
+            .backend
+            .write_commit(
+                &entry.handle,
+                mmcp_git::CommitSpec::mmcp_commit(
+                    args.message.as_deref().unwrap_or("debug: write file"),
+                    vec![(args.path.clone(), Some(args.content.into_bytes()))],
+                ),
+            )
+            .await
+            .map_err(git_error)?;
+        Ok(ok_json(json!({
+            "path": args.path,
+            "commit_id": commit_id,
+        })))
+    }
+}
+
+impl McpServer {
+    fn require_debug(&self) -> Result<(), McpError> {
+        if self.state.debug.load(Ordering::Relaxed) {
+            Ok(())
+        } else {
+            Err(McpError::invalid_params(
+                "debug tools are disabled; call debug_toggle(enabled=true) first",
+                None,
+            ))
+        }
+    }
 }
 
 #[tool_handler]
@@ -619,7 +854,7 @@ mod tests {
     async fn test_state() -> (ClientState, TempDir) {
         let tmp = TempDir::new().expect("tempdir");
         let home = crate::home::MmcpHome::from_root(tmp.path().join("mmcp-home"));
-        let state = ClientState::initialize_from(home, None)
+        let state = ClientState::initialize_from(home, None, false)
             .await
             .expect("initialize_from");
         (state, tmp)

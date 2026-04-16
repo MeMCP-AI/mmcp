@@ -22,7 +22,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Run the MCP stdio server for AI clients to connect to.
-    Serve,
+    Serve {
+        /// Enable debug tools for raw git access.
+        #[arg(long, default_value_t = false)]
+        debug: bool,
+    },
 
     /// Initialize a new mmcp project in the current directory.
     Init,
@@ -97,7 +101,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Serve => commands::serve::run().await?,
+        Command::Serve { debug } => commands::serve::run(debug).await?,
         Command::Init => commands::init::run().await?,
         Command::Status => commands::status::run().await?,
         Command::Sync => commands::sync::run(true, true).await?,
