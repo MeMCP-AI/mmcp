@@ -4,7 +4,9 @@ use mmcp_db::entities::group::OwnerKind;
 use mmcp_db::entities::memory::MemoryKind;
 use mmcp_db::entities::membership::{GroupRole, PrincipalKind};
 use mmcp_db::entities::{memory_read, memory_version, membership};
-use mmcp_db::repository::{group_repo, memory_repo, org_repo, session_repo, user_repo};
+use mmcp_db::repository::{
+    group_repo, memory_repo, oauth_repo, org_repo, passkey_repo, session_repo, user_repo,
+};
 use mmcp_db::{Database, connect};
 use uuid::Uuid;
 
@@ -314,4 +316,230 @@ async fn memory_read_tracking_and_post_compaction() {
     session_repo::clear_post_compaction(conn, "sess-1").await.unwrap();
     let refreshed = session_repo::find(conn, "sess-1").await.unwrap().unwrap();
     assert!(!refreshed.post_compaction);
+}
+
+#[tokio::test]
+async fn oauth_account_create_find_and_update_tokens_round_trip() {
+    let db = fresh_database().await;
+    let conn = db.connection();
+
+    // OAuth rows foreign-key onto users; create one first.
+    let alice = Uuid::now_v7();
+    user_repo::create(
+        conn,
+        user_repo::NewUser {
+            id: alice,
+            handle: "alice".into(),
+            display_name: None,
+            password_hash: None,
+            email: Some("alice@example.com".into()),
+            created_at: 1,
+        },
+    )
+    .await
+    .unwrap();
+
+    let link_id = Uuid::now_v7();
+    oauth_repo::create(
+        conn,
+        oauth_repo::NewOauthAccount {
+            id: link_id,
+            user_id: alice,
+            provider: "github".into(),
+            provider_user_id: "octocat".into(),
+            email: Some("alice@example.com".into()),
+            access_token: Some("access-1".into()),
+            refresh_token: Some("refresh-1".into()),
+            created_at: 10,
+        },
+    )
+    .await
+    .expect("insert github link");
+
+    // Lookup by (provider, provider_user_id) — the login flow's path.
+    let by_provider = oauth_repo::find_by_provider(conn, "github", "octocat")
+        .await
+        .expect("query")
+        .expect("row present");
+    assert_eq!(by_provider.id, link_id);
+    assert_eq!(by_provider.user_id, alice);
+    assert_eq!(by_provider.access_token.as_deref(), Some("access-1"));
+
+    // Unknown (provider, provider_user_id) returns None — the first-
+    // time-signup path.
+    let missing = oauth_repo::find_by_provider(conn, "github", "nobody")
+        .await
+        .unwrap();
+    assert!(missing.is_none());
+
+    // All links for a user.
+    let user_links = oauth_repo::find_by_user(conn, alice).await.unwrap();
+    assert_eq!(user_links.len(), 1);
+
+    // Token refresh path advances both tokens and updated_at.
+    let refreshed = oauth_repo::update_tokens(
+        conn,
+        link_id,
+        Some("access-2".into()),
+        Some("refresh-2".into()),
+        20,
+    )
+    .await
+    .expect("update tokens");
+    assert_eq!(refreshed.access_token.as_deref(), Some("access-2"));
+    assert_eq!(refreshed.refresh_token.as_deref(), Some("refresh-2"));
+    assert_eq!(refreshed.updated_at, 20);
+
+    // Updating a non-existent link surfaces NotFound.
+    let missing_update = oauth_repo::update_tokens(
+        conn,
+        Uuid::now_v7(),
+        None,
+        None,
+        30,
+    )
+    .await;
+    assert!(matches!(missing_update, Err(mmcp_db::DbError::NotFound)));
+}
+
+#[tokio::test]
+async fn passkey_credential_create_find_update_and_delete_round_trip() {
+    let db = fresh_database().await;
+    let conn = db.connection();
+
+    let bob = Uuid::now_v7();
+    user_repo::create(
+        conn,
+        user_repo::NewUser {
+            id: bob,
+            handle: "bob".into(),
+            display_name: None,
+            password_hash: None,
+            email: None,
+            created_at: 1,
+        },
+    )
+    .await
+    .unwrap();
+
+    let cred_id = Uuid::now_v7();
+    passkey_repo::create(
+        conn,
+        cred_id,
+        bob,
+        "laptop".into(),
+        r#"{"counter":0}"#.into(),
+        10,
+    )
+    .await
+    .expect("insert passkey");
+
+    // Found by id.
+    let fetched = passkey_repo::find_by_id(conn, cred_id)
+        .await
+        .unwrap()
+        .expect("present");
+    assert_eq!(fetched.user_id, bob);
+    assert_eq!(fetched.name, "laptop");
+    assert!(fetched.last_used_at.is_none());
+
+    // Listed under the owner.
+    let user_creds = passkey_repo::find_by_user(conn, bob).await.unwrap();
+    assert_eq!(user_creds.len(), 1);
+
+    // After successful auth the counter in credential_json advances
+    // and last_used_at updates.
+    let updated = passkey_repo::update_after_auth(
+        conn,
+        cred_id,
+        r#"{"counter":1}"#.into(),
+        20,
+    )
+    .await
+    .expect("update after auth");
+    assert_eq!(updated.credential_json, r#"{"counter":1}"#);
+    assert_eq!(updated.last_used_at, Some(20));
+
+    // Updating a non-existent credential surfaces NotFound.
+    let missing = passkey_repo::update_after_auth(
+        conn,
+        Uuid::now_v7(),
+        "{}".into(),
+        30,
+    )
+    .await;
+    assert!(matches!(missing, Err(mmcp_db::DbError::NotFound)));
+
+    // Delete, then verify it's gone.
+    passkey_repo::delete(conn, cred_id).await.expect("delete");
+    let gone = passkey_repo::find_by_id(conn, cred_id).await.unwrap();
+    assert!(gone.is_none());
+
+    // Deleting an already-absent id is idempotent (no error).
+    passkey_repo::delete(conn, cred_id).await.expect("delete idempotent");
+}
+
+#[tokio::test]
+async fn user_lookup_by_id_and_require_and_update_profile() {
+    let db = fresh_database().await;
+    let conn = db.connection();
+
+    let carol = Uuid::now_v7();
+    user_repo::create(
+        conn,
+        user_repo::NewUser {
+            id: carol,
+            handle: "carol".into(),
+            display_name: None,
+            password_hash: None,
+            email: Some("carol@example.com".into()),
+            created_at: 1,
+        },
+    )
+    .await
+    .unwrap();
+
+    // Look up by primary id: present path.
+    let by_id = user_repo::find_by_id(conn, carol).await.unwrap().unwrap();
+    assert_eq!(by_id.handle, "carol");
+
+    // `require` returns the row for an existing id.
+    let required = user_repo::require(conn, carol).await.expect("require alice");
+    assert_eq!(required.id, carol);
+
+    // `require` surfaces NotFound for an unknown id rather than None.
+    let err = user_repo::require(conn, Uuid::now_v7()).await.unwrap_err();
+    assert!(matches!(err, mmcp_db::DbError::NotFound));
+
+    // `update_profile` writes display_name and rotates the password
+    // hash when supplied; the returned model reflects both changes.
+    let updated = user_repo::update_profile(
+        conn,
+        carol,
+        Some("Carol Q.".into()),
+        Some("hash-v2".into()),
+    )
+    .await
+    .expect("update profile");
+    assert_eq!(updated.display_name.as_deref(), Some("Carol Q."));
+    assert_eq!(updated.password_hash.as_deref(), Some("hash-v2"));
+
+    // Passing `None` for password_hash preserves the existing hash
+    // while still updating display_name — the "edit profile but not
+    // password" path.
+    let preserved = user_repo::update_profile(
+        conn,
+        carol,
+        Some("Carol Third".into()),
+        None,
+    )
+    .await
+    .expect("update profile without password");
+    assert_eq!(preserved.display_name.as_deref(), Some("Carol Third"));
+    assert_eq!(preserved.password_hash.as_deref(), Some("hash-v2"));
+
+    // Updating a non-existent user surfaces NotFound via the
+    // require() call inside update_profile.
+    let missing = user_repo::update_profile(conn, Uuid::now_v7(), None, None).await;
+    assert!(matches!(missing, Err(mmcp_db::DbError::NotFound)));
 }
