@@ -75,7 +75,7 @@ impl GitBackend for NativeBackend {
             .read_file(
                 repo,
                 mmcp_core::manifest::MANIFEST_FILENAME,
-                &Rev::Branch("main".to_string()),
+                &Rev::Branch(mmcp_core::conventions::MAIN_BRANCH.to_string()),
             )
             .await?;
         let text = std::str::from_utf8(&bytes)
@@ -93,16 +93,13 @@ impl GitBackend for NativeBackend {
             .map_err(|e| GitError::Gix(format!("manifest render: {e}")))?;
         self.write_commit(
             repo,
-            CommitSpec {
-                branch: "main".to_string(),
-                author_name: "mmcp".to_string(),
-                author_email: "mmcp@mmcp.invalid".to_string(),
-                message: "mmcp: initialize group manifest".to_string(),
-                files: vec![(
+            CommitSpec::mmcp_commit(
+                "mmcp: initialize group manifest",
+                vec![(
                     mmcp_core::manifest::MANIFEST_FILENAME.to_string(),
                     Some(rendered.into_bytes()),
                 )],
-            },
+            ),
         )
         .await
     }

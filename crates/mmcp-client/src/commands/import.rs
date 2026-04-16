@@ -95,16 +95,13 @@ pub async fn import_memory(
     let commit_id = backend
         .write_commit(
             handle,
-            CommitSpec {
-                branch: "main".to_string(),
-                author_name: "mmcp".to_string(),
-                author_email: "mmcp@mmcp.invalid".to_string(),
-                message: format!("import memory {slug}"),
-                files: vec![(
-                    format!("memories/{slug}.md"),
+            CommitSpec::mmcp_commit(
+                format!("import memory {slug}"),
+                vec![(
+                    mmcp_core::conventions::memory_path(slug),
                     Some(rendered.into_bytes()),
                 )],
-            },
+            ),
         )
         .await?;
 
@@ -135,7 +132,9 @@ pub fn validate_slug(slug: &str) -> Result<(), ImportError> {
 
 /// Derive a slug from a filename.
 pub fn slugify_filename(filename: &str) -> String {
-    let stem = filename.strip_suffix(".md").unwrap_or(filename);
+    let stem = filename
+        .strip_suffix(mmcp_core::conventions::MEMORY_EXTENSION)
+        .unwrap_or(filename);
     let mut slug = String::with_capacity(stem.len());
     for ch in stem.chars() {
         if ch.is_ascii_alphanumeric() {

@@ -9,6 +9,7 @@
 
 pub mod acl;
 pub mod config;
+pub mod conventions;
 pub mod id;
 pub mod identity;
 pub mod loadset;

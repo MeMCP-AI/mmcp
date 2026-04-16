@@ -111,11 +111,11 @@ async fn get_manifest(
                         .drain(..)
                         .next()
                         .map(|c| c.id)
-                        .unwrap_or_else(|| "0000000000000000000000000000000000000000".to_string()),
-                    Err(_) => "0000000000000000000000000000000000000000".to_string(),
+                        .unwrap_or_else(|| mmcp_core::conventions::ZERO_COMMIT.to_string()),
+                    Err(_) => mmcp_core::conventions::ZERO_COMMIT.to_string(),
                 }
             }
-            Err(_) => "0000000000000000000000000000000000000000".to_string(),
+            Err(_) => mmcp_core::conventions::ZERO_COMMIT.to_string(),
         };
         groups.push(RemoteGroup {
             group_id: row.id,
@@ -153,7 +153,7 @@ async fn get_refs(
     let mut refs = Vec::new();
     if let Some(tip) = main_tip {
         refs.push(RefEntry {
-            name: "refs/heads/main".to_string(),
+            name: mmcp_core::conventions::MAIN_BRANCH_REF.to_string(),
             commit: tip,
         });
     }

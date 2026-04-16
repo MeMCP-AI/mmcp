@@ -105,7 +105,10 @@ impl SyncEngine {
         // side was skipped so callers can explain it to users.
         let content_transferred = match group_handles.resolve(edit.memory) {
             Some(handle) => {
-                let refs = vec![RefSpec::new("refs/heads/main", "refs/heads/main")];
+                let refs = vec![RefSpec::new(
+                        mmcp_core::conventions::MAIN_BRANCH_REF,
+                        mmcp_core::conventions::MAIN_BRANCH_REF,
+                    )];
                 let remote_url = self.client.git_url_for(edit.memory);
                 match self.backend.push(&handle, &remote_url, &refs).await {
                     Ok(_) => true,
@@ -140,7 +143,10 @@ impl SyncEngine {
             match group_handles.resolve(remote.group_id) {
                 None => new_groups.push(remote),
                 Some(handle) => {
-                    let refs = vec![RefSpec::new("refs/heads/main", "refs/heads/main")];
+                    let refs = vec![RefSpec::new(
+                        mmcp_core::conventions::MAIN_BRANCH_REF,
+                        mmcp_core::conventions::MAIN_BRANCH_REF,
+                    )];
                     let remote_url = self.client.git_url_for(remote.group_id);
                     match self.backend.fetch(&handle, &remote_url, &refs).await {
                         Ok(()) => updated.push(remote),

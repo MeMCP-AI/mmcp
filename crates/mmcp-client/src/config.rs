@@ -5,10 +5,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use mmcp_core::config::ProjectConfig;
 
-/// Project-level manifest file name. Placed at the project root,
-/// matching the `.mmcp.toml` convention used inside group
-/// repositories.
-pub const PROJECT_MANIFEST: &str = ".mmcp.toml";
+/// Project-level manifest file name. Same as the group repo
+/// manifest - a single `.mmcp.toml` convention everywhere.
+pub use mmcp_core::manifest::MANIFEST_FILENAME as PROJECT_MANIFEST;
 
 /// Locate the project root by walking up from `start` until a
 /// `.mmcp.toml` file is found. Returns `None` when no ancestor

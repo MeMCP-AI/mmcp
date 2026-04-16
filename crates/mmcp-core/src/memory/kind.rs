@@ -36,6 +36,19 @@ pub enum MemoryKind {
 }
 
 impl MemoryKind {
+    /// The canonical string representation of this kind, matching
+    /// the serde `snake_case` serialization.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            MemoryKind::Rule => "rule",
+            MemoryKind::Snapshot => "snapshot",
+            MemoryKind::Log => "log",
+            MemoryKind::Reference => "reference",
+            MemoryKind::Scratch => "scratch",
+        }
+    }
+
     /// True if retrieval should attach a "content may be out of date"
     /// warning by default for this kind.
     #[must_use]

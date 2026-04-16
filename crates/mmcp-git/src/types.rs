@@ -107,6 +107,26 @@ pub struct CommitSpec {
     pub files: Vec<(String, Option<Vec<u8>>)>,
 }
 
+impl CommitSpec {
+    /// Build a commit authored by mmcp on the main branch.
+    ///
+    /// Centralizes the default author/branch so callers (import,
+    /// manifest init, etc.) never hardcode them.
+    #[must_use]
+    pub fn mmcp_commit(
+        message: impl Into<String>,
+        files: Vec<(String, Option<Vec<u8>>)>,
+    ) -> Self {
+        Self {
+            branch: mmcp_core::conventions::MAIN_BRANCH.to_string(),
+            author_name: mmcp_core::conventions::MMCP_AUTHOR_NAME.to_string(),
+            author_email: mmcp_core::conventions::MMCP_AUTHOR_EMAIL.to_string(),
+            message: message.into(),
+            files,
+        }
+    }
+}
+
 /// Report returned from a push operation.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PushReport {

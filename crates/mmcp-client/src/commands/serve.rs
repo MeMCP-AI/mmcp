@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use mmcp_core::id::GroupId;
-use mmcp_core::memory::{MemoryFile, MemoryFrontmatter, MemoryKind};
+use mmcp_core::memory::{MemoryFile, MemoryFrontmatter};
 use mmcp_git::{GitBackend, NativeBackend, Rev};
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
@@ -33,10 +33,8 @@ use uuid::Uuid;
 use crate::config::{PROJECT_MANIFEST, find_project_root};
 use crate::home::MmcpHome;
 use crate::state::{GroupEntry, GroupIndex, SessionStore, WatcherHandle, spawn_watcher};
-/// Subdirectory inside every group repo holding memory files.
-const MEMORIES_PATH_PREFIX: &str = "memories";
-/// File extension memory files use.
-const MEMORY_EXTENSION: &str = ".md";
+
+use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION};
 
 /// Run the MCP stdio server loop until the client disconnects.
 pub async fn run() -> Result<()> {
@@ -448,8 +446,8 @@ async fn list_memory_files(
     let files = backend
         .list_tree(
             &entry.handle,
-            MEMORIES_PATH_PREFIX,
-            &Rev::Branch("main".to_string()),
+            MEMORIES_DIR,
+            &Rev::Branch(mmcp_core::conventions::MAIN_BRANCH.to_string()),
         )
         .await
         .map_err(git_error)?;
@@ -475,7 +473,7 @@ async fn read_memory_descriptor(
         Ok(file) => (
             Some(file.frontmatter.name),
             Some(file.frontmatter.description),
-            kind_to_string(file.frontmatter.kind).to_string(),
+            file.frontmatter.kind.as_str().to_string(),
             file.frontmatter.mandatory,
             file.frontmatter.version.map(|v| v.to_string()),
             file.frontmatter.tags,
@@ -506,7 +504,7 @@ fn parse_group_id(value: &str) -> Result<GroupId, McpError> {
 
 fn parse_rev(value: Option<&str>) -> Rev {
     match value {
-        None => Rev::Branch("main".to_string()),
+        None => Rev::Branch(mmcp_core::conventions::MAIN_BRANCH.to_string()),
         Some(v) => {
             // Heuristic: 40-char hex string -> commit, otherwise branch.
             if v.len() == 40 && v.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -527,28 +525,19 @@ fn rev_label(rev: &Rev) -> String {
 }
 
 fn memory_path(slug: &str) -> String {
-    format!("{MEMORIES_PATH_PREFIX}/{slug}{MEMORY_EXTENSION}")
+    mmcp_core::conventions::memory_path(slug)
 }
 
 fn git_error(err: mmcp_git::GitError) -> McpError {
     McpError::internal_error(Cow::Owned(format!("git error: {err}")), None)
 }
 
-fn kind_to_string(kind: MemoryKind) -> &'static str {
-    match kind {
-        MemoryKind::Rule => "rule",
-        MemoryKind::Snapshot => "snapshot",
-        MemoryKind::Log => "log",
-        MemoryKind::Reference => "reference",
-        MemoryKind::Scratch => "scratch",
-    }
-}
 
 fn frontmatter_to_json(fm: &MemoryFrontmatter) -> serde_json::Value {
     json!({
         "name": fm.name,
         "description": fm.description,
-        "kind": kind_to_string(fm.kind),
+        "kind": fm.kind.as_str(),
         "mandatory": fm.mandatory,
         "version": fm.version.as_ref().map(|v| v.to_string()),
         "tags": fm.tags,
@@ -610,12 +599,12 @@ mod tests {
             .write_commit(
                 &handle,
                 CommitSpec {
-                    branch: "main".to_string(),
+                    branch: mmcp_core::conventions::MAIN_BRANCH.to_string(),
                     author_name: "test".into(),
                     author_email: "test@example.com".into(),
                     message: format!("seed memory {memory_slug}"),
                     files: vec![(
-                        format!("{MEMORIES_PATH_PREFIX}/{memory_slug}{MEMORY_EXTENSION}"),
+                        format!("{MEMORIES_DIR}/{memory_slug}{MEMORY_EXTENSION}"),
                         Some(memory_body.as_bytes().to_vec()),
                     )],
                 },
