@@ -7,3 +7,17 @@
 /target
 **/*.rs.bk
 Cargo.lock.bak
+
+# cargo-mutants scratch output.
+# Current run lands in `mutants.out/`; previous run rotates to
+# `mutants.out.old/` on each fresh invocation. Both are machine-
+# generated and should never be tracked.
+mutants.out
+mutants.out.old
+
+# cargo-llvm-cov profile/HTML output. Regenerated on every run; the
+# summary is what lands in commits, the scratch data does not.
+target/llvm-cov-target
+target/llvm-cov/
+*.profraw
+/lcov.info

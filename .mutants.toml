@@ -1,0 +1,48 @@
+# cargo-mutants configuration for the mmcp workspace.
+#
+# cargo-mutants introduces small semantic mutations ("mutants") into
+# the source, then runs the test suite against each to check whether
+# any existing test catches the change. Surviving mutants point at
+# under-tested code paths; passing mutants confirm the tests are
+# actually load-bearing.
+#
+# Tune carefully: a noisy run (false-positive survivors from binary
+# entry points, SeaORM entity boilerplate, etc.) drowns out the real
+# signal. The exclusions below target code that is either pure
+# scaffolding or cannot be meaningfully mutated without the
+# mutation producing an unrunnable state.
+
+# Skip whole files that cargo-mutants would spend budget on without
+# producing actionable findings:
+#
+# - `main.rs` entry points are `#[tokio::main] async fn main()` and a
+#   `match cli.command { … }` dispatch. Mutating the dispatch produces
+#   panics that every smoke test already catches; mutating the
+#   runtime line produces an unbuildable binary.
+# - `crates/mmcp-db/src/entities/**` is SeaORM-generated data. Its
+#   fields are definitions, not logic.
+# - `webui/**` is a separate Cargo project excluded from this workspace
+#   and already has its own test story.
+exclude_globs = [
+    "crates/*/src/main.rs",
+    "crates/mmcp-db/src/entities/**",
+    "webui/**",
+]
+
+# Keep tests out of the mutation set even though they are not
+# technically `src/` files — the default already does this, listed
+# here for documentation.
+examine_globs = [
+    "crates/*/src/**/*.rs",
+]
+
+# `build_timeout_multiplier` and `test_timeout_multiplier` scale the
+# baseline build/test wall-clock so flaky tests don't flag as
+# caught-by-timeout. The workspace has DB and git I/O tests that run
+# 5+ seconds; leave some headroom.
+build_timeout_multiplier = 2.0
+test_timeout_multiplier = 3.0
+
+# Only run the workspace test suite for each mutant. Running doc
+# tests on every mutant triples wall-clock for no added signal.
+additional_cargo_test_args = ["--lib", "--tests"]
