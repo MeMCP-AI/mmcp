@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-exclude = ["webui"]
+# `webui` is a separate Cargo project (Leptos SSR) with its own
+# workspace. The `crates/*/fuzz` directories each hold a
+# cargo-fuzz harness whose `libfuzzer-sys` dep only compiles under
+# libFuzzer on Linux/macOS; excluding them keeps workspace-wide
+# `cargo check` / `cargo test` cross-platform.
+exclude = ["webui", "crates/mmcp-core/fuzz"]
 members = [
     "crates/mmcp-core",
     "crates/mmcp-git",
