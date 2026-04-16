@@ -18,6 +18,24 @@
 
 **Status**: Open.
 
+### FR-005: Health + Diagnose tools (2026-04-16) - RESOLVED
+
+**Need**: Way to validate manifest and memory file integrity, both surface-level and in-depth.
+
+**Status**: Resolved. Two-level system delivered: `check_health` (surface errors only) and `diagnose` (deep analysis with info/warning hints across per-group + project-level concerns). Never auto-fixes - diagnostics only.
+
+### FR-006: Universal frontmatter support (2026-04-16) - RESOLVED
+
+**Need**: Memory files should accept any of TOML/YAML/JSON frontmatter, not just TOML `+++`.
+
+**Status**: Resolved via gray_matter crate. Read auto-detects TOML `+++`, YAML `---`, JSON `---`, TOML `---`. Write preserves original format. Explicit `normalize()` for TOML conversion.
+
+### FR-007: Feature request tracking integrated into mmcp (2026-04-17)
+
+**Need**: FRs currently live in flat markdown files under `mcp/<server>/fr.md` at the project root. Once mmcp stabilizes, these could live as memories in a dedicated "mmcp-feedback" group synced to the mmcp-server so FRs survive across machines and can be queried via the MCP itself.
+
+**Status**: Open. Waiting for server deployment.
+
 ### FR-004: Debug/raw access tools (2026-04-16) - RESOLVED
 
 **Need**: Sometimes need raw git access for troubleshooting - read/write arbitrary files, list tree, inspect commits.
