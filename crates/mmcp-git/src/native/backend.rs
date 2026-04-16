@@ -99,6 +99,8 @@ impl GitBackend for NativeBackend {
                     mmcp_core::manifest::MANIFEST_FILENAME.to_string(),
                     Some(rendered.into_bytes()),
                 )],
+                mmcp_core::conventions::MMCP_AUTHOR_NAME,
+                mmcp_core::conventions::MMCP_AUTHOR_EMAIL,
             ),
         )
         .await

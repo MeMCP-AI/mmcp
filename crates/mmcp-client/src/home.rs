@@ -13,10 +13,23 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
+use mmcp_core::config::UserConfig;
+
 /// Subdirectory names within the mmcp home.
 const DEFAULT_MMCP_DIR: &str = ".mmcp";
 const REPOS_SUBDIR: &str = "repos";
 const SESSIONS_SUBDIR: &str = "sessions";
+const USER_CONFIG_FILE: &str = "config.toml";
+
+/// Resolved commit author identity.
+///
+/// Built by [`MmcpHome::resolve_author`] using the three-tier
+/// cascade: user config -> git config (if opted in) -> fallback.
+#[derive(Debug, Clone)]
+pub struct ResolvedAuthor {
+    pub name: String,
+    pub email: String,
+}
 
 /// Resolved mmcp home directory layout.
 ///
@@ -68,6 +81,58 @@ impl MmcpHome {
         self.root.join(SESSIONS_SUBDIR)
     }
 
+    /// Path to the user-level config file (`~/.mmcp/config.toml`).
+    pub fn user_config_path(&self) -> PathBuf {
+        self.root.join(USER_CONFIG_FILE)
+    }
+
+    /// Load the user-level config. Returns `UserConfig::default()`
+    /// if the file does not exist.
+    pub fn load_user_config(&self) -> Result<UserConfig> {
+        let path = self.user_config_path();
+        if !path.exists() {
+            return Ok(UserConfig::default());
+        }
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
+        UserConfig::from_toml(&text)
+            .map_err(|e| anyhow::anyhow!("parsing {}: {e}", path.display()))
+    }
+
+    /// Resolve the commit author using the three-tier cascade:
+    ///
+    /// 1. `~/.mmcp/config.toml` `[author].name` / `[author].email`
+    /// 2. `git config --global user.name/email` (only if `git_fallback == true`)
+    /// 3. Hardcoded constants (final fallback)
+    pub fn resolve_author(&self) -> ResolvedAuthor {
+        let cfg = self.load_user_config().unwrap_or_default();
+        let author_cfg = cfg.author.as_ref();
+
+        let mut name: Option<String> = author_cfg.and_then(|a| a.name.clone());
+        let mut email: Option<String> = author_cfg.and_then(|a| a.email.clone());
+
+        // Tier 2: git config, only if explicitly opted in
+        let git_fallback = author_cfg.and_then(|a| a.git_fallback).unwrap_or(false);
+        if git_fallback && (name.is_none() || email.is_none()) {
+            if name.is_none() {
+                name = read_git_config("user.name");
+            }
+            if email.is_none() {
+                email = read_git_config("user.email");
+            }
+        }
+
+        // Tier 3: hardcoded fallback
+        ResolvedAuthor {
+            name: name.unwrap_or_else(|| {
+                mmcp_core::conventions::MMCP_AUTHOR_NAME.to_string()
+            }),
+            email: email.unwrap_or_else(|| {
+                mmcp_core::conventions::MMCP_AUTHOR_EMAIL.to_string()
+            }),
+        }
+    }
+
     /// Initialize a `NativeBackend` and `GroupIndex` from this home.
     ///
     /// This is the canonical way to get a ready-to-use git backend
@@ -91,6 +156,22 @@ impl MmcpHome {
             })?;
         Ok((backend, groups))
     }
+}
+
+/// Read a single value from git's global config.
+/// Returns `None` if git is not installed or the key is unset.
+fn read_git_config(key: &str) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("config")
+        .arg("--global")
+        .arg(key)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if value.is_empty() { None } else { Some(value) }
 }
 
 /// Resolve the user's home directory from environment variables.

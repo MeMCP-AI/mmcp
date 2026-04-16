@@ -65,6 +65,7 @@ pub async fn import_memory(
     slug: &str,
     content: &str,
     synth_frontmatter: Option<SynthFrontmatter>,
+    author: &crate::home::ResolvedAuthor,
 ) -> Result<ImportResult, ImportError> {
     validate_slug(slug)?;
 
@@ -100,6 +101,8 @@ pub async fn import_memory(
                     mmcp_core::conventions::memory_path(slug),
                     Some(rendered.into_bytes()),
                 )],
+                &author.name,
+                &author.email,
             ),
         )
         .await?;
@@ -197,6 +200,7 @@ pub async fn run(
 ) -> Result<()> {
     let mmcp_home = crate::home::MmcpHome::discover()?;
     let (backend, group_index) = mmcp_home.init_backend().await?;
+    let author = mmcp_home.resolve_author();
 
     let entry = resolve_group(&group_index, &group)
         .await
@@ -222,7 +226,7 @@ pub async fn run(
                     .unwrap_or("unnamed"),
             )
         });
-        let result = import_memory(&backend, &entry.handle, &slug, &content, synth).await?;
+        let result = import_memory(&backend, &entry.handle, &slug, &content, synth, &author).await?;
         println!("imported {} (commit {})", result.slug, result.commit_id);
     } else if let Some(dir_path) = dir {
         let mut count = 0;
@@ -246,7 +250,7 @@ pub async fn run(
             );
             let content = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
-            match import_memory(&backend, &entry.handle, &slug, &content, synth.clone()).await {
+            match import_memory(&backend, &entry.handle, &slug, &content, synth.clone(), &author).await {
                 Ok(result) => {
                     println!("imported {} (commit {})", result.slug, result.commit_id);
                     count += 1;
@@ -270,6 +274,13 @@ mod tests {
     use std::sync::Arc;
     use mmcp_core::manifest::GroupManifest;
     use tempfile::TempDir;
+
+    fn test_author() -> crate::home::ResolvedAuthor {
+        crate::home::ResolvedAuthor {
+            name: "test".to_string(),
+            email: "test@test.invalid".to_string(),
+        }
+    }
 
     async fn test_backend() -> (Arc<NativeBackend>, RepoHandle, TempDir) {
         let tmp = TempDir::new().expect("tempdir");
@@ -319,7 +330,8 @@ mod tests {
     async fn import_with_frontmatter_succeeds() {
         let (backend, handle, _tmp) = test_backend().await;
         let content = "+++\nname = \"test\"\ndescription = \"a test\"\nkind = \"rule\"\n+++\n\nBody here.\n";
-        let result = import_memory(&backend, &handle, "test-mem", content, None)
+        let author = test_author();
+        let result = import_memory(&backend, &handle, "test-mem", content, None, &author)
             .await
             .expect("import");
         assert_eq!(result.slug, "test-mem");
@@ -329,13 +341,14 @@ mod tests {
     #[tokio::test]
     async fn import_with_synth_frontmatter_succeeds() {
         let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
         let content = "Just plain markdown body.\n";
         let synth = Some(SynthFrontmatter {
             name: "plain".to_string(),
             description: "imported plain".to_string(),
             kind: MemoryKind::Reference,
         });
-        let result = import_memory(&backend, &handle, "plain-mem", content, synth)
+        let result = import_memory(&backend, &handle, "plain-mem", content, synth, &author)
             .await
             .expect("import");
         assert_eq!(result.slug, "plain-mem");
@@ -344,8 +357,9 @@ mod tests {
     #[tokio::test]
     async fn import_without_frontmatter_or_synth_fails() {
         let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
         let content = "No frontmatter here.\n";
-        let err = import_memory(&backend, &handle, "bad", content, None)
+        let err = import_memory(&backend, &handle, "bad", content, None, &author)
             .await
             .unwrap_err();
         assert!(matches!(err, ImportError::MissingFrontmatter));
@@ -354,8 +368,9 @@ mod tests {
     #[tokio::test]
     async fn import_then_read_round_trips() {
         let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
         let content = "+++\nname = \"rt\"\ndescription = \"round trip\"\nkind = \"rule\"\nmandatory = true\ntags = [\"test\"]\n+++\n\nRound trip body.\n";
-        import_memory(&backend, &handle, "rt-test", content, None)
+        import_memory(&backend, &handle, "rt-test", content, None, &author)
             .await
             .expect("import");
 

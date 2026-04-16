@@ -382,12 +382,92 @@ pub async fn diagnose_all(
     }
 }
 
-/// Check project-level configuration for issues.
+/// Check project-level and user-level configuration for issues.
 fn check_project_config(issues: &mut Vec<Issue>) {
+    // User-level config
+    let home = crate::home::MmcpHome::discover().ok();
+    let user_cfg = home
+        .as_ref()
+        .and_then(|h| h.load_user_config().ok())
+        .unwrap_or_default();
+
+    if home.as_ref().is_none_or(|h| !h.user_config_path().exists()) {
+        issues.push(Issue {
+            group: "(user)".to_string(),
+            slug: None,
+            severity: "warning",
+            message: "no user config at ~/.mmcp/config.toml - create one to set author identity and default sync server".to_string(),
+        });
+    } else {
+        // Check author config
+        match user_cfg.author.as_ref() {
+            None => {
+                issues.push(Issue {
+                    group: "(user)".to_string(),
+                    slug: None,
+                    severity: "warning",
+                    message: "[author] section missing in user config".to_string(),
+                });
+            }
+            Some(author) => {
+                match author.git_fallback {
+                    None => {
+                        issues.push(Issue {
+                            group: "(user)".to_string(),
+                            slug: None,
+                            severity: "warning",
+                            message: "author.git_fallback not set - set to true (use git identity) or false (use mmcp fallback)".to_string(),
+                        });
+                    }
+                    Some(true) => {
+                        // Check if git config actually has values
+                        if author.name.is_none() {
+                            let git_name = std::process::Command::new("git")
+                                .args(["config", "--global", "user.name"])
+                                .output()
+                                .ok()
+                                .filter(|o| o.status.success())
+                                .and_then(|o| {
+                                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                                    if s.is_empty() { None } else { Some(s) }
+                                });
+                            if git_name.is_none() {
+                                issues.push(Issue {
+                                    group: "(user)".to_string(),
+                                    slug: None,
+                                    severity: "warning",
+                                    message: "git_fallback=true but git config user.name is empty".to_string(),
+                                });
+                            }
+                        }
+                    }
+                    Some(false) => {
+                        // Explicit opt-out: respected silently, no warning
+                    }
+                }
+            }
+        }
+    }
+
+    // Check sync: user config OR project config must have it
+    let user_has_sync = user_cfg.sync.is_some();
+
+    // Project-level config
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
-        Err(_) => return,
+        Err(_) => {
+            if !user_has_sync {
+                issues.push(Issue {
+                    group: "(project)".to_string(),
+                    slug: None,
+                    severity: "warning",
+                    message: "no [sync] server configured in user or project config".to_string(),
+                });
+            }
+            return;
+        }
     };
+
     match crate::config::find_project_root(&cwd) {
         None => {
             issues.push(Issue {
@@ -396,6 +476,14 @@ fn check_project_config(issues: &mut Vec<Issue>) {
                 severity: "warning",
                 message: "no .mmcp.toml project config found in current directory or any parent".to_string(),
             });
+            if !user_has_sync {
+                issues.push(Issue {
+                    group: "(project)".to_string(),
+                    slug: None,
+                    severity: "warning",
+                    message: "no [sync] server configured anywhere - push/pull will not work".to_string(),
+                });
+            }
         }
         Some(root) => {
             match crate::config::load(&root) {
@@ -408,12 +496,12 @@ fn check_project_config(issues: &mut Vec<Issue>) {
                     });
                 }
                 Ok(cfg) => {
-                    if cfg.sync.is_none() {
+                    if cfg.sync.is_none() && !user_has_sync {
                         issues.push(Issue {
                             group: "(project)".to_string(),
                             slug: None,
                             severity: "warning",
-                            message: "no [sync] server configured - push/pull will not work".to_string(),
+                            message: "no [sync] server configured in user or project config - push/pull will not work".to_string(),
                         });
                     }
                 }

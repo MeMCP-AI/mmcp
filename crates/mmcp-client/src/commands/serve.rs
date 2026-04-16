@@ -60,6 +60,8 @@ struct ClientStateInner {
     sessions: SessionStore,
     #[allow(dead_code)] // NOTE: held to keep the notify watcher alive for the process lifetime.
     watcher: WatcherHandle,
+    /// Resolved commit author from user config cascade.
+    author: crate::home::ResolvedAuthor,
     /// Debug mode flag. When true, raw git access tools are enabled.
     /// Can be toggled at runtime via the `debug_toggle` tool.
     debug: Arc<AtomicBool>,
@@ -96,11 +98,14 @@ impl ClientState {
         let watcher = spawn_watcher(home.repos_root(), project_config_path, groups.clone())
             .context("spawning filesystem watcher")?;
 
+        let author = home.resolve_author();
+
         Ok(Self(Arc::new(ClientStateInner {
             backend,
             groups,
             sessions,
             watcher,
+            author,
             debug: Arc::new(AtomicBool::new(debug)),
         })))
     }
@@ -538,6 +543,7 @@ impl McpServer {
             &args.slug,
             &rendered,
             None,
+            &self.state.author,
         )
         .await
         .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
@@ -754,6 +760,8 @@ impl McpServer {
                 mmcp_git::CommitSpec::mmcp_commit(
                     args.message.as_deref().unwrap_or("debug: write file"),
                     vec![(args.path.clone(), Some(args.content.into_bytes()))],
+                    &self.state.author.name,
+                    &self.state.author.email,
                 ),
             )
             .await

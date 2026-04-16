@@ -10,6 +10,8 @@
 
 mod error;
 mod project;
+pub mod user;
 
 pub use error::ConfigError;
 pub use project::{GroupsConfig, LanguagesConfig, ProjectConfig, SyncConfig};
+pub use user::{AuthorConfig, DefaultsConfig, UserConfig};
