@@ -16,7 +16,7 @@ use std::path::PathBuf;
 /// | `MMCP_TOKEN_KEY_HEX`              | random 32 bytes on start |
 /// | `MMCP_OAUTH_GITHUB_CLIENT_ID`     | (absent = disabled)      |
 /// | `MMCP_OAUTH_GITHUB_CLIENT_SECRET` | (absent = disabled)      |
-/// | `MMCP_ORIGIN`                     | `http://127.0.0.1:8787`  |
+/// | `MMCP_ORIGIN`                     | `http://localhost:<port>`|
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub bind: SocketAddr,
@@ -55,7 +55,7 @@ impl ServerConfig {
     where
         F: Fn(&str) -> Option<String>,
     {
-        let bind = get("MMCP_BIND")
+        let bind: SocketAddr = get("MMCP_BIND")
             .unwrap_or_else(|| "127.0.0.1:8787".to_string())
             .parse()
             .unwrap_or_else(|_| "127.0.0.1:8787".parse().unwrap());
@@ -68,7 +68,13 @@ impl ServerConfig {
             .as_deref()
             .and_then(parse_hex_key)
             .unwrap_or_else(random_key);
-        let origin = get("MMCP_ORIGIN").unwrap_or_else(|| format!("http://{bind}"));
+        // Fallback origin intentionally uses `localhost` (not the
+        // bind IP) because the WebAuthn RP ID is derived from the
+        // origin's host and the spec rejects IP literals. Production
+        // deployments set `MMCP_ORIGIN` to their public hostname;
+        // `cargo run` just needs something that boots.
+        let origin =
+            get("MMCP_ORIGIN").unwrap_or_else(|| format!("http://localhost:{}", bind.port()));
 
         let mut oauth_providers = Vec::new();
         if let (Some(id), Some(secret)) = (
@@ -134,7 +140,7 @@ mod tests {
         assert_eq!(cfg.bind.to_string(), "127.0.0.1:8787");
         assert_eq!(cfg.database_url, "sqlite::memory:");
         assert_eq!(cfg.repo_root, PathBuf::from("data/repos"));
-        assert_eq!(cfg.origin, "http://127.0.0.1:8787");
+        assert_eq!(cfg.origin, "http://localhost:8787");
         assert!(cfg.oauth_providers.is_empty());
         // A fallback key is still 32 bytes — only the bit pattern is
         // machine-dependent (OS CSPRNG), so we only check length.
@@ -154,9 +160,21 @@ mod tests {
     }
 
     #[test]
-    fn origin_defaults_from_bind_when_override_absent() {
+    fn origin_defaults_to_localhost_and_inherits_bind_port() {
+        // Bind may be a loopback/wildcard IP, but the derived origin
+        // always uses `localhost` because WebAuthn rejects IP-literal
+        // RP IDs.
         let cfg = from_map(&[("MMCP_BIND", "0.0.0.0:9000")]);
-        assert_eq!(cfg.origin, "http://0.0.0.0:9000");
+        assert_eq!(cfg.origin, "http://localhost:9000");
+    }
+
+    #[test]
+    fn explicit_origin_override_wins_over_bind_derived_default() {
+        let cfg = from_map(&[
+            ("MMCP_BIND", "0.0.0.0:9000"),
+            ("MMCP_ORIGIN", "https://mmcp.example.com"),
+        ]);
+        assert_eq!(cfg.origin, "https://mmcp.example.com");
     }
 
     #[test]
