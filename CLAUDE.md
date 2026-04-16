@@ -1,13 +1,13 @@
 # CLAUDE.md
 
-## CRITICAL: Serena MCP Availability — HARD REQUIREMENT
+## CRITICAL: MMCP MCP Availability — HARD REQUIREMENT
 
-**If Serena MCP is unavailable, STOP IMMEDIATELY. Do NOT continue any work. Do NOT attempt workarounds.**
-Serena is MANDATORY for this project. There are ZERO exceptions. If Serena tools cannot be reached, inform the user and halt ALL operations until Serena is restored. No code may be written, no files may be created, no tasks may proceed without Serena.
+**If MMCP MCP is unavailable, STOP IMMEDIATELY. Do NOT continue any work. Do NOT attempt workarounds.**
+MMCP is MANDATORY for this project. There are ZERO exceptions. If MMCP tools cannot be reached, inform the user and halt ALL operations until MMCP is restored. No code may be written, no files may be created, no tasks may proceed without MMCP.
 
-## MANDATORY: Serena Memory System — Full Context Loading
+## MANDATORY: MMCP Memory System — Full Context Loading
 
-This project uses **Serena MCP memories** as the single source of truth for ALL development rules, conventions, and project knowledge.
+This project uses **MMCP MCP memories** as the single source of truth for ALL development rules, conventions, and project knowledge.
 
 **At the start of EVERY session, execute the following steps IN ORDER. ALL steps are MANDATORY. NONE may be skipped.**
 
@@ -43,8 +43,8 @@ This project uses **Serena MCP memories** as the single source of truth for ALL 
 - `*/*.md` - Project-specific knowledge for this emulator
 - `project_` - Project-specific knowledge (legacy prefix, same as above)
 
-**All rules, conventions, architecture details, and commands live in Serena memories.**
+**All rules, conventions, architecture details, and commands live in MMCP memories.**
 
-Do NOT add rules to this file - create or update Serena memories instead.
+Do NOT add rules to this file - create or update MMCP memories instead.
 
 FINALLY : NEVER TRUST COMPACTION REPORT !
