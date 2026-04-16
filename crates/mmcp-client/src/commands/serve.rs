@@ -563,15 +563,46 @@ impl McpServer {
                 .get(&group_id)
                 .await
                 .ok_or_else(|| McpError::invalid_params("group not found", None))?;
-            vec![crate::commands::health::check_group(&self.state.backend, &entry).await]
+            vec![crate::commands::health::health_check_group(&self.state.backend, &entry).await]
         } else {
-            crate::commands::health::check_all(&self.state.backend, &self.state.groups).await
+            crate::commands::health::health_check_all(&self.state.backend, &self.state.groups).await
         };
         let total_issues: usize = reports.iter().map(|r| r.issues.len()).sum();
         Ok(ok_json(json!({
             "groups": reports,
             "total_issues": total_issues,
             "healthy": total_issues == 0,
+        })))
+    }
+
+    #[tool(
+        description = "Deep diagnostic analysis of a group's memories. Everything check_health does plus: missing tags, empty bodies, naming drift, empty groups, UUID mismatches, created_at sanity, cross-group duplicate slugs, and structural hints. Severity levels: error, warning, info."
+    )]
+    async fn diagnose(
+        &self,
+        Parameters(args): Parameters<CheckHealthArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let reports = if let Some(ref group_str) = args.group {
+            let group_id = parse_group_id(group_str)?;
+            let entry = self
+                .state
+                .groups
+                .get(&group_id)
+                .await
+                .ok_or_else(|| McpError::invalid_params("group not found", None))?;
+            vec![crate::commands::health::diagnose_group(&self.state.backend, &entry).await]
+        } else {
+            crate::commands::health::diagnose_all(&self.state.backend, &self.state.groups).await
+        };
+        let errors: usize = reports.iter().flat_map(|r| &r.issues).filter(|i| i.severity == "error").count();
+        let warnings: usize = reports.iter().flat_map(|r| &r.issues).filter(|i| i.severity == "warning").count();
+        let infos: usize = reports.iter().flat_map(|r| &r.issues).filter(|i| i.severity == "info").count();
+        Ok(ok_json(json!({
+            "groups": reports,
+            "errors": errors,
+            "warnings": warnings,
+            "infos": infos,
+            "healthy": errors == 0,
         })))
     }
 

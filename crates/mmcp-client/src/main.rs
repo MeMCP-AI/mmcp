@@ -43,9 +43,18 @@ enum Command {
     /// Push pending local edits to the remote server.
     Push,
 
-    /// Validate manifests and memory files across all groups.
+    /// Quick health check: manifests parse, memories parse, no errors.
     Check {
         /// Check only this group (UUID or slug). All groups if omitted.
+        #[arg(long)]
+        group: Option<String>,
+    },
+
+    /// Deep diagnostic analysis: everything health checks plus
+    /// missing fields, naming drift, empty groups, cross-group
+    /// duplicates, and structural hints.
+    Diagnose {
+        /// Diagnose only this group (UUID or slug). All groups if omitted.
         #[arg(long)]
         group: Option<String>,
     },
@@ -109,7 +118,8 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Serve { debug } => commands::serve::run(debug).await?,
-        Command::Check { group } => commands::health::run(group).await?,
+        Command::Check { group } => commands::health::run_check(group).await?,
+        Command::Diagnose { group } => commands::health::run_diagnose(group).await?,
         Command::Init => commands::init::run().await?,
         Command::Status => commands::status::run().await?,
         Command::Sync => commands::sync::run(true, true).await?,
