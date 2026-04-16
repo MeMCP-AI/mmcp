@@ -46,3 +46,33 @@
 - `debug_write_file(group, path, content, message?)` - write any file
 - `debug_list_tree(group, prefix?, rev?)` - list blobs
 - `debug_git_log(group, path?, limit?)` - raw commit history
+
+### FR-008: `bootstrap_context` tool + server-instruction delivery (2026-04-17) - RESOLVED
+
+**Need**: The AI had no single entry point to load its mandatory + project-scoped memories at session start. Slug names and project-stack "YES/NO" flags lived in CLAUDE.md which drifted against the real memory store. Needed a tool-driven bootstrap where the server decides what to load, based on frontmatter flags and project config, and CLAUDE.md becomes a pointer.
+
+**Status**: Resolved. `bootstrap_context(scope?)` returns memories with bodies inline; `all`/`mandatory`/`project` scopes. Emits structured diagnostics (`claude_md_missing` / `claude_md_unmanaged` / `claude_md_stale`) suggesting `init_claude` when appropriate. Session-start protocol moved into `get_info().instructions` so every MCP client sees the checkpoint list on handshake.
+
+### FR-009: `init_claude` tool + `mmcp init claude` CLI (2026-04-17) - RESOLVED
+
+**Need**: No programmatic way to generate, append to, or convert CLAUDE.md. Hand-editing produced drift against the real tool surface (wrong slug casing, wrong project flags). Needed a managed file with a versioned fence so mmcp updates can upgrade the block atomically.
+
+**Status**: Resolved. `init_claude(action, backup?, dry_run?, on_conflict?, path?)` and `mmcp init claude [--override|--convert|--append]`. Convert splits content into typed memories (not a single-blob import). Fenced block `<!-- mmcp:begin v1 --> ... <!-- mmcp:end v1 -->` with DO-NOT-EDIT marker. Structured `conflict_unresolved` error when file is dirty/untracked — shape matches future MCP elicitation exchange.
+
+### FR-010: Enumerate groups tool (2026-04-17)
+
+**Need**: `list_memories` and `group_info` both require a group UUID up front, but there is no pure "list all groups the caller has access to" MCP tool. `bootstrap_context` now returns groups implicitly (via the memories it surfaces), but a standalone `list_groups` would simplify admin flows and exploration from an AI session that hasn't been bootstrapped yet.
+
+**Status**: Open. `bootstrap_context` partially addresses this, but an explicit `list_groups(owner_scope?)` would be clearer and cheaper (no memory body fetches).
+
+### FR-011: MCP elicitation support for conflict resolution (2026-04-17)
+
+**Need**: `init_claude` currently returns a structured `conflict_unresolved` error when the target file is dirty/untracked and `on_conflict` is not pre-supplied. This forces a retry-with-answer pattern on the caller. When rmcp exposes `ElicitationRequest`, swap the error for a live prompt so the AI can answer synchronously mid-tool-call. Wire contract (choice enum: `override` / `backup_override` / `cancel`) already matches elicitation schema shape.
+
+**Status**: Open. Blocked on rmcp exposing elicitation. Internal refactor only; external API stays stable.
+
+### FR-012: `list_groups` / `enumerate_groups` for bootstrapping without cwd (2026-04-17)
+
+**Need**: `bootstrap_context` discovers the project group by reading `.mmcp.toml` from the MCP server's current working directory. That's correct for the common case but fragile: if the server is launched from a different cwd than the project, the project_uuid resolution fails silently and `scope=project` returns empty. Consider accepting an optional explicit `project_root` arg, or an explicit `project_uuid`, in `bootstrap_context`.
+
+**Status**: Open.

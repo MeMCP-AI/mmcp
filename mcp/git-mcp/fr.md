@@ -25,3 +25,9 @@
 ### FR-006: Commit message linting / trailer validation (2026-04-16)
 
 **Need**: No way to validate commit messages against project conventions (no Co-Authored-By, subject + body required, etc.) before creating the commit. A `git_validate_message(message, rules)` tool or a pre-commit lint would have caught the 26 violations immediately.
+
+### FR-007: Working-directory session lost between plan-mode entries (2026-04-17)
+
+**Need**: After entering and exiting plan mode, `git_status` / `git_commit` / `git_diff` forget the working directory set via `git_set_working_dir`. Every resume has to re-call `set_working_dir` as the first op. Annoying for multi-step workflows where the working directory is stable.
+
+**Proposed**: Persist the `git_set_working_dir` value across plan-mode transitions, or fall back to a repo auto-detection from cwd when unset, instead of erroring.
