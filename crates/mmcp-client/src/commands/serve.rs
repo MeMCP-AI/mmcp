@@ -157,13 +157,25 @@ struct GroupInfoArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
-struct ImportMemoryArgs {
-    /// Target group UUID.
+struct WriteMemoryArgs {
+    /// Target group UUID or slug.
     pub group: String,
-    /// Memory slug.
+    /// Memory slug (lowercase alphanumeric + hyphens).
     pub slug: String,
-    /// Full markdown content with +++ TOML frontmatter.
-    pub content: String,
+    /// Human-readable title.
+    pub name: String,
+    /// One-line summary for relevance inference.
+    pub description: String,
+    /// Memory kind: rule, snapshot, log, reference, or scratch.
+    pub kind: String,
+    /// Markdown body content (no frontmatter - the server builds it).
+    pub body: String,
+    /// Free-form classification tags.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Whether this memory must be read at least once per session.
+    #[serde(default)]
+    pub mandatory: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -385,12 +397,11 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Import a memory into a group. Content must be a complete markdown document with +++ TOML frontmatter including name, description, and kind fields. If a memory with the same slug already exists it is overwritten with a new commit."
+        description = "Write a memory into a group. All metadata fields (name, description, kind, tags, mandatory) are typed parameters - the server builds the frontmatter. If the slug already exists it is overwritten with a new commit."
     )]
-    async fn import_memory(
+    async fn write_memory(
         &self,
-        #[allow(unused_variables)]
-        Parameters(args): Parameters<ImportMemoryArgs>,
+        Parameters(args): Parameters<WriteMemoryArgs>,
     ) -> Result<CallToolResult, McpError> {
         let group_id = parse_group_id(&args.group)?;
         let entry = self
@@ -399,11 +410,39 @@ impl McpServer {
             .get(&group_id)
             .await
             .ok_or_else(|| McpError::invalid_params("group not found", None))?;
+
+        let kind = crate::commands::import::parse_kind(&args.kind)
+            .map_err(|e| McpError::invalid_params(Cow::Owned(e.to_string()), None))?;
+
+        let synth = crate::commands::import::SynthFrontmatter {
+            name: args.name,
+            description: args.description,
+            kind,
+        };
+
+        // Build content with tags and mandatory if provided.
+        use mmcp_core::memory::{MemoryFile, MemoryFrontmatter};
+        let file = MemoryFile {
+            frontmatter: MemoryFrontmatter {
+                name: synth.name,
+                description: synth.description,
+                kind: synth.kind,
+                mandatory: args.mandatory,
+                version: None,
+                tags: args.tags,
+                bump_intent: None,
+            },
+            body: args.body,
+        };
+        let rendered = file
+            .to_string()
+            .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
+
         let result = crate::commands::import::import_memory(
             &self.state.backend,
             &entry.handle,
             &args.slug,
-            &args.content,
+            &rendered,
             None,
         )
         .await
@@ -423,7 +462,7 @@ impl ServerHandler for McpServer {
             .with_server_info(Implementation::from_build_env())
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
             .with_instructions(
-                "mmcp memory server. Reads and writes memories directly from git repositories under ~/.mmcp/repos. Exposes list_memories, read_memory, list_versions, group_info, search_memories, and import_memory."
+                "mmcp memory server. Reads and writes memories directly from git repositories under ~/.mmcp/repos. Exposes list_memories, read_memory, list_versions, group_info, search_memories, and write_memory. All metadata is typed - the server builds frontmatter from structured parameters."
                     .to_string(),
             )
     }
