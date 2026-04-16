@@ -1,5 +1,8 @@
 project_uuid = "019d955d-4cce-77f2-a0b3-0b79ed394612"
 
+[sync]
+server_url = "http://localhost:8787"
+
 [groups]
 no_default = false
 additional = []
