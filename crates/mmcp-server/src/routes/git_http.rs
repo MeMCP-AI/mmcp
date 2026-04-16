@@ -100,6 +100,7 @@ async fn info_refs(
         .arg(&repo_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    apply_git_protocol_env(&mut cmd, &headers);
     let output = cmd.output().await.map_err(GitHttpError::internal)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -124,11 +125,20 @@ async fn info_refs(
 async fn upload_pack(
     State(state): State<ServerState>,
     Path(group_id): Path<String>,
+    headers: HeaderMap,
     body: Body,
 ) -> Result<Response, GitHttpError> {
     let uuid = parse_group_path(&group_id)?;
     let repo_path = ensure_group(&state, uuid).await?;
-    stream_pack_command("upload-pack", &repo_path, body, "application/x-git-upload-pack-result").await
+    stream_pack_command_guarded(
+        "upload-pack",
+        &repo_path,
+        body,
+        "application/x-git-upload-pack-result",
+        None,
+        &headers,
+    )
+    .await
 }
 
 async fn receive_pack(
@@ -152,6 +162,7 @@ async fn receive_pack(
         body,
         "application/x-git-receive-pack-result",
         Some(guard),
+        &headers,
     )
     .await
 }
@@ -164,34 +175,32 @@ async fn receive_pack(
 /// flow client → axum → child stdin in one direction and child
 /// stdout → axum → client in the other, with a small ring buffer
 /// at each hop.
-async fn stream_pack_command(
-    subcommand: &'static str,
-    repo_path: &std::path::Path,
-    body: Body,
-    content_type: &'static str,
-) -> Result<Response, GitHttpError> {
-    stream_pack_command_guarded(subcommand, repo_path, body, content_type, None).await
-}
-
-/// Same as [`stream_pack_command`] but holds an optional write-lock
-/// guard alongside the child process so the lock stays acquired for
-/// the whole streaming lifetime.
+///
+/// An optional `write_guard` is held alongside the child process so
+/// the lock stays acquired for the whole streaming lifetime (used by
+/// `receive-pack` to serialize concurrent writers per group).
+///
+/// The request `headers` are inspected for `Git-Protocol` so the
+/// subprocess negotiates the same protocol version the client asked
+/// for (v0/v1/v2). Without this forwarding, v2-capable clients
+/// silently downgrade to v0.
 async fn stream_pack_command_guarded(
     subcommand: &'static str,
     repo_path: &std::path::Path,
     body: Body,
     content_type: &'static str,
     write_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+    headers: &HeaderMap,
 ) -> Result<Response, GitHttpError> {
-    let mut child = tokio::process::Command::new("git")
-        .arg(subcommand)
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.arg(subcommand)
         .arg("--stateless-rpc")
         .arg(repo_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(GitHttpError::internal)?;
+        .stderr(Stdio::piped());
+    apply_git_protocol_env(&mut cmd, headers);
+    let mut child = cmd.spawn().map_err(GitHttpError::internal)?;
 
     let mut stdin = child.stdin.take().expect("stdin piped");
     let stdout = child.stdout.take().expect("stdout piped");
@@ -243,6 +252,20 @@ async fn stream_pack_command_guarded(
         response_body,
     )
         .into_response())
+}
+
+/// Forward the client's `Git-Protocol` header (if any) to the
+/// subprocess via the `GIT_PROTOCOL` environment variable. Git's
+/// own smart-HTTP CGI does the same thing. Without this, clients
+/// that negotiate protocol v2 silently get v0 replies, losing
+/// ref filtering and partial-clone optimizations on large repos.
+fn apply_git_protocol_env(cmd: &mut tokio::process::Command, headers: &HeaderMap) {
+    if let Some(value) = headers.get("git-protocol")
+        && let Ok(raw) = value.to_str()
+        && !raw.is_empty()
+    {
+        cmd.env("GIT_PROTOCOL", raw);
+    }
 }
 
 /// pkt-line formatted service advertisement prefix, required by
