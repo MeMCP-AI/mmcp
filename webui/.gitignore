@@ -1,0 +1,9 @@
+# Per-user local state (Claude Code / Serena convention)
+*.local.json
+*.local.yml
+*.local.toml
+
+# Rust build artifacts
+/target
+**/*.rs.bk
+Cargo.lock.bak
