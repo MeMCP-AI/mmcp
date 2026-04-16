@@ -925,4 +925,154 @@ mod tests {
         assert!(stub.contains("CRITICAL: mmcp is mandatory"));
         assert!(stub.contains("bootstrap_context"));
     }
+
+    // ── Fence-marker identity ───────────────────────────────────
+
+    #[test]
+    fn markers_include_block_version_and_polarity() {
+        // `begin_marker` and `end_marker` must return the exact
+        // strings the splicer, the bootstrap_context diagnostics,
+        // and future version-upgraders depend on. A mutation that
+        // replaced the body with any constant string would escape
+        // unless we assert on the full contents directly.
+        assert_eq!(begin_marker(), format!("<!-- mmcp:begin {BLOCK_VERSION} -->"));
+        assert_eq!(end_marker(), format!("<!-- mmcp:end {BLOCK_VERSION} -->"));
+        assert_ne!(begin_marker(), end_marker());
+        assert!(begin_marker().contains("mmcp:begin"));
+        assert!(end_marker().contains("mmcp:end"));
+    }
+
+    // ── Action resolution per explicit flag ─────────────────────
+
+    #[test]
+    fn resolve_action_recognizes_convert_flag() {
+        let mut args = default_args();
+        args.convert = true;
+        assert_eq!(resolve_action(&args, false).unwrap(), Action::Convert);
+    }
+
+    #[test]
+    fn resolve_action_recognizes_append_flag() {
+        let mut args = default_args();
+        args.append = true;
+        assert_eq!(resolve_action(&args, false).unwrap(), Action::Append);
+    }
+
+    #[test]
+    fn resolve_action_rejects_override_plus_append() {
+        let mut args = default_args();
+        args.r#override = true;
+        args.append = true;
+        assert!(resolve_action(&args, false).is_err());
+    }
+
+    // ── splice_block boundary conditions ────────────────────────
+
+    #[test]
+    fn splice_block_refuses_when_only_begin_marker_is_present() {
+        // A previous run that crashed mid-write can leave a file
+        // with a `begin` marker and no matching `end`. The splicer
+        // must refuse rather than guess at the boundary — mutation
+        // testing flagged this branch (the `||` between the two
+        // "older fence" checks) as escaping.
+        let input = format!("{begin}\npartial body\n", begin = begin_marker());
+        let err = splice_block(&input).unwrap_err();
+        assert!(err.to_string().contains("different version"));
+    }
+
+    #[test]
+    fn splice_block_refuses_when_only_end_marker_is_present() {
+        let input = format!("intro\n{end}\n", end = end_marker());
+        let err = splice_block(&input).unwrap_err();
+        assert!(err.to_string().contains("different version"));
+    }
+
+    // ── slugify: pure-function coverage ─────────────────────────
+
+    #[test]
+    fn slugify_empty_input_falls_back_to_section_prefix() {
+        assert_eq!(slugify(""), "imported-section");
+        // All-punctuation likewise collapses to the fallback.
+        assert_eq!(slugify("!!!"), "imported-section");
+    }
+
+    #[test]
+    fn slugify_collapses_punctuation_into_single_hyphens() {
+        // Multi-punct runs must not leave consecutive dashes.
+        let slug = slugify("hello  world!!foo");
+        assert_eq!(slug, "imported-hello-world-foo");
+        // Trailing punctuation must not leave a trailing dash.
+        assert_eq!(slugify("trailing!!"), "imported-trailing");
+    }
+
+    #[test]
+    fn slugify_lowercases_and_strips_unicode() {
+        // Non-ASCII alphanumerics drop through the fallback path;
+        // ASCII letters get lowercased.
+        assert_eq!(slugify("MixedCase"), "imported-mixedcase");
+    }
+
+    // ── uniquify: collision resolution ──────────────────────────
+
+    #[test]
+    fn uniquify_appends_sequential_suffix_for_repeated_collisions() {
+        let mut seen = std::collections::HashSet::new();
+        assert_eq!(uniquify("rules", &mut seen), "rules");
+        assert_eq!(uniquify("rules", &mut seen), "rules-2");
+        assert_eq!(uniquify("rules", &mut seen), "rules-3");
+        assert_eq!(uniquify("rules", &mut seen), "rules-4");
+        // Suffix increments monotonically — any mutation of `n += 1`
+        // (for example `*=` or `-=`) breaks this chain.
+    }
+
+    #[test]
+    fn uniquify_leaves_first_hit_untouched_and_only_disambiguates_later() {
+        let mut seen = std::collections::HashSet::new();
+        // Pre-seed the set so the first call sees a collision.
+        seen.insert("rules".to_string());
+        assert_eq!(uniquify("rules", &mut seen), "rules-2");
+    }
+
+    // ── first_paragraph: pure-function coverage ─────────────────
+
+    #[test]
+    fn first_paragraph_returns_first_non_empty_paragraph() {
+        let body = "line one\nline two\n\nsecond paragraph\n";
+        assert_eq!(first_paragraph(body), "line one line two");
+    }
+
+    #[test]
+    fn first_paragraph_skips_leading_blank_lines() {
+        let body = "\n\n\nfirst real line\nmore\n\nnext paragraph\n";
+        assert_eq!(first_paragraph(body), "first real line more");
+    }
+
+    #[test]
+    fn first_paragraph_falls_back_when_body_is_empty() {
+        assert_eq!(first_paragraph(""), "Imported from CLAUDE.md");
+        assert_eq!(first_paragraph("   \n\n   \n"), "Imported from CLAUDE.md");
+    }
+
+    #[test]
+    fn first_paragraph_truncates_long_paragraphs_to_160_chars() {
+        // 200 identical chars → must come back with the `...`
+        // suffix and total length of 160. The `> 160` comparison in
+        // the implementation is load-bearing; mutating it to `==`
+        // or `<` would either never truncate or truncate short
+        // strings.
+        let long = "a".repeat(200);
+        let out = first_paragraph(&long);
+        assert_eq!(out.len(), 160);
+        assert!(out.ends_with("..."));
+    }
+
+    #[test]
+    fn first_paragraph_does_not_truncate_under_the_threshold() {
+        // A 160-char input is the boundary — not greater, so no
+        // truncation. Catches the `>` vs `>=` mutation.
+        let just_at = "a".repeat(160);
+        let out = first_paragraph(&just_at);
+        assert_eq!(out.len(), 160);
+        assert!(!out.ends_with("..."));
+    }
 }
