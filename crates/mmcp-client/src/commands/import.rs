@@ -5,7 +5,6 @@
 //! `mmcp import` CLI subcommand and the `import_memory` MCP tool.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use mmcp_core::id::GroupId;
@@ -197,14 +196,7 @@ pub async fn run(
     kind: Option<String>,
 ) -> Result<()> {
     let mmcp_home = crate::home::MmcpHome::discover()?;
-    let repos_root = mmcp_home.repos_root();
-    let backend = Arc::new(
-        NativeBackend::new(&repos_root)
-            .with_context(|| format!("initializing repo root {}", repos_root.display()))?,
-    );
-    let group_index = GroupIndex::build(repos_root, backend.clone())
-        .await
-        .context("building group index")?;
+    let (backend, group_index) = mmcp_home.init_backend().await?;
 
     let entry = resolve_group(&group_index, &group)
         .await
@@ -275,6 +267,7 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use mmcp_core::manifest::GroupManifest;
     use tempfile::TempDir;
 

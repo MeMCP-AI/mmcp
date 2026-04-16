@@ -78,21 +78,13 @@ impl ClientState {
         std::fs::create_dir_all(home.root())
             .with_context(|| format!("creating {}", home.root().display()))?;
 
-        let repos_root = home.repos_root();
-        let backend = Arc::new(
-            NativeBackend::new(&repos_root)
-                .with_context(|| format!("initializing repo root {}", repos_root.display()))?,
-        );
+        let (backend, groups) = home.init_backend().await?;
 
         let sessions_root = home.sessions_root();
         let sessions = SessionStore::open(&sessions_root)
             .with_context(|| format!("opening session store at {}", sessions_root.display()))?;
 
-        let groups = GroupIndex::build(repos_root.clone(), backend.clone())
-            .await
-            .with_context(|| format!("building group index at {}", repos_root.display()))?;
-
-        let watcher = spawn_watcher(repos_root, project_config_path, groups.clone())
+        let watcher = spawn_watcher(home.repos_root(), project_config_path, groups.clone())
             .context("spawning filesystem watcher")?;
 
         Ok(Self(Arc::new(ClientStateInner {

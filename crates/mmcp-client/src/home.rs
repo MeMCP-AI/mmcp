@@ -67,6 +67,30 @@ impl MmcpHome {
     pub fn sessions_root(&self) -> PathBuf {
         self.root.join(SESSIONS_SUBDIR)
     }
+
+    /// Initialize a `NativeBackend` and `GroupIndex` from this home.
+    ///
+    /// This is the canonical way to get a ready-to-use git backend
+    /// and group index. Used by `serve`, `sync`, and `import`.
+    pub async fn init_backend(
+        &self,
+    ) -> anyhow::Result<(std::sync::Arc<mmcp_git::NativeBackend>, crate::state::GroupIndex)> {
+        use anyhow::Context;
+        let repos_root = self.repos_root();
+        let backend = std::sync::Arc::new(
+            mmcp_git::NativeBackend::new(&repos_root)
+                .with_context(|| format!("initializing repo root {}", repos_root.display()))?,
+        );
+        let groups = crate::state::GroupIndex::build(repos_root, backend.clone())
+            .await
+            .with_context(|| {
+                format!(
+                    "building group index at {}",
+                    self.repos_root().display()
+                )
+            })?;
+        Ok((backend, groups))
+    }
 }
 
 /// Resolve the user's home directory from environment variables.

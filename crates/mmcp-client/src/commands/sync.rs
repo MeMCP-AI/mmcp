@@ -5,10 +5,8 @@
 //! body opens a real `SyncClient` pointed at the project's
 //! configured server and calls through to `SyncEngine`.
 
-use std::sync::Arc;
-
 use anyhow::{Context, Result, bail};
-use mmcp_git::{NativeBackend, RepoHandle};
+use mmcp_git::RepoHandle;
 use mmcp_sync::{GroupHandleResolver, PendingQueue, SyncClient, SyncEngine, SyncError};
 use uuid::Uuid;
 
@@ -41,14 +39,7 @@ pub async fn run(pull: bool, push: bool) -> Result<()> {
     };
 
     let mmcp_home = MmcpHome::discover()?;
-    let repos_root = mmcp_home.repos_root();
-    let backend = Arc::new(
-        NativeBackend::new(&repos_root)
-            .with_context(|| format!("initializing repo root {}", repos_root.display()))?,
-    );
-    let group_index = GroupIndex::build(repos_root.clone(), backend.clone())
-        .await
-        .with_context(|| format!("building group index at {}", repos_root.display()))?;
+    let (backend, group_index) = mmcp_home.init_backend().await?;
     let resolver = IndexResolver { index: group_index };
 
     let client = SyncClient::new(sync_cfg.server_url.clone())
