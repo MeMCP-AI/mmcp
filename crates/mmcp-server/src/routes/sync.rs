@@ -35,7 +35,7 @@ use crate::state::ServerState;
 pub fn router() -> Router<ServerState> {
     Router::new()
         .route("/sync/manifest", get(get_manifest))
-        .route("/sync/refs/:group_id", get(get_refs))
+        .route("/sync/refs/{group_id}", get(get_refs))
         .route("/sync/push", post(post_push))
 }
 

@@ -38,5 +38,12 @@ webauthn-rs = { workspace = true }
 reqwest = { workspace = true }
 urlencoding = "2"
 
+[dev-dependencies]
+tokio = { workspace = true }
+reqwest = { workspace = true }
+tempfile = "3"
+serde_json = "1"
+axum = { workspace = true }
+
 [lints]
 workspace = true

@@ -38,8 +38,8 @@ pub fn router() -> Router<ServerState> {
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
         // OAuth
-        .route("/auth/oauth/:provider/authorize", get(oauth_authorize))
-        .route("/auth/oauth/:provider/callback", get(oauth_callback))
+        .route("/auth/oauth/{provider}/authorize", get(oauth_authorize))
+        .route("/auth/oauth/{provider}/callback", get(oauth_callback))
         // Passkey
         .route("/auth/passkey/register/start", post(passkey_register_start))
         .route(

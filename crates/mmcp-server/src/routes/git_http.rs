@@ -42,9 +42,9 @@ use crate::state::ServerState;
 
 pub fn router() -> Router<ServerState> {
     Router::new()
-        .route("/git/:group_id/info/refs", get(info_refs))
-        .route("/git/:group_id/git-upload-pack", post(upload_pack))
-        .route("/git/:group_id/git-receive-pack", post(receive_pack))
+        .route("/git/{group_id}/info/refs", get(info_refs))
+        .route("/git/{group_id}/git-upload-pack", post(upload_pack))
+        .route("/git/{group_id}/git-receive-pack", post(receive_pack))
 }
 
 #[derive(Deserialize)]

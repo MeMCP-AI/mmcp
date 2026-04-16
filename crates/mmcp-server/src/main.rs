@@ -4,10 +4,9 @@ use std::net::SocketAddr;
 
 use anyhow::Result;
 
-mod app;
-mod config;
-mod routes;
-mod state;
+use mmcp_server::app;
+use mmcp_server::config;
+use mmcp_server::state;
 
 #[tokio::main]
 async fn main() -> Result<()> {

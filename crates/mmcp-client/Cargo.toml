@@ -34,6 +34,8 @@ notify = "8"
 
 [dev-dependencies]
 tempfile = "3"
+assert_cmd = "2"
+predicates = "3"
 
 [lints]
 workspace = true

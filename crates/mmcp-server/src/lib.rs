@@ -1,0 +1,9 @@
+//! mmcp server library.
+//!
+//! Re-exports the modules that integration tests and the binary
+//! entry point both need.
+
+pub mod app;
+pub mod config;
+pub mod routes;
+pub mod state;

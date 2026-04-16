@@ -138,10 +138,13 @@ impl AuthnBackend for MmcpAuthBackend {
                     return Ok(None);
                 };
                 let Some(ref hash) = user.password_hash else {
-                    return Err(AuthError::InvalidCredentials);
+                    return Ok(None);
                 };
-                password::verify_password(&pw, hash)?;
-                Ok(Some(MmcpUser::from_db(user)))
+                match password::verify_password(&pw, hash) {
+                    Ok(()) => Ok(Some(MmcpUser::from_db(user))),
+                    Err(AuthError::InvalidCredentials) => Ok(None),
+                    Err(other) => Err(other),
+                }
             }
 
             Credentials::OAuth {
