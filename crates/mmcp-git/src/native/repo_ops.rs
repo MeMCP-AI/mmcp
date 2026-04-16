@@ -149,6 +149,7 @@ pub fn push(
     refspecs: &[(String, String, bool)],
     creds: &Credentials,
 ) -> Result<PushReport, GitError> {
+    preflight_local_refs(repo_path, refspecs)?;
     ensure_remote(repo_path, remote_url)?;
     let mut cmd = Command::new(git_binary());
     apply_credentials(&mut cmd, creds);
@@ -179,6 +180,42 @@ pub fn push(
         rejected: Vec::new(),
     };
     Ok(report)
+}
+
+/// Verify every local ref named in the outgoing refspecs actually
+/// resolves in the bare repo. Turns git's opaque "src refspec does
+/// not match any" into an actionable `nothing to push` error with
+/// the offending ref name, which otherwise looks identical to a
+/// remote-rejection and sends debuggers down the wrong path.
+///
+/// Empty refspec lists (used by tests exercising error paths) skip
+/// the check so the subprocess surfaces its own error.
+fn preflight_local_refs(
+    repo_path: &Path,
+    refspecs: &[(String, String, bool)],
+) -> Result<(), GitError> {
+    if refspecs.is_empty() {
+        return Ok(());
+    }
+    let repo = open_bare(repo_path)?;
+    for (local, _remote, _force) in refspecs {
+        // Delete refspec — `:refs/heads/foo` — has an empty source
+        // and is always valid.
+        if local.is_empty() {
+            continue;
+        }
+        if repo.find_reference(local.as_str()).is_err() {
+            return Err(GitError::Transport {
+                op: "push",
+                url: repo_path.to_string_lossy().into_owned(),
+                stderr: format!(
+                    "nothing to push: local ref `{local}` does not exist \
+                     (repository has no commits yet, or the branch name is wrong)"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Ensure the repo at `repo_path` has an `origin` remote pointing

@@ -326,7 +326,18 @@ impl IntoResponse for GitHttpError {
                 (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
             }
             GitHttpError::Unauthorized => {
-                (StatusCode::UNAUTHORIZED, "missing or invalid token".to_string()).into_response()
+                // Emit `WWW-Authenticate` so stock git's HTTP auth
+                // flow can respond with a Basic-auth challenge instead
+                // of surfacing a bare 401. Without this header, git
+                // clients treat the request as a hard failure rather
+                // than retrying with credentials from the user's
+                // credential helper.
+                (
+                    StatusCode::UNAUTHORIZED,
+                    [("WWW-Authenticate", r#"Basic realm="mmcp""#)],
+                    "missing or invalid token".to_string(),
+                )
+                    .into_response()
             }
             GitHttpError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.to_string()).into_response(),
         }
