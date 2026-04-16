@@ -1,0 +1,105 @@
+name: mutants
+
+# Mutation testing is expensive — a full workspace run easily takes
+# 30-60 minutes. Scope PR runs to the files the PR changed (via
+# `--in-diff`); full runs happen weekly on a scheduled trigger.
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 3 * * 0" # Sundays 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pr-mutants:
+    name: diff mutation
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # `--in-diff` needs access to the base commit
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+
+      - name: Compute base diff
+        id: diff
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          diff=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- '*.rs' \
+            | grep -v '^tests/' \
+            | grep -v '/tests/' \
+            | grep -v '/fuzz/' \
+            || true)
+          printf 'files<<EOF\n%s\nEOF\n' "$diff" >> "$GITHUB_OUTPUT"
+
+      - name: Run cargo-mutants on changed files
+        # `--in-diff` scopes mutation attempts to the lines this PR
+        # actually touched, so CI time stays bounded regardless of
+        # workspace size. A PR that doesn't change any `.rs` files
+        # skips the job with a zero exit.
+        run: |
+          if [ -z "${{ steps.diff.outputs.files }}" ]; then
+            echo "No Rust source files changed; skipping mutation run."
+            exit 0
+          fi
+          cargo mutants --no-shuffle --in-diff \
+            <(git diff origin/${{ github.base_ref }}...HEAD -- '*.rs') \
+            --timeout 180
+
+      - name: Upload mutation artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-pr-${{ github.sha }}
+          path: mutants.out/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  weekly-mutants:
+    name: full mutation
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+
+      - name: Run full mutation pass
+        # A full workspace run is capped at 90 minutes by the GitHub
+        # Actions default job timeout; if it runs long, the weekly
+        # schedule catches the next invocation.
+        run: cargo mutants --no-shuffle --timeout 180
+
+      - name: Upload mutation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-weekly-${{ github.sha }}
+          path: mutants.out/
+          retention-days: 30
+          if-no-files-found: ignore

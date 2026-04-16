@@ -1,0 +1,83 @@
+name: fuzz
+
+# Short smoke fuzz runs on every PR (60 seconds per target) catch
+# regressions that make a parser immediately crash on even low-
+# coverage inputs. A weekly scheduled job runs each target for
+# longer against a persistent corpus artifact so genuine long-tail
+# inputs accumulate.
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 4 * * 0" # Sundays 04:00 UTC — after the mutants job
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz-smoke:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - memory_file_parse
+          - project_config_from_toml
+          - group_manifest_from_toml
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        # cargo-fuzz currently requires nightly for `-Z
+        # sanitizer=address` and the libFuzzer instrumentation.
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/mmcp-core/fuzz
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Restore fuzz corpus
+        uses: actions/cache@v4
+        with:
+          # Corpus accumulates interesting inputs across runs; key
+          # on the target name so each fuzz target gets its own
+          # bucket.
+          path: crates/mmcp-core/fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.sha }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      - name: Run fuzz target (smoke)
+        # PR runs are capped at 60 seconds per target — enough to
+        # catch immediate regressions, short enough to keep the PR
+        # queue moving.
+        if: github.event_name == 'pull_request'
+        working-directory: crates/mmcp-core/fuzz
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=60
+
+      - name: Run fuzz target (scheduled, extended)
+        # Weekly runs are capped at 15 minutes per target. Any
+        # crash dumps land under `fuzz/artifacts/` and are uploaded
+        # below.
+        if: github.event_name != 'pull_request'
+        working-directory: crates/mmcp-core/fuzz
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=900
+
+      - name: Upload crash artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}-${{ github.sha }}
+          path: crates/mmcp-core/fuzz/artifacts/${{ matrix.target }}/
+          retention-days: 30
+          if-no-files-found: ignore
