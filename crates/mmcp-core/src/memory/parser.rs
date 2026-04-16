@@ -4,14 +4,14 @@
 //! block. Supported formats:
 //!
 //! - **TOML** with `+++` fences (mmcp default)
-//! - **YAML** with `---` fences (via `gray_matter`)
-//! - **JSON** with `---` fences (via `gray_matter`)
-//! - **TOML** with `---` fences (via `gray_matter`)
+//! - **YAML** with `---` fences
+//! - **JSON** with `---` fences
+//! - **TOML** with `---` fences
 //!
-//! On read, the parser auto-detects the format and preserves it.
-//! On write, the file is rendered back in the **same format** it
-//! was parsed from. Use `normalize()` to explicitly convert to
-//! TOML `+++`.
+//! All parsing is handled by `gray_matter` with appropriate
+//! delimiter and engine configuration. On write, the file is
+//! rendered back in the **same format** it was parsed from.
+//! Use `normalize()` to explicitly convert to TOML `+++`.
 
 use gray_matter::Matter;
 use gray_matter::engine::{JSON, TOML as GmTOML, YAML};
@@ -62,12 +62,6 @@ pub enum MemoryParseError {
     Render(String),
 }
 
-impl From<toml::de::Error> for MemoryParseError {
-    fn from(e: toml::de::Error) -> Self {
-        MemoryParseError::Deserialize(e.to_string())
-    }
-}
-
 impl From<toml::ser::Error> for MemoryParseError {
     fn from(e: toml::ser::Error) -> Self {
         MemoryParseError::Render(e.to_string())
@@ -80,68 +74,48 @@ impl From<serde_json::Error> for MemoryParseError {
     }
 }
 
-const TOML_FENCE: &str = "+++";
-const DASH_FENCE: &str = "---";
-
 impl MemoryFile {
     /// Parse a memory file from raw text.
     ///
     /// Auto-detects the frontmatter format:
-    /// - `+++` fences -> TOML
-    /// - `---` fences -> tries YAML, JSON, then TOML
+    /// - `+++` fences -> TOML via gray_matter with `+++` delimiter
+    /// - `---` fences -> tries YAML, JSON (if `{`), then TOML
     pub fn parse(source: &str) -> Result<Self, MemoryParseError> {
         let input = source.strip_prefix('\u{feff}').unwrap_or(source);
         let trimmed = input.trim_start();
 
-        if trimmed.starts_with(TOML_FENCE) {
-            return Self::parse_toml_native(input);
+        if trimmed.starts_with("+++") {
+            return Self::parse_with::<GmTOML>(input, "+++", FrontmatterFormat::TomlPlus);
         }
-        if trimmed.starts_with(DASH_FENCE) {
-            // Peek at the first non-fence line to detect JSON (starts with `{`)
-            let after_fence = trimmed.strip_prefix(DASH_FENCE)
+        if trimmed.starts_with("---") {
+            // Peek after fence to detect JSON
+            let after_fence = trimmed.strip_prefix("---")
                 .and_then(|s| s.strip_prefix('\n').or(s.strip_prefix("\r\n")))
                 .unwrap_or("");
-            let first_content = after_fence.trim_start();
-
-            if first_content.starts_with('{') {
-                // JSON first when content looks like an object
-                if let Ok(file) = Self::parse_gray_matter::<JSON>(input, FrontmatterFormat::Json) {
+            if after_fence.trim_start().starts_with('{') {
+                if let Ok(file) = Self::parse_with::<JSON>(input, "---", FrontmatterFormat::Json) {
                     return Ok(file);
                 }
             }
             // YAML is the default for --- fences
-            if let Ok(file) = Self::parse_gray_matter::<YAML>(input, FrontmatterFormat::Yaml) {
+            if let Ok(file) = Self::parse_with::<YAML>(input, "---", FrontmatterFormat::Yaml) {
                 return Ok(file);
             }
             // Fall back to TOML with --- fences
-            return Self::parse_gray_matter::<GmTOML>(input, FrontmatterFormat::TomlDash);
+            return Self::parse_with::<GmTOML>(input, "---", FrontmatterFormat::TomlDash);
         }
 
         Err(MemoryParseError::NoFrontmatter)
     }
 
-    /// Native TOML parser for `+++` fenced files.
-    fn parse_toml_native(input: &str) -> Result<Self, MemoryParseError> {
-        let after_open = strip_fence_line(input, TOML_FENCE)
-            .ok_or(MemoryParseError::NoFrontmatter)?;
-        let (frontmatter_text, body) = split_at_closing_fence(after_open, TOML_FENCE)
-            .ok_or(MemoryParseError::Deserialize(
-                "missing closing +++ fence".to_string(),
-            ))?;
-        let frontmatter: MemoryFrontmatter = toml::from_str(frontmatter_text)?;
-        Ok(Self {
-            frontmatter,
-            body: body.to_string(),
-            format: FrontmatterFormat::TomlPlus,
-        })
-    }
-
-    /// gray_matter parser for `---` fenced files.
-    fn parse_gray_matter<E: gray_matter::engine::Engine>(
+    /// Parse using gray_matter with a specific engine and delimiter.
+    fn parse_with<E: gray_matter::engine::Engine>(
         input: &str,
+        delimiter: &str,
         fmt: FrontmatterFormat,
     ) -> Result<Self, MemoryParseError> {
-        let matter = Matter::<E>::new();
+        let mut matter = Matter::<E>::new();
+        matter.delimiter = delimiter.to_string();
         let result = matter
             .parse_with_struct::<MemoryFrontmatter>(input)
             .ok_or_else(|| {
@@ -157,16 +131,16 @@ impl MemoryFile {
     /// Render back in the **same format** as parsed.
     pub fn to_string(&self) -> Result<String, MemoryParseError> {
         match self.format {
-            FrontmatterFormat::TomlPlus => self.render_toml_plus(),
-            FrontmatterFormat::Yaml => self.render_yaml(),
-            FrontmatterFormat::Json => self.render_json(),
-            FrontmatterFormat::TomlDash => self.render_toml_dash(),
+            FrontmatterFormat::TomlPlus => self.render("+++", RenderEngine::Toml),
+            FrontmatterFormat::Yaml => self.render("---", RenderEngine::Yaml),
+            FrontmatterFormat::Json => self.render("---", RenderEngine::Json),
+            FrontmatterFormat::TomlDash => self.render("---", RenderEngine::Toml),
         }
     }
 
-    /// Explicitly normalize to TOML `+++` format.
+    /// Explicitly render as TOML `+++` regardless of original format.
     pub fn to_toml_string(&self) -> Result<String, MemoryParseError> {
-        self.render_toml_plus()
+        self.render("+++", RenderEngine::Toml)
     }
 
     /// Convert this file's format to TOML `+++` (in-place).
@@ -174,64 +148,35 @@ impl MemoryFile {
         self.format = FrontmatterFormat::TomlPlus;
     }
 
-    fn render_toml_plus(&self) -> Result<String, MemoryParseError> {
-        let front = toml::to_string_pretty(&self.frontmatter)?;
+    fn render(&self, delimiter: &str, engine: RenderEngine) -> Result<String, MemoryParseError> {
+        let front = match engine {
+            RenderEngine::Toml => toml::to_string_pretty(&self.frontmatter)?,
+            RenderEngine::Json => serde_json::to_string_pretty(&self.frontmatter)?,
+            RenderEngine::Yaml => render_yaml_frontmatter(&self.frontmatter),
+        };
         let mut out = String::with_capacity(front.len() + self.body.len() + 16);
-        out.push_str("+++\n");
-        out.push_str(&front);
-        if !front.ends_with('\n') {
-            out.push('\n');
-        }
-        out.push_str("+++\n");
-        out.push_str(&self.body);
-        Ok(out)
-    }
-
-    fn render_yaml(&self) -> Result<String, MemoryParseError> {
-        // serde_yaml is not a dep; use serde_json -> yaml conversion
-        // or just render as TOML +++ for now. Actually, let's use
-        // a simple manual YAML render for the frontmatter fields.
-        // For correctness, we serialize to JSON then to YAML-ish.
-        // TODO(2026-04-16): add serde_yaml dep for proper YAML output
-        let front = render_yaml_frontmatter(&self.frontmatter)?;
-        let mut out = String::with_capacity(front.len() + self.body.len() + 16);
-        out.push_str("---\n");
-        out.push_str(&front);
-        if !front.ends_with('\n') {
-            out.push('\n');
-        }
-        out.push_str("---\n");
-        out.push_str(&self.body);
-        Ok(out)
-    }
-
-    fn render_json(&self) -> Result<String, MemoryParseError> {
-        let front = serde_json::to_string_pretty(&self.frontmatter)?;
-        let mut out = String::with_capacity(front.len() + self.body.len() + 16);
-        out.push_str("---\n");
-        out.push_str(&front);
+        out.push_str(delimiter);
         out.push('\n');
-        out.push_str("---\n");
-        out.push_str(&self.body);
-        Ok(out)
-    }
-
-    fn render_toml_dash(&self) -> Result<String, MemoryParseError> {
-        let front = toml::to_string_pretty(&self.frontmatter)?;
-        let mut out = String::with_capacity(front.len() + self.body.len() + 16);
-        out.push_str("---\n");
         out.push_str(&front);
         if !front.ends_with('\n') {
             out.push('\n');
         }
-        out.push_str("---\n");
+        out.push_str(delimiter);
+        out.push('\n');
         out.push_str(&self.body);
         Ok(out)
     }
 }
 
-/// Simple YAML-like render of frontmatter fields.
-fn render_yaml_frontmatter(fm: &MemoryFrontmatter) -> Result<String, MemoryParseError> {
+enum RenderEngine {
+    Toml,
+    Json,
+    Yaml,
+}
+
+/// Simple YAML render of frontmatter fields.
+// TODO(2026-04-16): replace with serde_yaml for proper YAML output
+fn render_yaml_frontmatter(fm: &MemoryFrontmatter) -> String {
     let mut out = String::new();
     out.push_str(&format!("name: \"{}\"\n", fm.name));
     out.push_str(&format!("description: \"{}\"\n", fm.description));
@@ -248,39 +193,7 @@ fn render_yaml_frontmatter(fm: &MemoryFrontmatter) -> Result<String, MemoryParse
             out.push_str(&format!("  - {tag}\n"));
         }
     }
-    Ok(out)
-}
-
-/// Strip the opening fence line, returning everything after it.
-fn strip_fence_line<'a>(source: &'a str, fence: &str) -> Option<&'a str> {
-    let rest = source.strip_prefix(fence)?;
-    let rest = rest.strip_prefix("\r\n").or_else(|| rest.strip_prefix('\n'))?;
-    Some(rest)
-}
-
-/// Split at the first standalone fence line.
-fn split_at_closing_fence<'a>(source: &'a str, fence: &str) -> Option<(&'a str, &'a str)> {
-    let mut cursor = 0usize;
-    while cursor < source.len() {
-        let remaining = &source[cursor..];
-        let line_end = remaining.find('\n').unwrap_or(remaining.len());
-        let line = &remaining[..line_end];
-        let trimmed = line.strip_suffix('\r').unwrap_or(line);
-
-        if trimmed == fence {
-            let front = &source[..cursor];
-            let body_start = cursor + line_end + usize::from(line_end < remaining.len());
-            let body = if body_start > source.len() {
-                ""
-            } else {
-                &source[body_start..]
-            };
-            return Some((front, body));
-        }
-
-        cursor += line_end + usize::from(line_end < remaining.len());
-    }
-    None
+    out
 }
 
 #[cfg(test)]
