@@ -41,28 +41,39 @@ pub struct OAuthProviderConfig {
 }
 
 impl ServerConfig {
-    /// Build a config from the environment using sensible defaults.
+    /// Build a config from the process environment using sensible
+    /// defaults. Thin wrapper over [`from_source`] that reads each
+    /// variable via `std::env::var`.
     pub fn from_env() -> Self {
-        let bind = std::env::var("MMCP_BIND")
-            .unwrap_or_else(|_| "127.0.0.1:8787".to_string())
+        Self::from_source(|key| std::env::var(key).ok())
+    }
+
+    /// Build a config by pulling each variable from an injectable
+    /// source. Exposed separately from [`from_env`] so tests can feed
+    /// a deterministic map without mutating the process environment.
+    pub fn from_source<F>(get: F) -> Self
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        let bind = get("MMCP_BIND")
+            .unwrap_or_else(|| "127.0.0.1:8787".to_string())
             .parse()
             .unwrap_or_else(|_| "127.0.0.1:8787".parse().unwrap());
         let database_url =
-            std::env::var("MMCP_DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
-        let repo_root = std::env::var("MMCP_REPO_ROOT")
+            get("MMCP_DATABASE_URL").unwrap_or_else(|| "sqlite::memory:".to_string());
+        let repo_root = get("MMCP_REPO_ROOT")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("data/repos"));
-        let token_key = std::env::var("MMCP_TOKEN_KEY_HEX")
-            .ok()
-            .and_then(|hex| parse_hex_key(&hex))
+            .unwrap_or_else(|| PathBuf::from("data/repos"));
+        let token_key = get("MMCP_TOKEN_KEY_HEX")
+            .as_deref()
+            .and_then(parse_hex_key)
             .unwrap_or_else(random_key);
-        let origin = std::env::var("MMCP_ORIGIN")
-            .unwrap_or_else(|_| format!("http://{bind}"));
+        let origin = get("MMCP_ORIGIN").unwrap_or_else(|| format!("http://{bind}"));
 
         let mut oauth_providers = Vec::new();
-        if let (Ok(id), Ok(secret)) = (
-            std::env::var("MMCP_OAUTH_GITHUB_CLIENT_ID"),
-            std::env::var("MMCP_OAUTH_GITHUB_CLIENT_SECRET"),
+        if let (Some(id), Some(secret)) = (
+            get("MMCP_OAUTH_GITHUB_CLIENT_ID"),
+            get("MMCP_OAUTH_GITHUB_CLIENT_SECRET"),
         ) {
             oauth_providers.push(OAuthProviderConfig {
                 slug: "github".to_string(),
@@ -107,4 +118,128 @@ fn random_key() -> [u8; 32] {
     let mut out = [0u8; 32];
     getrandom::fill(&mut out).expect("OS CSPRNG unavailable; set MMCP_TOKEN_KEY_HEX explicitly");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// Build a config from a `HashMap` so tests never touch
+    /// `std::env`, which would race under cargo's default parallel
+    /// test runner.
+    fn from_map(entries: &[(&str, &str)]) -> ServerConfig {
+        let map: HashMap<&str, &str> = entries.iter().copied().collect();
+        ServerConfig::from_source(|key| map.get(key).map(|s| (*s).to_string()))
+    }
+
+    #[test]
+    fn from_source_applies_defaults_when_nothing_is_set() {
+        let cfg = from_map(&[]);
+        assert_eq!(cfg.bind.to_string(), "127.0.0.1:8787");
+        assert_eq!(cfg.database_url, "sqlite::memory:");
+        assert_eq!(cfg.repo_root, PathBuf::from("data/repos"));
+        assert_eq!(cfg.origin, "http://127.0.0.1:8787");
+        assert!(cfg.oauth_providers.is_empty());
+        // A fallback key is still 32 bytes — only the bit pattern is
+        // machine-dependent (OS CSPRNG), so we only check length.
+        assert_eq!(cfg.token_key.len(), 32);
+    }
+
+    #[test]
+    fn from_source_honors_bind_database_and_repo_root_overrides() {
+        let cfg = from_map(&[
+            ("MMCP_BIND", "0.0.0.0:9000"),
+            ("MMCP_DATABASE_URL", "postgres://x:y@db/app"),
+            ("MMCP_REPO_ROOT", "/srv/mmcp/repos"),
+        ]);
+        assert_eq!(cfg.bind.to_string(), "0.0.0.0:9000");
+        assert_eq!(cfg.database_url, "postgres://x:y@db/app");
+        assert_eq!(cfg.repo_root, PathBuf::from("/srv/mmcp/repos"));
+    }
+
+    #[test]
+    fn origin_defaults_from_bind_when_override_absent() {
+        let cfg = from_map(&[("MMCP_BIND", "0.0.0.0:9000")]);
+        assert_eq!(cfg.origin, "http://0.0.0.0:9000");
+    }
+
+    #[test]
+    fn malformed_bind_falls_back_to_default_quietly() {
+        let cfg = from_map(&[("MMCP_BIND", "not-a-socket-addr")]);
+        assert_eq!(cfg.bind.to_string(), "127.0.0.1:8787");
+    }
+
+    #[test]
+    fn valid_token_key_hex_is_parsed_verbatim() {
+        // All-ones key is visibly different from any random fallback.
+        let hex = "ff".repeat(32);
+        let cfg = from_map(&[("MMCP_TOKEN_KEY_HEX", hex.as_str())]);
+        assert_eq!(cfg.token_key, [0xFFu8; 32]);
+    }
+
+    #[test]
+    fn invalid_token_key_hex_falls_back_to_random() {
+        // Wrong length: fallback kicks in silently and still yields
+        // 32 bytes.
+        let cfg = from_map(&[("MMCP_TOKEN_KEY_HEX", "deadbeef")]);
+        assert_eq!(cfg.token_key.len(), 32);
+    }
+
+    #[test]
+    fn invalid_hex_digit_falls_back_to_random() {
+        // Right length but non-hex chars — parse_hex_key returns None.
+        let bad = "z".repeat(64);
+        let cfg = from_map(&[("MMCP_TOKEN_KEY_HEX", bad.as_str())]);
+        assert_eq!(cfg.token_key.len(), 32);
+    }
+
+    #[test]
+    fn github_oauth_enabled_only_when_both_client_id_and_secret_are_set() {
+        let only_id = from_map(&[("MMCP_OAUTH_GITHUB_CLIENT_ID", "abc")]);
+        assert!(only_id.oauth_providers.is_empty());
+
+        let only_secret = from_map(&[("MMCP_OAUTH_GITHUB_CLIENT_SECRET", "xyz")]);
+        assert!(only_secret.oauth_providers.is_empty());
+
+        let both = from_map(&[
+            ("MMCP_OAUTH_GITHUB_CLIENT_ID", "abc"),
+            ("MMCP_OAUTH_GITHUB_CLIENT_SECRET", "xyz"),
+        ]);
+        assert_eq!(both.oauth_providers.len(), 1);
+        let gh = &both.oauth_providers[0];
+        assert_eq!(gh.slug, "github");
+        assert_eq!(gh.client_id, "abc");
+        assert_eq!(gh.client_secret, "xyz");
+        assert_eq!(gh.auth_url, "https://github.com/login/oauth/authorize");
+        assert_eq!(gh.token_url, "https://github.com/login/oauth/access_token");
+        assert_eq!(gh.userinfo_url, "https://api.github.com/user");
+    }
+
+    #[test]
+    fn parse_hex_key_rejects_wrong_length() {
+        assert!(parse_hex_key("").is_none());
+        assert!(parse_hex_key("ff").is_none());
+        assert!(parse_hex_key(&"ff".repeat(31)).is_none());
+        assert!(parse_hex_key(&"ff".repeat(33)).is_none());
+    }
+
+    #[test]
+    fn parse_hex_key_rejects_non_hex_characters() {
+        assert!(parse_hex_key(&"g".repeat(64)).is_none());
+        // Mixed valid/invalid.
+        let mut mixed = "f".repeat(63);
+        mixed.push('z');
+        assert!(parse_hex_key(&mixed).is_none());
+    }
+
+    #[test]
+    fn parse_hex_key_accepts_valid_lowercase_and_uppercase() {
+        let lower = "a".repeat(64);
+        let upper = "A".repeat(64);
+        let lo = parse_hex_key(&lower).expect("lowercase valid");
+        let up = parse_hex_key(&upper).expect("uppercase valid");
+        assert_eq!(lo, up);
+        assert_eq!(lo, [0xAAu8; 32]);
+    }
 }
