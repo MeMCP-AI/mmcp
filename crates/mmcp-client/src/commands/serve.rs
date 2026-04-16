@@ -186,6 +186,17 @@ struct GroupInfoArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+struct ImportMemoryArgs {
+    /// Target group UUID.
+    pub group: String,
+    /// Memory slug.
+    pub slug: String,
+    /// Full markdown content with +++ TOML frontmatter.
+    pub content: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
 struct SearchMemoriesArgs {
     /// Substring matched against memory slug and frontmatter name,
     /// case-insensitive.
@@ -401,6 +412,37 @@ impl McpServer {
             "hits": hits,
         })))
     }
+
+    #[tool(
+        description = "Import a memory into a group. Content must be a complete markdown document with +++ TOML frontmatter including name, description, and kind fields. If a memory with the same slug already exists it is overwritten with a new commit."
+    )]
+    async fn import_memory(
+        &self,
+        #[allow(unused_variables)]
+        Parameters(args): Parameters<ImportMemoryArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let group_id = parse_group_id(&args.group)?;
+        let entry = self
+            .state
+            .groups
+            .get(&group_id)
+            .await
+            .ok_or_else(|| McpError::invalid_params("group not found", None))?;
+        let result = crate::commands::import::import_memory(
+            &self.state.backend,
+            &entry.handle,
+            &args.slug,
+            &args.content,
+            None,
+        )
+        .await
+        .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
+        Ok(ok_json(json!({
+            "slug": result.slug,
+            "commit_id": result.commit_id,
+            "group": args.group,
+        })))
+    }
 }
 
 #[tool_handler]
@@ -410,7 +452,7 @@ impl ServerHandler for McpServer {
             .with_server_info(Implementation::from_build_env())
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
             .with_instructions(
-                "mmcp memory server. Reads memories directly from git repositories under ~/.mmcp/repos. Exposes list_memories, read_memory, list_versions, group_info, and search_memories. Session-scoped tools (verify, acknowledge compaction) land in a follow-up build when the stdio server learns its session id."
+                "mmcp memory server. Reads and writes memories directly from git repositories under ~/.mmcp/repos. Exposes list_memories, read_memory, list_versions, group_info, search_memories, and import_memory."
                     .to_string(),
             )
     }

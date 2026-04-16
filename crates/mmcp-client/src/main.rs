@@ -39,6 +39,38 @@ enum Command {
     /// Push pending local edits to the remote server.
     Push,
 
+    /// Import memories from external markdown files into a group.
+    Import {
+        /// Target group (UUID or slug).
+        #[arg(long)]
+        group: String,
+
+        /// Path to a single .md file to import.
+        #[arg(long, conflicts_with = "dir")]
+        file: Option<std::path::PathBuf>,
+
+        /// Import all .md files from this directory.
+        #[arg(long, conflicts_with = "file")]
+        dir: Option<std::path::PathBuf>,
+
+        /// Override the slug (only valid with --file).
+        #[arg(long, conflicts_with = "dir")]
+        slug: Option<String>,
+
+        /// Memory name (required if file has no +++ frontmatter).
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Memory description (required if file has no +++ frontmatter).
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Memory kind: rule, snapshot, log, reference, scratch
+        /// (required if file has no +++ frontmatter).
+        #[arg(long)]
+        kind: Option<String>,
+    },
+
     /// Hook handler subcommands invoked by Claude Code hook entries.
     Hook {
         #[command(subcommand)]
@@ -71,6 +103,15 @@ async fn main() -> Result<()> {
         Command::Sync => commands::sync::run(true, true).await?,
         Command::Pull => commands::sync::run(true, false).await?,
         Command::Push => commands::sync::run(false, true).await?,
+        Command::Import {
+            group,
+            file,
+            dir,
+            slug,
+            name,
+            description,
+            kind,
+        } => commands::import::run(group, file, dir, slug, name, description, kind).await?,
         Command::Hook { command } => match command {
             HookCommand::UserPrompt => commands::hook::user_prompt().await?,
         },
