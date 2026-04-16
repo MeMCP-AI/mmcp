@@ -1,35 +1,24 @@
 //! Parser and renderer for memory files.
 //!
-//! A memory file is a Markdown document preceded by a TOML
-//! frontmatter block delimited by `+++` fences:
+//! A memory file is a Markdown document preceded by a frontmatter
+//! block. Supported formats:
 //!
-//! ```markdown
-//! +++
-//! name = "Example"
-//! description = "Demonstration memory"
-//! kind = "rule"
-//! +++
+//! - **TOML** with `+++` fences (mmcp canonical format, hand-parsed)
+//! - **YAML** with `---` fences (via `gray_matter`)
+//! - **JSON** with `---` fences (via `gray_matter`)
+//! - **TOML** with `---` fences (via `gray_matter`)
 //!
-//! # Body
-//! Markdown content.
-//! ```
-//!
-//! The parser is intentionally minimal and hand-rolled so that the
-//! frontmatter schema stays tied to our own types without depending
-//! on a YAML-first library.
+//! On read, the parser auto-detects the format from the opening
+//! fence. On write, the canonical `+++` TOML format is always
+//! produced so all committed files have a consistent shape.
 
+use gray_matter::Matter;
+use gray_matter::engine::{JSON, TOML as GmTOML, YAML};
 use thiserror::Error;
 
 use crate::memory::MemoryFrontmatter;
 
-/// Fence that opens and closes the TOML frontmatter block.
-const FENCE: &str = "+++";
-
 /// Parsed memory file: frontmatter plus raw body text.
-///
-/// The body is exactly what followed the closing fence, with the
-/// single newline that terminates the fence consumed. Trailing
-/// whitespace is preserved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryFile {
     /// Parsed frontmatter block.
@@ -42,77 +31,142 @@ pub struct MemoryFile {
 /// Failures that can occur while parsing a memory file.
 #[derive(Debug, Error)]
 pub enum MemoryParseError {
-    /// The file did not start with the opening `+++` fence.
-    #[error("memory file must start with a `+++` frontmatter fence")]
-    MissingOpeningFence,
+    /// No frontmatter block was detected in the file.
+    #[error("no frontmatter detected (expected `+++` or `---` fences)")]
+    NoFrontmatter,
 
-    /// The opening fence was found but the closing fence was not.
-    #[error("memory file is missing the closing `+++` frontmatter fence")]
-    MissingClosingFence,
-
-    /// The TOML inside the fences failed to parse against the
-    /// [`MemoryFrontmatter`] schema.
+    /// The frontmatter was found but could not be deserialized.
     #[error("invalid memory frontmatter: {0}")]
-    Toml(#[from] toml::de::Error),
+    Deserialize(String),
 
     /// The frontmatter could not be rendered back to TOML.
     #[error("failed to render memory frontmatter: {0}")]
     Render(#[from] toml::ser::Error),
 }
 
+impl From<toml::de::Error> for MemoryParseError {
+    fn from(e: toml::de::Error) -> Self {
+        MemoryParseError::Deserialize(e.to_string())
+    }
+}
+
+/// Fence that opens and closes a TOML frontmatter block.
+const TOML_FENCE: &str = "+++";
+
 impl MemoryFile {
     /// Parse a memory file from raw text.
     ///
-    /// Accepts both `\n` and `\r\n` line endings. The opening fence
-    /// must be the very first line, and the closing fence must appear
-    /// on its own line.
+    /// Auto-detects the frontmatter format:
+    /// - `+++` fences -> native TOML parser
+    /// - `---` fences -> gray_matter (tries YAML, then TOML)
+    ///
+    /// Accepts UTF-8 BOM prefix and both LF and CRLF line endings.
     pub fn parse(source: &str) -> Result<Self, MemoryParseError> {
-        let without_bom = source.strip_prefix('\u{feff}').unwrap_or(source);
+        let input = source.strip_prefix('\u{feff}').unwrap_or(source);
+        let trimmed = input.trim_start();
 
-        let after_open = strip_fence_line(without_bom)
-            .ok_or(MemoryParseError::MissingOpeningFence)?;
+        if trimmed.starts_with(TOML_FENCE) {
+            return Self::parse_toml_native(input);
+        }
+        if trimmed.starts_with("---") {
+            // Try YAML first (most common with --- fences)
+            if let Ok(file) = Self::parse_gray_matter_yaml(input) {
+                return Ok(file);
+            }
+            // Try JSON (--- fenced JSON block)
+            if let Ok(file) = Self::parse_gray_matter_json(input) {
+                return Ok(file);
+            }
+            // Fall back to TOML with --- fences
+            return Self::parse_gray_matter_toml(input);
+        }
 
-        let (frontmatter_text, body) = split_at_closing_fence(after_open)
-            .ok_or(MemoryParseError::MissingClosingFence)?;
+        Err(MemoryParseError::NoFrontmatter)
+    }
 
+    /// Native TOML parser for `+++` fenced files.
+    fn parse_toml_native(input: &str) -> Result<Self, MemoryParseError> {
+        let after_open = strip_fence_line(input, TOML_FENCE)
+            .ok_or(MemoryParseError::NoFrontmatter)?;
+        let (frontmatter_text, body) = split_at_closing_fence(after_open, TOML_FENCE)
+            .ok_or(MemoryParseError::Deserialize(
+                "missing closing +++ fence".to_string(),
+            ))?;
         let frontmatter: MemoryFrontmatter = toml::from_str(frontmatter_text)?;
-
         Ok(Self {
             frontmatter,
             body: body.to_string(),
         })
     }
 
-    /// Render the file back to the `+++`-fenced format.
+    /// gray_matter YAML parser for `---` fenced files.
+    fn parse_gray_matter_yaml(input: &str) -> Result<Self, MemoryParseError> {
+        let matter = Matter::<YAML>::new();
+        let result = matter
+            .parse_with_struct::<MemoryFrontmatter>(input)
+            .ok_or_else(|| {
+                MemoryParseError::Deserialize("YAML frontmatter parse failed".to_string())
+            })?;
+        Ok(Self {
+            frontmatter: result.data,
+            body: result.content,
+        })
+    }
+
+    /// gray_matter JSON parser for `---` fenced JSON files.
+    fn parse_gray_matter_json(input: &str) -> Result<Self, MemoryParseError> {
+        let matter = Matter::<JSON>::new();
+        let result = matter
+            .parse_with_struct::<MemoryFrontmatter>(input)
+            .ok_or_else(|| {
+                MemoryParseError::Deserialize("JSON frontmatter parse failed".to_string())
+            })?;
+        Ok(Self {
+            frontmatter: result.data,
+            body: result.content,
+        })
+    }
+
+    /// gray_matter TOML parser for `---` fenced TOML files.
+    fn parse_gray_matter_toml(input: &str) -> Result<Self, MemoryParseError> {
+        let matter = Matter::<GmTOML>::new();
+        let result = matter
+            .parse_with_struct::<MemoryFrontmatter>(input)
+            .ok_or_else(|| {
+                MemoryParseError::Deserialize("TOML (---) frontmatter parse failed".to_string())
+            })?;
+        Ok(Self {
+            frontmatter: result.data,
+            body: result.content,
+        })
+    }
+
+    /// Render the file back to the canonical `+++` TOML format.
     pub fn to_string(&self) -> Result<String, MemoryParseError> {
         let front = toml::to_string_pretty(&self.frontmatter)?;
         let mut out = String::with_capacity(front.len() + self.body.len() + 16);
-        out.push_str(FENCE);
+        out.push_str(TOML_FENCE);
         out.push('\n');
         out.push_str(&front);
         if !front.ends_with('\n') {
             out.push('\n');
         }
-        out.push_str(FENCE);
+        out.push_str(TOML_FENCE);
         out.push('\n');
         out.push_str(&self.body);
         Ok(out)
     }
 }
 
-/// Strip the opening fence line from `source`, returning everything
-/// after it or `None` if the first line was not a fence.
-fn strip_fence_line(source: &str) -> Option<&str> {
-    let rest = source.strip_prefix(FENCE)?;
+/// Strip the opening fence line, returning everything after it.
+fn strip_fence_line<'a>(source: &'a str, fence: &str) -> Option<&'a str> {
+    let rest = source.strip_prefix(fence)?;
     let rest = rest.strip_prefix("\r\n").or_else(|| rest.strip_prefix('\n'))?;
     Some(rest)
 }
 
-/// Split `source` at the first standalone `+++` line, returning the
-/// text before the fence and the text after it (with the line break
-/// following the fence consumed). Returns `None` if no closing fence
-/// exists.
-fn split_at_closing_fence(source: &str) -> Option<(&str, &str)> {
+/// Split at the first standalone fence line.
+fn split_at_closing_fence<'a>(source: &'a str, fence: &str) -> Option<(&'a str, &'a str)> {
     let mut cursor = 0usize;
     while cursor < source.len() {
         let remaining = &source[cursor..];
@@ -120,7 +174,7 @@ fn split_at_closing_fence(source: &str) -> Option<(&str, &str)> {
         let line = &remaining[..line_end];
         let trimmed = line.strip_suffix('\r').unwrap_or(line);
 
-        if trimmed == FENCE {
+        if trimmed == fence {
             let front = &source[..cursor];
             let body_start = cursor + line_end + usize::from(line_end < remaining.len());
             let body = if body_start > source.len() {
@@ -141,11 +195,13 @@ mod tests {
     use super::*;
     use crate::memory::MemoryKind;
 
-    const SAMPLE: &str = "+++\nname = \"Rust Coding Rules\"\ndescription = \"Strict Rust coding conventions\"\nkind = \"rule\"\nmandatory = true\ntags = [\"rust\", \"style\"]\n+++\n# Rust Coding Rules\n\nBody text.\n";
+    const TOML_SAMPLE: &str = "+++\nname = \"Rust Coding Rules\"\ndescription = \"Strict Rust coding conventions\"\nkind = \"rule\"\nmandatory = true\ntags = [\"rust\", \"style\"]\n+++\n# Rust Coding Rules\n\nBody text.\n";
+
+    const YAML_SAMPLE: &str = "---\nname: YAML Memory\ndescription: A memory in YAML format\nkind: reference\ntags:\n  - yaml\n  - test\n---\n# YAML Body\n\nThis was written in YAML.\n";
 
     #[test]
-    fn parses_fenced_toml_frontmatter() {
-        let file = MemoryFile::parse(SAMPLE).expect("parse sample");
+    fn parses_toml_frontmatter() {
+        let file = MemoryFile::parse(TOML_SAMPLE).expect("parse toml");
         assert_eq!(file.frontmatter.name, "Rust Coding Rules");
         assert_eq!(file.frontmatter.kind, MemoryKind::Rule);
         assert!(file.frontmatter.mandatory);
@@ -154,37 +210,59 @@ mod tests {
     }
 
     #[test]
-    fn rejects_file_without_opening_fence() {
-        let source = "name = \"no fence\"\n";
-        let err = MemoryFile::parse(source).expect_err("must fail");
-        assert!(matches!(err, MemoryParseError::MissingOpeningFence));
+    fn parses_yaml_frontmatter() {
+        let file = MemoryFile::parse(YAML_SAMPLE).expect("parse yaml");
+        assert_eq!(file.frontmatter.name, "YAML Memory");
+        assert_eq!(file.frontmatter.kind, MemoryKind::Reference);
+        assert_eq!(file.frontmatter.tags, vec!["yaml", "test"]);
+        assert!(file.body.contains("# YAML Body"));
+    }
+
+    const JSON_SAMPLE: &str = "---\n{\"name\": \"JSON Memory\", \"description\": \"A memory in JSON\", \"kind\": \"scratch\"}\n---\n# JSON Body\n\nWritten in JSON.\n";
+
+    #[test]
+    fn parses_json_frontmatter() {
+        let file = MemoryFile::parse(JSON_SAMPLE).expect("parse json");
+        assert_eq!(file.frontmatter.name, "JSON Memory");
+        assert_eq!(file.frontmatter.kind, MemoryKind::Scratch);
+        assert!(file.body.contains("# JSON Body"));
     }
 
     #[test]
-    fn rejects_file_without_closing_fence() {
-        let source = "+++\nname = \"open forever\"\n";
+    fn rejects_file_without_frontmatter() {
+        let source = "Just plain text, no fences.\n";
         let err = MemoryFile::parse(source).expect_err("must fail");
-        assert!(matches!(err, MemoryParseError::MissingClosingFence));
+        assert!(matches!(err, MemoryParseError::NoFrontmatter));
     }
 
     #[test]
     fn rejects_invalid_toml_in_frontmatter() {
         let source = "+++\nnot valid toml =====\n+++\nbody\n";
         let err = MemoryFile::parse(source).expect_err("must fail");
-        assert!(matches!(err, MemoryParseError::Toml(_)));
+        assert!(matches!(err, MemoryParseError::Deserialize(_)));
     }
 
     #[test]
-    fn round_trip_preserves_frontmatter_and_body() {
-        let parsed = MemoryFile::parse(SAMPLE).expect("parse sample");
+    fn round_trip_toml_preserves_content() {
+        let parsed = MemoryFile::parse(TOML_SAMPLE).expect("parse");
         let rendered = parsed.to_string().expect("render");
         let reparsed = MemoryFile::parse(&rendered).expect("reparse");
-        assert_eq!(parsed, reparsed);
+        assert_eq!(parsed.frontmatter, reparsed.frontmatter);
+    }
+
+    #[test]
+    fn yaml_round_trips_through_toml_render() {
+        let parsed = MemoryFile::parse(YAML_SAMPLE).expect("parse yaml");
+        let rendered = parsed.to_string().expect("render as toml");
+        assert!(rendered.starts_with("+++"));
+        let reparsed = MemoryFile::parse(&rendered).expect("reparse toml");
+        assert_eq!(parsed.frontmatter.name, reparsed.frontmatter.name);
+        assert_eq!(parsed.frontmatter.kind, reparsed.frontmatter.kind);
     }
 
     #[test]
     fn accepts_crlf_line_endings() {
-        let source = "+++\r\nname = \"crlf\"\r\ndescription = \"windows newlines\"\r\nkind = \"rule\"\r\n+++\r\nbody\r\n";
+        let source = "+++\r\nname = \"crlf\"\r\ndescription = \"windows\"\r\nkind = \"rule\"\r\n+++\r\nbody\r\n";
         let file = MemoryFile::parse(source).expect("parse crlf");
         assert_eq!(file.frontmatter.name, "crlf");
     }

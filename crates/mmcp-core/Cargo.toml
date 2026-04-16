@@ -13,6 +13,7 @@ uuid = { workspace = true }
 jiff = { workspace = true }
 semver = { workspace = true }
 toml = { workspace = true }
+gray_matter = { version = "0.2", features = ["toml", "yaml"] }
 
 [lints]
 workspace = true
