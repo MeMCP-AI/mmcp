@@ -8,18 +8,36 @@ use std::path::PathBuf;
 /// Loaded from the following environment variables with the listed
 /// defaults so local development is a zero-configuration experience:
 ///
-/// | Variable             | Default                  |
-/// | -------------------- | ------------------------ |
-/// | `MMCP_BIND`          | `127.0.0.1:8787`         |
-/// | `MMCP_DATABASE_URL`  | `sqlite::memory:`        |
-/// | `MMCP_REPO_ROOT`     | `./data/repos`           |
-/// | `MMCP_TOKEN_KEY_HEX` | random 32 bytes on start |
+/// | Variable                          | Default                  |
+/// | --------------------------------- | ------------------------ |
+/// | `MMCP_BIND`                       | `127.0.0.1:8787`         |
+/// | `MMCP_DATABASE_URL`               | `sqlite::memory:`        |
+/// | `MMCP_REPO_ROOT`                  | `./data/repos`           |
+/// | `MMCP_TOKEN_KEY_HEX`              | random 32 bytes on start |
+/// | `MMCP_OAUTH_GITHUB_CLIENT_ID`     | (absent = disabled)      |
+/// | `MMCP_OAUTH_GITHUB_CLIENT_SECRET` | (absent = disabled)      |
+/// | `MMCP_ORIGIN`                     | `http://127.0.0.1:8787`  |
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub bind: SocketAddr,
     pub database_url: String,
     pub repo_root: PathBuf,
     pub token_key: [u8; 32],
+    pub oauth_providers: Vec<OAuthProviderConfig>,
+    /// Public origin of the server (e.g. `https://mmcp.example.com`).
+    /// Used to build OAuth callback URLs and WebAuthn relying party ID.
+    pub origin: String,
+}
+
+/// Configuration for a single OAuth provider.
+#[derive(Debug, Clone)]
+pub struct OAuthProviderConfig {
+    pub slug: String,
+    pub client_id: String,
+    pub client_secret: String,
+    pub auth_url: String,
+    pub token_url: String,
+    pub userinfo_url: String,
 }
 
 impl ServerConfig {
@@ -38,11 +56,31 @@ impl ServerConfig {
             .ok()
             .and_then(|hex| parse_hex_key(&hex))
             .unwrap_or_else(random_key);
+        let origin = std::env::var("MMCP_ORIGIN")
+            .unwrap_or_else(|_| format!("http://{bind}"));
+
+        let mut oauth_providers = Vec::new();
+        if let (Ok(id), Ok(secret)) = (
+            std::env::var("MMCP_OAUTH_GITHUB_CLIENT_ID"),
+            std::env::var("MMCP_OAUTH_GITHUB_CLIENT_SECRET"),
+        ) {
+            oauth_providers.push(OAuthProviderConfig {
+                slug: "github".to_string(),
+                client_id: id,
+                client_secret: secret,
+                auth_url: "https://github.com/login/oauth/authorize".to_string(),
+                token_url: "https://github.com/login/oauth/access_token".to_string(),
+                userinfo_url: "https://api.github.com/user".to_string(),
+            });
+        }
+
         Self {
             bind,
             database_url,
             repo_root,
             token_key,
+            oauth_providers,
+            origin,
         }
     }
 }

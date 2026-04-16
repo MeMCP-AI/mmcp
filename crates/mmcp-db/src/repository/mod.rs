@@ -6,6 +6,8 @@
 
 pub mod group_repo;
 pub mod memory_repo;
+pub mod oauth_repo;
 pub mod org_repo;
+pub mod passkey_repo;
 pub mod session_repo;
 pub mod user_repo;

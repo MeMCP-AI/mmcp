@@ -71,6 +71,10 @@ bytes = "1"
 # Authentication
 argon2 = "0.5"
 rusty_paseto = { version = "0.7", default-features = false, features = ["v4_local", "batteries_included"] }
+axum-login = "0.18"
+tower-sessions = "0.14"
+oauth2 = "5"
+webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
 
 # HTTP framework
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "macros", "query"] }
