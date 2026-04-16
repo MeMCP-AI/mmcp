@@ -381,6 +381,15 @@ struct InitClaudeArgs {
     pub path: Option<String>,
 }
 
+/// Argument shape for `status`.
+///
+/// Empty today; the struct is kept so future flags (e.g. a `verbose`
+/// switch that also reports per-memory HEAD commits) can land
+/// without a schema break.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct StatusArgs {}
+
 /// Shared argument shape for `sync_pull`, `sync_push`, and `sync`.
 ///
 /// The `group` field is a forward-compatibility slot: today the
@@ -1200,6 +1209,70 @@ impl McpServer {
             "warnings": group_scope_warnings(args.group.as_deref()),
         })))
     }
+
+    #[tool(
+        description = "Return the local mmcp project state: discovered project root, configured sync server, and the mirrored groups with their memory counts. Pure-local — no network. Returns `project_configured: false` when no `.mmcp.toml` is in scope, so callers can distinguish 'not in a project' from transient errors."
+    )]
+    async fn status(
+        &self,
+        Parameters(_args): Parameters<StatusArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = std::env::current_dir().map_err(|e| {
+            McpError::internal_error(format!("cannot read working directory: {e}"), None)
+        })?;
+
+        // Collect group state first so callers inspecting a
+        // machine-wide mirror from outside any project still see
+        // what is mirrored.
+        let entries = self.state.groups.list().await;
+        let mut groups = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let files = list_memory_files(&self.state.backend, entry).await?;
+            groups.push(json!({
+                "slug": entry.manifest.slug,
+                "uuid": entry.manifest.group_id.to_string(),
+                "memory_count": files.len(),
+            }));
+        }
+
+        Ok(ok_json(compose_status(&cwd, groups)?))
+    }
+}
+
+/// Compose the `status` tool response from a cwd + a pre-built
+/// groups list.
+///
+/// Split out of [`McpServer::status`] so tests can feed a deterministic
+/// cwd without mutating process state. The caller gathers the groups
+/// (which needs access to the async backend) and this function
+/// handles the synchronous project-root + sync-config lookup.
+fn compose_status(
+    cwd: &std::path::Path,
+    groups: Vec<serde_json::Value>,
+) -> Result<serde_json::Value, McpError> {
+    let Some(root) = find_project_root(cwd) else {
+        return Ok(json!({
+            "project_configured": false,
+            "groups": groups,
+        }));
+    };
+    let cfg = load_project_config(&root).map_err(|e| {
+        McpError::invalid_params(
+            format!("failed to load project config: {e}"),
+            Some(json!({ "code": "project_config_load_failed" })),
+        )
+    })?;
+    let sync = match cfg.sync.as_ref() {
+        Some(s) => json!({ "configured": true, "server_url": s.server_url }),
+        None => json!({ "configured": false }),
+    };
+    Ok(json!({
+        "project_configured": true,
+        "project_root": root.to_string_lossy(),
+        "project_uuid": cfg.project_uuid.to_string(),
+        "sync": sync,
+        "groups": groups,
+    }))
 }
 
 impl McpServer {
@@ -2110,5 +2183,103 @@ mod tests {
             Some("sync_remote")
         );
         assert_eq!(payload.get("status").and_then(|v| v.as_i64()), Some(503));
+    }
+
+    // ── status tool (FR-015) ──────────────────────────────────────────
+
+    #[test]
+    fn compose_status_flags_project_missing_when_outside_any_mmcp_directory() {
+        let tmp = TempDir::new().expect("tempdir");
+        let res = compose_status(tmp.path(), vec![]).expect("compose_status");
+        assert_eq!(
+            res.get("project_configured").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        assert!(
+            res.get("project_root").is_none(),
+            "no project root should be surfaced when there is no project"
+        );
+    }
+
+    #[test]
+    fn compose_status_reports_sync_not_configured_when_block_missing() {
+        let tmp = TempDir::new().expect("tempdir");
+        write_project_config(
+            tmp.path(),
+            "project_uuid = \"018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91\"\n",
+        );
+        let res = compose_status(tmp.path(), vec![]).expect("compose_status");
+        assert_eq!(
+            res.get("project_configured").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        let sync = res.get("sync").expect("sync object");
+        assert_eq!(
+            sync.get("configured").and_then(|v| v.as_bool()),
+            Some(false),
+            "sync.configured must be false when no [sync] block is present",
+        );
+        assert!(
+            sync.get("server_url").is_none(),
+            "server_url must be absent when sync is not configured",
+        );
+    }
+
+    #[test]
+    fn compose_status_surfaces_server_url_and_passes_groups_through() {
+        let tmp = TempDir::new().expect("tempdir");
+        write_project_config(
+            tmp.path(),
+            "project_uuid = \"018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91\"\n\n[sync]\nserver_url = \"http://localhost:8787\"\n",
+        );
+        let groups = vec![json!({
+            "slug": "team-rust",
+            "uuid": "018f7c3e-0000-0000-0000-000000000001",
+            "memory_count": 3,
+        })];
+        let res = compose_status(tmp.path(), groups.clone()).expect("compose_status");
+        assert_eq!(
+            res.get("project_uuid").and_then(|v| v.as_str()),
+            Some("018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91")
+        );
+        let sync = res.get("sync").expect("sync object");
+        assert_eq!(
+            sync.get("configured").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            sync.get("server_url").and_then(|v| v.as_str()),
+            Some("http://localhost:8787")
+        );
+        assert_eq!(
+            res.get("groups").cloned().unwrap_or_default(),
+            json!(groups),
+            "groups should pass through compose_status unchanged",
+        );
+    }
+
+    #[tokio::test]
+    async fn status_tool_lists_groups_with_memory_counts() {
+        let (state, _tmp) = test_state().await;
+        seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+        let res = server
+            .status(Parameters(StatusArgs::default()))
+            .await
+            .expect("status");
+        let parsed = parse_ok_json(res);
+        let groups = parsed
+            .get("groups")
+            .and_then(|v| v.as_array())
+            .expect("groups array");
+        let group = groups
+            .iter()
+            .find(|g| g.get("slug").and_then(|s| s.as_str()) == Some("team-rust"))
+            .expect("seeded group should appear");
+        assert_eq!(
+            group.get("memory_count").and_then(|v| v.as_u64()),
+            Some(1),
+            "memory_count must match the number of seeded memories",
+        );
     }
 }

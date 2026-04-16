@@ -77,21 +77,17 @@
 
 **Status**: Open.
 
-### FR-014: Expose `sync_pull` / `sync_push` / `sync` MCP tools (2026-04-17)
+### FR-014: Expose `sync_pull` / `sync_push` / `sync` MCP tools (2026-04-17) - RESOLVED
 
 **Need**: The sync engine in `mmcp-sync` already powers three CLI subcommands (`mmcp pull`, `mmcp push`, `mmcp sync`) but none of them are reachable through MCP. An AI session can write memories into the local mirror via `write_memory`, but has no way to propagate those commits to the configured `[sync] server_url` without the operator dropping to a shell and running the CLI. Symmetric gap on reads: the session cannot refresh the local mirror against upstream, so edits made elsewhere stay invisible until a manual `mmcp pull` runs.
 
-**How to apply**: Add three MCP tools mirroring the CLI shapes — `sync_pull(group?)`, `sync_push(group?)`, `sync(group?)` (pull-then-push). Each returns the same per-group summary the CLI prints today (`updated`, `new_groups`, `pushed`, `conflicts`), plus a structured error when `[sync]` is absent from `.mmcp.toml` so the tool can tell the AI to run `init` or configure `server_url`. Reuse `mmcp_sync::Engine` directly; no logic duplicated between CLI and MCP.
+**Status**: Resolved. Three new MCP tools — `sync_pull`, `sync_push`, `sync` — now wrap the same `SyncEngine` the CLI uses via a shared `commands::sync::build_engine` helper. Missing-config cases surface as a structured `sync_not_configured` error carrying `project_uuid` + retry hint; engine failures map to distinct codes (`sync_conflict`, `sync_remote`, `sync_transport`, `sync_not_found`, `sync_git`, `sync_invalid_version`) so callers branch without parsing human messages. `GroupHandleResolver` picked up a `Send + Sync` supertrait bound to satisfy the rmcp router's future bounds — no behavior change because every existing resolver was already thread-safe.
 
-**Status**: Open.
-
-### FR-015: Expose `status` MCP tool for local sync state (2026-04-17)
+### FR-015: Expose `status` MCP tool for local sync state (2026-04-17) - RESOLVED
 
 **Need**: `mmcp status` prints the local project's sync state (configured server, groups mirrored, pending commits, last push). Without an MCP equivalent an AI session has to either read `.mmcp.toml` manually or call several tools in sequence (`bootstrap_context` + `group_info` per group + `list_versions`) to approximate the same picture. Adds friction before every pull/push decision.
 
-**How to apply**: One tool `status()` that returns `{ server_url, project_uuid, groups: [{ slug, uuid, latest_commit, ahead_of_upstream }], sync_configured: bool }`. Cheap — reads only local state, no network.
-
-**Status**: Open. Unblocks FR-014 because `sync_pull/push` responses reference the same shape.
+**Status**: Resolved. New `status` MCP tool returns `{project_configured, project_root, project_uuid, sync: {configured, server_url?}, groups: [{slug, uuid, memory_count}]}`. Pure-local, no network; `project_configured: false` when no `.mmcp.toml` is in scope (no error) so the AI can decide whether to prompt for `mmcp init`. Mirrored groups are surfaced regardless of project presence, which is useful for diagnosing machine-wide mirror state from outside any project.
 
 ### FR-013: `list_memories` should signal "group not in local mirror" (2026-04-16)
 
