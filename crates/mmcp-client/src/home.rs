@@ -121,10 +121,10 @@ impl MmcpHome {
         let git_fallback = author_cfg.and_then(|a| a.git_fallback).unwrap_or(false);
         if git_fallback && (name.is_none() || email.is_none()) {
             if name.is_none() {
-                name = read_git_config("user.name");
+                name = read_git_global("user.name");
             }
             if email.is_none() {
-                email = read_git_config("user.email");
+                email = read_git_global("user.email");
             }
         }
 
@@ -165,10 +165,13 @@ impl MmcpHome {
 }
 
 /// Read a single value from git's global config via gix (no subprocess).
-/// Returns `None` if the config file is missing, unreadable, or the key is unset.
-fn read_git_config(key: &str) -> Option<String> {
+///
+/// Keys are dotted (e.g. `user.name`). Returns `None` if the config file
+/// is missing, unreadable, the key is unset, or the value is empty.
+/// Shared by author resolution (Tier 2) and by the diagnose command so
+/// the two never drift apart.
+pub(crate) fn read_git_global(key: &str) -> Option<String> {
     let file = gix::config::File::from_globals().ok()?;
-    // Keys are dotted: "user.name" -> section "user", name "name"
     let (section, name) = key.split_once('.')?;
     let value = file.string_by(section, None, name)?;
     let s = value.to_string();

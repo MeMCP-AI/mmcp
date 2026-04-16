@@ -93,7 +93,7 @@ pub async fn health_check_group(
     };
 
     // Memories
-    let rev = Rev::Branch(mmcp_core::conventions::MAIN_BRANCH.to_string());
+    let rev = Rev::main();
     let files = match backend.list_tree(&entry.handle, MEMORIES_DIR, &rev).await {
         Ok(f) => f,
         Err(err) => {
@@ -184,7 +184,7 @@ pub async fn diagnose_group(
 ) -> GroupReport {
     let mut report = health_check_group(backend, entry).await;
     let gid = report.group_id.clone();
-    let rev = Rev::Branch(mmcp_core::conventions::MAIN_BRANCH.to_string());
+    let rev = Rev::main();
 
     // Deep manifest checks
     if let Ok(m) = backend.read_manifest(&entry.handle).await {
@@ -343,7 +343,7 @@ pub async fn diagnose_all(
     for entry in &entries {
         let report = diagnose_group(backend, entry).await;
         let gid = report.group_id.clone();
-        let rev = Rev::Branch(mmcp_core::conventions::MAIN_BRANCH.to_string());
+        let rev = Rev::main();
         if let Ok(files) = backend.list_tree(&entry.handle, MEMORIES_DIR, &rev).await {
             for f in files {
                 if let Some(s) = f.strip_suffix(MEMORY_EXTENSION) {
@@ -420,25 +420,18 @@ fn check_project_config(issues: &mut Vec<Issue>) {
                         });
                     }
                     Some(true) => {
-                        // Check if git config actually has values
-                        if author.name.is_none() {
-                            let git_name = std::process::Command::new("git")
-                                .args(["config", "--global", "user.name"])
-                                .output()
-                                .ok()
-                                .filter(|o| o.status.success())
-                                .and_then(|o| {
-                                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                                    if s.is_empty() { None } else { Some(s) }
-                                });
-                            if git_name.is_none() {
-                                issues.push(Issue {
-                                    group: "(user)".to_string(),
-                                    slug: None,
-                                    severity: "warning",
-                                    message: "git_fallback=true but git config user.name is empty".to_string(),
-                                });
-                            }
+                        // Check if git config actually has a name when no override is set.
+                        // Uses the same gix-based reader as author resolution so the two
+                        // views can never disagree.
+                        if author.name.is_none()
+                            && crate::home::read_git_global("user.name").is_none()
+                        {
+                            issues.push(Issue {
+                                group: "(user)".to_string(),
+                                slug: None,
+                                severity: "warning",
+                                message: "git_fallback=true but git config user.name is empty".to_string(),
+                            });
                         }
                     }
                     Some(false) => {
