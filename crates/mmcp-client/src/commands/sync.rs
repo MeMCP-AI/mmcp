@@ -4,9 +4,16 @@
 //! `pull` and `push` toggle which halves of a full sync run. The
 //! body opens a real `SyncClient` pointed at the project's
 //! configured server and calls through to `SyncEngine`.
+//!
+//! The [`build_engine`] helper is `pub(crate)` so the MCP server
+//! (`commands/serve.rs`) can build the same engine + resolver pair
+//! without duplicating the glue. Both paths share one
+//! [`IndexResolver`] implementation.
+
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use mmcp_git::RepoHandle;
+use mmcp_git::{NativeBackend, RepoHandle};
 use mmcp_sync::{GroupHandleResolver, PendingQueue, SyncClient, SyncEngine, SyncError};
 use uuid::Uuid;
 
@@ -40,13 +47,7 @@ pub async fn run(pull: bool, push: bool) -> Result<()> {
 
     let mmcp_home = MmcpHome::discover()?;
     let (backend, group_index) = mmcp_home.init_backend().await?;
-    let resolver = IndexResolver { index: group_index };
-
-    let client = SyncClient::new(sync_cfg.server_url.clone())
-        .with_context(|| format!("configuring sync client for {}", sync_cfg.server_url))?;
-    let engine = SyncEngine::new(backend, client);
-
-    let queue = PendingQueue::new();
+    let (engine, resolver, queue) = build_engine(backend, group_index, &sync_cfg.server_url)?;
 
     let report = match (pull, push) {
         (true, true) => {
@@ -106,10 +107,31 @@ pub async fn run(pull: bool, push: bool) -> Result<()> {
     Ok(())
 }
 
+/// Build a fresh [`SyncEngine`], [`IndexResolver`], and
+/// [`PendingQueue`] pointed at `server_url`.
+///
+/// Shared between the CLI (`commands::sync`) and the MCP server
+/// (`commands::serve`) so both paths converge on the exact same
+/// engine configuration. The caller supplies an already-initialized
+/// backend and group index because the MCP server holds them in
+/// `ClientState` and re-initializing would open a duplicate backend.
+pub(crate) fn build_engine(
+    backend: Arc<NativeBackend>,
+    groups: GroupIndex,
+    server_url: &str,
+) -> Result<(SyncEngine, IndexResolver, PendingQueue)> {
+    let client = SyncClient::new(server_url.to_owned())
+        .with_context(|| format!("configuring sync client for {server_url}"))?;
+    let engine = SyncEngine::new(backend, client);
+    let resolver = IndexResolver { index: groups };
+    let queue = PendingQueue::new();
+    Ok((engine, resolver, queue))
+}
+
 /// Resolver that walks the live `GroupIndex` snapshot to answer
 /// `resolve` calls from the sync engine.
-struct IndexResolver {
-    index: GroupIndex,
+pub(crate) struct IndexResolver {
+    pub(crate) index: GroupIndex,
 }
 
 impl GroupHandleResolver for IndexResolver {
