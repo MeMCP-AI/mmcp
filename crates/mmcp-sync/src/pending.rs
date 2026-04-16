@@ -134,6 +134,23 @@ mod tests {
     }
 
     #[test]
+    fn is_empty_flips_with_queue_state() {
+        // Pin both polarities of `is_empty` so a mutation replacing
+        // the body with `true` (which cargo-mutants flagged as a
+        // surviving mutant in an earlier pass) no longer escapes —
+        // the non-empty branch immediately produces a disagreement.
+        let q = PendingQueue::new();
+        assert!(q.is_empty(), "fresh queue must be empty");
+        q.enqueue(PendingEdit::new(
+            Uuid::now_v7(),
+            "x",
+            BumpIntent::Patch,
+            "x",
+        ));
+        assert!(!q.is_empty(), "queue with one edit is not empty");
+    }
+
+    #[test]
     fn snapshot_is_independent_of_queue() {
         let q = PendingQueue::new();
         q.enqueue(PendingEdit::new(Uuid::now_v7(), "a", BumpIntent::Patch, "a"));

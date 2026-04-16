@@ -242,3 +242,70 @@ async fn remote_error(status: StatusCode, response: reqwest::Response) -> SyncEr
         message,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `git_url_for` must produce `{base_url}/git/{uuid}.git`
+    /// verbatim — mutations that short-circuit the format (e.g.
+    /// returning an empty or constant string) would otherwise
+    /// route pushes at the wrong URL silently.
+    #[test]
+    fn git_url_for_formats_base_url_plus_group_uuid_dot_git() {
+        let client = SyncClient::new("https://mmcp.example.com").expect("build client");
+        let group = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let url = client.git_url_for(group);
+        assert_eq!(
+            url,
+            "https://mmcp.example.com/git/00000000-0000-0000-0000-000000000001.git"
+        );
+    }
+
+    #[test]
+    fn git_url_for_uses_base_url_without_trailing_slash() {
+        // `new` strips a single trailing slash; a slash-terminated
+        // input must still produce the no-double-slash form.
+        let client = SyncClient::new("https://mmcp.example.com/").expect("build client");
+        let group = Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap();
+        let url = client.git_url_for(group);
+        assert!(!url.contains("com//git/"), "no double slash: {url}");
+        assert!(url.ends_with(".git"));
+    }
+
+    /// `git_credentials` returns `None` when no bearer token was
+    /// configured. Locks in the negative branch of the match so a
+    /// mutation replacing the body with `Default::default()` would
+    /// only agree on this case; the positive-branch tests below
+    /// then disagree and catch it.
+    #[test]
+    fn git_credentials_without_bearer_returns_none() {
+        let client = SyncClient::new("http://localhost:0").expect("build client");
+        assert_eq!(client.git_credentials(), mmcp_git::Credentials::None);
+    }
+
+    #[test]
+    fn git_credentials_with_nonempty_bearer_returns_bearer() {
+        let client = SyncClient::new("http://localhost:0")
+            .expect("build client")
+            .with_bearer("ghp_test_token");
+        assert_eq!(
+            client.git_credentials(),
+            mmcp_git::Credentials::bearer("ghp_test_token")
+        );
+    }
+
+    /// The `Some(token) if !token.is_empty()` guard specifically
+    /// demands a non-empty token. Mutation testing flagged the
+    /// `!token.is_empty()` predicate as escaping — a caller that
+    /// stored an empty bearer string must fall back to `None`, not
+    /// produce a `Credentials::bearer("")` call that the server
+    /// would then silently reject.
+    #[test]
+    fn git_credentials_with_empty_bearer_string_falls_back_to_none() {
+        let client = SyncClient::new("http://localhost:0")
+            .expect("build client")
+            .with_bearer("");
+        assert_eq!(client.git_credentials(), mmcp_git::Credentials::None);
+    }
+}
