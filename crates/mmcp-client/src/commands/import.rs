@@ -134,23 +134,15 @@ pub fn validate_slug(slug: &str) -> Result<(), ImportError> {
 }
 
 /// Derive a slug from a filename.
+///
+/// Strips the memory extension (`.md`) before delegating to the
+/// `slug` crate, which handles Unicode normalization (NFD + diacritic
+/// stripping) and hyphen collapsing for us.
 pub fn slugify_filename(filename: &str) -> String {
     let stem = filename
         .strip_suffix(mmcp_core::conventions::MEMORY_EXTENSION)
         .unwrap_or(filename);
-    let mut slug = String::with_capacity(stem.len());
-    for ch in stem.chars() {
-        if ch.is_ascii_alphanumeric() {
-            slug.push(ch.to_ascii_lowercase());
-        } else if !slug.is_empty() && !slug.ends_with('-') {
-            slug.push('-');
-        }
-    }
-    // Trim trailing hyphens.
-    while slug.ends_with('-') {
-        slug.pop();
-    }
-    slug
+    slug::slugify(stem)
 }
 
 /// Parse a kind string into `MemoryKind`.

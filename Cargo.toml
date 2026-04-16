@@ -50,6 +50,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 inquire = { version = "0.9", default-features = false, features = ["crossterm"] }
 
+# Slugification (Unicode-aware: NFD + diacritic stripping). Used
+# wherever we derive a file-safe slug from human-facing text — memory
+# filenames on import, CLAUDE.md section headings on convert.
+slug = "0.1"
+
+# Hex encoding / decoding. Used by the server token-key loader to
+# accept a `MMCP_TOKEN_KEY_HEX` env var as 32 raw bytes.
+hex = "0.4"
+
 # Serialization
 serde = { version = "1", features = ["derive"] }
 

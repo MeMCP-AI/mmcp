@@ -727,24 +727,14 @@ fn split_sections(input: &str) -> Vec<Section> {
 }
 
 fn slugify(text: &str) -> String {
-    let mut slug = String::with_capacity(text.len());
-    let mut prev_dash = false;
-    for ch in text.chars() {
-        if ch.is_ascii_alphanumeric() {
-            slug.push(ch.to_ascii_lowercase());
-            prev_dash = false;
-        } else if !slug.is_empty() && !prev_dash {
-            slug.push('-');
-            prev_dash = true;
-        }
-    }
-    while slug.ends_with('-') {
-        slug.pop();
-    }
-    if slug.is_empty() {
-        slug.push_str("section");
-    }
-    format!("imported-{slug}")
+    // `slug::slugify` handles Unicode normalization, hyphen
+    // collapsing, and edge trimming. It returns an empty string for
+    // input that contains no slug-safe characters (e.g. `"!!!"`), so
+    // fall back to the placeholder `section` to keep `imported-`
+    // slugs well-formed under validate_slug.
+    let base = slug::slugify(text);
+    let base = if base.is_empty() { "section" } else { base.as_str() };
+    format!("imported-{base}")
 }
 
 fn uniquify(base: &str, used: &mut std::collections::HashSet<String>) -> String {

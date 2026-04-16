@@ -96,16 +96,11 @@ impl ServerConfig {
     }
 }
 
-fn parse_hex_key(hex: &str) -> Option<[u8; 32]> {
-    if hex.len() != 64 {
-        return None;
-    }
-    let mut out = [0u8; 32];
-    for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
-        let byte = u8::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok()?;
-        out[i] = byte;
-    }
-    Some(out)
+fn parse_hex_key(input: &str) -> Option<[u8; 32]> {
+    // `hex::decode` rejects odd-length input and any non-hex byte;
+    // the subsequent `try_into` enforces the 32-byte length. Mixed
+    // case is accepted exactly as before.
+    hex::decode(input).ok()?.try_into().ok()
 }
 
 fn random_key() -> [u8; 32] {
