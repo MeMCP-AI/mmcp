@@ -31,7 +31,7 @@ use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::config::{PROJECT_MANIFEST, find_project_root};
+use crate::config::{PROJECT_MANIFEST, find_project_root, load as load_project_config};
 use crate::home::MmcpHome;
 use crate::state::{GroupEntry, GroupIndex, SessionStore, WatcherHandle, spawn_watcher};
 
@@ -379,6 +379,22 @@ struct InitClaudeArgs {
     /// Path to the CLAUDE.md file. Defaults to `./CLAUDE.md`.
     #[serde(default)]
     pub path: Option<String>,
+}
+
+/// Shared argument shape for `sync_pull`, `sync_push`, and `sync`.
+///
+/// The `group` field is a forward-compatibility slot: today the
+/// sync engine operates across the whole local mirror and the arg
+/// is recorded as an advisory warning on the response instead of
+/// scoping the operation. Kept as a struct so future flags can land
+/// without breaking the tool schema.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct SyncToolArgs {
+    /// Reserved. Today the engine pulls/pushes the whole mirror;
+    /// any value passed here surfaces as a warning on the response.
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 #[tool_router]
@@ -1082,6 +1098,108 @@ impl McpServer {
             })).collect::<Vec<_>>(),
         })))
     }
+
+    #[tool(
+        description = "Pull updates from the configured mmcp sync server into the local mirror. Returns the groups whose local HEAD advanced plus any groups the server has that are not mirrored yet. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block, and code `sync_conflict` / `sync_remote` / `sync_transport` for engine-level failures."
+    )]
+    async fn sync_pull(
+        &self,
+        Parameters(args): Parameters<SyncToolArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (cfg, server_url) = self.require_sync_configured()?;
+        let (engine, resolver, _queue) = crate::commands::sync::build_engine(
+            self.state.backend.clone(),
+            self.state.groups.clone(),
+            &server_url,
+        )
+        .map_err(|e| {
+            McpError::internal_error(format!("failed to build sync engine: {e}"), None)
+        })?;
+        let report = engine.pull(&resolver).await.map_err(map_sync_error_to_mcp)?;
+        Ok(ok_json(json!({
+            "updated": report.updated,
+            "new_groups": report.new_groups,
+            "project_uuid": cfg.project_uuid.to_string(),
+            "server_url": server_url,
+            "warnings": group_scope_warnings(args.group.as_deref()),
+        })))
+    }
+
+    #[tool(
+        description = "Push the local pending-edit queue to the configured mmcp sync server. Returns each drained edit with the server-assigned version and tag, plus whether the content plane (git push) actually shipped bytes. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block."
+    )]
+    async fn sync_push(
+        &self,
+        Parameters(args): Parameters<SyncToolArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (cfg, server_url) = self.require_sync_configured()?;
+        let (engine, resolver, queue) = crate::commands::sync::build_engine(
+            self.state.backend.clone(),
+            self.state.groups.clone(),
+            &server_url,
+        )
+        .map_err(|e| {
+            McpError::internal_error(format!("failed to build sync engine: {e}"), None)
+        })?;
+        let report = engine
+            .push(&queue, &resolver)
+            .await
+            .map_err(map_sync_error_to_mcp)?;
+        Ok(ok_json(json!({
+            "drained": report.drained.iter().map(|d| json!({
+                "edit_id": d.edit_id.to_string(),
+                "group_id": d.response.group_id.to_string(),
+                "memory_id": d.response.memory_id.to_string(),
+                "assigned_version": d.response.assigned_version,
+                "tag": d.response.tag,
+                "content_transferred": d.content_transferred,
+            })).collect::<Vec<_>>(),
+            "project_uuid": cfg.project_uuid.to_string(),
+            "server_url": server_url,
+            "warnings": group_scope_warnings(args.group.as_deref()),
+        })))
+    }
+
+    #[tool(
+        description = "Run a full sync (pull then push) against the configured mmcp server. Returns both report shapes nested under `pulled` and `pushed`. Same error codes as `sync_pull` / `sync_push`."
+    )]
+    async fn sync(
+        &self,
+        Parameters(args): Parameters<SyncToolArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (cfg, server_url) = self.require_sync_configured()?;
+        let (engine, resolver, queue) = crate::commands::sync::build_engine(
+            self.state.backend.clone(),
+            self.state.groups.clone(),
+            &server_url,
+        )
+        .map_err(|e| {
+            McpError::internal_error(format!("failed to build sync engine: {e}"), None)
+        })?;
+        let report = engine
+            .sync(&queue, &resolver)
+            .await
+            .map_err(map_sync_error_to_mcp)?;
+        Ok(ok_json(json!({
+            "pulled": {
+                "updated": report.pulled.updated,
+                "new_groups": report.pulled.new_groups,
+            },
+            "pushed": {
+                "drained": report.pushed.drained.iter().map(|d| json!({
+                    "edit_id": d.edit_id.to_string(),
+                    "group_id": d.response.group_id.to_string(),
+                    "memory_id": d.response.memory_id.to_string(),
+                    "assigned_version": d.response.assigned_version,
+                    "tag": d.response.tag,
+                    "content_transferred": d.content_transferred,
+                })).collect::<Vec<_>>(),
+            },
+            "project_uuid": cfg.project_uuid.to_string(),
+            "server_url": server_url,
+            "warnings": group_scope_warnings(args.group.as_deref()),
+        })))
+    }
 }
 
 impl McpServer {
@@ -1094,6 +1212,112 @@ impl McpServer {
                 None,
             ))
         }
+    }
+
+    /// Discover the current project and enforce that `[sync]` is
+    /// present in its `.mmcp.toml`. Thin wrapper over
+    /// [`resolve_sync_config`] that pulls the current working
+    /// directory from the process. Kept on the server so tool
+    /// methods stay short; the pure logic lives in the free
+    /// function so unit tests can drive it with a tempdir-rooted
+    /// path.
+    fn require_sync_configured(
+        &self,
+    ) -> Result<(mmcp_core::config::ProjectConfig, String), McpError> {
+        let cwd = std::env::current_dir().map_err(|e| {
+            McpError::internal_error(format!("cannot read working directory: {e}"), None)
+        })?;
+        resolve_sync_config(&cwd)
+    }
+}
+
+/// Resolve the project at `cwd` (walking parent dirs) and return its
+/// [`ProjectConfig`] plus the configured `[sync].server_url`.
+///
+/// Factored out of [`McpServer::require_sync_configured`] so tests can
+/// feed a deterministic path without touching process-wide
+/// `current_dir`. The three error branches are stable wire contracts:
+/// `project_not_found`, `project_config_load_failed`, and
+/// `sync_not_configured`.
+fn resolve_sync_config(
+    cwd: &std::path::Path,
+) -> Result<(mmcp_core::config::ProjectConfig, String), McpError> {
+    let root = find_project_root(cwd).ok_or_else(|| {
+        McpError::invalid_params(
+            "no mmcp project found in current directory or any parent",
+            Some(json!({ "code": "project_not_found" })),
+        )
+    })?;
+    let cfg = load_project_config(&root).map_err(|e| {
+        McpError::invalid_params(
+            format!("failed to load project config: {e}"),
+            Some(json!({ "code": "project_config_load_failed" })),
+        )
+    })?;
+    let Some(sync) = cfg.sync.as_ref() else {
+        return Err(McpError::invalid_params(
+            "project has no [sync] block; cannot sync against a remote",
+            Some(json!({
+                "code": "sync_not_configured",
+                "project_uuid": cfg.project_uuid.to_string(),
+                "retry_hint": "add [sync] server_url = \"http://...\" to .mmcp.toml"
+            })),
+        ));
+    };
+    let server_url = sync.server_url.clone();
+    Ok((cfg, server_url))
+}
+
+/// Map a [`mmcp_sync::SyncError`] to an [`McpError`] that carries a
+/// structured `code` payload. Callers (AI or test code) can branch
+/// on the code string instead of parsing the human message.
+fn map_sync_error_to_mcp(err: mmcp_sync::SyncError) -> McpError {
+    use mmcp_sync::SyncError;
+    let message = err.to_string();
+    let payload = match &err {
+        SyncError::Conflict {
+            memory,
+            local_commit,
+            remote_commit,
+        } => json!({
+            "code": "sync_conflict",
+            "memory": memory.to_string(),
+            "local_commit": local_commit,
+            "remote_commit": remote_commit,
+        }),
+        SyncError::Remote { status, message } => json!({
+            "code": "sync_remote",
+            "status": status,
+            "message": message,
+        }),
+        SyncError::Transport(detail) => json!({
+            "code": "sync_transport",
+            "detail": detail,
+        }),
+        SyncError::NotFound(detail) => json!({
+            "code": "sync_not_found",
+            "detail": detail,
+        }),
+        SyncError::Git(g) => json!({
+            "code": "sync_git",
+            "detail": g.to_string(),
+        }),
+        SyncError::InvalidVersion(v) => json!({
+            "code": "sync_invalid_version",
+            "detail": v.to_string(),
+        }),
+    };
+    McpError::invalid_params(message, Some(payload))
+}
+
+/// Emit a one-element advisory warning list when the caller passed a
+/// `group` argument that the engine cannot honor yet. Empty list
+/// when nothing was passed so the field stays stable (`[]`) on every
+/// successful response.
+fn group_scope_warnings(group: Option<&str>) -> Vec<String> {
+    match group {
+        Some(_) => vec!["group scoping not yet implemented; operated on the whole mirror".into()],
+        None => Vec::new(),
     }
 }
 
@@ -1777,5 +2001,114 @@ mod tests {
         let body = std::fs::read_to_string(&target).expect("read stub");
         assert!(body.contains("mmcp is mandatory"));
         assert!(body.contains("bootstrap_context"));
+    }
+
+    // ── sync tool helpers (FR-014) ────────────────────────────────────
+
+    /// Write a deterministic `.mmcp.toml` at `path`.
+    fn write_project_config(root: &std::path::Path, body: &str) {
+        std::fs::write(root.join(PROJECT_MANIFEST), body).expect("write .mmcp.toml");
+    }
+
+    #[test]
+    fn resolve_sync_config_errors_when_cwd_has_no_project() {
+        let tmp = TempDir::new().expect("tempdir");
+        let err =
+            resolve_sync_config(tmp.path()).expect_err("tempdir should not host a mmcp project");
+        let payload = err.data.as_ref().expect("error data");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("project_not_found")
+        );
+    }
+
+    #[test]
+    fn resolve_sync_config_errors_when_sync_block_is_missing() {
+        let tmp = TempDir::new().expect("tempdir");
+        write_project_config(
+            tmp.path(),
+            "project_uuid = \"018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91\"\n",
+        );
+        let err = resolve_sync_config(tmp.path()).expect_err("must reject missing [sync]");
+        let payload = err.data.as_ref().expect("error data");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("sync_not_configured")
+        );
+        assert_eq!(
+            payload.get("project_uuid").and_then(|v| v.as_str()),
+            Some("018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"),
+            "payload must echo the project uuid so the caller can disambiguate multi-project sessions",
+        );
+        assert!(payload.get("retry_hint").is_some(), "retry_hint must be present");
+    }
+
+    #[test]
+    fn resolve_sync_config_returns_server_url_on_happy_path() {
+        let tmp = TempDir::new().expect("tempdir");
+        write_project_config(
+            tmp.path(),
+            "project_uuid = \"018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91\"\n\n[sync]\nserver_url = \"http://localhost:8787\"\n",
+        );
+        let (cfg, server_url) =
+            resolve_sync_config(tmp.path()).expect("happy path should resolve");
+        assert_eq!(server_url, "http://localhost:8787");
+        assert_eq!(
+            cfg.project_uuid.to_string(),
+            "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
+        );
+    }
+
+    #[test]
+    fn group_scope_warnings_is_empty_when_no_group_requested() {
+        assert!(group_scope_warnings(None).is_empty());
+    }
+
+    #[test]
+    fn group_scope_warnings_emits_note_when_group_is_passed() {
+        let warnings = group_scope_warnings(Some("team-rust"));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("group scoping not yet implemented"));
+    }
+
+    #[test]
+    fn map_sync_error_preserves_conflict_payload() {
+        use mmcp_sync::SyncError;
+        let mem = Uuid::nil();
+        let err = SyncError::Conflict {
+            memory: mem,
+            local_commit: "aaaa".into(),
+            remote_commit: "bbbb".into(),
+        };
+        let mapped = map_sync_error_to_mcp(err);
+        let payload = mapped.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("sync_conflict")
+        );
+        assert_eq!(
+            payload.get("local_commit").and_then(|v| v.as_str()),
+            Some("aaaa")
+        );
+        assert_eq!(
+            payload.get("remote_commit").and_then(|v| v.as_str()),
+            Some("bbbb")
+        );
+    }
+
+    #[test]
+    fn map_sync_error_preserves_remote_status_and_message() {
+        use mmcp_sync::SyncError;
+        let err = SyncError::Remote {
+            status: 503,
+            message: "backend down".into(),
+        };
+        let mapped = map_sync_error_to_mcp(err);
+        let payload = mapped.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("sync_remote")
+        );
+        assert_eq!(payload.get("status").and_then(|v| v.as_i64()), Some(503));
     }
 }

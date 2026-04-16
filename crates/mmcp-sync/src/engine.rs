@@ -189,7 +189,13 @@ impl SyncEngine {
 /// The client's `GroupIndex` implements this naturally; the sync
 /// engine stays decoupled from any specific index type so tests
 /// can supply a tiny in-memory resolver.
-pub trait GroupHandleResolver {
+///
+/// `Send + Sync` are required so the engine's async methods can be
+/// spawned onto a multi-threaded runtime (e.g. the MCP tool router
+/// boxes returned futures with a `Send` bound). Existing resolver
+/// impls in this workspace are already thread-safe; the bound
+/// simply makes that requirement explicit.
+pub trait GroupHandleResolver: Send + Sync {
     fn resolve(&self, group_id: Uuid) -> Option<mmcp_git::RepoHandle>;
 }
 
