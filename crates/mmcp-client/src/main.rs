@@ -43,6 +43,13 @@ enum Command {
     /// Push pending local edits to the remote server.
     Push,
 
+    /// Validate manifests and memory files across all groups.
+    Check {
+        /// Check only this group (UUID or slug). All groups if omitted.
+        #[arg(long)]
+        group: Option<String>,
+    },
+
     /// Import memories from external markdown files into a group.
     Import {
         /// Target group (UUID or slug).
@@ -102,6 +109,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Serve { debug } => commands::serve::run(debug).await?,
+        Command::Check { group } => commands::health::run(group).await?,
         Command::Init => commands::init::run().await?,
         Command::Status => commands::status::run().await?,
         Command::Sync => commands::sync::run(true, true).await?,

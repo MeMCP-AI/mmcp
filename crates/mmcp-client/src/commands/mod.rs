@@ -1,5 +1,6 @@
 //! Client subcommands.
 
+pub mod health;
 pub mod hook;
 pub mod import;
 pub mod init;

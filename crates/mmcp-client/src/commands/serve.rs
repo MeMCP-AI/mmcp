@@ -226,6 +226,14 @@ struct SearchMemoriesArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+struct CheckHealthArgs {
+    /// Group UUID to check. If omitted, checks all groups.
+    #[serde(default)]
+    pub group: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
 struct DebugToggleArgs {
     /// Set to true to enable debug tools, false to disable.
     pub enabled: bool,
@@ -537,6 +545,33 @@ impl McpServer {
             "slug": result.slug,
             "commit_id": result.commit_id,
             "group": args.group,
+        })))
+    }
+
+    #[tool(
+        description = "Validate manifests and memory frontmatter for a group. Returns issues found: parse errors, missing required fields, empty bodies. Checks one group if group UUID given, all groups if omitted."
+    )]
+    async fn check_health(
+        &self,
+        Parameters(args): Parameters<CheckHealthArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let reports = if let Some(ref group_str) = args.group {
+            let group_id = parse_group_id(group_str)?;
+            let entry = self
+                .state
+                .groups
+                .get(&group_id)
+                .await
+                .ok_or_else(|| McpError::invalid_params("group not found", None))?;
+            vec![crate::commands::health::check_group(&self.state.backend, &entry).await]
+        } else {
+            crate::commands::health::check_all(&self.state.backend, &self.state.groups).await
+        };
+        let total_issues: usize = reports.iter().map(|r| r.issues.len()).sum();
+        Ok(ok_json(json!({
+            "groups": reports,
+            "total_issues": total_issues,
+            "healthy": total_issues == 0,
         })))
     }
 
