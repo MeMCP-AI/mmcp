@@ -75,7 +75,7 @@ impl GitBackend for NativeBackend {
             .read_file(
                 repo,
                 mmcp_core::manifest::MANIFEST_FILENAME,
-                &Rev::main(),
+                &Rev::head(),
             )
             .await?;
         let text = std::str::from_utf8(&bytes)

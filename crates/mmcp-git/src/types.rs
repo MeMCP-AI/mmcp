@@ -60,8 +60,14 @@ impl RefSpec {
 
 /// A revision inside a repository.
 ///
-/// A `Rev` can be a branch name, a tag name, or a raw commit id. The
-/// backend is responsible for interpreting it.
+/// A `Rev` can be a branch name, a tag name, a raw commit id, or the
+/// repo's current `HEAD` (whatever branch it points to). The backend
+/// is responsible for interpreting it.
+///
+/// Use `Rev::Head` for reads against a repository whose default branch
+/// name is not known in advance (foreign clones, repos cloned from a
+/// `master`-based remote, etc.). Use [`Rev::main`] only when mmcp owns
+/// the repo's policy and knows it was created with `main`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Rev {
     /// Branch by name, without the `refs/heads/` prefix.
@@ -72,15 +78,27 @@ pub enum Rev {
 
     /// Commit by hex id.
     Commit(String),
+
+    /// Whatever branch `HEAD` currently points at.
+    Head,
 }
 
 impl Rev {
-    /// The default branch revision (`main`). Shorthand for the pattern
-    /// `Rev::Branch(MAIN_BRANCH.to_string())` used by every reader that
-    /// does not accept an explicit revision.
+    /// The default branch revision mmcp uses when creating repos
+    /// itself (`main`). Prefer [`Rev::head`] on read paths so foreign
+    /// repos with non-`main` defaults still resolve correctly.
     #[must_use]
     pub fn main() -> Self {
         Rev::Branch(mmcp_core::conventions::MAIN_BRANCH.to_string())
+    }
+
+    /// Whatever the repo's `HEAD` currently points at. Use this for
+    /// reads when the caller does not know (or care) which branch name
+    /// the repo actually uses — safe against any default-branch
+    /// convention.
+    #[must_use]
+    pub fn head() -> Self {
+        Rev::Head
     }
 
     /// Canonical form used for diagnostics.
@@ -90,6 +108,7 @@ impl Rev {
             Rev::Branch(name) => format!("refs/heads/{name}"),
             Rev::Tag(name) => format!("refs/tags/{name}"),
             Rev::Commit(id) => id.clone(),
+            Rev::Head => "HEAD".to_string(),
         }
     }
 }

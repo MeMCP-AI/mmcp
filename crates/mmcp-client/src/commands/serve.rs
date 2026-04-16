@@ -800,8 +800,8 @@ impl ServerHandler for McpServer {
     }
 }
 
-/// List every `memories/<slug>.md` blob in the group's repo at
-/// `main` and return the slugs without the `.md` extension.
+/// List every `memories/<slug>.md` blob in the group's repo at the
+/// current `HEAD` and return the slugs without the `.md` extension.
 async fn list_memory_files(
     backend: &NativeBackend,
     entry: &GroupEntry,
@@ -810,7 +810,7 @@ async fn list_memory_files(
         .list_tree(
             &entry.handle,
             MEMORIES_DIR,
-            &Rev::main(),
+            &Rev::head(),
         )
         .await
         .map_err(git_error)?;
@@ -867,7 +867,9 @@ fn parse_group_id(value: &str) -> Result<GroupId, McpError> {
 
 fn parse_rev(value: Option<&str>) -> Rev {
     match value {
-        None => Rev::main(),
+        // Default: resolve via HEAD so repos whose default branch is
+        // not `main` still return the latest content.
+        None => Rev::head(),
         Some(v) => {
             // Heuristic: 40-char hex string -> commit, otherwise branch.
             if v.len() == 40 && v.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -884,6 +886,7 @@ fn rev_label(rev: &Rev) -> String {
         Rev::Branch(b) => format!("branch:{b}"),
         Rev::Tag(t) => format!("tag:{t}"),
         Rev::Commit(c) => format!("commit:{c}"),
+        Rev::Head => "HEAD".to_string(),
     }
 }
 

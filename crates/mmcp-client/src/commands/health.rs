@@ -93,7 +93,7 @@ pub async fn health_check_group(
     };
 
     // Memories
-    let rev = Rev::main();
+    let rev = Rev::head();
     let files = match backend.list_tree(&entry.handle, MEMORIES_DIR, &rev).await {
         Ok(f) => f,
         Err(err) => {
@@ -184,7 +184,7 @@ pub async fn diagnose_group(
 ) -> GroupReport {
     let mut report = health_check_group(backend, entry).await;
     let gid = report.group_id.clone();
-    let rev = Rev::main();
+    let rev = Rev::head();
 
     // Deep manifest checks
     if let Ok(m) = backend.read_manifest(&entry.handle).await {
@@ -343,7 +343,7 @@ pub async fn diagnose_all(
     for entry in &entries {
         let report = diagnose_group(backend, entry).await;
         let gid = report.group_id.clone();
-        let rev = Rev::main();
+        let rev = Rev::head();
         if let Ok(files) = backend.list_tree(&entry.handle, MEMORIES_DIR, &rev).await {
             for f in files {
                 if let Some(s) = f.strip_suffix(MEMORY_EXTENSION) {

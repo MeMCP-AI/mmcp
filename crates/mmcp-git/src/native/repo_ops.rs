@@ -165,6 +165,10 @@ fn resolve_rev(repo: &gix::Repository, rev: &Rev) -> Result<gix::ObjectId, GitEr
         }
         Rev::Commit(hex) => gix::ObjectId::from_hex(hex.as_bytes())
             .map_err(|_| GitError::RevNotFound(hex.clone()))?,
+        Rev::Head => repo
+            .head_id()
+            .map(|id| id.detach())
+            .map_err(|_| GitError::RevNotFound("HEAD".to_string()))?,
     };
     Ok(target)
 }
@@ -505,15 +509,17 @@ pub fn tag(repo_path: &Path, name: &str, target_hex: &str) -> Result<(), GitErro
 }
 
 /// Walk the commit history that touches `path`, most recent first.
+///
+/// Reads start from whatever `HEAD` points at, so the walker works
+/// against repos whose default branch is not `main` (cloned from
+/// `master`-based forges, custom-named defaults, etc.).
 pub fn walk_history(repo_path: &Path, path: &str) -> Result<Vec<CommitMeta>, GitError> {
     let repo = open_bare(repo_path)?;
 
-    let head = match repo.find_reference(mmcp_core::conventions::MAIN_BRANCH_REF) {
-        Ok(r) => r.id().detach(),
-        Err(_) => match repo.head_id() {
-            Ok(id) => id.detach(),
-            Err(_) => return Ok(Vec::new()),
-        },
+    let head = match resolve_rev(&repo, &Rev::Head) {
+        Ok(id) => id,
+        Err(GitError::RevNotFound(_)) => return Ok(Vec::new()),
+        Err(other) => return Err(other),
     };
 
     let mut out = Vec::new();
