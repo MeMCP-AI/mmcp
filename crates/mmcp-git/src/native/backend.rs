@@ -133,9 +133,17 @@ impl GitBackend for NativeBackend {
     ) -> Result<(), GitError> {
         let repo_path = Self::handle_path(repo).to_path_buf();
         let remote_url = remote_url.to_string();
+        // Format refspecs the way `git fetch` expects, including the
+        // `+` prefix for forced updates. Without the prefix git refuses
+        // to overwrite a diverged local ref, so callers who opted into
+        // `RefSpec::forced()` would still hit non-fast-forward
+        // rejections.
         let refspecs: Vec<String> = refs
             .iter()
-            .map(|r| format!("{}:{}", r.local, r.remote))
+            .map(|r| {
+                let prefix = if r.force { "+" } else { "" };
+                format!("{prefix}{}:{}", r.local, r.remote)
+            })
             .collect();
         let creds = creds.clone();
         tokio::task::spawn_blocking(move || {
