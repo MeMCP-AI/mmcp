@@ -508,7 +508,7 @@ pub fn tag(repo_path: &Path, name: &str, target_hex: &str) -> Result<(), GitErro
 pub fn walk_history(repo_path: &Path, path: &str) -> Result<Vec<CommitMeta>, GitError> {
     let repo = open_bare(repo_path)?;
 
-    let head = match repo.find_reference("refs/heads/main") {
+    let head = match repo.find_reference(mmcp_core::conventions::MAIN_BRANCH_REF) {
         Ok(r) => r.id().detach(),
         Err(_) => match repo.head_id() {
             Ok(id) => id.detach(),

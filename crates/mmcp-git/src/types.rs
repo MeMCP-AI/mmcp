@@ -75,6 +75,14 @@ pub enum Rev {
 }
 
 impl Rev {
+    /// The default branch revision (`main`). Shorthand for the pattern
+    /// `Rev::Branch(MAIN_BRANCH.to_string())` used by every reader that
+    /// does not accept an explicit revision.
+    #[must_use]
+    pub fn main() -> Self {
+        Rev::Branch(mmcp_core::conventions::MAIN_BRANCH.to_string())
+    }
+
     /// Canonical form used for diagnostics.
     #[must_use]
     pub fn canonical(&self) -> String {
