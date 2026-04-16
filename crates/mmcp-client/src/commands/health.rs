@@ -38,6 +38,13 @@ pub struct GroupReport {
     pub issues: Vec<Issue>,
 }
 
+/// Full diagnostic report including project-level issues.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagReport {
+    pub project_issues: Vec<Issue>,
+    pub groups: Vec<GroupReport>,
+}
+
 // ── Health (surface) ────────────────────────────────────────
 
 /// Quick surface check: manifest parseable, all memories parse,
@@ -320,7 +327,12 @@ pub async fn diagnose_group(
 pub async fn diagnose_all(
     backend: &NativeBackend,
     groups: &GroupIndex,
-) -> Vec<GroupReport> {
+) -> DiagReport {
+    let mut project_issues = Vec::new();
+
+    // Project-level: check if a sync server is configured
+    check_project_config(&mut project_issues);
+
     let entries = groups.list().await;
     let mut reports = Vec::with_capacity(entries.len());
 
@@ -331,7 +343,6 @@ pub async fn diagnose_all(
     for entry in &entries {
         let report = diagnose_group(backend, entry).await;
         let gid = report.group_id.clone();
-        // Track slugs
         let rev = Rev::Branch(mmcp_core::conventions::MAIN_BRANCH.to_string());
         if let Ok(files) = backend.list_tree(&entry.handle, MEMORIES_DIR, &rev).await {
             for f in files {
@@ -346,7 +357,7 @@ pub async fn diagnose_all(
         reports.push(report);
     }
 
-    // Report cross-group slug duplicates
+    // Cross-group slug duplicates
     for (dup_slug, group_ids) in &slug_groups {
         if group_ids.len() > 1 {
             for report in &mut reports {
@@ -365,7 +376,50 @@ pub async fn diagnose_all(
         }
     }
 
-    reports
+    DiagReport {
+        project_issues,
+        groups: reports,
+    }
+}
+
+/// Check project-level configuration for issues.
+fn check_project_config(issues: &mut Vec<Issue>) {
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    match crate::config::find_project_root(&cwd) {
+        None => {
+            issues.push(Issue {
+                group: "(project)".to_string(),
+                slug: None,
+                severity: "warning",
+                message: "no .mmcp.toml project config found in current directory or any parent".to_string(),
+            });
+        }
+        Some(root) => {
+            match crate::config::load(&root) {
+                Err(err) => {
+                    issues.push(Issue {
+                        group: "(project)".to_string(),
+                        slug: None,
+                        severity: "error",
+                        message: format!("project config failed to load: {err}"),
+                    });
+                }
+                Ok(cfg) => {
+                    if cfg.sync.is_none() {
+                        issues.push(Issue {
+                            group: "(project)".to_string(),
+                            slug: None,
+                            severity: "warning",
+                            message: "no [sync] server configured - push/pull will not work".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ── CLI entry points ────────────────────────────────────────
@@ -397,19 +451,31 @@ pub async fn run_diagnose(group: Option<String>) -> Result<()> {
     let home = crate::home::MmcpHome::discover()?;
     let (backend, groups) = home.init_backend().await?;
 
-    let reports = if let Some(id) = group {
+    let diag = if let Some(id) = group {
         let entry = crate::commands::import::resolve_group(&groups, &id)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        vec![diagnose_group(&backend, &entry).await]
+        DiagReport {
+            project_issues: Vec::new(),
+            groups: vec![diagnose_group(&backend, &entry).await],
+        }
     } else {
         diagnose_all(&backend, &groups).await
     };
 
-    print_reports(&reports);
-    let errors: usize = reports
+    // Print project-level issues
+    if !diag.project_issues.is_empty() {
+        println!("project:");
+        for issue in &diag.project_issues {
+            println!("  [{}] {}", issue.severity, issue.message);
+        }
+    }
+
+    print_reports(&diag.groups);
+    let errors: usize = diag.groups
         .iter()
         .flat_map(|r| &r.issues)
+        .chain(diag.project_issues.iter())
         .filter(|i| i.severity == "error")
         .count();
     if errors > 0 {

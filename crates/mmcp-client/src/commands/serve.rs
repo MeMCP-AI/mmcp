@@ -582,7 +582,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<CheckHealthArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let reports = if let Some(ref group_str) = args.group {
+        let diag = if let Some(ref group_str) = args.group {
             let group_id = parse_group_id(group_str)?;
             let entry = self
                 .state
@@ -590,15 +590,20 @@ impl McpServer {
                 .get(&group_id)
                 .await
                 .ok_or_else(|| McpError::invalid_params("group not found", None))?;
-            vec![crate::commands::health::diagnose_group(&self.state.backend, &entry).await]
+            crate::commands::health::DiagReport {
+                project_issues: Vec::new(),
+                groups: vec![crate::commands::health::diagnose_group(&self.state.backend, &entry).await],
+            }
         } else {
             crate::commands::health::diagnose_all(&self.state.backend, &self.state.groups).await
         };
-        let errors: usize = reports.iter().flat_map(|r| &r.issues).filter(|i| i.severity == "error").count();
-        let warnings: usize = reports.iter().flat_map(|r| &r.issues).filter(|i| i.severity == "warning").count();
-        let infos: usize = reports.iter().flat_map(|r| &r.issues).filter(|i| i.severity == "info").count();
+        let all_issues = diag.groups.iter().flat_map(|r| &r.issues).chain(diag.project_issues.iter());
+        let errors: usize = all_issues.clone().filter(|i| i.severity == "error").count();
+        let warnings: usize = all_issues.clone().filter(|i| i.severity == "warning").count();
+        let infos: usize = all_issues.filter(|i| i.severity == "info").count();
         Ok(ok_json(json!({
-            "groups": reports,
+            "project_issues": diag.project_issues,
+            "groups": diag.groups,
             "errors": errors,
             "warnings": warnings,
             "infos": infos,
