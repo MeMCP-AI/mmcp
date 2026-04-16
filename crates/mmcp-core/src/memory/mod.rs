@@ -20,5 +20,5 @@ pub use bump::BumpIntent;
 pub use entry::Memory;
 pub use frontmatter::MemoryFrontmatter;
 pub use kind::MemoryKind;
-pub use parser::{MemoryFile, MemoryParseError};
+pub use parser::{FrontmatterFormat, MemoryFile, MemoryParseError};
 pub use version::Version;

@@ -83,6 +83,7 @@ pub async fn import_memory(
                 bump_intent: None,
             },
             body: content.to_string(),
+            format: mmcp_core::memory::FrontmatterFormat::TomlPlus,
         }
     } else {
         return Err(ImportError::MissingFrontmatter);

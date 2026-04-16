@@ -520,7 +520,7 @@ impl McpServer {
 
         let kind = args.kind.into_core();
 
-        use mmcp_core::memory::{MemoryFile, MemoryFrontmatter};
+        use mmcp_core::memory::{FrontmatterFormat, MemoryFile, MemoryFrontmatter};
         let file = MemoryFile {
             frontmatter: MemoryFrontmatter {
                 name: args.name,
@@ -532,6 +532,7 @@ impl McpServer {
                 bump_intent: None,
             },
             body: args.body,
+            format: FrontmatterFormat::TomlPlus,
         };
         let rendered = file
             .to_string()
