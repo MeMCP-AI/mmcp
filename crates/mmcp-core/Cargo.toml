@@ -17,5 +17,8 @@ serde_json = "1"
 serde_yaml = "0.9"
 gray_matter = { version = "0.2", features = ["toml", "yaml"] }
 
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
+
 [lints]
 workspace = true
