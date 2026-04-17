@@ -466,6 +466,13 @@ struct InitClaudeArgs {
 #[schemars(crate = "rmcp::schemars")]
 struct StatusArgs {}
 
+/// Argument shape for `list_groups`. Takes no parameters today;
+/// a future `owner_scope` filter would land here without breaking
+/// the wire contract since the field would default-serde in.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct ListGroupsArgs {}
+
 /// Shared argument shape for `sync_pull`, `sync_push`, and `sync`.
 ///
 /// The `group` field is a forward-compatibility slot: today the
@@ -658,15 +665,61 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List memories that live in the specified group. The group argument is the group UUID. Returns an empty list if the group is unknown or contains no memories."
+        description = "Enumerate every group the local mirror holds. Returns `{groups: [{slug, uuid, memory_count, protected, is_project}]}` — cheap manifest-only walk, no memory bodies. `is_project` is true for the group whose UUID matches the current cwd's `.mmcp.toml`; false for every other group including cases where no project is in scope. Pure-local, no network."
+    )]
+    async fn list_groups(
+        &self,
+        Parameters(_args): Parameters<ListGroupsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        // Resolve the project uuid up front so every group row can
+        // flag whether it matches without re-reading the config per
+        // iteration. Missing / unreadable config → `None`, which
+        // just means no row will be flagged `is_project: true`.
+        let project_uuid = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| find_project_root(&cwd))
+            .and_then(|root| load_project_config(&root).ok())
+            .map(|cfg| *cfg.project_uuid.as_uuid());
+
+        let entries = self.state.groups.list().await;
+        let mut groups = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let files = list_memory_files(&self.state.backend, &entry).await?;
+            let uuid = entry.manifest.group_id;
+            groups.push(json!({
+                "slug":         entry.manifest.slug,
+                "uuid":         uuid.to_string(),
+                "memory_count": files.len(),
+                "protected":    entry.manifest.protected,
+                "is_project":   project_uuid == Some(*uuid.as_uuid()),
+            }));
+        }
+        Ok(ok_json(json!({
+            "groups": groups,
+            "count":  groups.len(),
+        })))
+    }
+
+    #[tool(
+        description = "List memories that live in the specified group. The group argument is the group UUID. Returns `{group, memories, mirrored: bool}` — `mirrored: false` signals the group UUID is unknown to the local mirror (distinct from a mirrored-but-empty group, which returns `mirrored: true` with `memories: []`)."
     )]
     async fn list_memories(
         &self,
         Parameters(args): Parameters<ListMemoriesArgs>,
     ) -> Result<CallToolResult, McpError> {
         let group_id = parse_group_id(&args.group)?;
+        // `mirrored: false` distinguishes "group UUID is unknown to
+        // the local mirror" from "group exists locally but is empty"
+        // (which returns `mirrored: true` with `memories: []`).
+        // Before the signal landed both states collapsed to the same
+        // wire shape and callers silently skipped mandatory re-reads
+        // when the project group happened not to be pulled yet.
         let Some(entry) = self.state.groups.get(&group_id).await else {
-            return Ok(ok_json(json!({ "memories": [] })));
+            return Ok(ok_json(json!({
+                "group":    args.group,
+                "memories": Vec::<serde_json::Value>::new(),
+                "mirrored": false,
+            })));
         };
         let files = list_memory_files(&self.state.backend, &entry).await?;
         let mut memories = Vec::with_capacity(files.len());
@@ -677,8 +730,9 @@ impl McpServer {
             memories.push(descriptor);
         }
         Ok(ok_json(json!({
-            "group": entry.manifest.group_id,
+            "group":    entry.manifest.group_id,
             "memories": memories,
+            "mirrored": true,
         })))
     }
 
@@ -2567,6 +2621,99 @@ mod tests {
             Some("Sample"),
             "frontmatter name should be parsed"
         );
+        assert_eq!(
+            parsed.get("mirrored").and_then(|v| v.as_bool()),
+            Some(true),
+            "mirrored should be true for a group that exists in the local mirror",
+        );
+    }
+
+    #[tokio::test]
+    async fn list_memories_reports_mirrored_false_for_unknown_group() {
+        // FR-013: a group whose UUID is not in the local mirror must
+        // return `mirrored: false` so AI callers distinguish
+        // "empty-mirrored" from "never-pulled" without a second tool
+        // call. Regression test for the pre-fix behaviour that
+        // returned `{memories: []}` indistinguishable from an empty
+        // mirrored group, silently masking missed checkpoint reads.
+        let (state, _tmp) = test_state().await;
+        let server = McpServer::new(state);
+        let phantom_uuid = Uuid::now_v7().to_string();
+
+        let res = server
+            .list_memories(Parameters(ListMemoriesArgs {
+                group: phantom_uuid.clone(),
+            }))
+            .await
+            .expect("list_memories on unknown group should not error");
+        let parsed = parse_ok_json(res);
+        assert_eq!(
+            parsed.get("mirrored").and_then(|v| v.as_bool()),
+            Some(false),
+            "unknown group must surface mirrored=false",
+        );
+        assert_eq!(
+            parsed
+                .get("memories")
+                .and_then(|v| v.as_array())
+                .map(Vec::len),
+            Some(0),
+            "unknown group still returns an empty memories array",
+        );
+    }
+
+    #[tokio::test]
+    async fn list_groups_returns_every_mirrored_group_with_metadata() {
+        // FR-010: verify the standalone enumeration path returns
+        // every seeded group, with manifest + memory counts, in a
+        // single cheap call — no need to drive `bootstrap_context`
+        // just to discover what is mirrored.
+        let (state, _tmp) = test_state().await;
+        seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
+        seed_group_with_memory(&state, "team-rust-2", "other", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+
+        let res = server
+            .list_groups(Parameters(ListGroupsArgs::default()))
+            .await
+            .expect("list_groups");
+        let parsed = parse_ok_json(res);
+        assert_eq!(
+            parsed.get("count").and_then(|v| v.as_u64()),
+            Some(2),
+            "count must match seeded group cardinality",
+        );
+        let groups = parsed
+            .get("groups")
+            .and_then(|v| v.as_array())
+            .expect("groups array");
+        let slugs: std::collections::HashSet<&str> = groups
+            .iter()
+            .filter_map(|g| g.get("slug").and_then(|v| v.as_str()))
+            .collect();
+        assert!(slugs.contains("team-rust"));
+        assert!(slugs.contains("team-rust-2"));
+        for group in groups {
+            assert_eq!(
+                group.get("memory_count").and_then(|v| v.as_u64()),
+                Some(1),
+                "each seeded group has exactly one memory",
+            );
+            assert!(
+                group.get("uuid").and_then(|v| v.as_str()).is_some(),
+                "uuid field must be populated",
+            );
+            assert_eq!(
+                group.get("protected").and_then(|v| v.as_bool()),
+                Some(false),
+                "seeded groups are unprotected by default",
+            );
+            assert_eq!(
+                group.get("is_project").and_then(|v| v.as_bool()),
+                Some(false),
+                "no `.mmcp.toml` in scope in tests — is_project is false",
+            );
+        }
     }
 
     #[tokio::test]
