@@ -406,6 +406,20 @@ struct SyncToolArgs {
     pub group: Option<String>,
 }
 
+/// Argument shape for `init_project`.
+///
+/// `slug` is required because the MCP transport has no TTY to
+/// prompt with and rmcp does not yet support elicitation. FR-011
+/// will add elicitation so the server can default to the slugified
+/// project dir basename when no slug is supplied.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct InitProjectArgs {
+    /// Group slug (kebab-case, 1-128 chars, no leading/trailing or
+    /// consecutive hyphens). Same contract as memory slugs.
+    pub slug: String,
+}
+
 #[tool_router]
 impl McpServer {
     fn new(state: ClientState) -> Self {
@@ -1237,6 +1251,33 @@ impl McpServer {
 
         Ok(ok_json(compose_status(&cwd, groups)?))
     }
+
+    #[tool(
+        description = "Create the project's backing group repo keyed on the project_uuid in .mmcp.toml. Idempotent — a second call against an already-created repo returns `created: false` without writing a new commit. Required before `write_memory` can target the project_uuid. Errors with code `project_not_found` when .mmcp.toml is missing (the caller should run `mmcp init` first) and `invalid_slug` when the slug does not satisfy the memory-slug contract."
+    )]
+    async fn init_project(
+        &self,
+        Parameters(args): Parameters<InitProjectArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = std::env::current_dir().map_err(|e| {
+            McpError::internal_error(format!("cannot read working directory: {e}"), None)
+        })?;
+        let report = crate::commands::init::create_project_group_from_state(
+            &self.state.backend,
+            &self.state.groups,
+            &cwd,
+            &args.slug,
+        )
+        .await
+        .map_err(map_init_project_error_to_mcp)?;
+        Ok(ok_json(json!({
+            "project_uuid": report.project_uuid.to_string(),
+            "group_id":     report.group_id.to_string(),
+            "slug":         report.slug,
+            "repo_path":    report.repo_path.to_string_lossy(),
+            "created":      report.created,
+        })))
+    }
 }
 
 /// Compose the `status` tool response from a cwd + a pre-built
@@ -1378,6 +1419,37 @@ fn map_sync_error_to_mcp(err: mmcp_sync::SyncError) -> McpError {
         SyncError::InvalidVersion(v) => json!({
             "code": "sync_invalid_version",
             "detail": v.to_string(),
+        }),
+    };
+    McpError::invalid_params(message, Some(payload))
+}
+
+/// Map a [`commands::init::InitProjectError`] to an [`McpError`]
+/// with a structured `code` payload so AI callers can branch on
+/// state instead of parsing the error string.
+fn map_init_project_error_to_mcp(err: crate::commands::init::InitProjectError) -> McpError {
+    use crate::commands::init::InitProjectError;
+    let message = err.to_string();
+    let payload = match &err {
+        InitProjectError::ProjectNotFound => json!({
+            "code": "project_not_found",
+            "retry_hint": "run `mmcp init` first to create .mmcp.toml",
+        }),
+        InitProjectError::ConfigLoadFailed(detail) => json!({
+            "code": "project_config_load_failed",
+            "detail": detail,
+        }),
+        InitProjectError::InvalidSlug { slug } => json!({
+            "code": "invalid_slug",
+            "slug": slug,
+        }),
+        InitProjectError::GitBackend(detail) => json!({
+            "code": "git_backend",
+            "detail": detail,
+        }),
+        InitProjectError::IndexRefreshFailed(detail) => json!({
+            "code": "index_refresh_failed",
+            "detail": detail,
         }),
     };
     McpError::invalid_params(message, Some(payload))
@@ -2281,5 +2353,124 @@ mod tests {
             Some(1),
             "memory_count must match the number of seeded memories",
         );
+    }
+
+    // ── init_project tool (FR-003) ────────────────────────────────────
+
+    #[test]
+    fn map_init_project_error_surfaces_project_not_found_with_retry_hint() {
+        let err =
+            map_init_project_error_to_mcp(crate::commands::init::InitProjectError::ProjectNotFound);
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("project_not_found")
+        );
+        assert!(
+            payload.get("retry_hint").is_some(),
+            "retry_hint must be present so the AI knows what to do next",
+        );
+    }
+
+    #[test]
+    fn map_init_project_error_surfaces_invalid_slug_with_slug_echo() {
+        let err = map_init_project_error_to_mcp(
+            crate::commands::init::InitProjectError::InvalidSlug {
+                slug: "BAD SLUG".to_string(),
+            },
+        );
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("invalid_slug")
+        );
+        assert_eq!(
+            payload.get("slug").and_then(|v| v.as_str()),
+            Some("BAD SLUG"),
+            "caller's original slug must be echoed so UIs can highlight it",
+        );
+    }
+
+    /// Seed a tempdir-backed `ClientState` that also has a
+    /// `.mmcp.toml` written at a separate project root. The test
+    /// manually sets the process cwd is **not** done — instead we
+    /// exercise `create_project_group_from_state` directly, which
+    /// takes cwd as a parameter. The tool method version
+    /// (`server.init_project`) reads `current_dir()` and is covered
+    /// by end-to-end smoke, not unit tests.
+    #[tokio::test]
+    async fn init_project_helper_creates_repo_and_refreshes_index() {
+        use mmcp_core::config::{GroupsConfig, LanguagesConfig, ProjectConfig};
+        use mmcp_core::id::ProjectUuid;
+
+        let (state, tmp) = test_state().await;
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).expect("create project root");
+
+        let project_uuid = ProjectUuid::new();
+        let cfg = ProjectConfig {
+            project_uuid,
+            sync: None,
+            groups: GroupsConfig::default(),
+            languages: LanguagesConfig::default(),
+        };
+        crate::config::save(&project_root, &cfg).expect("write .mmcp.toml");
+
+        let report = crate::commands::init::create_project_group_from_state(
+            &state.backend,
+            &state.groups,
+            &project_root,
+            "team-rust",
+        )
+        .await
+        .expect("create_project_group_from_state");
+
+        assert!(report.created, "first call must report created: true");
+        assert_eq!(report.slug, "team-rust");
+        assert!(
+            state
+                .groups
+                .get(&GroupId::from_uuid(*project_uuid.as_uuid()))
+                .await
+                .is_some(),
+            "newly created group must be visible via GroupIndex",
+        );
+    }
+
+    #[tokio::test]
+    async fn init_project_helper_is_idempotent() {
+        use mmcp_core::config::{GroupsConfig, LanguagesConfig, ProjectConfig};
+        use mmcp_core::id::ProjectUuid;
+
+        let (state, tmp) = test_state().await;
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).expect("create project root");
+        let cfg = ProjectConfig {
+            project_uuid: ProjectUuid::new(),
+            sync: None,
+            groups: GroupsConfig::default(),
+            languages: LanguagesConfig::default(),
+        };
+        crate::config::save(&project_root, &cfg).expect("write .mmcp.toml");
+
+        let first = crate::commands::init::create_project_group_from_state(
+            &state.backend,
+            &state.groups,
+            &project_root,
+            "team-rust",
+        )
+        .await
+        .expect("first");
+        assert!(first.created);
+
+        let second = crate::commands::init::create_project_group_from_state(
+            &state.backend,
+            &state.groups,
+            &project_root,
+            "team-rust",
+        )
+        .await
+        .expect("second");
+        assert!(!second.created, "second call must not rewrite the repo");
     }
 }

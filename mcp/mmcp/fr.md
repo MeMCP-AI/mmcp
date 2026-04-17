@@ -12,11 +12,11 @@
 
 **Status**: Resolved on 2026-04-16. `write_memory` now available with fully typed parameters: `group`, `slug`, `name`, `description`, `kind` (enum), `body`, `tags`, `mandatory`. Server builds frontmatter - AI never touches TOML.
 
-### FR-003: Group creation via MCP tool (2026-04-16)
+### FR-003: Group creation via MCP tool (2026-04-16) - RESOLVED
 
 **Need**: Creating groups currently requires either the server API or direct git operations. A `create_group` tool exposed via MCP would enable end-to-end workflows without leaving the AI conversation.
 
-**Status**: Open.
+**Status**: Resolved (2026-04-17). Project-group creation landed on both surfaces via the shared `commands::init::create_project_group_inner` helper: the CLI grew `mmcp init project [--slug <slug>]` with an interactive-prompt fallback on TTY, and the MCP server exposes `init_project(slug)`. Both paths read `.mmcp.toml`'s `project_uuid`, validate the slug against the existing memory-slug contract, build a `GroupManifest::new_user_owned`, and call `NativeBackend::create_group_repo`. Idempotent: a second call against an existing repo returns `created: false` without rewriting the manifest. Shared-group creation (multiple repos per project, keyed by slug in `ProjectConfig.groups.additional`) is explicitly deferred to a future FR once the `additional` field's format is nailed down.
 
 ### FR-005: Health + Diagnose tools (2026-04-16) - RESOLVED
 
