@@ -131,6 +131,11 @@ pub struct AddSpec {
     pub description: String,
     pub body: String,
     pub status: FeatureStatus,
+    /// Explicit sequential number. Leave absent to let
+    /// [`add_feature`] auto-assign `max(existing) + 1`; pin
+    /// explicitly only for the FR-027 slug-migration binary that
+    /// carries numbers forward from the old `fr-NNN-*` slug form.
+    pub number: Option<u32>,
     pub depends_on: Vec<Uuid>,
     pub blocks: Vec<Uuid>,
     /// Optional override for the git commit message; when absent,
@@ -151,6 +156,11 @@ pub struct UpdateSpec {
     pub description: Option<String>,
     pub body: Option<String>,
     pub status: Option<FeatureStatus>,
+    /// Explicit re-numbering. Callers almost never set this; it
+    /// exists so the FR-027 slug-migration binary can stamp the
+    /// number parsed from legacy `fr-NNN-*` slugs without racing
+    /// `add_feature`'s auto-assignment.
+    pub number: Option<u32>,
     pub depends_on: Option<Vec<Uuid>>,
     pub blocks: Option<Vec<Uuid>>,
     pub message: Option<String>,
@@ -168,6 +178,10 @@ pub struct FeatureRecord {
     pub description: String,
     pub body: String,
     pub status: FeatureStatus,
+    /// Sequential number within the group. `None` on legacy
+    /// memories until the slug migration backfills them from the
+    /// old `fr-NNN-*` slug prefix.
+    pub number: Option<u32>,
     pub depends_on: Vec<Uuid>,
     pub blocks: Vec<Uuid>,
     /// Commit id of the most recent write for this FR, or the head
@@ -197,8 +211,18 @@ pub async fn add_feature(
     };
     validate_slug(&slug).map_err(FeatureError::Memory)?;
 
+    // Auto-assign the sequential number when the caller did not
+    // pin one. The FR-027 migration binary pins explicitly so
+    // historic `fr-NNN-*` numbers are preserved; ordinary creates
+    // pick `max(existing) + 1`. Gaps from deletes stay gaps.
+    let number = match spec.number {
+        Some(n) => Some(n),
+        None => Some(next_feature_number(backend, entry).await?),
+    };
+
     let metadata = FeatureMetadata {
         status: spec.status,
+        number,
         depends_on: spec.depends_on.clone(),
         blocks: spec.blocks.clone(),
     };
@@ -232,10 +256,25 @@ pub async fn add_feature(
         description: spec.description,
         body: spec.body,
         status: spec.status,
+        number,
         depends_on: spec.depends_on,
         blocks: spec.blocks,
         commit_id,
     })
+}
+
+/// Compute the next auto-assigned feature number in the group:
+/// `max(existing_numbers) + 1`, or `1` when no feature has a
+/// number yet. Pre-FR-027 legacy features with no `number`
+/// metadata do not contribute; the migration binary backfills
+/// them from their slug prefix before new creates run.
+async fn next_feature_number(
+    backend: &NativeBackend,
+    entry: &GroupEntry,
+) -> Result<u32, FeatureError> {
+    let records = list_features(backend, entry, None, true).await?;
+    let max = records.iter().filter_map(|r| r.number).max();
+    Ok(max.map_or(1, |n| n + 1))
 }
 
 /// Read an FR by slug. When `rev` is `None`, reads the group's
@@ -298,11 +337,16 @@ pub async fn update_feature(
     let description = spec.description.unwrap_or(current.description);
     let body = spec.body.unwrap_or(current.body);
     let status = spec.status.unwrap_or(current.status);
+    // `spec.number.is_some()` wins (explicit re-numbering); else
+    // keep the existing value so ordinary edits don't wipe the
+    // auto-assigned number.
+    let number = spec.number.or(current.number);
     let depends_on = spec.depends_on.unwrap_or(current.depends_on);
     let blocks = spec.blocks.unwrap_or(current.blocks);
 
     let metadata = FeatureMetadata {
         status,
+        number,
         depends_on: depends_on.clone(),
         blocks: blocks.clone(),
     };
@@ -331,6 +375,7 @@ pub async fn update_feature(
         description,
         body,
         status,
+        number,
         depends_on,
         blocks,
         commit_id,
@@ -422,6 +467,15 @@ pub async fn list_features(
             Err(other) => return Err(other),
         }
     }
+    // Sort by sequential number ascending so the listing keeps a
+    // natural lineage; numberless legacy entries land at the end
+    // ordered by slug for a stable secondary key.
+    out.sort_by(|a, b| match (a.number, b.number) {
+        (Some(x), Some(y)) => x.cmp(&y),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.slug.cmp(&b.slug),
+    });
     Ok(out)
 }
 
@@ -493,6 +547,7 @@ fn record_from_file(
         description: file.frontmatter.description,
         body: file.body,
         status: metadata.status,
+        number: metadata.number,
         depends_on: metadata.depends_on,
         blocks: metadata.blocks,
         commit_id,
@@ -518,6 +573,7 @@ mod tests {
             description: "Sanity test for the add/read round trip".into(),
             body: "## Need\n\nA round trip.\n".into(),
             status: FeatureStatus::Open,
+            number: None,
             depends_on: vec![prior_id],
             blocks: vec![later_id],
             message: None,
@@ -700,6 +756,121 @@ mod tests {
             4,
             "show_all must re-include every FR regardless of status",
         );
+    }
+
+    #[tokio::test]
+    async fn add_feature_auto_assigns_sequential_numbers_when_absent() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        let first = add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("first".into()),
+                title: "first".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("first");
+        let second = add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("second".into()),
+                title: "second".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("second");
+        let third = add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("third".into()),
+                title: "third".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("third");
+        assert_eq!(first.number, Some(1));
+        assert_eq!(second.number, Some(2));
+        assert_eq!(third.number, Some(3));
+    }
+
+    #[tokio::test]
+    async fn add_feature_honors_pinned_number_and_resumes_after_gap() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        let pinned = add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("pin".into()),
+                title: "pin".into(),
+                number: Some(42),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("pin");
+        assert_eq!(pinned.number, Some(42));
+
+        // Next unpinned create picks up past the highest existing
+        // number. Numbers below the pin are not reused.
+        let next = add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("next".into()),
+                title: "next".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("next");
+        assert_eq!(next.number, Some(43));
+    }
+
+    #[tokio::test]
+    async fn list_features_sorts_by_number_ascending() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        // Deliberately insert out of order.
+        for (slug, number) in [("third", 3), ("first", 1), ("second", 2)] {
+            add_feature(
+                scratch.backend(),
+                &entry,
+                AddSpec {
+                    slug: Some(slug.into()),
+                    title: slug.into(),
+                    number: Some(number),
+                    ..AddSpec::default()
+                },
+                scratch.author(),
+            )
+            .await
+            .expect("seed");
+        }
+
+        let records = list_features(scratch.backend(), &entry, None, true)
+            .await
+            .expect("list");
+        let slugs: Vec<_> = records.iter().map(|r| r.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["first", "second", "third"]);
     }
 
     #[tokio::test]

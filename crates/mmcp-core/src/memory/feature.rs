@@ -110,6 +110,13 @@ pub struct FeatureMetadata {
     #[serde(default)]
     pub status: FeatureStatus,
 
+    /// Sequential number per group, auto-assigned by `add_feature`
+    /// as `max(existing_numbers) + 1`. Gaps from deletions are not
+    /// reused so the lineage stays monotonic. Absent on pre-FR-027
+    /// memories until the slug-migration binary backfills them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<u32>,
+
     /// UUIDs of FRs this one depends on; usually the prerequisite
     /// surface must land first. Post-FR-028 cross-refs hold memory
     /// UUIDs (not slugs) so a rename on either side never breaks
@@ -149,5 +156,27 @@ mod tests {
         assert_eq!(meta.status, FeatureStatus::Open);
         assert!(meta.depends_on.is_empty());
         assert!(meta.blocks.is_empty());
+        assert_eq!(meta.number, None);
+    }
+
+    #[test]
+    fn number_field_round_trips_through_toml() {
+        let meta = FeatureMetadata {
+            status: FeatureStatus::Open,
+            number: Some(42),
+            depends_on: Vec::new(),
+            blocks: Vec::new(),
+        };
+        let rendered = toml::to_string(&meta).expect("render");
+        assert!(rendered.contains("number = 42"), "rendered: {rendered}");
+        let parsed: FeatureMetadata = toml::from_str(&rendered).expect("parse");
+        assert_eq!(parsed.number, Some(42));
+    }
+
+    #[test]
+    fn absent_number_is_skipped_on_serialize() {
+        let meta = FeatureMetadata::default();
+        let rendered = toml::to_string(&meta).expect("render");
+        assert!(!rendered.contains("number"), "rendered: {rendered}");
     }
 }

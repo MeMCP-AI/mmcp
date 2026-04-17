@@ -63,6 +63,11 @@ pub struct AddArgs {
     #[arg(long)]
     pub status: Option<String>,
 
+    /// Explicit sequential number (FR-027). Leave absent to let
+    /// the server auto-assign `max(existing) + 1` per group.
+    #[arg(long)]
+    pub number: Option<u32>,
+
     /// Slugs of prerequisites. Repeat the flag for each entry.
     #[arg(long = "depends-on")]
     pub depends_on: Vec<String>,
@@ -106,6 +111,11 @@ pub struct UpdateArgs {
     /// New status. Omit to leave unchanged.
     #[arg(long)]
     pub status: Option<String>,
+
+    /// Explicit re-numbering (FR-027). Rare; mostly used by the
+    /// slug-migration flow to preserve historical numbers.
+    #[arg(long)]
+    pub number: Option<u32>,
 
     /// Replacement `depends_on` list. Omit to leave unchanged; pass
     /// `--depends-on-clear` to empty the list.
@@ -195,6 +205,7 @@ async fn run_add(args: AddArgs) -> Result<()> {
         description: args.description,
         body: read_body(&args.body)?,
         status,
+        number: args.number,
         depends_on,
         blocks,
         message: args.message,
@@ -265,6 +276,7 @@ async fn run_update(args: UpdateArgs) -> Result<()> {
         description: args.description,
         body,
         status,
+        number: args.number,
         depends_on,
         blocks,
         message: args.message,
@@ -342,7 +354,17 @@ fn print_record_summary(record: &FeatureRecord) {
     } else {
         record.title.as_str()
     };
-    println!("[{}] {} — {}", record.status.as_str(), record.slug, title);
+    let number = record
+        .number
+        .map(|n| format!("#{n} "))
+        .unwrap_or_default();
+    println!(
+        "[{}] {}{} — {}",
+        record.status.as_str(),
+        number,
+        record.slug,
+        title
+    );
     if !record.description.is_empty() {
         println!("    {}", record.description);
     }
@@ -350,6 +372,9 @@ fn print_record_summary(record: &FeatureRecord) {
 
 fn print_record_full(record: &FeatureRecord) {
     println!("slug        : {}", record.slug);
+    if let Some(n) = record.number {
+        println!("number      : {n}");
+    }
     println!("title       : {}", record.title);
     println!("status      : {}", record.status.as_str());
     if !record.description.is_empty() {
