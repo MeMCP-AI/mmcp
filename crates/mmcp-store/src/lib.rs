@@ -40,6 +40,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod config;
 pub mod home;
 
 pub use home::{MmcpHome, ResolvedAuthor, read_git_global};
