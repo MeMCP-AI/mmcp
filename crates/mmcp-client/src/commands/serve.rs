@@ -1253,7 +1253,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Create the project's backing group repo keyed on the project_uuid in .mmcp.toml. Idempotent — a second call against an already-created repo returns `created: false` without writing a new commit. Required before `write_memory` can target the project_uuid. Errors with code `project_not_found` when .mmcp.toml is missing (the caller should run `mmcp init` first) and `invalid_slug` when the slug does not satisfy the memory-slug contract."
+        description = "Bootstrap the project's `.mmcp.toml` and backing group repo. Idempotent and never-overwrite: a second call returns `created_config: false` / `created_repo: false` without rewriting either artifact. Errors with code `invalid_slug` when the slug does not satisfy the memory-slug contract, `slug_required` when no slug is available (arg missing and no `project_slug` in `.mmcp.toml`), `slug_mismatch` / `project_uuid_mismatch` when args disagree with an existing config, and `repo_without_config` if the bare repo exists but the config has been deleted."
     )]
     async fn init_project(
         &self,
@@ -1262,20 +1262,27 @@ impl McpServer {
         let cwd = std::env::current_dir().map_err(|e| {
             McpError::internal_error(format!("cannot read working directory: {e}"), None)
         })?;
+        let opts = crate::commands::init::InitProjectOptions {
+            slug: Some(args.slug),
+            config_only: false,
+            project_uuid: None,
+        };
         let report = crate::commands::init::create_project_group_from_state(
             &self.state.backend,
             &self.state.groups,
             &cwd,
-            &args.slug,
+            &opts,
         )
         .await
         .map_err(map_init_project_error_to_mcp)?;
         Ok(ok_json(json!({
-            "project_uuid": report.project_uuid.to_string(),
-            "group_id":     report.group_id.to_string(),
-            "slug":         report.slug,
-            "repo_path":    report.repo_path.to_string_lossy(),
-            "created":      report.created,
+            "project_uuid":   report.project_uuid.to_string(),
+            "project_root":   report.project_root.to_string_lossy(),
+            "group_id":       report.group_id.to_string(),
+            "slug":           report.slug,
+            "repo_path":      report.repo_path.as_ref().map(|p| p.to_string_lossy()),
+            "created_config": report.created_config,
+            "created_repo":   report.created_repo,
         })))
     }
 }
@@ -1431,17 +1438,36 @@ fn map_init_project_error_to_mcp(err: crate::commands::init::InitProjectError) -
     use crate::commands::init::InitProjectError;
     let message = err.to_string();
     let payload = match &err {
-        InitProjectError::ProjectNotFound => json!({
-            "code": "project_not_found",
-            "retry_hint": "run `mmcp init` first to create .mmcp.toml",
+        InitProjectError::InvalidSlug { slug } => json!({
+            "code": "invalid_slug",
+            "slug": slug,
         }),
         InitProjectError::ConfigLoadFailed(detail) => json!({
             "code": "project_config_load_failed",
             "detail": detail,
         }),
-        InitProjectError::InvalidSlug { slug } => json!({
-            "code": "invalid_slug",
-            "slug": slug,
+        InitProjectError::ConfigWriteFailed(detail) => json!({
+            "code": "project_config_write_failed",
+            "detail": detail,
+        }),
+        InitProjectError::ProjectUuidMismatch { expected, got } => json!({
+            "code": "project_uuid_mismatch",
+            "expected": expected.to_string(),
+            "got": got.to_string(),
+        }),
+        InitProjectError::SlugMismatch { expected, got } => json!({
+            "code": "slug_mismatch",
+            "expected": expected,
+            "got": got,
+        }),
+        InitProjectError::SlugRequired => json!({
+            "code": "slug_required",
+            "retry_hint": "pass a `slug` argument, or store `project_slug` in .mmcp.toml",
+        }),
+        InitProjectError::RepoWithoutConfig { uuid, path } => json!({
+            "code": "repo_without_config",
+            "uuid": uuid.to_string(),
+            "path": path.to_string_lossy(),
         }),
         InitProjectError::GitBackend(detail) => json!({
             "code": "git_backend",
@@ -2358,13 +2384,14 @@ mod tests {
     // ── init_project tool (FR-003) ────────────────────────────────────
 
     #[test]
-    fn map_init_project_error_surfaces_project_not_found_with_retry_hint() {
-        let err =
-            map_init_project_error_to_mcp(crate::commands::init::InitProjectError::ProjectNotFound);
+    fn map_init_project_error_surfaces_slug_required_with_retry_hint() {
+        let err = map_init_project_error_to_mcp(
+            crate::commands::init::InitProjectError::SlugRequired,
+        );
         let payload = err.data.as_ref().expect("payload");
         assert_eq!(
             payload.get("code").and_then(|v| v.as_str()),
-            Some("project_not_found")
+            Some("slug_required")
         );
         assert!(
             payload.get("retry_hint").is_some(),
@@ -2391,46 +2418,58 @@ mod tests {
         );
     }
 
-    /// Seed a tempdir-backed `ClientState` that also has a
-    /// `.mmcp.toml` written at a separate project root. The test
-    /// manually sets the process cwd is **not** done — instead we
-    /// exercise `create_project_group_from_state` directly, which
-    /// takes cwd as a parameter. The tool method version
-    /// (`server.init_project`) reads `current_dir()` and is covered
-    /// by end-to-end smoke, not unit tests.
+    #[test]
+    fn map_init_project_error_surfaces_slug_mismatch_with_both_sides() {
+        let err = map_init_project_error_to_mcp(
+            crate::commands::init::InitProjectError::SlugMismatch {
+                expected: "stored".to_string(),
+                got: "passed".to_string(),
+            },
+        );
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("slug_mismatch")
+        );
+        assert_eq!(
+            payload.get("expected").and_then(|v| v.as_str()),
+            Some("stored")
+        );
+        assert_eq!(
+            payload.get("got").and_then(|v| v.as_str()),
+            Some("passed")
+        );
+    }
+
+    /// End-to-end exercise of `create_project_group_from_state` with
+    /// the new options shape. Writes both config and repo from
+    /// scratch on the first call.
     #[tokio::test]
     async fn init_project_helper_creates_repo_and_refreshes_index() {
-        use mmcp_core::config::{GroupsConfig, LanguagesConfig, ProjectConfig};
-        use mmcp_core::id::ProjectUuid;
-
         let (state, tmp) = test_state().await;
         let project_root = tmp.path().join("project");
         std::fs::create_dir_all(&project_root).expect("create project root");
 
-        let project_uuid = ProjectUuid::new();
-        let cfg = ProjectConfig {
-            project_uuid,
-            sync: None,
-            groups: GroupsConfig::default(),
-            languages: LanguagesConfig::default(),
+        let opts = crate::commands::init::InitProjectOptions {
+            slug: Some("team-rust".to_string()),
+            ..Default::default()
         };
-        crate::config::save(&project_root, &cfg).expect("write .mmcp.toml");
-
         let report = crate::commands::init::create_project_group_from_state(
             &state.backend,
             &state.groups,
             &project_root,
-            "team-rust",
+            &opts,
         )
         .await
         .expect("create_project_group_from_state");
 
-        assert!(report.created, "first call must report created: true");
+        assert!(report.created_config, "config must be written on first call");
+        assert!(report.created_repo, "repo must be written on first call");
         assert_eq!(report.slug, "team-rust");
         assert!(
             state
                 .groups
-                .get(&GroupId::from_uuid(*project_uuid.as_uuid()))
+                .get(&GroupId::from_uuid(*report.project_uuid.as_uuid()))
                 .await
                 .is_some(),
             "newly created group must be visible via GroupIndex",
@@ -2439,38 +2478,36 @@ mod tests {
 
     #[tokio::test]
     async fn init_project_helper_is_idempotent() {
-        use mmcp_core::config::{GroupsConfig, LanguagesConfig, ProjectConfig};
-        use mmcp_core::id::ProjectUuid;
-
         let (state, tmp) = test_state().await;
         let project_root = tmp.path().join("project");
         std::fs::create_dir_all(&project_root).expect("create project root");
-        let cfg = ProjectConfig {
-            project_uuid: ProjectUuid::new(),
-            sync: None,
-            groups: GroupsConfig::default(),
-            languages: LanguagesConfig::default(),
-        };
-        crate::config::save(&project_root, &cfg).expect("write .mmcp.toml");
 
+        let opts = crate::commands::init::InitProjectOptions {
+            slug: Some("team-rust".to_string()),
+            ..Default::default()
+        };
         let first = crate::commands::init::create_project_group_from_state(
             &state.backend,
             &state.groups,
             &project_root,
-            "team-rust",
+            &opts,
         )
         .await
         .expect("first");
-        assert!(first.created);
+        assert!(first.created_config);
+        assert!(first.created_repo);
 
         let second = crate::commands::init::create_project_group_from_state(
             &state.backend,
             &state.groups,
             &project_root,
-            "team-rust",
+            &opts,
         )
         .await
         .expect("second");
-        assert!(!second.created, "second call must not rewrite the repo");
+        assert!(
+            !second.created_config && !second.created_repo,
+            "second call must not rewrite anything",
+        );
     }
 }

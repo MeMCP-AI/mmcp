@@ -98,6 +98,7 @@ mod tests {
     ) -> ProjectConfig {
         ProjectConfig {
             project_uuid: ProjectUuid::new(),
+            project_slug: None,
             sync,
             groups,
             languages,

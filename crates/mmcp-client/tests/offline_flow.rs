@@ -43,6 +43,7 @@ async fn offline_env() -> (
     // canonical shape for a user who has never run `mmcp link`.
     let project_cfg = ProjectConfig {
         project_uuid: ProjectUuid::new(),
+        project_slug: None,
         sync: None,
         groups: GroupsConfig::default(),
         languages: LanguagesConfig::default(),

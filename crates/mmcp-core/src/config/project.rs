@@ -13,8 +13,20 @@ use crate::id::ProjectUuid;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectConfig {
-    /// Stable identity for this project. Generated at `mmcp init`.
+    /// Stable identity for this project. Generated at
+    /// `mmcp init project` (locally if offline, or accepted from
+    /// the server on first push) and never rewritten afterwards.
     pub project_uuid: ProjectUuid,
+
+    /// Human-readable group slug mirrored into the project's bare
+    /// repo manifest. Stored here so a checked-in `.mmcp.toml`
+    /// carries the canonical project name forward — teammates
+    /// cloning the working tree see the slug without reading back
+    /// to `~/.mmcp/repos`. Absent on configs written by pre-slug
+    /// versions of `mmcp init`; `mmcp init project` backfills it
+    /// in place on the next run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_slug: Option<String>,
 
     /// Sync settings. Absent for local-only projects.
     #[serde(default)]
@@ -95,6 +107,7 @@ mod tests {
             project_uuid = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
         "#;
         let cfg = ProjectConfig::from_toml(source).expect("parse minimal config");
+        assert!(cfg.project_slug.is_none());
         assert!(cfg.sync.is_none());
         assert!(!cfg.groups.no_default);
         assert!(cfg.groups.additional.is_empty());
@@ -103,9 +116,24 @@ mod tests {
     }
 
     #[test]
+    fn pre_slug_config_parses_without_project_slug_field() {
+        // Configs written before `project_slug` landed must keep
+        // parsing — the field is backward-compatible via serde-default.
+        let source = r#"
+project_uuid = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
+
+[sync]
+server_url = "http://localhost:8787"
+"#;
+        let cfg = ProjectConfig::from_toml(source).expect("pre-slug config must parse");
+        assert!(cfg.project_slug.is_none());
+    }
+
+    #[test]
     fn full_config_round_trips() {
         let source = r#"
 project_uuid = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
+project_slug = "team-acme"
 
 [sync]
 server_url = "https://mmcp.example.com"
@@ -119,6 +147,7 @@ use = ["rust"]
 auto_detect = true
 "#;
         let cfg = ProjectConfig::from_toml(source).expect("parse full config");
+        assert_eq!(cfg.project_slug.as_deref(), Some("team-acme"));
         assert_eq!(
             cfg.sync.as_ref().expect("sync present").server_url,
             "https://mmcp.example.com"
@@ -130,6 +159,27 @@ auto_detect = true
         let rendered = cfg.to_toml().expect("render full config");
         let reparsed = ProjectConfig::from_toml(&rendered).expect("reparse rendered config");
         assert_eq!(cfg, reparsed);
+    }
+
+    #[test]
+    fn absent_project_slug_is_skipped_on_serialize() {
+        // `skip_serializing_if = Option::is_none` keeps rendered
+        // `.mmcp.toml` files minimal — no empty-string field noise
+        // on configs that haven't been init-project'd yet.
+        let cfg = ProjectConfig {
+            project_uuid: ProjectUuid::from_uuid(
+                uuid::Uuid::parse_str("018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91").unwrap(),
+            ),
+            project_slug: None,
+            sync: None,
+            groups: GroupsConfig::default(),
+            languages: LanguagesConfig::default(),
+        };
+        let rendered = cfg.to_toml().expect("render");
+        assert!(
+            !rendered.contains("project_slug"),
+            "project_slug must not appear when the value is None"
+        );
     }
 
     #[test]

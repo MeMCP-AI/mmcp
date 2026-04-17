@@ -28,9 +28,11 @@ enum Command {
         debug: bool,
     },
 
-    /// Initialize mmcp-managed files for the current directory. With
-    /// no subcommand, writes `.mmcp.toml`. Subcommands manage other
-    /// project-level files (currently: `claude`).
+    /// Initialize mmcp-managed files for the current directory.
+    /// Takes a subcommand naming which surface to bootstrap
+    /// (`project` for `.mmcp.toml` + group repo, `claude` for
+    /// CLAUDE.md). Running `mmcp init` with no subcommand prints
+    /// this help text.
     Init(InitArgs),
 
     /// Show local mmcp state for the current project.
@@ -107,6 +109,7 @@ enum HookCommand {
 }
 
 #[derive(clap::Args)]
+#[command(arg_required_else_help = true)]
 struct InitArgs {
     #[command(subcommand)]
     cmd: Option<InitCommand>,
@@ -138,13 +141,15 @@ async fn main() -> Result<()> {
         Command::Serve { debug } => commands::serve::run(debug).await?,
         Command::Check { group } => commands::health::run_check(group).await?,
         Command::Diagnose { group } => commands::health::run_diagnose(group).await?,
-        Command::Init(InitArgs { cmd: None }) => commands::init::run().await?,
-        Command::Init(InitArgs {
-            cmd: Some(InitCommand::Claude(args)),
-        }) => commands::claude::run(args).await?,
-        Command::Init(InitArgs {
-            cmd: Some(InitCommand::Project(args)),
-        }) => commands::init::run_project(args).await?,
+        Command::Init(InitArgs { cmd }) => match cmd {
+            // `arg_required_else_help = true` on `InitArgs` makes
+            // clap surface help before we ever get here when no
+            // subcommand is passed. This branch only fires when a
+            // future variant is added without a dispatch arm.
+            None => unreachable!("clap enforces subcommand presence"),
+            Some(InitCommand::Claude(args)) => commands::claude::run(args).await?,
+            Some(InitCommand::Project(args)) => commands::init::run_project(args).await?,
+        },
         Command::Status => commands::status::run().await?,
         Command::Sync => commands::sync::run(true, true).await?,
         Command::Pull => commands::sync::run(true, false).await?,

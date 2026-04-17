@@ -28,16 +28,41 @@ fn help_flag_succeeds() {
 }
 
 #[test]
-fn init_in_tempdir_creates_config() {
-    let tmp = tempfile::tempdir().unwrap();
+fn bare_init_prints_help_instead_of_hard_error() {
+    // `mmcp init` without a subcommand should render help text for
+    // the `init` group, not a terse "required subcommand" abort.
+    // Clap's `arg_required_else_help` emits the usage block on
+    // stderr and exits non-zero, same as `mmcp` alone.
     mmcp()
         .arg("init")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Usage"))
+        .stderr(predicate::str::contains("project"))
+        .stderr(predicate::str::contains("claude"));
+}
+
+#[test]
+fn init_project_config_only_creates_config_without_repo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mmcp_home = tmp.path().join("mmcp-home");
+    mmcp()
+        .args(["init", "project", "--slug", "cli-smoke", "--config-only"])
         .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
         .assert()
         .success();
 
     let config_path = tmp.path().join(".mmcp.toml");
-    assert!(config_path.exists(), "init should create .mmcp.toml");
+    assert!(
+        config_path.exists(),
+        "init project --config-only must create .mmcp.toml"
+    );
+    let body = std::fs::read_to_string(&config_path).expect("read config");
+    assert!(
+        body.contains("project_slug = \"cli-smoke\""),
+        "slug must be stored in .mmcp.toml; got:\n{body}"
+    );
 }
 
 #[test]
@@ -53,17 +78,18 @@ fn status_outside_project_fails() {
 #[test]
 fn status_inside_initialized_project_prints_project_fields() {
     let tmp = tempfile::tempdir().unwrap();
-    // Bootstrap the project first, then probe status from the same
-    // directory.
+    let mmcp_home = tmp.path().join("mmcp-home");
     mmcp()
-        .arg("init")
+        .args(["init", "project", "--slug", "status-test", "--config-only"])
         .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
         .assert()
         .success();
 
     mmcp()
         .arg("status")
         .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
         .assert()
         .success()
         .stdout(predicate::str::contains("project root"))
@@ -73,28 +99,43 @@ fn status_inside_initialized_project_prints_project_fields() {
 }
 
 #[test]
-fn init_refuses_to_overwrite_existing_project() {
+fn init_project_second_call_is_idempotent() {
+    // The merged `init project` never overwrites — a second run
+    // against an already-initialized project must succeed and leave
+    // the repo as-is. This replaces the old "refuses to overwrite"
+    // test; refusing to overwrite was a footgun that prevented
+    // running the command defensively.
     let tmp = tempfile::tempdir().unwrap();
-    mmcp().arg("init").current_dir(tmp.path()).assert().success();
+    let mmcp_home = tmp.path().join("mmcp-home");
     mmcp()
-        .arg("init")
+        .args(["init", "project", "--slug", "idempotent"])
         .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("already initialized"));
+        .success();
+    mmcp()
+        .args(["init", "project", "--slug", "idempotent"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already present"));
 }
 
 #[test]
 fn sync_fails_when_project_has_no_sync_block() {
-    // `mmcp init` writes a project config with `sync = None`, so
-    // running `mmcp sync` against a fresh init must fail with a
-    // message naming the missing block.
+    // A freshly initialized project has `sync = None`, so running
+    // `mmcp sync` against it must fail with a message naming the
+    // missing block. Use `--config-only` to keep the tempdir free
+    // of the bare repo — sync never gets that far anyway.
     let tmp = tempfile::tempdir().unwrap();
-    mmcp().arg("init").current_dir(tmp.path()).assert().success();
-
-    // Point MMCP_HOME at the tempdir so the command never touches
-    // the operator's real `~/.mmcp/`.
     let mmcp_home = tmp.path().join("mmcp-home");
+    mmcp()
+        .args(["init", "project", "--slug", "sync-test", "--config-only"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
     mmcp()
         .arg("sync")
         .current_dir(tmp.path())
@@ -119,11 +160,6 @@ fn sync_outside_project_fails_with_a_useful_message() {
 
 #[test]
 fn hook_user_prompt_emits_session_marker() {
-    // Drive the hook binary end-to-end: feed it a minimal
-    // `UserPromptSubmit` JSON payload via stdin and assert the
-    // standard session marker lands on stdout. Keeping the state
-    // under a tempdir-backed `MMCP_HOME` keeps the test off the
-    // operator's real `~/.mmcp/sessions/`.
     let tmp = tempfile::tempdir().unwrap();
     let mmcp_home = tmp.path().join("mmcp-home");
     let payload = r#"{"session_id":"sess-cli-smoke-1"}"#;
@@ -152,16 +188,19 @@ fn hook_user_prompt_rejects_malformed_json() {
 
 #[test]
 fn init_claude_dry_run_against_override_announces_plan_without_writing() {
-    // `mmcp init claude --override --dry-run` on a missing CLAUDE.md
-    // must print its plan to stderr and leave the filesystem
-    // unchanged. Covers the dry-run path of the new subcommand the
-    // previous track added.
     let tmp = tempfile::tempdir().unwrap();
-    mmcp().arg("init").current_dir(tmp.path()).assert().success();
+    let mmcp_home = tmp.path().join("mmcp-home");
+    mmcp()
+        .args(["init", "project", "--slug", "claude-test", "--config-only"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
 
     mmcp()
         .args(["init", "claude", "--override", "--dry-run"])
         .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
         .assert()
         .success()
         .stderr(predicate::str::contains("dry-run"));

@@ -1,20 +1,27 @@
-//! `mmcp init` implementations.
+//! `mmcp init project` implementation.
 //!
-//! `mmcp init` (no subcommand) writes the per-project `.mmcp.toml`
-//! with a freshly generated `project_uuid`. `mmcp init project`
-//! creates the git repo that `project_uuid` refers to so memories
-//! can be written into it. The two steps are intentionally
-//! orthogonal: an operator who is going to sync a pre-existing
-//! server-side project down only needs `mmcp init`; an operator
-//! starting a brand new local-only project runs both.
+//! The project is bootstrapped by a single command: `.mmcp.toml`
+//! and the backing bare git repo are both created (or, more often,
+//! one of them is created next to the other that is already there).
+//! `--config-only` exists for operators who want to write just the
+//! project config up front — useful when adopting a server-side
+//! project that a follow-up `mmcp pull` will populate.
+//!
+//! Idempotency rule: *never rewrite* either artifact. The bare repo
+//! is untouched once it exists, and `.mmcp.toml` is only ever
+//! enriched (specifically, an absent `project_slug` gets backfilled).
+//! Every other difference between args and on-disk state — a
+//! `--project-uuid` that disagrees with the stored one, a `--slug`
+//! that disagrees with the stored one — is an error so the operator
+//! never silently ends up with the wrong project identity.
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use inquire::Text;
-use mmcp_core::config::{GroupsConfig, LanguagesConfig, ProjectConfig};
+use mmcp_core::config::ProjectConfig;
 use mmcp_core::id::{GroupId, ProjectUuid};
 use mmcp_core::manifest::GroupManifest;
 use mmcp_git::{GitBackend, NativeBackend};
@@ -22,79 +29,95 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::commands::import::validate_slug;
-use crate::config::{config_path_for, find_project_root, load, save};
+use crate::config::{find_project_root, load, save};
 use crate::home::MmcpHome;
 use crate::state::GroupIndex;
 
-/// Initialize a new mmcp project rooted at the current working
-/// directory.
-pub async fn run() -> Result<()> {
-    let cwd = std::env::current_dir().context("reading current working directory")?;
-    let existing = config_path_for(&cwd);
-    if existing.exists() {
-        bail!(
-            "mmcp project already initialized at {}",
-            existing.display()
-        );
-    }
-
-    let config = ProjectConfig {
-        project_uuid: ProjectUuid::new(),
-        sync: None,
-        groups: GroupsConfig::default(),
-        languages: LanguagesConfig::default(),
-    };
-    save(&cwd, &config)?;
-
-    println!(
-        "initialized mmcp project {} at {}",
-        config.project_uuid,
-        cwd.display()
-    );
-    Ok(())
-}
-
-// ── `mmcp init project` ─────────────────────────────────────────────
+// ── CLI args ─────────────────────────────────────────────────────────
 
 /// Flags accepted by `mmcp init project`.
 #[derive(Debug, Clone, clap::Args)]
 pub struct ProjectArgs {
-    /// Group slug (kebab-case). When omitted, a TTY invocation
-    /// prompts for one using the slugified project directory name
-    /// as the default; a non-TTY invocation errors so the operator
-    /// has to pick a deterministic name up front.
+    /// Group slug (kebab-case). Absent on a TTY prompts for one
+    /// using the slugified project directory basename as the
+    /// default; absent on a non-TTY with no stored slug errors so
+    /// scripted runs have to pick a name explicitly.
     #[arg(long)]
     pub slug: Option<String>,
+
+    /// Write `.mmcp.toml` only. Skip bare-repo creation. Useful when
+    /// adopting a project whose repo is hosted on a server and will
+    /// land locally via the first `mmcp pull`.
+    #[arg(long)]
+    pub config_only: bool,
+
+    /// Adopt an explicit project UUID instead of minting a fresh v7.
+    /// Rejected if `.mmcp.toml` already exists with a different UUID.
+    #[arg(long)]
+    pub project_uuid: Option<Uuid>,
 }
 
-/// Successful outcome of a project-group initialization.
+// ── Shared types ─────────────────────────────────────────────────────
+
+/// Options consumed by the shared bootstrap helper. Kept as a
+/// struct rather than a long arg list so CLI and MCP callers
+/// converge on one shape; optional fields default via `Default`.
+#[derive(Debug, Clone, Default)]
+pub struct InitProjectOptions {
+    pub slug: Option<String>,
+    pub config_only: bool,
+    pub project_uuid: Option<Uuid>,
+}
+
+/// Successful outcome of a project-bootstrap call.
 #[derive(Debug, Clone)]
 pub struct ProjectGroupReport {
     pub project_uuid: ProjectUuid,
-    pub group_id: GroupId,
+    pub project_root: PathBuf,
     pub slug: String,
-    pub repo_path: PathBuf,
-    /// `true` when the call actually created the repo; `false` when
-    /// it was already present on disk (idempotent path).
-    pub created: bool,
+    pub group_id: GroupId,
+    /// `None` when `config_only` was set and the repo is still
+    /// absent; `Some(path)` whenever a repo exists on disk (either
+    /// created by this call or already present).
+    pub repo_path: Option<PathBuf>,
+    /// `true` when this call wrote `.mmcp.toml` for the first time,
+    /// `false` when the config was already there. Slug backfill on
+    /// an existing config does not flip this to `true` — the config
+    /// is enriched, not replaced.
+    pub created_config: bool,
+    /// `true` when this call created the bare repo, `false` for a
+    /// pre-existing repo or a `config_only` run.
+    pub created_repo: bool,
 }
 
-/// Structured failures emitted by the `init project` code path.
+/// Structured failures emitted by the bootstrap helper.
 ///
-/// The MCP tool side maps each variant to a distinct `code` on the
-/// wire so AI clients can branch without parsing human text.
+/// The MCP tool maps each variant to a distinct `code` so AI
+/// clients branch on state rather than parsing human strings.
 #[derive(Debug, Error)]
 pub enum InitProjectError {
-    #[error(
-        "no mmcp project found in current directory or any parent; run `mmcp init` first"
-    )]
-    ProjectNotFound,
+    #[error("invalid slug `{slug}`: must be 1-128 lowercase alphanumeric chars or hyphens, no leading/trailing/consecutive hyphens")]
+    InvalidSlug { slug: String },
 
     #[error("failed to load project config: {0}")]
     ConfigLoadFailed(String),
 
-    #[error("invalid slug `{slug}`: must be 1-128 lowercase alphanumeric chars or hyphens, no leading/trailing/consecutive hyphens")]
-    InvalidSlug { slug: String },
+    #[error("failed to write project config: {0}")]
+    ConfigWriteFailed(String),
+
+    #[error("supplied project_uuid {got} disagrees with the one already stored in .mmcp.toml ({expected}); refusing to rewrite project identity")]
+    ProjectUuidMismatch { expected: Uuid, got: Uuid },
+
+    #[error("supplied slug `{got}` disagrees with the one already stored in .mmcp.toml (`{expected}`); refusing to rewrite project slug")]
+    SlugMismatch { expected: String, got: String },
+
+    #[error(
+        "slug required: pass `--slug <slug>` (or supply it in the `slug` tool argument)"
+    )]
+    SlugRequired,
+
+    #[error("bare repo for project_uuid {uuid} exists at {path} but .mmcp.toml is missing; refusing to touch an orphan repo")]
+    RepoWithoutConfig { uuid: Uuid, path: PathBuf },
 
     #[error("git backend error: {0}")]
     GitBackend(String),
@@ -103,159 +126,145 @@ pub enum InitProjectError {
     IndexRefreshFailed(String),
 }
 
+// ── CLI entry ────────────────────────────────────────────────────────
+
 /// CLI entry for `mmcp init project`.
-///
-/// Handles interactive slug acquisition (TTY prompt with the
-/// slugified project dir basename as the default) and pretty-prints
-/// the resulting [`ProjectGroupReport`] to stdout.
 pub async fn run_project(args: ProjectArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("reading current working directory")?;
     let home = MmcpHome::discover()?;
 
-    let slug = match args.slug {
-        Some(s) => s,
-        None => resolve_slug_interactive(&cwd)?,
+    let opts = InitProjectOptions {
+        slug: args.slug,
+        config_only: args.config_only,
+        project_uuid: args.project_uuid,
     };
 
-    let report = create_project_group(&home, &cwd, &slug)
+    let (backend, groups) = home.init_backend().await?;
+    let report = bootstrap_project(&backend, &groups, &cwd, &opts, /* tty_slug_prompt */ true)
         .await
-        .map_err(|e| anyhow::anyhow!(e))?;
+        .map_err(anyhow::Error::from)?;
 
-    if report.created {
-        println!(
-            "created group {} ({}) at {}",
-            report.slug,
-            report.group_id,
-            report.repo_path.display()
-        );
-    } else {
-        println!(
-            "project group {} already exists at {}",
-            report.slug,
-            report.repo_path.display()
-        );
-    }
+    print_report(&report);
     Ok(())
 }
 
-/// Derive a default slug from the project directory basename.
-///
-/// Split out so it can be unit-tested without spawning a TTY. Falls
-/// back to `"project"` when `cwd` has no nameable terminal component
-/// (e.g. `/`) so the interactive prompt always has something to
-/// offer.
-fn default_slug_from_cwd(cwd: &Path) -> String {
-    cwd.file_name()
-        .and_then(|os| os.to_str())
-        .map(slug::slugify)
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "project".to_string())
+/// MCP entry — reuses state the server already holds. `tty_slug_prompt`
+/// is always `false`; MCP callers either supply a slug up front, rely
+/// on a stored `project_slug`, or receive `SlugRequired`.
+pub async fn create_project_group_from_state(
+    backend: &Arc<NativeBackend>,
+    groups: &GroupIndex,
+    cwd: &Path,
+    opts: &InitProjectOptions,
+) -> Result<ProjectGroupReport, InitProjectError> {
+    bootstrap_project(backend, groups, cwd, opts, false).await
 }
 
-/// TTY-bound slug prompt. Non-TTY callers receive an error so CI
-/// and scripted runs have to pass `--slug` explicitly instead of
-/// hanging on stdin.
-fn resolve_slug_interactive(cwd: &Path) -> Result<String> {
-    if !std::io::stdin().is_terminal() {
-        bail!("--slug required when stdin is not a TTY");
-    }
-    let default = default_slug_from_cwd(cwd);
-    Text::new("Group slug:")
-        .with_default(&default)
-        .prompt()
-        .context("reading group slug from TTY")
-}
-
-/// CLI variant: builds a fresh backend + group index from the user's
-/// mmcp home, then delegates to the shared inner helper.
-///
-/// Tests that want to avoid the `MmcpHome::discover` environment
-/// cascade can call [`create_project_group_from_state`] directly.
+/// CLI variant kept for symmetry with older call sites — builds its
+/// own backend via `MmcpHome` and delegates.
 pub async fn create_project_group(
     home: &MmcpHome,
     cwd: &Path,
-    slug: &str,
+    opts: &InitProjectOptions,
 ) -> Result<ProjectGroupReport, InitProjectError> {
     let (backend, groups) = home
         .init_backend()
         .await
         .map_err(|e| InitProjectError::GitBackend(e.to_string()))?;
-    create_project_group_inner(&backend, &groups, cwd, slug).await
+    bootstrap_project(&backend, &groups, cwd, opts, false).await
 }
 
-/// MCP variant: the server already holds `backend` + `groups` in its
-/// `ClientState`, so re-initializing them via `MmcpHome` would both
-/// duplicate work and race against the live watcher. This entry
-/// point lets the tool method pass the state pieces through.
-pub async fn create_project_group_from_state(
+// ── Core orchestrator ────────────────────────────────────────────────
+
+async fn bootstrap_project(
     backend: &Arc<NativeBackend>,
     groups: &GroupIndex,
     cwd: &Path,
-    slug: &str,
+    opts: &InitProjectOptions,
+    tty_slug_prompt: bool,
 ) -> Result<ProjectGroupReport, InitProjectError> {
-    create_project_group_inner(backend, groups, cwd, slug).await
-}
+    // 1. Discover or mint `.mmcp.toml`. `project_root` is always the
+    //    directory that holds the config once we return — either the
+    //    discovered ancestor or `cwd` when this call created it.
+    let (mut cfg, project_root, created_config) =
+        load_or_mint_config(cwd, opts.project_uuid)?;
 
-/// Inner helper shared by both entry points. Idempotent: re-calling
-/// against an already-created repo returns `created: false` without
-/// writing a new commit.
-///
-/// Steps:
-/// 1. Locate `.mmcp.toml` walking up from `cwd`; error otherwise.
-/// 2. Load and parse the config; surface parse errors verbatim.
-/// 3. Validate the slug against the shared memory-slug contract so
-///    the stored group slug can never disagree with what the import
-///    path would accept.
-/// 4. Derive `GroupId` from the project's stable UUID.
-/// 5. Short-circuit if the repo already exists on disk; otherwise
-///    build a fresh manifest (owner = a new v7 UUID, re-generated on
-///    each fresh creation — ownership semantics are deferred to the
-///    auth track) and invoke `create_group_repo`.
-/// 6. Refresh the live `GroupIndex` so subsequent
-///    `groups.get(group_id)` calls hit.
-async fn create_project_group_inner(
-    backend: &Arc<NativeBackend>,
-    groups: &GroupIndex,
-    cwd: &Path,
-    slug: &str,
-) -> Result<ProjectGroupReport, InitProjectError> {
-    let root = find_project_root(cwd).ok_or(InitProjectError::ProjectNotFound)?;
-    let cfg = load(&root).map_err(|e| InitProjectError::ConfigLoadFailed(e.to_string()))?;
+    // 2. Resolve the slug from args → stored config → optional TTY
+    //    prompt. Validate once, end-to-end: whatever we resolve will
+    //    be stored in both the config and (absent --config-only) the
+    //    group manifest, so any invalid value short-circuits here.
+    let slug = resolve_slug(
+        opts.slug.as_deref(),
+        cfg.project_slug.as_deref(),
+        cwd,
+        tty_slug_prompt,
+    )?;
+    validate_slug(&slug).map_err(|_| InitProjectError::InvalidSlug { slug: slug.clone() })?;
 
-    validate_slug(slug).map_err(|_| InitProjectError::InvalidSlug {
-        slug: slug.to_string(),
-    })?;
+    // 3. Backfill `project_slug` if the existing config lacked one.
+    //    Any other disagreement already errored out in `resolve_slug`,
+    //    so at this point either the stored slug matches or was
+    //    absent.
+    let mut config_touched = false;
+    if cfg.project_slug.as_deref() != Some(slug.as_str()) {
+        cfg.project_slug = Some(slug.clone());
+        config_touched = true;
+    }
+    if created_config || config_touched {
+        save(&project_root, &cfg)
+            .map_err(|e| InitProjectError::ConfigWriteFailed(e.to_string()))?;
+    }
 
+    // 4. Decide what to do with the bare repo.
     let project_uuid = cfg.project_uuid;
     let group_id = GroupId::from_uuid(*project_uuid.as_uuid());
     let repo_path = backend.repo_path(*project_uuid.as_uuid());
+    let repo_exists = repo_path.exists();
 
-    if repo_path.exists() {
-        // The repo is already on disk. Refresh the index so
-        // `groups.get(group_id)` is guaranteed to see it even if the
-        // caller spun up the index before the watcher noticed the
-        // directory — this keeps the idempotent path observable
-        // identically to the "just created" path.
+    if opts.config_only {
+        // Config-only path: if the repo is already there we still
+        // refresh the index so the caller sees consistent state, but
+        // we don't claim credit for creating it.
+        if repo_exists {
+            groups
+                .refresh()
+                .await
+                .map_err(|e| InitProjectError::IndexRefreshFailed(e.to_string()))?;
+        }
+        return Ok(ProjectGroupReport {
+            project_uuid,
+            project_root,
+            slug,
+            group_id,
+            repo_path: if repo_exists { Some(repo_path) } else { None },
+            created_config,
+            created_repo: false,
+        });
+    }
+
+    if repo_exists {
         groups
             .refresh()
             .await
             .map_err(|e| InitProjectError::IndexRefreshFailed(e.to_string()))?;
         return Ok(ProjectGroupReport {
             project_uuid,
+            project_root,
+            slug,
             group_id,
-            slug: slug.to_string(),
-            repo_path,
-            created: false,
+            repo_path: Some(repo_path),
+            created_config,
+            created_repo: false,
         });
     }
 
-    // Owner is a fresh v7 UUID because we do not yet track a stable
-    // user identity in the local home config; auth work will revisit
-    // this and backfill. The choice is safe because
-    // `create_group_repo` records the owner in the initial manifest
-    // commit and never overwrites it afterwards.
+    // Fresh repo. Owner is a v7 UUID — ownership semantics remain
+    // deferred to the auth track; `create_group_repo` records the
+    // owner once and never overwrites it, so regeneration on
+    // subsequent calls is harmless (they hit the `repo_exists`
+    // short-circuit above).
     let owner = Uuid::now_v7();
-    let manifest = GroupManifest::new_user_owned(group_id, slug.to_string(), owner);
+    let manifest = GroupManifest::new_user_owned(group_id, slug.clone(), owner);
     backend
         .create_group_repo(&manifest)
         .await
@@ -267,12 +276,122 @@ async fn create_project_group_inner(
 
     Ok(ProjectGroupReport {
         project_uuid,
+        project_root,
+        slug,
         group_id,
-        slug: slug.to_string(),
-        repo_path,
-        created: true,
+        repo_path: Some(repo_path),
+        created_config,
+        created_repo: true,
     })
 }
+
+// ── Small typed helpers ──────────────────────────────────────────────
+
+/// Discover the enclosing project config, or mint a fresh one.
+///
+/// Returns `(config, project_root, created_config)`. When the walk up
+/// from `cwd` finds a `.mmcp.toml`, that file is loaded and
+/// `created_config = false`. Otherwise a fresh `ProjectConfig` is
+/// constructed (UUID from `explicit_uuid` when supplied, fresh v7
+/// otherwise), `created_config = true`, and the project root is `cwd`.
+///
+/// Validation of `explicit_uuid` against an already-stored UUID is
+/// performed here so subsequent steps don't have to re-check it.
+fn load_or_mint_config(
+    cwd: &Path,
+    explicit_uuid: Option<Uuid>,
+) -> Result<(ProjectConfig, PathBuf, bool), InitProjectError> {
+    if let Some(root) = find_project_root(cwd) {
+        let cfg = load(&root).map_err(|e| InitProjectError::ConfigLoadFailed(e.to_string()))?;
+        if let Some(given) = explicit_uuid
+            && *cfg.project_uuid.as_uuid() != given
+        {
+            return Err(InitProjectError::ProjectUuidMismatch {
+                expected: *cfg.project_uuid.as_uuid(),
+                got: given,
+            });
+        }
+        return Ok((cfg, root, false));
+    }
+    let project_uuid = match explicit_uuid {
+        Some(given) => ProjectUuid::from_uuid(given),
+        None => ProjectUuid::new(),
+    };
+    let cfg = ProjectConfig {
+        project_uuid,
+        project_slug: None,
+        sync: None,
+        groups: Default::default(),
+        languages: Default::default(),
+    };
+    Ok((cfg, cwd.to_path_buf(), true))
+}
+
+/// Resolve the slug from the precedence chain:
+///
+/// 1. `arg_slug` — whatever the caller passed explicitly.
+/// 2. `config_slug` — the stored `project_slug` in `.mmcp.toml`.
+/// 3. TTY prompt (only when `tty_slug_prompt` is true and stdin is a
+///    terminal), defaulting to the slugified project dir basename.
+/// 4. [`InitProjectError::SlugRequired`].
+///
+/// Errors [`SlugMismatch`] when the caller's slug disagrees with an
+/// already-stored slug. A matching arg is accepted — useful for
+/// automation that passes the slug defensively even when it's
+/// already recorded.
+fn resolve_slug(
+    arg_slug: Option<&str>,
+    config_slug: Option<&str>,
+    cwd: &Path,
+    tty_slug_prompt: bool,
+) -> Result<String, InitProjectError> {
+    match (arg_slug, config_slug) {
+        (Some(arg), Some(stored)) if arg != stored => Err(InitProjectError::SlugMismatch {
+            expected: stored.to_string(),
+            got: arg.to_string(),
+        }),
+        (Some(arg), _) => Ok(arg.to_string()),
+        (None, Some(stored)) => Ok(stored.to_string()),
+        (None, None) if tty_slug_prompt && std::io::stdin().is_terminal() => {
+            let default = default_slug_from_cwd(cwd);
+            Text::new("Group slug:")
+                .with_default(&default)
+                .prompt()
+                .map_err(|_| InitProjectError::SlugRequired)
+        }
+        (None, None) => Err(InitProjectError::SlugRequired),
+    }
+}
+
+/// Derive a default slug from the project directory basename. Falls
+/// back to `"project"` when `cwd` has no nameable terminal component
+/// so the interactive prompt always has something to offer.
+fn default_slug_from_cwd(cwd: &Path) -> String {
+    cwd.file_name()
+        .and_then(|os| os.to_str())
+        .map(slug::slugify)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "project".to_string())
+}
+
+fn print_report(report: &ProjectGroupReport) {
+    let config_line = if report.created_config {
+        "wrote .mmcp.toml"
+    } else {
+        ".mmcp.toml already present"
+    };
+    let repo_line = match (&report.repo_path, report.created_repo) {
+        (Some(path), true) => format!("created group repo at {}", path.display()),
+        (Some(path), false) => format!("group repo already present at {}", path.display()),
+        (None, _) => "skipped group repo (config-only)".to_string(),
+    };
+    println!(
+        "project {} ({}): {}, {}",
+        report.slug, report.project_uuid, config_line, repo_line
+    );
+}
+
+// ── Tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -280,30 +399,20 @@ mod tests {
     use tempfile::TempDir;
 
     /// Assemble a tempdir-backed `(backend, groups, project_root)`
-    /// fixture with a pre-written `.mmcp.toml`, so tests can focus
-    /// on the creation logic without duplicating plumbing.
-    async fn test_fixture() -> (Arc<NativeBackend>, GroupIndex, TempDir, ProjectUuid) {
+    /// fixture. The project config is written by the helper under
+    /// test, not by the fixture — callers pass a fresh tempdir path.
+    async fn test_fixture() -> (Arc<NativeBackend>, GroupIndex, TempDir) {
         let tmp = TempDir::new().expect("tempdir");
-        let project_root = tmp.path().to_path_buf();
         let repos_root = tmp.path().join("repos");
         std::fs::create_dir_all(&repos_root).expect("repos root");
-
-        let project_uuid = ProjectUuid::new();
-        let cfg = ProjectConfig {
-            project_uuid,
-            sync: None,
-            groups: GroupsConfig::default(),
-            languages: LanguagesConfig::default(),
-        };
-        save(&project_root, &cfg).expect("write .mmcp.toml");
-
         let backend = Arc::new(NativeBackend::new(&repos_root).expect("backend"));
         let groups = GroupIndex::build(repos_root, backend.clone())
             .await
             .expect("group index");
-
-        (backend, groups, tmp, project_uuid)
+        (backend, groups, tmp)
     }
+
+    // ── pure helpers ──────────────────────────────────────────────
 
     #[test]
     fn default_slug_from_cwd_slugifies_dir_basename() {
@@ -313,83 +422,225 @@ mod tests {
 
     #[test]
     fn default_slug_from_cwd_falls_back_for_unnameable_paths() {
-        // Root-like paths (no terminal component) should still
-        // produce a usable default so the TTY prompt never starts
-        // with an empty string.
         assert_eq!(default_slug_from_cwd(Path::new("/")), "project");
     }
 
-    #[tokio::test]
-    async fn create_project_group_errors_when_no_project_config() {
-        let tmp = TempDir::new().expect("tempdir");
-        let repos_root = tmp.path().join("repos");
-        std::fs::create_dir_all(&repos_root).expect("repos root");
-        let backend = Arc::new(NativeBackend::new(&repos_root).expect("backend"));
-        let groups = GroupIndex::build(repos_root, backend.clone())
-            .await
-            .expect("group index");
-
-        let err = create_project_group_inner(&backend, &groups, tmp.path(), "any-slug")
-            .await
-            .expect_err("must fail without .mmcp.toml");
-        assert!(matches!(err, InitProjectError::ProjectNotFound));
+    #[test]
+    fn resolve_slug_prefers_arg_over_config() {
+        let s = resolve_slug(Some("from-arg"), Some("from-config"), Path::new("/x"), false);
+        assert!(matches!(s, Err(InitProjectError::SlugMismatch { .. })));
     }
 
+    #[test]
+    fn resolve_slug_uses_config_when_arg_is_absent() {
+        let s = resolve_slug(None, Some("from-config"), Path::new("/x"), false)
+            .expect("config slug");
+        assert_eq!(s, "from-config");
+    }
+
+    #[test]
+    fn resolve_slug_matching_arg_and_config_is_accepted() {
+        let s = resolve_slug(Some("same"), Some("same"), Path::new("/x"), false)
+            .expect("matching");
+        assert_eq!(s, "same");
+    }
+
+    #[test]
+    fn resolve_slug_returns_required_when_no_source_and_no_tty() {
+        let s = resolve_slug(None, None, Path::new("/x"), false);
+        assert!(matches!(s, Err(InitProjectError::SlugRequired)));
+    }
+
+    // ── orchestrator paths ────────────────────────────────────────
+
     #[tokio::test]
-    async fn create_project_group_writes_repo_and_refreshes_index() {
-        let (backend, groups, tmp, project_uuid) = test_fixture().await;
+    async fn init_project_writes_both_config_and_repo_from_scratch() {
+        let (backend, groups, tmp) = test_fixture().await;
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).expect("project root");
+        let opts = InitProjectOptions {
+            slug: Some("team-rust".into()),
+            ..Default::default()
+        };
 
-        let report =
-            create_project_group_inner(&backend, &groups, tmp.path(), "team-rust")
-                .await
-                .expect("create_project_group");
+        let report = bootstrap_project(&backend, &groups, &project_root, &opts, false)
+            .await
+            .expect("bootstrap");
 
-        assert!(report.created, "first call must report created: true");
+        assert!(report.created_config);
+        assert!(report.created_repo);
         assert_eq!(report.slug, "team-rust");
-        assert_eq!(report.project_uuid, project_uuid);
-        assert!(
-            report.repo_path.exists(),
-            "repo directory should be on disk after creation",
-        );
+        assert!(project_root.join(".mmcp.toml").exists());
+        assert!(report.repo_path.is_some());
+        assert!(report.repo_path.unwrap().exists());
         assert!(
             groups
-                .get(&GroupId::from_uuid(*project_uuid.as_uuid()))
+                .get(&GroupId::from_uuid(*report.project_uuid.as_uuid()))
                 .await
-                .is_some(),
-            "GroupIndex must surface the newly created group",
+                .is_some()
         );
     }
 
     #[tokio::test]
-    async fn create_project_group_is_idempotent_on_second_call() {
-        let (backend, groups, tmp, _uuid) = test_fixture().await;
+    async fn init_project_backfills_slug_into_existing_config() {
+        let (backend, groups, tmp) = test_fixture().await;
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).expect("project root");
 
-        let first =
-            create_project_group_inner(&backend, &groups, tmp.path(), "team-rust")
-                .await
-                .expect("first");
-        assert!(first.created);
+        // Seed a pre-slug config — no `project_slug` field.
+        let stored_uuid = ProjectUuid::new();
+        let cfg = ProjectConfig {
+            project_uuid: stored_uuid,
+            project_slug: None,
+            sync: None,
+            groups: Default::default(),
+            languages: Default::default(),
+        };
+        save(&project_root, &cfg).expect("seed config");
 
-        let second =
-            create_project_group_inner(&backend, &groups, tmp.path(), "team-rust")
-                .await
-                .expect("second");
-        assert!(!second.created, "second call must report created: false");
-        assert_eq!(first.repo_path, second.repo_path);
+        let opts = InitProjectOptions {
+            slug: Some("team-rust".into()),
+            ..Default::default()
+        };
+        let report = bootstrap_project(&backend, &groups, &project_root, &opts, false)
+            .await
+            .expect("bootstrap");
+
+        assert!(
+            !report.created_config,
+            "config was pre-seeded; bootstrap should not claim creation",
+        );
+        assert!(report.created_repo, "repo was absent and must be created");
+        assert_eq!(report.project_uuid, stored_uuid, "UUID must not change");
+
+        let reloaded = load(&project_root).expect("reload");
+        assert_eq!(reloaded.project_slug.as_deref(), Some("team-rust"));
     }
 
     #[tokio::test]
-    async fn create_project_group_rejects_invalid_slug() {
-        let (backend, groups, tmp, _uuid) = test_fixture().await;
+    async fn init_project_rejects_slug_mismatch_against_existing_config() {
+        let (backend, groups, tmp) = test_fixture().await;
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).expect("project root");
+        let cfg = ProjectConfig {
+            project_uuid: ProjectUuid::new(),
+            project_slug: Some("team-rust".into()),
+            sync: None,
+            groups: Default::default(),
+            languages: Default::default(),
+        };
+        save(&project_root, &cfg).expect("seed config");
 
-        let err = create_project_group_inner(&backend, &groups, tmp.path(), "UPPERCASE")
+        let opts = InitProjectOptions {
+            slug: Some("different".into()),
+            ..Default::default()
+        };
+        let err = bootstrap_project(&backend, &groups, &project_root, &opts, false)
             .await
-            .expect_err("uppercase slug must be rejected");
-        assert!(matches!(err, InitProjectError::InvalidSlug { .. }));
+            .expect_err("must reject slug mismatch");
+        assert!(matches!(err, InitProjectError::SlugMismatch { .. }));
+    }
 
-        let err2 = create_project_group_inner(&backend, &groups, tmp.path(), "-leading")
+    #[tokio::test]
+    async fn init_project_rejects_project_uuid_mismatch() {
+        let (backend, groups, tmp) = test_fixture().await;
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).expect("project root");
+        let stored_uuid = ProjectUuid::new();
+        let cfg = ProjectConfig {
+            project_uuid: stored_uuid,
+            project_slug: Some("team-rust".into()),
+            sync: None,
+            groups: Default::default(),
+            languages: Default::default(),
+        };
+        save(&project_root, &cfg).expect("seed config");
+
+        let opts = InitProjectOptions {
+            slug: Some("team-rust".into()),
+            project_uuid: Some(Uuid::now_v7()),
+            ..Default::default()
+        };
+        let err = bootstrap_project(&backend, &groups, &project_root, &opts, false)
             .await
-            .expect_err("leading hyphen must be rejected");
-        assert!(matches!(err2, InitProjectError::InvalidSlug { .. }));
+            .expect_err("must reject uuid mismatch");
+        assert!(matches!(err, InitProjectError::ProjectUuidMismatch { .. }));
+    }
+
+    #[tokio::test]
+    async fn init_project_config_only_skips_repo_creation() {
+        let (backend, groups, tmp) = test_fixture().await;
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).expect("project root");
+        let opts = InitProjectOptions {
+            slug: Some("team-rust".into()),
+            config_only: true,
+            ..Default::default()
+        };
+
+        let report = bootstrap_project(&backend, &groups, &project_root, &opts, false)
+            .await
+            .expect("bootstrap");
+
+        assert!(report.created_config);
+        assert!(!report.created_repo, "config-only must never create a repo");
+        assert!(
+            report.repo_path.is_none(),
+            "repo_path must be None when the repo wasn't created",
+        );
+        assert!(project_root.join(".mmcp.toml").exists());
+    }
+
+    #[tokio::test]
+    async fn init_project_second_call_after_config_only_creates_repo() {
+        let (backend, groups, tmp) = test_fixture().await;
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).expect("project root");
+
+        // First call writes config only, stashes slug.
+        let config_only_opts = InitProjectOptions {
+            slug: Some("team-rust".into()),
+            config_only: true,
+            ..Default::default()
+        };
+        let first = bootstrap_project(&backend, &groups, &project_root, &config_only_opts, false)
+            .await
+            .expect("first");
+        assert!(first.created_config);
+        assert!(!first.created_repo);
+
+        // Second call without any args picks the slug from the
+        // stored config and creates the repo.
+        let follow_up = bootstrap_project(
+            &backend,
+            &groups,
+            &project_root,
+            &InitProjectOptions::default(),
+            false,
+        )
+        .await
+        .expect("second");
+        assert!(!follow_up.created_config);
+        assert!(follow_up.created_repo);
+        assert_eq!(follow_up.slug, "team-rust");
+    }
+
+    #[tokio::test]
+    async fn init_project_is_idempotent_when_everything_exists() {
+        let (backend, groups, tmp) = test_fixture().await;
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).expect("project root");
+        let opts = InitProjectOptions {
+            slug: Some("team-rust".into()),
+            ..Default::default()
+        };
+        let _first = bootstrap_project(&backend, &groups, &project_root, &opts, false)
+            .await
+            .expect("first");
+        let second = bootstrap_project(&backend, &groups, &project_root, &opts, false)
+            .await
+            .expect("second");
+        assert!(!second.created_config);
+        assert!(!second.created_repo);
     }
 }
