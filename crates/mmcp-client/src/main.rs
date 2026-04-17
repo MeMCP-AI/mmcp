@@ -116,6 +116,10 @@ struct InitArgs {
 enum InitCommand {
     /// Generate, append to, or convert the project's CLAUDE.md.
     Claude(commands::claude::ClaudeArgs),
+    /// Create the project's backing group repo keyed on
+    /// `.mmcp.toml`'s `project_uuid`. Requires `mmcp init` to have
+    /// run first so that UUID exists.
+    Project(commands::init::ProjectArgs),
 }
 
 #[tokio::main]
@@ -138,6 +142,9 @@ async fn main() -> Result<()> {
         Command::Init(InitArgs {
             cmd: Some(InitCommand::Claude(args)),
         }) => commands::claude::run(args).await?,
+        Command::Init(InitArgs {
+            cmd: Some(InitCommand::Project(args)),
+        }) => commands::init::run_project(args).await?,
         Command::Status => commands::status::run().await?,
         Command::Sync => commands::sync::run(true, true).await?,
         Command::Pull => commands::sync::run(true, false).await?,
