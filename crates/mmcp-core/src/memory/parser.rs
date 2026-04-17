@@ -95,7 +95,8 @@ impl MemoryFile {
         }
         if trimmed.starts_with("---") {
             // Peek after fence to detect JSON
-            let after_fence = trimmed.strip_prefix("---")
+            let after_fence = trimmed
+                .strip_prefix("---")
                 .and_then(|s| s.strip_prefix('\n').or(s.strip_prefix("\r\n")))
                 .unwrap_or("");
             if after_fence.trim_start().starts_with('{') {

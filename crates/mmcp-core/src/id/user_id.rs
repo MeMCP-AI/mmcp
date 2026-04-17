@@ -7,9 +7,7 @@ use uuid::Uuid;
 ///
 /// Always a UUIDv7 so that chronologically ordered iteration matches
 /// account creation order.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct UserId(Uuid);
 

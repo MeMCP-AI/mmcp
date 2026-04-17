@@ -11,9 +11,7 @@ use serde::{Deserialize, Serialize};
 /// version, which prevents offline edits from colliding on a number.
 ///
 /// Default is [`Minor`](BumpIntent::Minor).
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BumpIntent {
     /// Wording fix, typo correction, clarification, example tweak.

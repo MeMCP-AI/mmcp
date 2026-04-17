@@ -8,9 +8,7 @@ use uuid::Uuid;
 /// Memories are also keyed by `name` within their group repo, but the
 /// `MemoryId` is the durable handle that survives renames and moves
 /// between groups.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct MemoryId(Uuid);
 

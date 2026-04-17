@@ -12,9 +12,7 @@ use uuid::Uuid;
 ///
 /// `ProjectUuid` is the canonical key the server uses to map a working
 /// directory to its memory group.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ProjectUuid(Uuid);
 

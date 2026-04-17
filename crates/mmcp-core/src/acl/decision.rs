@@ -8,9 +8,7 @@ use crate::identity::Role;
 ///
 /// `None` means the principal has no access at all. Any `Some(role)`
 /// value is the maximum role reached by any membership path.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct EffectiveRole(Option<Role>);
 

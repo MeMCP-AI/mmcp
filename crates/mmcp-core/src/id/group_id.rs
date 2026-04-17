@@ -6,9 +6,7 @@ use uuid::Uuid;
 /// Stable identifier for a [`Group`](crate::identity::Group).
 ///
 /// UUIDv7 so creation-time ordering matches lexicographic ordering.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct GroupId(Uuid);
 

@@ -13,9 +13,7 @@ use serde::{Deserialize, Serialize};
 /// Effective roles are computed by [`acl`](crate::acl) (forthcoming),
 /// which takes the maximum across every membership path the principal
 /// has into the group.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     /// Read-only: pull and inspect memories.

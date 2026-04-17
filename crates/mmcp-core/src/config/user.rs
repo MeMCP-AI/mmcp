@@ -93,10 +93,7 @@ group = "my-group"
 "#;
         let cfg = UserConfig::from_toml(text).unwrap();
         assert_eq!(cfg.author.as_ref().unwrap().name.as_deref(), Some("Alice"));
-        assert_eq!(
-            cfg.author.as_ref().unwrap().git_fallback,
-            Some(true)
-        );
+        assert_eq!(cfg.author.as_ref().unwrap().git_fallback, Some(true));
         assert_eq!(
             cfg.sync.as_ref().unwrap().server_url,
             "https://mmcp.example.com"

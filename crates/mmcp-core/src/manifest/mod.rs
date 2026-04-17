@@ -23,4 +23,6 @@ mod error;
 mod group_manifest;
 
 pub use error::ManifestError;
-pub use group_manifest::{GroupManifest, GroupOwnerHint, MANIFEST_FILENAME, MANIFEST_SCHEMA_VERSION};
+pub use group_manifest::{
+    GroupManifest, GroupOwnerHint, MANIFEST_FILENAME, MANIFEST_SCHEMA_VERSION,
+};

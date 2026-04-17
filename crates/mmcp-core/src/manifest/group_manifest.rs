@@ -137,8 +137,7 @@ mod tests {
 
     #[test]
     fn user_owned_manifest_round_trips() {
-        let manifest =
-            GroupManifest::new_user_owned(GroupId::new(), "team-rust", Uuid::now_v7());
+        let manifest = GroupManifest::new_user_owned(GroupId::new(), "team-rust", Uuid::now_v7());
         let text = manifest.to_toml().unwrap();
         let parsed = GroupManifest::from_toml(&text).unwrap();
         assert_eq!(parsed, manifest);
@@ -180,22 +179,19 @@ mod tests {
         // Use a freshly-rendered manifest with the field stripped
         // rather than hand-typing TOML — avoids drifting on
         // GroupId's wire format.
-        let manifest =
-            GroupManifest::new_user_owned(GroupId::new(), "legacy", Uuid::now_v7());
+        let manifest = GroupManifest::new_user_owned(GroupId::new(), "legacy", Uuid::now_v7());
         let text = manifest.to_toml().unwrap();
         assert!(
             !text.contains("protected"),
             "seed manifest must not include the new field (precondition)",
         );
-        let parsed =
-            GroupManifest::from_toml(&text).expect("pre-flag manifest must parse");
+        let parsed = GroupManifest::from_toml(&text).expect("pre-flag manifest must parse");
         assert!(!parsed.protected);
     }
 
     #[test]
     fn manifest_with_protected_true_round_trips() {
-        let mut manifest =
-            GroupManifest::new_user_owned(GroupId::new(), "global", Uuid::now_v7());
+        let mut manifest = GroupManifest::new_user_owned(GroupId::new(), "global", Uuid::now_v7());
         manifest.protected = true;
         let text = manifest.to_toml().unwrap();
         assert!(
@@ -212,8 +208,7 @@ mod tests {
         // skip_serializing_if keeps the wire shape minimal; a group
         // that has never been opted into protection produces no
         // `protected` line.
-        let manifest =
-            GroupManifest::new_user_owned(GroupId::new(), "team-rust", Uuid::now_v7());
+        let manifest = GroupManifest::new_user_owned(GroupId::new(), "team-rust", Uuid::now_v7());
         let text = manifest.to_toml().unwrap();
         assert!(
             !text.contains("protected"),
