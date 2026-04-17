@@ -44,7 +44,13 @@ pub mod config;
 pub mod error;
 pub mod groups;
 pub mod home;
+pub mod memory;
 
 pub use error::StoreError;
 pub use groups::{GroupEntry, GroupIndex};
 pub use home::{MmcpHome, ResolvedAuthor, read_git_global};
+pub use memory::{
+    ImportError, ImportResult, SynthFrontmatter, create_memory_file, delete_memory_file,
+    import_memory, memory_exists, parse_kind, resolve_group, slugify_filename, update_memory_file,
+    validate_slug,
+};
