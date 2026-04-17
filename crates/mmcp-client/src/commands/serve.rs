@@ -408,16 +408,44 @@ struct SyncToolArgs {
 
 /// Argument shape for `init_project`.
 ///
-/// `slug` is required because the MCP transport has no TTY to
-/// prompt with and rmcp does not yet support elicitation. FR-011
-/// will add elicitation so the server can default to the slugified
-/// project dir basename when no slug is supplied.
-#[derive(Debug, Deserialize, JsonSchema)]
+/// All three fields are optional so the tool can serve three
+/// distinct flows:
+/// - **Fresh bootstrap**: `{slug: "team-rust"}` writes both config
+///   and repo.
+/// - **Config-only adoption**: `{slug: "team-rust", config_only: true}`
+///   stamps `.mmcp.toml` for a server-side project that a
+///   follow-up `sync_pull` will populate.
+/// - **Slug-less retry**: `{}` when `.mmcp.toml` already stores a
+///   `project_slug`, so the caller doesn't need to re-specify it.
+///
+/// Elicitation-based slug defaulting (FR-011) will plug in here
+/// once rmcp exposes the client-side hook: the server will compute
+/// a slugified project dir basename and ask the client to accept /
+/// override it. Until then, `slug_required` is the pre-elicitation
+/// graceful degradation.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
 struct InitProjectArgs {
     /// Group slug (kebab-case, 1-128 chars, no leading/trailing or
-    /// consecutive hyphens). Same contract as memory slugs.
-    pub slug: String,
+    /// consecutive hyphens). Same contract as memory slugs. Absent
+    /// is fine when `.mmcp.toml` already stores a `project_slug`;
+    /// otherwise the tool returns `slug_required`.
+    #[serde(default)]
+    pub slug: Option<String>,
+
+    /// When true, write `.mmcp.toml` only and skip bare-repo
+    /// creation. Useful when adopting a project whose repo will
+    /// land locally via the first `sync_pull`.
+    #[serde(default)]
+    pub config_only: bool,
+
+    /// Adopt an explicit project UUID instead of minting a fresh
+    /// v7. Rejected with `project_uuid_mismatch` if `.mmcp.toml`
+    /// already stores a different UUID. Passed as the UUID's
+    /// hyphenated string form; malformed values error with
+    /// `invalid_project_uuid`.
+    #[serde(default)]
+    pub project_uuid: Option<String>,
 }
 
 #[tool_router]
@@ -1262,10 +1290,22 @@ impl McpServer {
         let cwd = std::env::current_dir().map_err(|e| {
             McpError::internal_error(format!("cannot read working directory: {e}"), None)
         })?;
+        let parsed_uuid = match args.project_uuid.as_deref() {
+            Some(s) => Some(Uuid::parse_str(s).map_err(|e| {
+                McpError::invalid_params(
+                    format!("invalid project_uuid: {e}"),
+                    Some(json!({
+                        "code": "invalid_project_uuid",
+                        "value": s,
+                    })),
+                )
+            })?),
+            None => None,
+        };
         let opts = crate::commands::init::InitProjectOptions {
-            slug: Some(args.slug),
-            config_only: false,
-            project_uuid: None,
+            slug: args.slug,
+            config_only: args.config_only,
+            project_uuid: parsed_uuid,
         };
         let report = crate::commands::init::create_project_group_from_state(
             &self.state.backend,
@@ -2474,6 +2514,66 @@ mod tests {
                 .is_some(),
             "newly created group must be visible via GroupIndex",
         );
+    }
+
+    #[tokio::test]
+    async fn init_project_helper_respects_config_only() {
+        let (state, tmp) = test_state().await;
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).expect("create project root");
+
+        let opts = crate::commands::init::InitProjectOptions {
+            slug: Some("team-rust".to_string()),
+            config_only: true,
+            ..Default::default()
+        };
+        let report = crate::commands::init::create_project_group_from_state(
+            &state.backend,
+            &state.groups,
+            &project_root,
+            &opts,
+        )
+        .await
+        .expect("config-only bootstrap");
+
+        assert!(report.created_config);
+        assert!(
+            !report.created_repo,
+            "config_only must never create the bare repo",
+        );
+        assert!(report.repo_path.is_none());
+        assert!(project_root.join(".mmcp.toml").exists());
+    }
+
+    #[tokio::test]
+    async fn init_project_helper_returns_slug_required_when_no_source_available() {
+        // Seed a config without a `project_slug`, then call without
+        // a slug arg. The helper has no TTY to prompt, so it must
+        // surface `slug_required`.
+        let (state, tmp) = test_state().await;
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).expect("create project root");
+        let cfg = mmcp_core::config::ProjectConfig {
+            project_uuid: mmcp_core::id::ProjectUuid::new(),
+            project_slug: None,
+            sync: None,
+            groups: Default::default(),
+            languages: Default::default(),
+        };
+        crate::config::save(&project_root, &cfg).expect("seed config");
+
+        let err = crate::commands::init::create_project_group_from_state(
+            &state.backend,
+            &state.groups,
+            &project_root,
+            &crate::commands::init::InitProjectOptions::default(),
+        )
+        .await
+        .expect_err("must require slug");
+        assert!(matches!(
+            err,
+            crate::commands::init::InitProjectError::SlugRequired
+        ));
     }
 
     #[tokio::test]
