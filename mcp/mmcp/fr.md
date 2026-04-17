@@ -62,7 +62,7 @@ Elicitation-based slug defaulting on the MCP side is still gated on FR-011 (rmcp
 
 **Blocks**: nothing hard. External issue-bridge work depends on the tool surface but does not depend on issue-bridge UX being ready.
 
-**Status**: Open. Tool surface specified 2026-04-17; schema and `MemoryKind::Fr` variant to be drafted before implementation lands.
+**Status**: RESOLVED (2026-04-17). Landed in a four-commit chain: core types (`MemoryKind::Fr`, `FeatureStatus`, `FeatureMetadata`), store CRUD (`mmcp_store::features` with `add_feature` / `read_feature` / `update_feature` / `delete_feature` / `list_features` plus `resolve_project_group`), MCP tools on the stdio router, and the `mmcp feature` CLI subcommand. Round-trip covered by six store unit tests and three CLI smoke tests. The issue-bridge is still a follow-up — migration of the existing `mcp/mmcp/fr.md` entries into per-project FR memories is also pending and will happen opportunistically as new FRs are filed.
 
 ### FR-004: Debug/raw access tools (2026-04-16) - RESOLVED
 
