@@ -2,6 +2,7 @@
 //! memory file.
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::memory::{BumpIntent, FeatureMetadata, MemoryKind};
 
@@ -19,6 +20,12 @@ use crate::memory::{BumpIntent, FeatureMetadata, MemoryKind};
 /// commit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryFrontmatter {
+    /// Canonical primary key. Assigned once (UUIDv7) at create time
+    /// and never changes across renames. Absent on memories written
+    /// before FR-028; the migration binary backfills every repo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<Uuid>,
+
     /// Human-readable title displayed in listings and the WebUI.
     pub name: String,
 

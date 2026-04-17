@@ -99,7 +99,7 @@ pub async fn memory_exists(
     handle: &RepoHandle,
     slug: &str,
 ) -> Result<bool, ImportError> {
-    let path = mmcp_core::conventions::memory_path(slug);
+    let path = mmcp_core::conventions::legacy_memory_path(slug);
     match backend.read_file(handle, &path, &Rev::head()).await {
         Ok(_) => Ok(true),
         Err(GitError::PathNotFound(_)) => Ok(false),
@@ -181,7 +181,7 @@ pub async fn delete_memory_file(
                 commit_message,
                 // `build_tree` interprets `(path, None)` as a
                 // delete, so we don't need a separate delete API.
-                vec![(mmcp_core::conventions::memory_path(slug), None)],
+                vec![(mmcp_core::conventions::legacy_memory_path(slug), None)],
                 &author.name,
                 &author.email,
             ),
@@ -209,7 +209,7 @@ async fn write_memory_commit(
             CommitSpec::mmcp_commit(
                 commit_message,
                 vec![(
-                    mmcp_core::conventions::memory_path(slug),
+                    mmcp_core::conventions::legacy_memory_path(slug),
                     Some(rendered.as_bytes().to_vec()),
                 )],
                 &author.name,
@@ -251,6 +251,7 @@ pub async fn import_memory(
     } else if let Some(synth) = synth_frontmatter {
         MemoryFile {
             frontmatter: MemoryFrontmatter {
+                id: None,
                 name: synth.name,
                 description: synth.description,
                 kind: synth.kind,

@@ -92,6 +92,7 @@ impl EditorBuffer {
             .original_frontmatter
             .clone()
             .unwrap_or(MemoryFrontmatter {
+                id: None,
                 name: String::new(),
                 description: String::new(),
                 kind: MemoryKind::Scratch,

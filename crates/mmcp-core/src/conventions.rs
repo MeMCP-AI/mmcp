@@ -5,6 +5,8 @@
 //! needs one of these values imports from here instead of
 //! hardcoding the string.
 
+use uuid::Uuid;
+
 /// Default branch name used for all group repositories.
 pub const MAIN_BRANCH: &str = "main";
 
@@ -27,8 +29,38 @@ pub const MMCP_AUTHOR_EMAIL: &str = "mmcp@mmcp.invalid";
 /// The 40-character zero hash used to represent "no commit yet".
 pub const ZERO_COMMIT: &str = "0000000000000000000000000000000000000000";
 
-/// Build the in-repo path for a memory file: `memories/<slug>.md`.
+/// Build the in-repo path for a memory file under the FR-028
+/// two-level layout: `memories/<slug>/<uuid>.md`. The UUID is the
+/// canonical filename so duplicate slugs coexist as siblings.
 #[must_use]
-pub fn memory_path(slug: &str) -> String {
+pub fn memory_path(slug: &str, id: Uuid) -> String {
+    format!("{MEMORIES_DIR}/{slug}/{id}{MEMORY_EXTENSION}")
+}
+
+/// Build the pre-FR-028 flat path for a memory file:
+/// `memories/<slug>.md`. Retained so migration and back-compat
+/// read paths can still reach on-disk memories that pre-date the
+/// UUID layout; new writes always use [`memory_path`].
+#[must_use]
+pub fn legacy_memory_path(slug: &str) -> String {
     format!("{MEMORIES_DIR}/{slug}{MEMORY_EXTENSION}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_path_builds_two_level_path() {
+        let id = Uuid::parse_str("0196e5bb-a000-7000-8000-000000000001").unwrap();
+        assert_eq!(
+            memory_path("fr-028-uuidify-memories", id),
+            "memories/fr-028-uuidify-memories/0196e5bb-a000-7000-8000-000000000001.md"
+        );
+    }
+
+    #[test]
+    fn legacy_memory_path_matches_flat_layout() {
+        assert_eq!(legacy_memory_path("rules"), "memories/rules.md");
+    }
 }

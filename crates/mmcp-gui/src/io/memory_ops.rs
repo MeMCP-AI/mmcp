@@ -38,7 +38,7 @@ pub async fn read_memory_body(
     handle: &RepoHandle,
     slug: &str,
 ) -> Result<MemoryFile, GuiError> {
-    let path = mmcp_core::conventions::memory_path(slug);
+    let path = mmcp_core::conventions::legacy_memory_path(slug);
     let bytes = backend.read_file(handle, &path, &Rev::head()).await?;
     let text = std::str::from_utf8(&bytes)?;
     Ok(MemoryFile::parse(text)?)

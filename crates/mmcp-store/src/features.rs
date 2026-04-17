@@ -24,7 +24,7 @@
 
 use std::path::{Path, PathBuf};
 
-use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION, memory_path};
+use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION, legacy_memory_path};
 use mmcp_core::id::GroupId;
 use mmcp_core::memory::{
     FeatureMetadata, FeatureStatus, FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryKind,
@@ -220,7 +220,7 @@ pub async fn read_feature(
     rev: Option<&str>,
 ) -> Result<FeatureRecord, FeatureError> {
     validate_slug(slug).map_err(FeatureError::Memory)?;
-    let path = memory_path(slug);
+    let path = legacy_memory_path(slug);
     let resolved = match rev {
         // Heuristic aligned with the MCP `read_memory` tool: a
         // 40-char hex string resolves as a commit id; anything else
@@ -436,6 +436,7 @@ fn build_memory_file(
 ) -> MemoryFile {
     MemoryFile {
         frontmatter: MemoryFrontmatter {
+            id: None,
             name: title,
             description,
             kind: MemoryKind::Fr,

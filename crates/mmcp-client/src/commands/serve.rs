@@ -42,7 +42,7 @@ use mmcp_store::home::{MmcpHome, ResolvedAuthor};
 use mmcp_store::memory::{ImportError, delete_memory_file, import_memory, update_memory_file};
 use mmcp_store::sessions::SessionStore;
 
-use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION, memory_path};
+use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION, legacy_memory_path};
 
 /// Run the MCP stdio server loop until the client disconnects.
 pub async fn run(debug_mode: bool) -> Result<()> {
@@ -964,7 +964,7 @@ impl McpServer {
             )
         })?;
         let rev = parse_rev(args.version.as_deref());
-        let path = memory_path(&args.slug);
+        let path = legacy_memory_path(&args.slug);
         let bytes = self
             .state
             .backend
@@ -1015,7 +1015,7 @@ impl McpServer {
                 Some(json!({ "group": group_id.to_string() })),
             )
         })?;
-        let path = memory_path(&args.slug);
+        let path = legacy_memory_path(&args.slug);
         let history = self
             .state
             .backend
@@ -1172,6 +1172,7 @@ impl McpServer {
         use mmcp_core::memory::{FrontmatterFormat, MemoryFile, MemoryFrontmatter};
         let file = MemoryFile {
             frontmatter: MemoryFrontmatter {
+                id: None,
                 name: args.name,
                 description: args.description,
                 kind,
@@ -1240,7 +1241,7 @@ impl McpServer {
             .await
             .ok_or_else(|| McpError::invalid_params("group not found", None))?;
 
-        let path = memory_path(&args.slug);
+        let path = legacy_memory_path(&args.slug);
         let bytes = match self
             .state
             .backend
@@ -1384,7 +1385,7 @@ impl McpServer {
             .get(&group_id)
             .await
             .ok_or_else(|| McpError::invalid_params("group not found in local mirror", None))?;
-        let path = memory_path(&args.slug);
+        let path = legacy_memory_path(&args.slug);
         let bytes = self
             .state
             .backend
@@ -1459,7 +1460,7 @@ impl McpServer {
             .await
             .ok_or_else(|| McpError::invalid_params("group not found in local mirror", None))?;
 
-        let path = memory_path(&args.slug);
+        let path = legacy_memory_path(&args.slug);
         let bytes = self
             .state
             .backend
@@ -1830,7 +1831,7 @@ impl McpServer {
                 .await
                 .unwrap_or_default();
             for slug in slugs {
-                let path = mmcp_core::conventions::memory_path(&slug);
+                let path = mmcp_core::conventions::legacy_memory_path(&slug);
                 let bytes = match self
                     .state
                     .backend
@@ -3050,7 +3051,7 @@ async fn read_memory_descriptor(
     version: Option<&str>,
 ) -> Result<serde_json::Value, mmcp_git::GitError> {
     let rev = parse_rev(version);
-    let path = memory_path(slug);
+    let path = legacy_memory_path(slug);
     let bytes = backend.read_file(&entry.handle, &path, &rev).await?;
     let text = String::from_utf8_lossy(&bytes).into_owned();
     let (name, description, kind, mandatory, version_str, tags) = match MemoryFile::parse(&text) {
@@ -3302,7 +3303,7 @@ mod tests {
                     author_email: "test@example.com".into(),
                     message: format!("seed memory {memory_slug}"),
                     files: vec![(
-                        memory_path(memory_slug),
+                        legacy_memory_path(memory_slug),
                         Some(memory_body.as_bytes().to_vec()),
                     )],
                 },

@@ -616,6 +616,7 @@ async fn convert_and_write(
     for section in sections {
         let file = MemoryFile {
             frontmatter: MemoryFrontmatter {
+                id: None,
                 name: section.title.clone(),
                 description: section.description.clone(),
                 kind: section.kind,
@@ -637,7 +638,7 @@ async fn convert_and_write(
                 CommitSpec::mmcp_commit(
                     format!("convert CLAUDE.md section: {}", section.title),
                     vec![(
-                        mmcp_core::conventions::memory_path(&section.slug),
+                        mmcp_core::conventions::legacy_memory_path(&section.slug),
                         Some(rendered.into_bytes()),
                     )],
                     &author.name,

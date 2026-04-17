@@ -71,6 +71,7 @@ fn frontmatter_strategy() -> impl Strategy<Value = MemoryFrontmatter> {
     )
         .prop_map(
             |(name, description, kind, mandatory, version, tags, bump_intent)| MemoryFrontmatter {
+                id: None,
                 name,
                 description,
                 kind,

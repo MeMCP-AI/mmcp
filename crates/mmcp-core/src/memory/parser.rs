@@ -290,4 +290,32 @@ mod tests {
         let file = MemoryFile::parse(source).expect("parse bom");
         assert_eq!(file.frontmatter.name, "bom");
     }
+
+    #[test]
+    fn frontmatter_parses_without_id() {
+        let file = MemoryFile::parse(TOML_SAMPLE).expect("parse toml");
+        assert_eq!(file.frontmatter.id, None);
+        let rendered = file.to_string().expect("render");
+        assert!(
+            !rendered.contains("\nid ="),
+            "absent id must not serialize an id field: {rendered}"
+        );
+    }
+
+    #[test]
+    fn frontmatter_id_round_trips_when_set() {
+        use uuid::Uuid;
+
+        let source = "+++\nid = \"0196e5bb-a000-7000-8000-000000000001\"\nname = \"With Id\"\ndescription = \"has uuid\"\nkind = \"rule\"\n+++\nbody\n";
+        let parsed = MemoryFile::parse(source).expect("parse");
+        let expected = Uuid::parse_str("0196e5bb-a000-7000-8000-000000000001").unwrap();
+        assert_eq!(parsed.frontmatter.id, Some(expected));
+        let rendered = parsed.to_string().expect("render");
+        assert!(
+            rendered.contains("id = \"0196e5bb-a000-7000-8000-000000000001\""),
+            "rendered frontmatter missing id: {rendered}"
+        );
+        let reparsed = MemoryFile::parse(&rendered).expect("reparse");
+        assert_eq!(reparsed.frontmatter.id, Some(expected));
+    }
 }
