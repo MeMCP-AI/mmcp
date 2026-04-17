@@ -100,7 +100,10 @@ impl GroupIndex {
         let mut guard = self.inner.write().await;
         guard.clear();
         for entry in entries {
-            guard.insert(GroupId::from_uuid(*entry.manifest.group_id.as_uuid()), entry);
+            guard.insert(
+                GroupId::from_uuid(*entry.manifest.group_id.as_uuid()),
+                entry,
+            );
         }
         Ok(())
     }

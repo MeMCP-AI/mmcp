@@ -51,7 +51,9 @@ pub struct SynthFrontmatter {
 /// cosmetic follow-up.
 #[derive(Debug, thiserror::Error)]
 pub enum ImportError {
-    #[error("invalid slug '{0}': must be 1-128 chars, lowercase alphanumeric with hyphens, no leading/trailing hyphens")]
+    #[error(
+        "invalid slug '{0}': must be 1-128 chars, lowercase alphanumeric with hyphens, no leading/trailing hyphens"
+    )]
     InvalidSlug(String),
 
     #[error("content has no +++ frontmatter and no synthetic frontmatter provided")]
@@ -415,7 +417,8 @@ mod tests {
     #[tokio::test]
     async fn import_with_frontmatter_succeeds() {
         let (backend, handle, _tmp) = test_backend().await;
-        let content = "+++\nname = \"test\"\ndescription = \"a test\"\nkind = \"rule\"\n+++\n\nBody here.\n";
+        let content =
+            "+++\nname = \"test\"\ndescription = \"a test\"\nkind = \"rule\"\n+++\n\nBody here.\n";
         let author = test_author();
         let result = import_memory(&backend, &handle, "test-mem", content, None, &author, false)
             .await
@@ -434,10 +437,17 @@ mod tests {
             description: "imported plain".to_string(),
             kind: MemoryKind::Reference,
         });
-        let result =
-            import_memory(&backend, &handle, "plain-mem", content, synth, &author, false)
-                .await
-                .expect("import");
+        let result = import_memory(
+            &backend,
+            &handle,
+            "plain-mem",
+            content,
+            synth,
+            &author,
+            false,
+        )
+        .await
+        .expect("import");
         assert_eq!(result.slug, "plain-mem");
     }
 
@@ -483,10 +493,9 @@ mod tests {
     async fn update_memory_file_errors_when_slug_does_not_exist() {
         let (backend, handle, _tmp) = test_backend().await;
         let author = test_author();
-        let err =
-            update_memory_file(&backend, &handle, "missing", SAMPLE_RENDERED, &author, None)
-                .await
-                .expect_err("update on absent slug");
+        let err = update_memory_file(&backend, &handle, "missing", SAMPLE_RENDERED, &author, None)
+            .await
+            .expect_err("update on absent slug");
         assert!(matches!(err, ImportError::MemoryNotFound { slug } if slug == "missing"));
     }
 
@@ -494,9 +503,16 @@ mod tests {
     async fn update_memory_file_replaces_content_when_slug_exists() {
         let (backend, handle, _tmp) = test_backend().await;
         let author = test_author();
-        create_memory_file(&backend, &handle, "editable", SAMPLE_RENDERED, &author, None)
-            .await
-            .expect("seed");
+        create_memory_file(
+            &backend,
+            &handle,
+            "editable",
+            SAMPLE_RENDERED,
+            &author,
+            None,
+        )
+        .await
+        .expect("seed");
         let updated = "+++\nname = \"updated\"\ndescription = \"s\"\nkind = \"rule\"\nmandatory = false\ntags = []\n+++\nNew body.\n";
         update_memory_file(&backend, &handle, "editable", updated, &author, None)
             .await
@@ -541,13 +557,28 @@ mod tests {
         // must surface the collision instead of silently replacing.
         let (backend, handle, _tmp) = test_backend().await;
         let author = test_author();
-        import_memory(&backend, &handle, "taken", SAMPLE_RENDERED, None, &author, false)
-            .await
-            .expect("seed");
-        let err =
-            import_memory(&backend, &handle, "taken", SAMPLE_RENDERED, None, &author, false)
-                .await
-                .expect_err("second create must refuse");
+        import_memory(
+            &backend,
+            &handle,
+            "taken",
+            SAMPLE_RENDERED,
+            None,
+            &author,
+            false,
+        )
+        .await
+        .expect("seed");
+        let err = import_memory(
+            &backend,
+            &handle,
+            "taken",
+            SAMPLE_RENDERED,
+            None,
+            &author,
+            false,
+        )
+        .await
+        .expect_err("second create must refuse");
         assert!(matches!(err, ImportError::MemoryAlreadyExists { slug } if slug == "taken"));
     }
 
@@ -558,14 +589,28 @@ mod tests {
         // with `override: true` keep working.
         let (backend, handle, _tmp) = test_backend().await;
         let author = test_author();
-        let first =
-            import_memory(&backend, &handle, "upsert", SAMPLE_RENDERED, None, &author, false)
-                .await
-                .expect("first");
-        let second =
-            import_memory(&backend, &handle, "upsert", SAMPLE_RENDERED, None, &author, true)
-                .await
-                .expect("second with override");
+        let first = import_memory(
+            &backend,
+            &handle,
+            "upsert",
+            SAMPLE_RENDERED,
+            None,
+            &author,
+            false,
+        )
+        .await
+        .expect("first");
+        let second = import_memory(
+            &backend,
+            &handle,
+            "upsert",
+            SAMPLE_RENDERED,
+            None,
+            &author,
+            true,
+        )
+        .await
+        .expect("second with override");
         assert_ne!(first.commit_id, second.commit_id);
         assert_eq!(first.slug, second.slug);
     }

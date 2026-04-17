@@ -7,7 +7,7 @@
 
 use std::io::Write;
 
-use mmcp_client::state::SessionStore;
+use mmcp_store::SessionStore;
 use tempfile::TempDir;
 use uuid::Uuid;
 

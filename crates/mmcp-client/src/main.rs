@@ -1,16 +1,23 @@
 //! mmcp client binary entry point.
 //!
-//! A single binary with multiple entry points dispatched via clap
-//! subcommands. Each subcommand corresponds to one hat the client
-//! wears: MCP stdio server, project CLI, sync engine, or hook
-//! handler. The command implementations themselves live in the
-//! library target of this crate so integration tests can exercise
-//! them directly.
+//! A single `[[bin]]` crate that dispatches clap subcommands across
+//! four roles: MCP stdio server, project CLI, sync engine, hook
+//! handler. Per FR-020 the crate exposes no library target; the
+//! reusable store logic lives in `mmcp-store` so other workspace
+//! members (`mmcp-gui`, future third-party consumers) depend on
+//! that instead.
+//!
+//! Integration tests under `tests/` drive the store directly via
+//! `mmcp-store` for unit-level checks, and the binary via
+//! `assert_cmd` for end-to-end CLI smoke.
+
+#![forbid(unsafe_code)]
+
+mod commands;
+mod state;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-
-use mmcp_client::commands;
 
 #[derive(Parser)]
 #[command(name = "mmcp", version, about = "mmcp memory client")]

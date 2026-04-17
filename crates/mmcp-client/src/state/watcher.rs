@@ -13,8 +13,8 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::state::error::StateError;
-use crate::state::groups::GroupIndex;
+use mmcp_store::StoreError;
+use mmcp_store::groups::GroupIndex;
 
 /// Handle returned to the caller so the watcher task can be shut
 /// down (or simply dropped when the client exits).
@@ -34,31 +34,30 @@ pub fn spawn_watcher(
     repos_root: PathBuf,
     project_config_path: Option<PathBuf>,
     index: GroupIndex,
-) -> Result<WatcherHandle, StateError> {
+) -> Result<WatcherHandle, StoreError> {
     let (tx, mut rx) = mpsc::unbounded_channel::<WatcherMessage>();
 
     let forward_tx = tx.clone();
-    let mut watcher: RecommendedWatcher = notify::recommended_watcher(
-        move |res: notify::Result<notify::Event>| match res {
+    let mut watcher: RecommendedWatcher =
+        notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
             Ok(_event) => {
                 let _ = forward_tx.send(WatcherMessage::Event);
             }
             Err(err) => {
                 let _ = forward_tx.send(WatcherMessage::Error(err.to_string()));
             }
-        },
-    )
-    .map_err(|e| StateError::Io(format!("notify init: {e}")))?;
+        })
+        .map_err(|e| StoreError::Io(format!("notify init: {e}")))?;
 
     watcher
         .watch(&repos_root, RecursiveMode::NonRecursive)
-        .map_err(|e| StateError::Io(format!("watch {}: {e}", repos_root.display())))?;
+        .map_err(|e| StoreError::Io(format!("watch {}: {e}", repos_root.display())))?;
     if let Some(path) = project_config_path.as_ref()
         && path.exists()
     {
         watcher
             .watch(path, RecursiveMode::NonRecursive)
-            .map_err(|e| StateError::Io(format!("watch {}: {e}", path.display())))?;
+            .map_err(|e| StoreError::Io(format!("watch {}: {e}", path.display())))?;
     }
 
     let index_for_task = index.clone();

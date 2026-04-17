@@ -15,8 +15,8 @@ use inquire::{InquireError, Select};
 use mmcp_core::memory::{FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryKind};
 use mmcp_git::{CommitSpec, GitBackend};
 
-use crate::config::{self, PROJECT_MANIFEST};
-use crate::home::{MmcpHome, ResolvedAuthor};
+use mmcp_store::config::{self, PROJECT_MANIFEST};
+use mmcp_store::home::{MmcpHome, ResolvedAuthor};
 
 // ── Public CLI entry point ───────────────────────────────────────────
 
@@ -316,11 +316,7 @@ fn default_backup(args: &ClaudeArgs, state: &FileState) -> bool {
     state.is_conflict()
 }
 
-fn resolve_conflict(
-    args: &ClaudeArgs,
-    state: &FileState,
-    is_tty: bool,
-) -> Result<ConflictChoice> {
+fn resolve_conflict(args: &ClaudeArgs, state: &FileState, is_tty: bool) -> Result<ConflictChoice> {
     if !state.is_conflict() {
         return Ok(ConflictChoice::NotApplicable);
     }
@@ -684,7 +680,10 @@ fn split_sections(input: &str) -> Vec<Section> {
         if let Some(rest) = line.strip_prefix("## ") {
             // Flush previous section if it has content.
             if !current_body.trim().is_empty() {
-                sections.push((std::mem::take(&mut current_title), std::mem::take(&mut current_body)));
+                sections.push((
+                    std::mem::take(&mut current_title),
+                    std::mem::take(&mut current_body),
+                ));
             } else {
                 // Discard empty preamble.
                 current_body.clear();
@@ -706,8 +705,13 @@ fn split_sections(input: &str) -> Vec<Section> {
         let slug = uniquify(&base_slug, &mut used_slugs);
         let description = first_paragraph(&body);
         let upper = body.to_uppercase();
-        let is_rule = upper.contains("MUST") || upper.contains("MANDATORY") || upper.contains("NEVER");
-        let kind = if is_rule { MemoryKind::Rule } else { MemoryKind::Reference };
+        let is_rule =
+            upper.contains("MUST") || upper.contains("MANDATORY") || upper.contains("NEVER");
+        let kind = if is_rule {
+            MemoryKind::Rule
+        } else {
+            MemoryKind::Reference
+        };
         let mandatory = is_rule;
         let mut tags = vec!["imported".to_string(), "claude-md".to_string()];
         for h3 in collect_h3_tags(&body) {
@@ -733,7 +737,11 @@ fn slugify(text: &str) -> String {
     // fall back to the placeholder `section` to keep `imported-`
     // slugs well-formed under validate_slug.
     let base = slug::slugify(text);
-    let base = if base.is_empty() { "section" } else { base.as_str() };
+    let base = if base.is_empty() {
+        "section"
+    } else {
+        base.as_str()
+    };
     format!("imported-{base}")
 }
 
@@ -952,7 +960,10 @@ mod tests {
         // and future version-upgraders depend on. A mutation that
         // replaced the body with any constant string would escape
         // unless we assert on the full contents directly.
-        assert_eq!(begin_marker(), format!("<!-- mmcp:begin {BLOCK_VERSION} -->"));
+        assert_eq!(
+            begin_marker(),
+            format!("<!-- mmcp:begin {BLOCK_VERSION} -->")
+        );
         assert_eq!(end_marker(), format!("<!-- mmcp:end {BLOCK_VERSION} -->"));
         assert_ne!(begin_marker(), end_marker());
         assert!(begin_marker().contains("mmcp:begin"));

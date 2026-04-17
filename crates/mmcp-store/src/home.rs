@@ -106,8 +106,7 @@ impl MmcpHome {
         }
         let text = std::fs::read_to_string(&path)
             .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
-        UserConfig::from_toml(&text)
-            .map_err(|e| anyhow::anyhow!("parsing {}: {e}", path.display()))
+        UserConfig::from_toml(&text).map_err(|e| anyhow::anyhow!("parsing {}: {e}", path.display()))
     }
 
     /// Initialize a `NativeBackend` and `GroupIndex` from this home.
@@ -117,7 +116,10 @@ impl MmcpHome {
     /// this once at startup.
     pub async fn init_backend(
         &self,
-    ) -> anyhow::Result<(std::sync::Arc<mmcp_git::NativeBackend>, crate::groups::GroupIndex)> {
+    ) -> anyhow::Result<(
+        std::sync::Arc<mmcp_git::NativeBackend>,
+        crate::groups::GroupIndex,
+    )> {
         use anyhow::Context;
         let repos_root = self.repos_root();
         let backend = std::sync::Arc::new(

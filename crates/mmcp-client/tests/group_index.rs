@@ -9,10 +9,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use mmcp_client::state::GroupIndex;
 use mmcp_core::id::GroupId;
 use mmcp_core::manifest::GroupManifest;
 use mmcp_git::{GitBackend, NativeBackend};
+use mmcp_store::groups::GroupIndex;
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -23,11 +23,7 @@ fn make_backend() -> (Arc<NativeBackend>, PathBuf, TempDir) {
     (backend, root, tmp)
 }
 
-async fn seed_group(
-    backend: &NativeBackend,
-    slug: &str,
-    owner: Uuid,
-) -> (GroupManifest, Uuid) {
+async fn seed_group(backend: &NativeBackend, slug: &str, owner: Uuid) -> (GroupManifest, Uuid) {
     let group_id = GroupId::new();
     let uuid = *group_id.as_uuid();
     let manifest = GroupManifest::new_user_owned(group_id, slug, owner);

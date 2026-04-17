@@ -3221,6 +3221,7 @@ dependencies = [
  "jiff",
  "mmcp-core",
  "mmcp-git",
+ "mmcp-session",
  "mmcp-sync",
  "serde",
  "serde_json",
@@ -3228,6 +3229,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "toml",
  "tracing",
  "uuid",
 ]

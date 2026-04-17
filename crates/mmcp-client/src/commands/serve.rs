@@ -31,9 +31,15 @@ use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::config::{PROJECT_MANIFEST, find_project_root, load as load_project_config};
-use crate::home::MmcpHome;
-use crate::state::{GroupEntry, GroupIndex, SessionStore, WatcherHandle, spawn_watcher};
+use crate::state::{WatcherHandle, spawn_watcher};
+use mmcp_store::config::{PROJECT_MANIFEST, find_project_root, load as load_project_config};
+use mmcp_store::diagnostics::{
+    DiagReport, diagnose_all, diagnose_group, health_check_all, health_check_group,
+};
+use mmcp_store::groups::{GroupEntry, GroupIndex};
+use mmcp_store::home::{MmcpHome, ResolvedAuthor};
+use mmcp_store::memory::{ImportError, delete_memory_file, import_memory, update_memory_file};
+use mmcp_store::sessions::SessionStore;
 
 use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION, memory_path};
 
@@ -56,12 +62,13 @@ pub async fn run(debug_mode: bool) -> Result<()> {
 struct ClientStateInner {
     backend: Arc<NativeBackend>,
     groups: GroupIndex,
-    #[allow(dead_code)] // NOTE: consumed by session-scoped tools once they're wired onto the router.
+    #[allow(dead_code)]
+    // NOTE: consumed by session-scoped tools once they're wired onto the router.
     sessions: SessionStore,
     #[allow(dead_code)] // NOTE: held to keep the notify watcher alive for the process lifetime.
     watcher: WatcherHandle,
     /// Resolved commit author from user config cascade.
-    author: crate::home::ResolvedAuthor,
+    author: ResolvedAuthor,
     /// Debug mode flag. When true, raw git access tools are enabled.
     /// Can be toggled at runtime via the `debug_toggle` tool.
     debug: Arc<AtomicBool>,
@@ -577,10 +584,9 @@ impl McpServer {
                     "memory not found in group",
                     Some(json!({ "group": group_id.to_string(), "path": p })),
                 ),
-                mmcp_git::GitError::RevNotFound(r) => McpError::invalid_params(
-                    "revision not found",
-                    Some(json!({ "revision": r })),
-                ),
+                mmcp_git::GitError::RevNotFound(r) => {
+                    McpError::invalid_params("revision not found", Some(json!({ "revision": r })))
+                }
                 other => git_error(other),
             })?;
         let text = std::str::from_utf8(&bytes).map_err(|e| {
@@ -767,7 +773,7 @@ impl McpServer {
             .to_string()
             .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
 
-        let result = crate::commands::import::import_memory(
+        let result = import_memory(
             &self.state.backend,
             &entry.handle,
             &args.slug,
@@ -811,20 +817,15 @@ impl McpServer {
         {
             Ok(b) => b,
             Err(mmcp_git::GitError::PathNotFound(_)) => {
-                return Err(map_memory_error_to_mcp(
-                    crate::commands::import::ImportError::MemoryNotFound {
-                        slug: args.slug.clone(),
-                    },
-                ));
+                return Err(map_memory_error_to_mcp(ImportError::MemoryNotFound {
+                    slug: args.slug.clone(),
+                }));
             }
             Err(e) => return Err(git_error(e)),
         };
         let text = String::from_utf8_lossy(&bytes).into_owned();
         let mut file = mmcp_core::memory::MemoryFile::parse(&text).map_err(|e| {
-            McpError::internal_error(
-                Cow::Owned(format!("parsing existing memory: {e}")),
-                None,
-            )
+            McpError::internal_error(Cow::Owned(format!("parsing existing memory: {e}")), None)
         })?;
 
         // Apply deltas. Body replacement and frontmatter field
@@ -861,7 +862,7 @@ impl McpServer {
             .to_string()
             .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
 
-        let commit_id = crate::commands::import::update_memory_file(
+        let commit_id = update_memory_file(
             &self.state.backend,
             &entry.handle,
             &args.slug,
@@ -895,7 +896,7 @@ impl McpServer {
             .ok_or_else(|| McpError::invalid_params("group not found", None))?;
         ensure_not_protected(&entry, &args.slug, "delete")?;
 
-        let commit_id = crate::commands::import::delete_memory_file(
+        let commit_id = delete_memory_file(
             &self.state.backend,
             &entry.handle,
             &args.slug,
@@ -927,9 +928,9 @@ impl McpServer {
                 .get(&group_id)
                 .await
                 .ok_or_else(|| McpError::invalid_params("group not found", None))?;
-            vec![crate::commands::health::health_check_group(&self.state.backend, &entry).await]
+            vec![health_check_group(&self.state.backend, &entry).await]
         } else {
-            crate::commands::health::health_check_all(&self.state.backend, &self.state.groups).await
+            health_check_all(&self.state.backend, &self.state.groups).await
         };
         let total_issues: usize = reports.iter().map(|r| r.issues.len()).sum();
         Ok(ok_json(json!({
@@ -954,16 +955,23 @@ impl McpServer {
                 .get(&group_id)
                 .await
                 .ok_or_else(|| McpError::invalid_params("group not found", None))?;
-            crate::commands::health::DiagReport {
+            DiagReport {
                 project_issues: Vec::new(),
-                groups: vec![crate::commands::health::diagnose_group(&self.state.backend, &entry).await],
+                groups: vec![diagnose_group(&self.state.backend, &entry).await],
             }
         } else {
-            crate::commands::health::diagnose_all(&self.state.backend, &self.state.groups).await
+            diagnose_all(&self.state.backend, &self.state.groups).await
         };
-        let all_issues = diag.groups.iter().flat_map(|r| &r.issues).chain(diag.project_issues.iter());
+        let all_issues = diag
+            .groups
+            .iter()
+            .flat_map(|r| &r.issues)
+            .chain(diag.project_issues.iter());
         let errors: usize = all_issues.clone().filter(|i| i.severity == "error").count();
-        let warnings: usize = all_issues.clone().filter(|i| i.severity == "warning").count();
+        let warnings: usize = all_issues
+            .clone()
+            .filter(|i| i.severity == "warning")
+            .count();
         let infos: usize = all_issues.filter(|i| i.severity == "info").count();
         Ok(ok_json(json!({
             "project_issues": diag.project_issues,
@@ -1068,7 +1076,10 @@ impl McpServer {
             .get(&group_id)
             .await
             .ok_or_else(|| McpError::invalid_params("group not found", None))?;
-        let path = args.path.as_deref().unwrap_or(mmcp_core::manifest::MANIFEST_FILENAME);
+        let path = args
+            .path
+            .as_deref()
+            .unwrap_or(mmcp_core::manifest::MANIFEST_FILENAME);
         let history = self
             .state
             .backend
@@ -1148,10 +1159,10 @@ impl McpServer {
         // Resolve the project group (if any) from the cwd's .mmcp.toml.
         let project_root = std::env::current_dir()
             .ok()
-            .and_then(|cwd| crate::config::find_project_root(&cwd));
+            .and_then(|cwd| find_project_root(&cwd));
         let project_uuid = project_root
             .as_ref()
-            .and_then(|root| crate::config::load(root).ok())
+            .and_then(|root| load_project_config(root).ok())
             .map(|cfg| *cfg.project_uuid.as_uuid());
 
         let wants_project = matches!(scope, BootstrapScope::Project | BootstrapScope::All);
@@ -1192,15 +1203,11 @@ impl McpServer {
                 };
                 let is_mandatory = file.frontmatter.mandatory;
 
-                let include = (wants_mandatory && is_mandatory)
-                    || (wants_project && is_project);
+                let include = (wants_mandatory && is_mandatory) || (wants_project && is_project);
                 if !include {
                     continue;
                 }
-                let reason = match (
-                    wants_mandatory && is_mandatory,
-                    wants_project && is_project,
-                ) {
+                let reason = match (wants_mandatory && is_mandatory, wants_project && is_project) {
                     (true, true) => "mandatory,project",
                     (true, false) => "mandatory",
                     (false, true) => "project",
@@ -1341,7 +1348,7 @@ impl McpServer {
         }
 
         // Resolve the author and run the shared execute path.
-        let home = crate::home::MmcpHome::discover()
+        let home = MmcpHome::discover()
             .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
         let author = home.resolve_author();
         let report = crate::commands::claude::execute(&plan, &home, &author)
@@ -1369,15 +1376,16 @@ impl McpServer {
         Parameters(args): Parameters<SyncToolArgs>,
     ) -> Result<CallToolResult, McpError> {
         let (cfg, server_url) = self.require_sync_configured()?;
-        let (engine, resolver, _queue) = crate::commands::sync::build_engine(
+        let (engine, resolver, _queue) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
             self.state.groups.clone(),
             &server_url,
         )
-        .map_err(|e| {
-            McpError::internal_error(format!("failed to build sync engine: {e}"), None)
-        })?;
-        let report = engine.pull(&resolver).await.map_err(map_sync_error_to_mcp)?;
+        .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
+        let report = engine
+            .pull(&resolver)
+            .await
+            .map_err(map_sync_error_to_mcp)?;
         Ok(ok_json(json!({
             "updated": report.updated,
             "new_groups": report.new_groups,
@@ -1395,14 +1403,12 @@ impl McpServer {
         Parameters(args): Parameters<SyncToolArgs>,
     ) -> Result<CallToolResult, McpError> {
         let (cfg, server_url) = self.require_sync_configured()?;
-        let (engine, resolver, queue) = crate::commands::sync::build_engine(
+        let (engine, resolver, queue) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
             self.state.groups.clone(),
             &server_url,
         )
-        .map_err(|e| {
-            McpError::internal_error(format!("failed to build sync engine: {e}"), None)
-        })?;
+        .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
         let report = engine
             .push(&queue, &resolver)
             .await
@@ -1430,14 +1436,12 @@ impl McpServer {
         Parameters(args): Parameters<SyncToolArgs>,
     ) -> Result<CallToolResult, McpError> {
         let (cfg, server_url) = self.require_sync_configured()?;
-        let (engine, resolver, queue) = crate::commands::sync::build_engine(
+        let (engine, resolver, queue) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
             self.state.groups.clone(),
             &server_url,
         )
-        .map_err(|e| {
-            McpError::internal_error(format!("failed to build sync engine: {e}"), None)
-        })?;
+        .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
         let report = engine
             .sync(&queue, &resolver)
             .await
@@ -1715,11 +1719,6 @@ fn map_init_project_error_to_mcp(err: crate::commands::init::InitProjectError) -
             "code": "slug_required",
             "retry_hint": "pass a `slug` argument, or store `project_slug` in .mmcp.toml",
         }),
-        InitProjectError::RepoWithoutConfig { uuid, path } => json!({
-            "code": "repo_without_config",
-            "uuid": uuid.to_string(),
-            "path": path.to_string_lossy(),
-        }),
         InitProjectError::GitBackend(detail) => json!({
             "code": "git_backend",
             "detail": detail,
@@ -1771,8 +1770,7 @@ fn ensure_not_protected(entry: &GroupEntry, slug: &str, action: &str) -> Result<
 /// `invalid_slug`, `memory_render_failed`) are stable wire contracts
 /// the `edit_memory`, `delete_memory`, and tightened `write_memory`
 /// tools all share.
-fn map_memory_error_to_mcp(err: crate::commands::import::ImportError) -> McpError {
-    use crate::commands::import::ImportError;
+fn map_memory_error_to_mcp(err: ImportError) -> McpError {
     let message = err.to_string();
     let payload = match &err {
         ImportError::MemoryNotFound { slug } => json!({
@@ -1903,11 +1901,7 @@ async fn list_memory_files(
     entry: &GroupEntry,
 ) -> Result<Vec<String>, McpError> {
     let files = backend
-        .list_tree(
-            &entry.handle,
-            MEMORIES_DIR,
-            &Rev::head(),
-        )
+        .list_tree(&entry.handle, MEMORIES_DIR, &Rev::head())
         .await
         .map_err(git_error)?;
     Ok(files
@@ -1953,10 +1947,7 @@ async fn read_memory_descriptor(
 
 fn parse_group_id(value: &str) -> Result<GroupId, McpError> {
     let uuid = Uuid::parse_str(value).map_err(|_| {
-        McpError::invalid_params(
-            "group is not a valid UUID",
-            Some(json!({ "group": value })),
-        )
+        McpError::invalid_params("group is not a valid UUID", Some(json!({ "group": value })))
     })?;
     Ok(GroupId::from_uuid(uuid))
 }
@@ -2091,7 +2082,7 @@ mod tests {
     /// test never touches the real user home.
     async fn test_state() -> (ClientState, TempDir) {
         let tmp = TempDir::new().expect("tempdir");
-        let home = crate::home::MmcpHome::from_root(tmp.path().join("mmcp-home"));
+        let home = MmcpHome::from_root(tmp.path().join("mmcp-home"));
         let state = ClientState::initialize_from(home, None, false)
             .await
             .expect("initialize_from");
@@ -2265,10 +2256,7 @@ mod tests {
             parsed.get("slug").and_then(|v| v.as_str()),
             Some("team-rust")
         );
-        assert_eq!(
-            parsed.get("memory_count").and_then(|v| v.as_u64()),
-            Some(1)
-        );
+        assert_eq!(parsed.get("memory_count").and_then(|v| v.as_u64()), Some(1));
         let owner_kind = parsed
             .get("owner")
             .and_then(|v| v.get("kind"))
@@ -2378,15 +2366,19 @@ mod tests {
             .get("memories")
             .and_then(|v| v.as_array())
             .expect("memories array");
-        assert_eq!(memories.len(), 1, "only the mandatory memory should qualify");
+        assert_eq!(
+            memories.len(),
+            1,
+            "only the mandatory memory should qualify"
+        );
         let m = &memories[0];
-        assert_eq!(m.get("slug").and_then(|v| v.as_str()), Some("mandatory-rule"));
+        assert_eq!(
+            m.get("slug").and_then(|v| v.as_str()),
+            Some("mandatory-rule")
+        );
         assert_eq!(m.get("mandatory").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(m.get("reason").and_then(|v| v.as_str()), Some("mandatory"));
-        let body = m
-            .get("body")
-            .and_then(|v| v.as_str())
-            .expect("body inline");
+        let body = m.get("body").and_then(|v| v.as_str()).expect("body inline");
         assert!(body.contains("Always follow this rule."));
     }
 
@@ -2423,9 +2415,7 @@ mod tests {
         let diagnostics = build_claude_diagnostics(Some(tmp.path()));
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(
-            diagnostics[0]
-                .get("code")
-                .and_then(|v| v.as_str()),
+            diagnostics[0].get("code").and_then(|v| v.as_str()),
             Some("claude_md_missing")
         );
     }
@@ -2441,9 +2431,7 @@ mod tests {
         let diagnostics = build_claude_diagnostics(Some(tmp.path()));
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(
-            diagnostics[0]
-                .get("code")
-                .and_then(|v| v.as_str()),
+            diagnostics[0].get("code").and_then(|v| v.as_str()),
             Some("claude_md_unmanaged")
         );
     }
@@ -2457,7 +2445,10 @@ mod tests {
         )
         .expect("write claude");
         let diagnostics = build_claude_diagnostics(Some(tmp.path()));
-        assert!(diagnostics.is_empty(), "current-version fence should produce no diagnostics");
+        assert!(
+            diagnostics.is_empty(),
+            "current-version fence should produce no diagnostics"
+        );
     }
 
     #[test]
@@ -2482,8 +2473,14 @@ mod tests {
             .await
             .expect("init_claude dry_run");
         let parsed = parse_ok_json(res);
-        assert_eq!(parsed.get("action").and_then(|v| v.as_str()), Some("override"));
-        assert_eq!(parsed.get("state_before").and_then(|v| v.as_str()), Some("missing"));
+        assert_eq!(
+            parsed.get("action").and_then(|v| v.as_str()),
+            Some("override")
+        );
+        assert_eq!(
+            parsed.get("state_before").and_then(|v| v.as_str()),
+            Some("missing")
+        );
         assert_eq!(parsed.get("dry_run").and_then(|v| v.as_bool()), Some(true));
         assert!(parsed.get("wrote").map(|v| v.is_null()).unwrap_or(false));
         assert!(!target.exists(), "dry run must not write the file");
@@ -2514,7 +2511,10 @@ mod tests {
             payload.get("code").and_then(|v| v.as_str()),
             Some("conflict_unresolved")
         );
-        assert!(payload.get("choices").is_some(), "choices list must be present");
+        assert!(
+            payload.get("choices").is_some(),
+            "choices list must be present"
+        );
     }
 
     #[tokio::test]
@@ -2534,7 +2534,10 @@ mod tests {
             .await
             .expect("init_claude override");
         let parsed = parse_ok_json(res);
-        assert_eq!(parsed.get("action").and_then(|v| v.as_str()), Some("override"));
+        assert_eq!(
+            parsed.get("action").and_then(|v| v.as_str()),
+            Some("override")
+        );
         assert!(target.exists(), "stub must have been written");
         let body = std::fs::read_to_string(&target).expect("read stub");
         assert!(body.contains("mmcp is mandatory"));
@@ -2578,7 +2581,10 @@ mod tests {
             Some("018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"),
             "payload must echo the project uuid so the caller can disambiguate multi-project sessions",
         );
-        assert!(payload.get("retry_hint").is_some(), "retry_hint must be present");
+        assert!(
+            payload.get("retry_hint").is_some(),
+            "retry_hint must be present"
+        );
     }
 
     #[test]
@@ -2588,8 +2594,7 @@ mod tests {
             tmp.path(),
             "project_uuid = \"018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91\"\n\n[sync]\nserver_url = \"http://localhost:8787\"\n",
         );
-        let (cfg, server_url) =
-            resolve_sync_config(tmp.path()).expect("happy path should resolve");
+        let (cfg, server_url) = resolve_sync_config(tmp.path()).expect("happy path should resolve");
         assert_eq!(server_url, "http://localhost:8787");
         assert_eq!(
             cfg.project_uuid.to_string(),
@@ -2708,10 +2713,7 @@ mod tests {
             Some("018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91")
         );
         let sync = res.get("sync").expect("sync object");
-        assert_eq!(
-            sync.get("configured").and_then(|v| v.as_bool()),
-            Some(true)
-        );
+        assert_eq!(sync.get("configured").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(
             sync.get("server_url").and_then(|v| v.as_str()),
             Some("http://localhost:8787")
@@ -2752,9 +2754,8 @@ mod tests {
 
     #[test]
     fn map_init_project_error_surfaces_slug_required_with_retry_hint() {
-        let err = map_init_project_error_to_mcp(
-            crate::commands::init::InitProjectError::SlugRequired,
-        );
+        let err =
+            map_init_project_error_to_mcp(crate::commands::init::InitProjectError::SlugRequired);
         let payload = err.data.as_ref().expect("payload");
         assert_eq!(
             payload.get("code").and_then(|v| v.as_str()),
@@ -2768,11 +2769,10 @@ mod tests {
 
     #[test]
     fn map_init_project_error_surfaces_invalid_slug_with_slug_echo() {
-        let err = map_init_project_error_to_mcp(
-            crate::commands::init::InitProjectError::InvalidSlug {
+        let err =
+            map_init_project_error_to_mcp(crate::commands::init::InitProjectError::InvalidSlug {
                 slug: "BAD SLUG".to_string(),
-            },
-        );
+            });
         let payload = err.data.as_ref().expect("payload");
         assert_eq!(
             payload.get("code").and_then(|v| v.as_str()),
@@ -2787,12 +2787,11 @@ mod tests {
 
     #[test]
     fn map_init_project_error_surfaces_slug_mismatch_with_both_sides() {
-        let err = map_init_project_error_to_mcp(
-            crate::commands::init::InitProjectError::SlugMismatch {
+        let err =
+            map_init_project_error_to_mcp(crate::commands::init::InitProjectError::SlugMismatch {
                 expected: "stored".to_string(),
                 got: "passed".to_string(),
-            },
-        );
+            });
         let payload = err.data.as_ref().expect("payload");
         assert_eq!(
             payload.get("code").and_then(|v| v.as_str()),
@@ -2802,10 +2801,7 @@ mod tests {
             payload.get("expected").and_then(|v| v.as_str()),
             Some("stored")
         );
-        assert_eq!(
-            payload.get("got").and_then(|v| v.as_str()),
-            Some("passed")
-        );
+        assert_eq!(payload.get("got").and_then(|v| v.as_str()), Some("passed"));
     }
 
     /// End-to-end exercise of `create_project_group_from_state` with
@@ -2830,7 +2826,10 @@ mod tests {
         .await
         .expect("create_project_group_from_state");
 
-        assert!(report.created_config, "config must be written on first call");
+        assert!(
+            report.created_config,
+            "config must be written on first call"
+        );
         assert!(report.created_repo, "repo must be written on first call");
         assert_eq!(report.slug, "team-rust");
         assert!(
@@ -2887,7 +2886,7 @@ mod tests {
             groups: Default::default(),
             languages: Default::default(),
         };
-        crate::config::save(&project_root, &cfg).expect("seed config");
+        mmcp_store::config::save(&project_root, &cfg).expect("seed config");
 
         let err = crate::commands::init::create_project_group_from_state(
             &state.backend,
@@ -2932,7 +2931,10 @@ mod tests {
             .expect("create");
         let parsed = parse_ok_json(res);
         assert_eq!(parsed.get("slug").and_then(|v| v.as_str()), Some("fresh"));
-        assert_eq!(parsed.get("replaced").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(
+            parsed.get("replaced").and_then(|v| v.as_bool()),
+            Some(false)
+        );
     }
 
     #[tokio::test]
@@ -2949,10 +2951,7 @@ mod tests {
             payload.get("code").and_then(|v| v.as_str()),
             Some("memory_already_exists")
         );
-        assert_eq!(
-            payload.get("slug").and_then(|v| v.as_str()),
-            Some("taken")
-        );
+        assert_eq!(payload.get("slug").and_then(|v| v.as_str()), Some("taken"));
     }
 
     #[tokio::test]
@@ -3037,7 +3036,11 @@ mod tests {
             .get("frontmatter")
             .and_then(|v| v.get("tags"))
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| t.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
         assert!(tags.contains(&"alpha".to_string()));
         assert!(tags.contains(&"beta".to_string()));
@@ -3068,10 +3071,7 @@ mod tests {
             payload.get("code").and_then(|v| v.as_str()),
             Some("memory_not_found")
         );
-        assert_eq!(
-            payload.get("slug").and_then(|v| v.as_str()),
-            Some("ghost")
-        );
+        assert_eq!(payload.get("slug").and_then(|v| v.as_str()), Some("ghost"));
     }
 
     // ── delete_memory (FR-017) ────────────────────────────────────
@@ -3178,8 +3178,7 @@ mod tests {
     #[tokio::test]
     async fn edit_memory_against_protected_group_is_gated() {
         let (state, _tmp) = test_state().await;
-        let group =
-            seed_protected_group_with_memory(&state, "global", "rule", SAMPLE_MEMORY).await;
+        let group = seed_protected_group_with_memory(&state, "global", "rule", SAMPLE_MEMORY).await;
         let server = McpServer::new(state);
         let err = server
             .edit_memory(Parameters(EditMemoryArgs {
@@ -3195,17 +3194,13 @@ mod tests {
             payload.get("code").and_then(|v| v.as_str()),
             Some("protected_requires_elicitation")
         );
-        assert_eq!(
-            payload.get("action").and_then(|v| v.as_str()),
-            Some("edit")
-        );
+        assert_eq!(payload.get("action").and_then(|v| v.as_str()), Some("edit"));
     }
 
     #[tokio::test]
     async fn delete_memory_against_protected_group_is_gated() {
         let (state, _tmp) = test_state().await;
-        let group =
-            seed_protected_group_with_memory(&state, "global", "rule", SAMPLE_MEMORY).await;
+        let group = seed_protected_group_with_memory(&state, "global", "rule", SAMPLE_MEMORY).await;
         let server = McpServer::new(state);
         let err = server
             .delete_memory(Parameters(DeleteMemoryArgs {

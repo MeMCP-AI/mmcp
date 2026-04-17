@@ -28,10 +28,10 @@ use mmcp_git::{GitBackend, NativeBackend};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::commands::import::validate_slug;
-use crate::config::{find_project_root, load, save};
-use crate::home::MmcpHome;
-use crate::state::GroupIndex;
+use mmcp_store::config::{find_project_root, load, save};
+use mmcp_store::groups::GroupIndex;
+use mmcp_store::home::MmcpHome;
+use mmcp_store::memory::validate_slug;
 
 // ── CLI args ─────────────────────────────────────────────────────────
 
@@ -96,7 +96,9 @@ pub struct ProjectGroupReport {
 /// clients branch on state rather than parsing human strings.
 #[derive(Debug, Error)]
 pub enum InitProjectError {
-    #[error("invalid slug `{slug}`: must be 1-128 lowercase alphanumeric chars or hyphens, no leading/trailing/consecutive hyphens")]
+    #[error(
+        "invalid slug `{slug}`: must be 1-128 lowercase alphanumeric chars or hyphens, no leading/trailing/consecutive hyphens"
+    )]
     InvalidSlug { slug: String },
 
     #[error("failed to load project config: {0}")]
@@ -105,19 +107,18 @@ pub enum InitProjectError {
     #[error("failed to write project config: {0}")]
     ConfigWriteFailed(String),
 
-    #[error("supplied project_uuid {got} disagrees with the one already stored in .mmcp.toml ({expected}); refusing to rewrite project identity")]
+    #[error(
+        "supplied project_uuid {got} disagrees with the one already stored in .mmcp.toml ({expected}); refusing to rewrite project identity"
+    )]
     ProjectUuidMismatch { expected: Uuid, got: Uuid },
 
-    #[error("supplied slug `{got}` disagrees with the one already stored in .mmcp.toml (`{expected}`); refusing to rewrite project slug")]
+    #[error(
+        "supplied slug `{got}` disagrees with the one already stored in .mmcp.toml (`{expected}`); refusing to rewrite project slug"
+    )]
     SlugMismatch { expected: String, got: String },
 
-    #[error(
-        "slug required: pass `--slug <slug>` (or supply it in the `slug` tool argument)"
-    )]
+    #[error("slug required: pass `--slug <slug>` (or supply it in the `slug` tool argument)")]
     SlugRequired,
-
-    #[error("bare repo for project_uuid {uuid} exists at {path} but .mmcp.toml is missing; refusing to touch an orphan repo")]
-    RepoWithoutConfig { uuid: Uuid, path: PathBuf },
 
     #[error("git backend error: {0}")]
     GitBackend(String),
@@ -140,9 +141,11 @@ pub async fn run_project(args: ProjectArgs) -> Result<()> {
     };
 
     let (backend, groups) = home.init_backend().await?;
-    let report = bootstrap_project(&backend, &groups, &cwd, &opts, /* tty_slug_prompt */ true)
-        .await
-        .map_err(anyhow::Error::from)?;
+    let report = bootstrap_project(
+        &backend, &groups, &cwd, &opts, /* tty_slug_prompt */ true,
+    )
+    .await
+    .map_err(anyhow::Error::from)?;
 
     print_report(&report);
     Ok(())
@@ -160,20 +163,6 @@ pub async fn create_project_group_from_state(
     bootstrap_project(backend, groups, cwd, opts, false).await
 }
 
-/// CLI variant kept for symmetry with older call sites — builds its
-/// own backend via `MmcpHome` and delegates.
-pub async fn create_project_group(
-    home: &MmcpHome,
-    cwd: &Path,
-    opts: &InitProjectOptions,
-) -> Result<ProjectGroupReport, InitProjectError> {
-    let (backend, groups) = home
-        .init_backend()
-        .await
-        .map_err(|e| InitProjectError::GitBackend(e.to_string()))?;
-    bootstrap_project(&backend, &groups, cwd, opts, false).await
-}
-
 // ── Core orchestrator ────────────────────────────────────────────────
 
 async fn bootstrap_project(
@@ -186,8 +175,7 @@ async fn bootstrap_project(
     // 1. Discover or mint `.mmcp.toml`. `project_root` is always the
     //    directory that holds the config once we return — either the
     //    discovered ancestor or `cwd` when this call created it.
-    let (mut cfg, project_root, created_config) =
-        load_or_mint_config(cwd, opts.project_uuid)?;
+    let (mut cfg, project_root, created_config) = load_or_mint_config(cwd, opts.project_uuid)?;
 
     // 2. Resolve the slug from args → stored config → optional TTY
     //    prompt. Validate once, end-to-end: whatever we resolve will
@@ -427,21 +415,25 @@ mod tests {
 
     #[test]
     fn resolve_slug_prefers_arg_over_config() {
-        let s = resolve_slug(Some("from-arg"), Some("from-config"), Path::new("/x"), false);
+        let s = resolve_slug(
+            Some("from-arg"),
+            Some("from-config"),
+            Path::new("/x"),
+            false,
+        );
         assert!(matches!(s, Err(InitProjectError::SlugMismatch { .. })));
     }
 
     #[test]
     fn resolve_slug_uses_config_when_arg_is_absent() {
-        let s = resolve_slug(None, Some("from-config"), Path::new("/x"), false)
-            .expect("config slug");
+        let s =
+            resolve_slug(None, Some("from-config"), Path::new("/x"), false).expect("config slug");
         assert_eq!(s, "from-config");
     }
 
     #[test]
     fn resolve_slug_matching_arg_and_config_is_accepted() {
-        let s = resolve_slug(Some("same"), Some("same"), Path::new("/x"), false)
-            .expect("matching");
+        let s = resolve_slug(Some("same"), Some("same"), Path::new("/x"), false).expect("matching");
         assert_eq!(s, "same");
     }
 

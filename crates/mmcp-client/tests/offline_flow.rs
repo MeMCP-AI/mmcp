@@ -11,15 +11,15 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use mmcp_client::commands::health;
-use mmcp_client::commands::import::{self, SynthFrontmatter};
-use mmcp_client::home::{MmcpHome, ResolvedAuthor};
-use mmcp_client::state::GroupIndex;
 use mmcp_core::config::{GroupsConfig, LanguagesConfig, ProjectConfig};
 use mmcp_core::id::{GroupId, ProjectUuid};
 use mmcp_core::manifest::GroupManifest;
 use mmcp_core::memory::MemoryKind;
 use mmcp_git::{GitBackend, NativeBackend};
+use mmcp_store::diagnostics as health;
+use mmcp_store::groups::GroupIndex;
+use mmcp_store::home::{MmcpHome, ResolvedAuthor};
+use mmcp_store::memory::{self as import, SynthFrontmatter};
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -58,11 +58,7 @@ async fn offline_env() -> (
     (home, backend, groups, author, tmp)
 }
 
-async fn seed_group(
-    backend: &NativeBackend,
-    groups: &GroupIndex,
-    slug: &str,
-) -> GroupId {
+async fn seed_group(backend: &NativeBackend, groups: &GroupIndex, slug: &str) -> GroupId {
     let group_id = GroupId::new();
     let manifest = GroupManifest::new_user_owned(group_id, slug, Uuid::now_v7());
     backend
@@ -115,10 +111,7 @@ async fn import_list_read_health_and_diagnose_run_without_any_remote() {
         group_surface.issues
     );
     assert!(
-        group_surface
-            .issues
-            .iter()
-            .all(|i| i.severity != "error"),
+        group_surface.issues.iter().all(|i| i.severity != "error"),
         "surface check must not raise errors for a valid offline group; got {:?}",
         group_surface.issues
     );

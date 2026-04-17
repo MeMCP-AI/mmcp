@@ -11,23 +11,17 @@
 
 use anyhow::Result;
 
-// Re-export the analysis types so existing `crate::commands::health::{…}`
-// imports (used by the MCP tools in `commands/serve.rs`) keep
-// resolving. The shims vanish in commit 8 when `mmcp-client/src/lib.rs`
-// is deleted and every consumer rebinds to `mmcp_store::diagnostics::…`
-// directly.
-pub use mmcp_store::diagnostics::{
-    DiagReport, GroupReport, Issue, diagnose_all, diagnose_group, health_check_all,
-    health_check_group,
+use mmcp_store::diagnostics::{
+    DiagReport, GroupReport, diagnose_all, diagnose_group, health_check_all, health_check_group,
 };
-
+use mmcp_store::home::MmcpHome;
 use mmcp_store::memory::resolve_group;
 
 // ── CLI entry points ────────────────────────────────────────
 
 /// `mmcp check` - quick surface health check.
 pub async fn run_check(group: Option<String>) -> Result<()> {
-    let home = crate::home::MmcpHome::discover()?;
+    let home = MmcpHome::discover()?;
     let (backend, groups) = home.init_backend().await?;
 
     let reports = if let Some(id) = group {
@@ -49,7 +43,7 @@ pub async fn run_check(group: Option<String>) -> Result<()> {
 
 /// `mmcp diagnose` - deep diagnostic analysis.
 pub async fn run_diagnose(group: Option<String>) -> Result<()> {
-    let home = crate::home::MmcpHome::discover()?;
+    let home = MmcpHome::discover()?;
     let (backend, groups) = home.init_backend().await?;
 
     let diag = if let Some(id) = group {
@@ -94,13 +88,21 @@ fn print_reports(reports: &[GroupReport]) {
                 report.slug, report.group_id, report.memory_count
             );
         } else {
-            let errors = report.issues.iter().filter(|i| i.severity == "error").count();
+            let errors = report
+                .issues
+                .iter()
+                .filter(|i| i.severity == "error")
+                .count();
             let warnings = report
                 .issues
                 .iter()
                 .filter(|i| i.severity == "warning")
                 .count();
-            let infos = report.issues.iter().filter(|i| i.severity == "info").count();
+            let infos = report
+                .issues
+                .iter()
+                .filter(|i| i.severity == "info")
+                .count();
             println!(
                 "{} ({}): {} memories, {} error(s), {} warning(s), {} info(s):",
                 report.slug, report.group_id, report.memory_count, errors, warnings, infos

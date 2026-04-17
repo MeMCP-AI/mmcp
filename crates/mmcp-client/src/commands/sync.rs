@@ -5,19 +5,12 @@
 //! body calls through to `mmcp_store::sync::build_engine` (the
 //! shared wiring used by the MCP tools as well) and formats the
 //! resulting report for stdout.
-//!
-//! `build_engine` and `IndexResolver` now live in
-//! `mmcp-store::sync`; the `pub(crate) use` below keeps the
-//! `crate::commands::sync::build_engine` import path working for
-//! `commands/serve.rs` until commit 8 deletes the shim layer.
 
 use anyhow::{Context, Result, bail};
+use mmcp_store::config::{find_project_root, load};
+use mmcp_store::home::MmcpHome;
+use mmcp_store::sync::build_engine;
 use mmcp_sync::SyncError;
-
-use crate::config::{find_project_root, load};
-use crate::home::MmcpHome;
-
-pub(crate) use mmcp_store::sync::build_engine;
 
 /// Run the sync engine.
 ///
@@ -49,10 +42,7 @@ pub async fn run(pull: bool, push: bool) -> Result<()> {
 
     let report = match (pull, push) {
         (true, true) => {
-            let report = engine
-                .sync(&queue, &resolver)
-                .await
-                .map_err(to_anyhow)?;
+            let report = engine.sync(&queue, &resolver).await.map_err(to_anyhow)?;
             tracing::info!(
                 server = %sync_cfg.server_url,
                 updated = report.pulled.updated.len(),
@@ -108,4 +98,3 @@ pub async fn run(pull: bool, push: bool) -> Result<()> {
 fn to_anyhow(err: SyncError) -> anyhow::Error {
     anyhow::Error::from(err)
 }
-

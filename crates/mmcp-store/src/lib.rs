@@ -46,6 +46,7 @@ pub mod error;
 pub mod groups;
 pub mod home;
 pub mod memory;
+pub mod sessions;
 pub mod sync;
 
 pub use diagnostics::{
@@ -60,4 +61,5 @@ pub use memory::{
     import_memory, memory_exists, parse_kind, resolve_group, slugify_filename, update_memory_file,
     validate_slug,
 };
+pub use sessions::{MemoryRead, SessionState, SessionStore};
 pub use sync::{IndexResolver, build_engine};

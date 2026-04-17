@@ -11,6 +11,12 @@
 //! that window, so the two never overlap on the same session file.
 //! If we later need stronger guarantees we can layer `fs2`-based
 //! advisory locks on top without changing the public API.
+//!
+//! History: ported from `crates/mmcp-client/src/state/sessions.rs`
+//! during the FR-020 extraction. The store now uses
+//! [`StoreError`](crate::error::StoreError) — the consolidated
+//! error type that covers sessions alongside groups / memory /
+//! sync / diagnostics.
 
 use std::path::{Path, PathBuf};
 
@@ -19,7 +25,7 @@ use mmcp_session::{TranscriptSignature, compute_signature, detect_compaction};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::state::error::StateError;
+use crate::error::StoreError;
 
 /// Full session state serialised to TOML.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,10 +107,10 @@ pub struct SessionStore {
 impl SessionStore {
     /// Open the store at `root`, creating the directory if it does
     /// not already exist.
-    pub fn open(root: impl Into<PathBuf>) -> Result<Self, StateError> {
+    pub fn open(root: impl Into<PathBuf>) -> Result<Self, StoreError> {
         let root = root.into();
         std::fs::create_dir_all(&root)
-            .map_err(|e| StateError::Io(format!("create {}: {e}", root.display())))?;
+            .map_err(|e| StoreError::Io(format!("create {}: {e}", root.display())))?;
         Ok(Self { root })
     }
 
@@ -122,40 +128,43 @@ impl SessionStore {
 
     /// Load an existing session file, returning `None` if the file
     /// does not exist.
-    pub fn load(&self, session_id: &str) -> Result<Option<SessionState>, StateError> {
+    pub fn load(&self, session_id: &str) -> Result<Option<SessionState>, StoreError> {
         let path = self.path_for(session_id);
         match std::fs::read_to_string(&path) {
             Ok(text) => {
-                let state: SessionState = toml::from_str(&text).map_err(|e| {
-                    StateError::Toml(format!("parse {}: {e}", path.display()))
-                })?;
+                let state: SessionState = toml::from_str(&text)
+                    .map_err(|e| StoreError::Toml(format!("parse {}: {e}", path.display())))?;
                 Ok(Some(state))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(StateError::Io(format!("read {}: {e}", path.display()))),
+            Err(e) => Err(StoreError::Io(format!("read {}: {e}", path.display()))),
         }
     }
 
     /// Atomically write `state` to disk. The write goes to a
     /// sibling `.tmp` file which is then renamed over the final
     /// path so concurrent readers never observe a partial file.
-    pub fn save(&self, state: &SessionState) -> Result<(), StateError> {
+    pub fn save(&self, state: &SessionState) -> Result<(), StoreError> {
         let path = self.path_for(&state.session_id);
         let text = toml::to_string_pretty(state)
-            .map_err(|e| StateError::Toml(format!("serialize {}: {e}", path.display())))?;
+            .map_err(|e| StoreError::Toml(format!("serialize {}: {e}", path.display())))?;
         let tmp = path.with_extension("toml.tmp");
         std::fs::write(&tmp, text.as_bytes())
-            .map_err(|e| StateError::Io(format!("write {}: {e}", tmp.display())))?;
+            .map_err(|e| StoreError::Io(format!("write {}: {e}", tmp.display())))?;
         std::fs::rename(&tmp, &path).map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
-            StateError::Io(format!("rename {} -> {}: {e}", tmp.display(), path.display()))
+            StoreError::Io(format!(
+                "rename {} -> {}: {e}",
+                tmp.display(),
+                path.display()
+            ))
         })?;
         Ok(())
     }
 
     /// Load the session file if it exists, otherwise initialise a
     /// fresh one with `now` as the creation timestamp.
-    fn load_or_init(&self, session_id: &str, now: i64) -> Result<SessionState, StateError> {
+    fn load_or_init(&self, session_id: &str, now: i64) -> Result<SessionState, StoreError> {
         Ok(self
             .load(session_id)?
             .unwrap_or_else(|| SessionState::new(session_id.to_string(), now)))
@@ -170,7 +179,7 @@ impl SessionStore {
         user_id: Option<Uuid>,
         project_uuid: Option<Uuid>,
         transcript_path: Option<String>,
-    ) -> Result<SessionState, StateError> {
+    ) -> Result<SessionState, StoreError> {
         let now = now_ms();
         let mut state = self.load_or_init(session_id, now)?;
         state.user_id = user_id;
@@ -182,7 +191,7 @@ impl SessionStore {
     }
 
     /// Increment the session's turn counter and return the new value.
-    pub fn bump_turn(&self, session_id: &str) -> Result<i32, StateError> {
+    pub fn bump_turn(&self, session_id: &str) -> Result<i32, StoreError> {
         let now = now_ms();
         let mut state = self.load_or_init(session_id, now)?;
         state.turn_counter += 1;
@@ -197,7 +206,7 @@ impl SessionStore {
     /// signature is always updated to the current file contents.
     ///
     /// Returns `true` when a compaction was detected on this call.
-    pub fn check_transcript(&self, session_id: &str) -> Result<bool, StateError> {
+    pub fn check_transcript(&self, session_id: &str) -> Result<bool, StoreError> {
         let now = now_ms();
         let mut state = self.load_or_init(session_id, now)?;
 
@@ -231,7 +240,7 @@ impl SessionStore {
     // Kept public so callers can depend on a stable API before those
     // tools are wired onto the MCP router.
     #[allow(dead_code)]
-    pub fn acknowledge_compaction(&self, session_id: &str) -> Result<(), StateError> {
+    pub fn acknowledge_compaction(&self, session_id: &str) -> Result<(), StoreError> {
         let now = now_ms();
         let mut state = self.load_or_init(session_id, now)?;
         state.post_compaction = false;
@@ -250,7 +259,7 @@ impl SessionStore {
         turn: i32,
         version: Option<String>,
         verified: bool,
-    ) -> Result<(), StateError> {
+    ) -> Result<(), StoreError> {
         let now = now_ms();
         let mut state = self.load_or_init(session_id, now)?;
         state.reads.push(MemoryRead {
@@ -268,7 +277,7 @@ impl SessionStore {
     /// True if the session has recorded at least one read for the
     /// given memory.
     #[allow(dead_code)] // Session-scoped query tool will call this once wired.
-    pub fn has_read(&self, session_id: &str, memory_id: Uuid) -> Result<bool, StateError> {
+    pub fn has_read(&self, session_id: &str, memory_id: Uuid) -> Result<bool, StoreError> {
         let Some(state) = self.load(session_id)? else {
             return Ok(false);
         };
@@ -277,7 +286,7 @@ impl SessionStore {
 
     /// True if the session is currently flagged as post-compaction.
     #[allow(dead_code)] // Session-scoped query tool will call this once wired.
-    pub fn is_post_compaction(&self, session_id: &str) -> Result<bool, StateError> {
+    pub fn is_post_compaction(&self, session_id: &str) -> Result<bool, StoreError> {
         let Some(state) = self.load(session_id)? else {
             return Ok(false);
         };

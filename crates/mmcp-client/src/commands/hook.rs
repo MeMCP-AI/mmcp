@@ -14,8 +14,8 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::home::MmcpHome;
-use crate::state::SessionStore;
+use mmcp_store::SessionStore;
+use mmcp_store::home::MmcpHome;
 
 #[derive(Deserialize)]
 struct HookPayload {
@@ -59,18 +59,14 @@ pub async fn user_prompt() -> Result<()> {
     println!(
         "[mmcp session={session} turn=#{turn} id={message_id}{compaction_marker}]",
         session = payload.session_id,
-        compaction_marker = if compacted {
-            " post-compaction"
-        } else {
-            ""
-        }
+        compaction_marker = if compacted { " post-compaction" } else { "" }
     );
     Ok(())
 }
 
 fn project_uuid_from_cwd(cwd: Option<&str>) -> Option<Uuid> {
     let cwd = std::path::Path::new(cwd?);
-    let root = crate::config::find_project_root(cwd)?;
-    let cfg = crate::config::load(&root).ok()?;
+    let root = mmcp_store::config::find_project_root(cwd)?;
+    let cfg = mmcp_store::config::load(&root).ok()?;
     Some(*cfg.project_uuid.as_uuid())
 }

@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 
-use crate::config::{find_project_root, load};
+use mmcp_store::config::{find_project_root, load};
 
 /// Print a compact human-readable summary of the project state.
 pub async fn run() -> Result<()> {
@@ -19,7 +19,11 @@ pub async fn run() -> Result<()> {
     }
     println!(
         "default group : {}",
-        if cfg.groups.no_default { "disabled" } else { "global" }
+        if cfg.groups.no_default {
+            "disabled"
+        } else {
+            "global"
+        }
     );
     if !cfg.groups.additional.is_empty() {
         println!("extra groups  : {}", cfg.groups.additional.join(", "));

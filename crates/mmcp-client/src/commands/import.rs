@@ -12,17 +12,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use inquire::Confirm;
 use mmcp_store::groups::GroupEntry;
-
-// Re-export every public memory symbol so `crate::commands::import::…`
-// keeps resolving for the MCP tool bodies in `commands/serve.rs`,
-// the health report fallback in `commands/health.rs`, and anything
-// else that imported from this module pre-extraction. These shims
-// disappear when commit 8 deletes `mmcp-client/src/lib.rs` and
-// consumers rebind to `mmcp_store::memory::…` directly.
-pub use mmcp_store::memory::{
-    ImportError, ImportResult, SynthFrontmatter, create_memory_file, delete_memory_file,
-    import_memory, memory_exists, parse_kind, resolve_group, slugify_filename,
-    update_memory_file, validate_slug,
+use mmcp_store::home::MmcpHome;
+use mmcp_store::memory::{
+    ImportError, SynthFrontmatter, import_memory, parse_kind, resolve_group, slugify_filename,
 };
 
 /// CLI-side parity of the MCP `ensure_not_protected` guard.
@@ -85,7 +77,7 @@ pub async fn run(
     override_existing: bool,
     force: bool,
 ) -> Result<()> {
-    let mmcp_home = crate::home::MmcpHome::discover()?;
+    let mmcp_home = MmcpHome::discover()?;
     let (backend, group_index) = mmcp_home.init_backend().await?;
     let author = mmcp_home.resolve_author();
 
@@ -102,7 +94,9 @@ pub async fn run(
             kind: parse_kind(&k)?,
         }),
         (None, None, None) => None,
-        _ => bail!("--name, --description, and --kind must all be provided together or all omitted"),
+        _ => {
+            bail!("--name, --description, and --kind must all be provided together or all omitted")
+        }
     };
 
     if let Some(path) = file {

@@ -42,8 +42,8 @@ pub fn config_path_for(root: &Path) -> PathBuf {
 /// Load the `ProjectConfig` from `root/.mmcp.toml`.
 pub fn load(root: &Path) -> Result<ProjectConfig> {
     let path = config_path_for(root);
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     ProjectConfig::from_toml(&text).with_context(|| format!("parsing {}", path.display()))
 }
 

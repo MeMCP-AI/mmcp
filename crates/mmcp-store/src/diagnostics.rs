@@ -483,9 +483,8 @@ fn check_project_config(issues: &mut Vec<Issue>) {
                 group: "(project)".to_string(),
                 slug: None,
                 severity: "warning",
-                message:
-                    "no .mmcp.toml project config found in current directory or any parent"
-                        .to_string(),
+                message: "no .mmcp.toml project config found in current directory or any parent"
+                    .to_string(),
             });
             if !user_has_sync {
                 issues.push(Issue {
