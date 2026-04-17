@@ -17,11 +17,31 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) {
         ui.horizontal(|ui| {
             render_sync(ui, &state.sync);
 
+            if let Some(report) = &state.diag_report {
+                ui.separator();
+                render_diag_summary(ui, report);
+            }
+
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 render_selection_summary(ui, state);
             });
         });
     });
+}
+
+fn render_diag_summary(ui: &mut egui::Ui, report: &mmcp_store::DiagReport) {
+    let (errors, warnings, _infos) = crate::ui::diagnostics_panel::count_severities(report);
+    let color = if errors > 0 {
+        egui::Color32::from_rgb(220, 120, 120)
+    } else if warnings > 0 {
+        egui::Color32::from_rgb(220, 180, 80)
+    } else {
+        egui::Color32::from_rgb(120, 200, 120)
+    };
+    ui.colored_label(
+        color,
+        format!("diagnose: {errors} errors, {warnings} warnings"),
+    );
 }
 
 fn render_sync(ui: &mut egui::Ui, status: &SyncStatus) {

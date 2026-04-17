@@ -17,6 +17,7 @@ use mmcp_sync::{PendingQueue, SyncEngine};
 use tokio::sync::mpsc;
 
 use crate::error::GuiError;
+use crate::io::diagnostics_ops::run_diagnose;
 use crate::io::memory_ops::{list_memory_slugs, read_memory_body};
 use crate::io::sync_ops;
 use crate::runtime::outcome::TaskOutcome;
@@ -191,6 +192,10 @@ async fn execute(ctx: &WorkerContext, task: BackgroundTask) -> TaskOutcome {
                 },
             },
         },
+        BackgroundTask::RunDiagnose => {
+            let report = run_diagnose(&ctx.backend, &ctx.index).await;
+            TaskOutcome::DiagnoseCompleted(report)
+        }
         BackgroundTask::SyncPush => match &ctx.sync {
             None => TaskOutcome::SyncFailed {
                 op: SyncOp::Push,

@@ -4,13 +4,13 @@
 //! state (scroll positions, hover tracking) stays inside the pane
 //! modules via `egui::Id`. The app state is mutated in two places
 //! only: the UI handlers (selection changes, sync-status
-//! transitions) and the outcome-drain in `MmcpGuiApp::ui` (after a
-//! background task reports back).
+//! transitions, diag-panel toggling) and the outcome-drain in
+//! `MmcpGuiApp::ui` (after a background task reports back).
 
 use std::collections::HashMap;
 
 use mmcp_core::id::GroupId;
-use mmcp_store::GroupEntry;
+use mmcp_store::{DiagReport, GroupEntry};
 
 use crate::state::selection::Selection;
 use crate::state::sync_status::SyncStatus;
@@ -37,6 +37,14 @@ pub struct AppState {
     /// by the toolbar (before firing a task) and partly by the
     /// outcome drain (after a task completes).
     pub sync: SyncStatus,
+
+    /// Last diagnose report, populated when the worker reports
+    /// `TaskOutcome::DiagnoseCompleted`. `None` before the first
+    /// Diagnose button click.
+    pub diag_report: Option<DiagReport>,
+
+    /// Whether the floating diagnostics window is visible.
+    pub diag_panel_open: bool,
 
     /// Last error string emitted by the background worker. Phase 2
     /// renders this inline; phase 3+ promotes it to a toast queue.

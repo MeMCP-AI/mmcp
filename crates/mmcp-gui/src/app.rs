@@ -10,7 +10,9 @@ use eframe::egui;
 
 use crate::runtime::{BackgroundHandle, BackgroundTask, TaskOutcome};
 use crate::state::AppState;
-use crate::ui::{ViewerWidget, group_panel, memory_list_panel, status_bar, toolbar};
+use crate::ui::{
+    ViewerWidget, diagnostics_panel, group_panel, memory_list_panel, status_bar, toolbar,
+};
 
 pub struct MmcpGuiApp {
     state: AppState,
@@ -63,6 +65,9 @@ impl MmcpGuiApp {
                     tracing::warn!(op = op.as_str(), error = %message, "sync failed");
                     toolbar::apply_sync_failed(&mut self.state, op, message);
                 }
+                TaskOutcome::DiagnoseCompleted(report) => {
+                    self.state.diag_report = Some(report);
+                }
                 TaskOutcome::Error(msg) => {
                     tracing::warn!(error = %msg, "background task failed");
                     self.state.last_error = Some(msg);
@@ -84,6 +89,7 @@ impl eframe::App for MmcpGuiApp {
         group_panel::show(ui, &mut self.state, &self.background);
         memory_list_panel::show(ui, &mut self.state, &self.background);
         self.viewer.show(ui, &self.state);
+        diagnostics_panel::show(ui.ctx(), &mut self.state);
 
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));

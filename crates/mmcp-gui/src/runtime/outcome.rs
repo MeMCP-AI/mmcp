@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use mmcp_core::id::GroupId;
 use mmcp_core::memory::MemoryFile;
-use mmcp_store::GroupEntry;
+use mmcp_store::{DiagReport, GroupEntry};
 
 use crate::state::sync_status::SyncOp;
 
@@ -44,5 +44,6 @@ pub enum TaskOutcome {
         op: SyncOp,
         message: String,
     },
+    DiagnoseCompleted(DiagReport),
     Error(String),
 }

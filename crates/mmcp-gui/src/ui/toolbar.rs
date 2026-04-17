@@ -35,6 +35,14 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, background: &BackgroundHand
                 begin_sync(state, SyncOp::Push);
                 background.send(BackgroundTask::SyncPush);
             }
+
+            ui.separator();
+
+            if ui.button("Diagnose").clicked() {
+                state.diag_panel_open = true;
+                state.diag_report = None;
+                background.send(BackgroundTask::RunDiagnose);
+            }
         });
     });
 }
