@@ -218,6 +218,66 @@ struct WriteMemoryArgs {
     pub mandatory: bool,
 }
 
+/// Argument shape for `edit_memory`.
+///
+/// Every mutator field is optional; the server reads the existing
+/// memory file, applies the supplied deltas, re-renders, and
+/// commits. `tags_add` / `tags_remove` compose cleanly under repeat
+/// calls so callers don't have to fetch-merge-write the tag vector
+/// themselves. All-None args still produce a commit — the edit
+/// history stays explicit rather than collapsing no-op calls.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct EditMemoryArgs {
+    /// Target group UUID.
+    pub group: String,
+    /// Memory slug.
+    pub slug: String,
+    /// Replace the markdown body verbatim. Absent leaves it
+    /// untouched.
+    #[serde(default)]
+    pub body: Option<String>,
+    /// Replace the human-readable title. Absent leaves it
+    /// untouched.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Replace the one-line description.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Replace the memory kind.
+    #[serde(default)]
+    pub kind: Option<ToolMemoryKind>,
+    /// Tags to insert into the existing set; duplicates are
+    /// collapsed.
+    #[serde(default)]
+    pub tags_add: Vec<String>,
+    /// Tags to strip from the existing set; missing tags are
+    /// silently ignored.
+    #[serde(default)]
+    pub tags_remove: Vec<String>,
+    /// Replace the mandatory flag. Absent leaves it untouched.
+    #[serde(default)]
+    pub mandatory: Option<bool>,
+    /// Commit message override. Absent falls back to
+    /// `"update memory {slug}"`.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// Argument shape for `delete_memory`.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct DeleteMemoryArgs {
+    /// Target group UUID.
+    pub group: String,
+    /// Memory slug to remove.
+    pub slug: String,
+    /// Commit message override. Absent falls back to
+    /// `"delete memory {slug}"`.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct SearchMemoriesArgs {
@@ -704,6 +764,130 @@ impl McpServer {
             "slug": result.slug,
             "commit_id": result.commit_id,
             "group": args.group,
+        })))
+    }
+
+    #[tool(
+        description = "Apply partial frontmatter / body deltas to an existing memory and record the result as a new commit. Every mutator field is optional: omit it to leave that slice of the memory untouched. `tags_add` / `tags_remove` compose additively so repeated calls dedupe correctly. Errors with code `memory_not_found` when the slug has no file in the target group; use `write_memory` to create fresh memories."
+    )]
+    async fn edit_memory(
+        &self,
+        Parameters(args): Parameters<EditMemoryArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let group_id = parse_group_id(&args.group)?;
+        let entry = self
+            .state
+            .groups
+            .get(&group_id)
+            .await
+            .ok_or_else(|| McpError::invalid_params("group not found", None))?;
+
+        let path = memory_path(&args.slug);
+        let bytes = match self
+            .state
+            .backend
+            .read_file(&entry.handle, &path, &Rev::head())
+            .await
+        {
+            Ok(b) => b,
+            Err(mmcp_git::GitError::PathNotFound(_)) => {
+                return Err(map_memory_error_to_mcp(
+                    crate::commands::import::ImportError::MemoryNotFound {
+                        slug: args.slug.clone(),
+                    },
+                ));
+            }
+            Err(e) => return Err(git_error(e)),
+        };
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let mut file = mmcp_core::memory::MemoryFile::parse(&text).map_err(|e| {
+            McpError::internal_error(
+                Cow::Owned(format!("parsing existing memory: {e}")),
+                None,
+            )
+        })?;
+
+        // Apply deltas. Body replacement and frontmatter field
+        // replacements are straightforward slot writes; tags_add /
+        // tags_remove merge with the existing vector and dedupe so
+        // repeated calls converge.
+        if let Some(body) = args.body {
+            file.body = body;
+        }
+        if let Some(name) = args.name {
+            file.frontmatter.name = name;
+        }
+        if let Some(description) = args.description {
+            file.frontmatter.description = description;
+        }
+        if let Some(kind) = args.kind {
+            file.frontmatter.kind = kind.into_core();
+        }
+        if let Some(mandatory) = args.mandatory {
+            file.frontmatter.mandatory = mandatory;
+        }
+        if !args.tags_add.is_empty() || !args.tags_remove.is_empty() {
+            file.frontmatter.tags.extend(args.tags_add);
+            file.frontmatter
+                .tags
+                .retain(|t| !args.tags_remove.contains(t));
+            // Sort + dedup so the wire shape is deterministic; tag
+            // order is not load-bearing for readers.
+            file.frontmatter.tags.sort_unstable();
+            file.frontmatter.tags.dedup();
+        }
+
+        let rendered = file
+            .to_string()
+            .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
+
+        let commit_id = crate::commands::import::update_memory_file(
+            &self.state.backend,
+            &entry.handle,
+            &args.slug,
+            &rendered,
+            &self.state.author,
+            args.message.as_deref(),
+        )
+        .await
+        .map_err(map_memory_error_to_mcp)?;
+
+        Ok(ok_json(json!({
+            "group": args.group,
+            "slug": args.slug,
+            "commit_id": commit_id,
+        })))
+    }
+
+    #[tool(
+        description = "Remove a memory from a group by committing a deletion on `main`. Errors with code `memory_not_found` when the slug has no file; no silent no-op. The commit is addressable through `list_versions` just like any other write, so the removal is auditable."
+    )]
+    async fn delete_memory(
+        &self,
+        Parameters(args): Parameters<DeleteMemoryArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let group_id = parse_group_id(&args.group)?;
+        let entry = self
+            .state
+            .groups
+            .get(&group_id)
+            .await
+            .ok_or_else(|| McpError::invalid_params("group not found", None))?;
+
+        let commit_id = crate::commands::import::delete_memory_file(
+            &self.state.backend,
+            &entry.handle,
+            &args.slug,
+            &self.state.author,
+            args.message.as_deref(),
+        )
+        .await
+        .map_err(map_memory_error_to_mcp)?;
+
+        Ok(ok_json(json!({
+            "group": args.group,
+            "slug": args.slug,
+            "commit_id": commit_id,
         })))
     }
 
@@ -1516,6 +1700,56 @@ fn map_init_project_error_to_mcp(err: crate::commands::init::InitProjectError) -
         InitProjectError::IndexRefreshFailed(detail) => json!({
             "code": "index_refresh_failed",
             "detail": detail,
+        }),
+    };
+    McpError::invalid_params(message, Some(payload))
+}
+
+/// Map an [`ImportError`] coming from the memory CRUD primitives
+/// onto an [`McpError`] with a structured `code` payload. The four
+/// wire codes (`memory_not_found`, `memory_already_exists`,
+/// `invalid_slug`, `memory_render_failed`) are stable wire contracts
+/// the `edit_memory`, `delete_memory`, and tightened `write_memory`
+/// tools all share.
+fn map_memory_error_to_mcp(err: crate::commands::import::ImportError) -> McpError {
+    use crate::commands::import::ImportError;
+    let message = err.to_string();
+    let payload = match &err {
+        ImportError::MemoryNotFound { slug } => json!({
+            "code": "memory_not_found",
+            "slug": slug,
+        }),
+        ImportError::MemoryAlreadyExists { slug } => json!({
+            "code": "memory_already_exists",
+            "slug": slug,
+            "retry_hint": "use edit_memory to update in place, delete_memory to remove, or pass override: true to replace",
+        }),
+        ImportError::InvalidSlug(slug) => json!({
+            "code": "invalid_slug",
+            "slug": slug,
+        }),
+        ImportError::Render(detail) => json!({
+            "code": "memory_render_failed",
+            "detail": detail,
+        }),
+        ImportError::Parse(detail) => json!({
+            "code": "memory_parse_failed",
+            "detail": detail.to_string(),
+        }),
+        ImportError::Git(detail) => json!({
+            "code": "git_backend",
+            "detail": detail.to_string(),
+        }),
+        ImportError::MissingFrontmatter => json!({
+            "code": "memory_missing_frontmatter",
+        }),
+        ImportError::UnknownKind(kind) => json!({
+            "code": "memory_unknown_kind",
+            "kind": kind,
+        }),
+        ImportError::GroupNotFound(group) => json!({
+            "code": "group_not_found",
+            "group": group,
         }),
     };
     McpError::invalid_params(message, Some(payload))
@@ -2574,6 +2808,169 @@ mod tests {
             err,
             crate::commands::init::InitProjectError::SlugRequired
         ));
+    }
+
+    // ── edit_memory (FR-016) ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn edit_memory_replaces_body_leaving_frontmatter_intact() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "first", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state.clone());
+        let res = server
+            .edit_memory(Parameters(EditMemoryArgs {
+                group: group.to_string(),
+                slug: "first".into(),
+                body: Some("# Edited\nNew body.".into()),
+                ..Default::default()
+            }))
+            .await
+            .expect("edit");
+        let parsed = parse_ok_json(res);
+        assert_eq!(parsed.get("slug").and_then(|v| v.as_str()), Some("first"));
+
+        // Reload and confirm body changed, frontmatter preserved.
+        let read = server
+            .read_memory(Parameters(ReadMemoryArgs {
+                group: group.to_string(),
+                slug: "first".into(),
+                version: None,
+            }))
+            .await
+            .expect("read");
+        let parsed = parse_ok_json(read);
+        assert!(
+            parsed
+                .get("body")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .contains("New body"),
+            "body must reflect the edit; got: {parsed:?}",
+        );
+        let fm = parsed.get("frontmatter").expect("frontmatter object");
+        assert_eq!(fm.get("name").and_then(|v| v.as_str()), Some("Sample"));
+    }
+
+    #[tokio::test]
+    async fn edit_memory_tag_operators_compose_with_dedup() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "taggy", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state.clone());
+        server
+            .edit_memory(Parameters(EditMemoryArgs {
+                group: group.to_string(),
+                slug: "taggy".into(),
+                tags_add: vec!["alpha".into(), "beta".into(), "sample".into()],
+                tags_remove: vec!["sample".into()],
+                ..Default::default()
+            }))
+            .await
+            .expect("edit");
+        let read = server
+            .read_memory(Parameters(ReadMemoryArgs {
+                group: group.to_string(),
+                slug: "taggy".into(),
+                version: None,
+            }))
+            .await
+            .expect("read");
+        let parsed = parse_ok_json(read);
+        let tags: Vec<String> = parsed
+            .get("frontmatter")
+            .and_then(|v| v.get("tags"))
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        assert!(tags.contains(&"alpha".to_string()));
+        assert!(tags.contains(&"beta".to_string()));
+        assert!(
+            !tags.contains(&"sample".to_string()),
+            "sample tag should be removed by tags_remove; got {tags:?}",
+        );
+        // Sort + dedup means the wire vec is monotonic; duplicate
+        // ("alpha" inserted twice would collapse).
+    }
+
+    #[tokio::test]
+    async fn edit_memory_returns_memory_not_found_when_slug_absent() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "existing", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+        let err = server
+            .edit_memory(Parameters(EditMemoryArgs {
+                group: group.to_string(),
+                slug: "ghost".into(),
+                body: Some("n/a".into()),
+                ..Default::default()
+            }))
+            .await
+            .expect_err("must surface not-found");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("memory_not_found")
+        );
+        assert_eq!(
+            payload.get("slug").and_then(|v| v.as_str()),
+            Some("ghost")
+        );
+    }
+
+    // ── delete_memory (FR-017) ────────────────────────────────────
+
+    #[tokio::test]
+    async fn delete_memory_removes_slug_from_listing() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "doomed", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+        server
+            .delete_memory(Parameters(DeleteMemoryArgs {
+                group: group.to_string(),
+                slug: "doomed".into(),
+                message: None,
+            }))
+            .await
+            .expect("delete");
+        let list = server
+            .list_memories(Parameters(ListMemoriesArgs {
+                group: group.to_string(),
+            }))
+            .await
+            .expect("list");
+        let parsed = parse_ok_json(list);
+        let slugs: Vec<String> = parsed
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| m.get("slug").and_then(|s| s.as_str().map(str::to_string)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            !slugs.contains(&"doomed".to_string()),
+            "listing should exclude the deleted slug; got {slugs:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_memory_errors_when_slug_absent() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "present", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+        let err = server
+            .delete_memory(Parameters(DeleteMemoryArgs {
+                group: group.to_string(),
+                slug: "never-existed".into(),
+                message: None,
+            }))
+            .await
+            .expect_err("must surface not-found");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("memory_not_found")
+        );
     }
 
     #[tokio::test]
