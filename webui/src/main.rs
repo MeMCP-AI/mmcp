@@ -5,7 +5,7 @@
 async fn main() {
     use axum::Router;
     use leptos::prelude::*;
-    use leptos_axum::{generate_route_list, LeptosRoutes};
+    use leptos_axum::{LeptosRoutes, generate_route_list};
     use mmcp_webui::app::App;
 
     let conf = get_configuration(None).unwrap();
@@ -35,10 +35,9 @@ async fn main() {
     };
 
     let opts_for_routes = leptos_options.clone();
-    let shell_for_routes = shell.clone();
     let app = Router::new()
         .leptos_routes(&leptos_options, routes, move || {
-            shell_for_routes(opts_for_routes.clone())
+            shell(opts_for_routes.clone())
         })
         .fallback(leptos_axum::file_and_error_handler(shell))
         .with_state(leptos_options);
