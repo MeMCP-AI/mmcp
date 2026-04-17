@@ -9,6 +9,7 @@
 //! lives in a forthcoming `frontmatter` submodule which consumes these
 //! types.
 
+mod body;
 mod bump;
 mod entry;
 mod feature;
@@ -17,6 +18,7 @@ mod kind;
 mod parser;
 mod version;
 
+pub use body::{BodyParseError, Section, parse_sections, render_sections, slugify_heading};
 pub use bump::BumpIntent;
 pub use entry::Memory;
 pub use feature::{FeatureMetadata, FeatureStatus, FeatureStatusParseError};
