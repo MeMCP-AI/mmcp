@@ -1,24 +1,41 @@
 //! Password login page.
 
 use leptos::prelude::*;
+use leptos_router::NavigateOptions;
+use leptos_router::hooks::use_navigate;
+
+use crate::api;
+use crate::app::TokenSignal;
+use crate::auth;
 
 #[component]
 pub fn LoginPage() -> impl IntoView {
     let (handle, set_handle) = signal(String::new());
     let (password, set_password) = signal(String::new());
     let (error_msg, set_error_msg) = signal(Option::<String>::None);
-    let (success_msg, set_success_msg) = signal(Option::<String>::None);
+    let (pending, set_pending) = signal(false);
+    let token = expect_context::<TokenSignal>();
+    let navigate = use_navigate();
 
     let on_submit = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default();
         let h = handle.get();
         let p = password.get();
+        let navigate = navigate.clone();
         leptos::task::spawn_local(async move {
             set_error_msg.set(None);
-            set_success_msg.set(None);
-            match do_login(&h, &p).await {
-                Ok(msg) => set_success_msg.set(Some(msg)),
-                Err(e) => set_error_msg.set(Some(e)),
+            set_pending.set(true);
+            match api::login(h, p).await {
+                Ok(ok) => {
+                    auth::save_token(&ok.token);
+                    token.set(Some(ok.token));
+                    set_pending.set(false);
+                    navigate("/", NavigateOptions::default());
+                }
+                Err(e) => {
+                    set_pending.set(false);
+                    set_error_msg.set(Some(e.to_string()));
+                }
             }
         });
     };
@@ -44,17 +61,10 @@ pub fn LoginPage() -> impl IntoView {
                     on:input=move |ev| set_password.set(event_target_value(&ev))
                 />
             </div>
-            <button type="submit">"Sign in"</button>
+            <button type="submit" prop:disabled=pending>
+                {move || if pending.get() { "Signing in..." } else { "Sign in" }}
+            </button>
         </form>
         {move || error_msg.get().map(|msg| view! { <p style="color:red">{msg}</p> })}
-        {move || success_msg.get().map(|msg| view! { <p style="color:green">{msg}</p> })}
     }
-}
-
-async fn do_login(handle: &str, password: &str) -> Result<String, String> {
-    // Client-side: call the mmcp-server's /auth/login endpoint.
-    // The server URL would normally come from config; hardcoded
-    // for the scaffold.
-    let _ = (handle, password);
-    Err("Login not yet wired to a running mmcp-server".to_string())
 }

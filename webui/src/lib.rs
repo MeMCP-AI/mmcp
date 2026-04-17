@@ -1,6 +1,8 @@
 //! mmcp WebUI — Leptos fullstack app.
 
+pub mod api;
 pub mod app;
+pub mod auth;
 pub mod pages;
 
 #[cfg(feature = "hydrate")]
