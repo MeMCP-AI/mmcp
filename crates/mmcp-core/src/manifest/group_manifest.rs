@@ -43,6 +43,19 @@ pub struct GroupManifest {
     /// recovery; the server is still the authoritative owner-of-record.
     pub owner: GroupOwnerHint,
 
+    /// When true, any mutation of a memory in this group requires
+    /// user-visible confirmation. Stored in the manifest so the
+    /// flag travels with the repo on pull: a project that syncs a
+    /// protected group inherits the protection automatically
+    /// without any per-project opt-in.
+    ///
+    /// Serde-default-false + skip-when-false keeps pre-flag
+    /// manifests parsing unchanged and omits the field from
+    /// rendered manifests that don't need it, so the wire shape
+    /// stays minimal.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub protected: bool,
+
     /// Creation time of the group on the original server, as
     /// milliseconds since the Unix epoch.
     pub created_at: i64,
@@ -62,6 +75,11 @@ pub enum GroupOwnerHint {
 
 impl GroupManifest {
     /// Build a fresh manifest for a user-owned group created now.
+    ///
+    /// `protected` defaults to false; callers opt a group into
+    /// protection via field assignment on the returned manifest
+    /// before `create_group_repo`, or via a future
+    /// `set_protected` path on an existing repo.
     #[must_use]
     pub fn new_user_owned(group_id: GroupId, slug: impl Into<String>, owner: Uuid) -> Self {
         Self {
@@ -70,6 +88,7 @@ impl GroupManifest {
             slug: slug.into(),
             display_name: None,
             owner: GroupOwnerHint::User(owner),
+            protected: false,
             created_at: Timestamp::now().as_millisecond(),
         }
     }
@@ -83,6 +102,7 @@ impl GroupManifest {
             slug: slug.into(),
             display_name: None,
             owner: GroupOwnerHint::Org(owner),
+            protected: false,
             created_at: Timestamp::now().as_millisecond(),
         }
     }
@@ -151,5 +171,53 @@ mod tests {
     #[test]
     fn manifest_filename_is_dot_mmcp_toml() {
         assert_eq!(MANIFEST_FILENAME, ".mmcp.toml");
+    }
+
+    #[test]
+    fn manifest_missing_protected_parses_as_false() {
+        // Pre-flag manifests on disk must keep parsing. The field's
+        // serde-default keeps the round trip backward-compatible.
+        // Use a freshly-rendered manifest with the field stripped
+        // rather than hand-typing TOML — avoids drifting on
+        // GroupId's wire format.
+        let manifest =
+            GroupManifest::new_user_owned(GroupId::new(), "legacy", Uuid::now_v7());
+        let text = manifest.to_toml().unwrap();
+        assert!(
+            !text.contains("protected"),
+            "seed manifest must not include the new field (precondition)",
+        );
+        let parsed =
+            GroupManifest::from_toml(&text).expect("pre-flag manifest must parse");
+        assert!(!parsed.protected);
+    }
+
+    #[test]
+    fn manifest_with_protected_true_round_trips() {
+        let mut manifest =
+            GroupManifest::new_user_owned(GroupId::new(), "global", Uuid::now_v7());
+        manifest.protected = true;
+        let text = manifest.to_toml().unwrap();
+        assert!(
+            text.contains("protected = true"),
+            "rendered manifest must serialize the flag when set; got:\n{text}",
+        );
+        let parsed = GroupManifest::from_toml(&text).unwrap();
+        assert!(parsed.protected);
+        assert_eq!(parsed, manifest);
+    }
+
+    #[test]
+    fn manifest_with_protected_false_omits_the_field_on_serialize() {
+        // skip_serializing_if keeps the wire shape minimal; a group
+        // that has never been opted into protection produces no
+        // `protected` line.
+        let manifest =
+            GroupManifest::new_user_owned(GroupId::new(), "team-rust", Uuid::now_v7());
+        let text = manifest.to_toml().unwrap();
+        assert!(
+            !text.contains("protected"),
+            "unprotected manifest must not emit the field; got:\n{text}",
+        );
     }
 }
