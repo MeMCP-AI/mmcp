@@ -61,7 +61,7 @@ pub use diagnostics::{
 pub use error::StoreError;
 pub use features::{
     AddSpec as FeatureAddSpec, FeatureError, FeatureRecord, UpdateSpec as FeatureUpdateSpec,
-    add_feature, delete_feature, list_features, parse_cross_refs, read_feature,
+    add_feature, delete_feature, list_features, parse_cross_refs, read_feature, rename_feature,
     resolve_project_group, update_feature,
 };
 pub use groups::{GroupEntry, GroupIndex};

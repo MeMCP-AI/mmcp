@@ -24,7 +24,7 @@
 
 use std::path::{Path, PathBuf};
 
-use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION, legacy_memory_path};
+use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION, memory_path};
 use mmcp_core::id::GroupId;
 use mmcp_core::memory::{
     FeatureMetadata, FeatureStatus, FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryKind,
@@ -36,8 +36,8 @@ use crate::config::{find_project_root, load as load_project_config};
 use crate::groups::{GroupEntry, GroupIndex};
 use crate::home::ResolvedAuthor;
 use crate::memory::{
-    ImportError, create_memory_file, delete_memory_file, slugify_filename, update_memory_file,
-    validate_slug,
+    ImportError, delete_file_at_path, resolve_memory, slugify_filename, validate_slug,
+    write_file_at_path, write_memory_by_id,
 };
 
 /// Errors specific to feature-request operations.
@@ -220,18 +220,20 @@ pub async fn add_feature(
         None => Some(next_feature_number(backend, entry).await?),
     };
 
+    let id = Uuid::now_v7();
     let metadata = FeatureMetadata {
         status: spec.status,
         number,
         depends_on: spec.depends_on.clone(),
         blocks: spec.blocks.clone(),
     };
-    let file = build_memory_file(
+    let mut file = build_memory_file(
         spec.title.clone(),
         spec.description.clone(),
         spec.body.clone(),
         metadata,
     );
+    file.frontmatter = file.frontmatter.clone().with_id(id);
     let rendered = file
         .to_string()
         .map_err(|e| FeatureError::Memory(ImportError::Render(e.to_string())))?;
@@ -240,12 +242,14 @@ pub async fn add_feature(
         .message
         .clone()
         .unwrap_or_else(|| format!("create feature {slug}"));
-    let commit_id = create_memory_file(
+    let commit_id = write_memory_by_id(
         backend,
         &entry.handle,
         &slug,
+        id,
         &rendered,
         author,
+        false,
         Some(&message),
     )
     .await?;
@@ -288,8 +292,10 @@ pub async fn read_feature(
     rev: Option<&str>,
 ) -> Result<FeatureRecord, FeatureError> {
     validate_slug(slug).map_err(FeatureError::Memory)?;
-    let path = legacy_memory_path(slug);
-    let resolved = match rev {
+    let resolved = resolve_memory(backend, &entry.handle, Some(slug), None)
+        .await
+        .map_err(FeatureError::Memory)?;
+    let git_rev = match rev {
         // Heuristic aligned with the MCP `read_memory` tool: a
         // 40-char hex string resolves as a commit id; anything else
         // is treated as a branch or tag name. Kept in the store so
@@ -304,13 +310,13 @@ pub async fn read_feature(
         None => Rev::head(),
     };
     let bytes = backend
-        .read_file(&entry.handle, &path, &resolved)
+        .read_file(&entry.handle, &resolved.path, &git_rev)
         .await
         .map_err(|err| match err {
             mmcp_git::GitError::PathNotFound(_) => {
                 FeatureError::Memory(ImportError::MemoryNotFound {
                     slug: Some(slug.to_string()),
-                    id: None,
+                    id: resolved.id,
                 })
             }
             other => FeatureError::Memory(ImportError::Git(other)),
@@ -331,6 +337,9 @@ pub async fn update_feature(
     spec: UpdateSpec,
     author: &ResolvedAuthor,
 ) -> Result<FeatureRecord, FeatureError> {
+    let resolved = resolve_memory(backend, &entry.handle, Some(slug), None)
+        .await
+        .map_err(FeatureError::Memory)?;
     let current = read_feature(backend, entry, slug, None).await?;
 
     let title = spec.title.unwrap_or(current.title);
@@ -350,7 +359,12 @@ pub async fn update_feature(
         depends_on: depends_on.clone(),
         blocks: blocks.clone(),
     };
-    let file = build_memory_file(title.clone(), description.clone(), body.clone(), metadata);
+    let mut file = build_memory_file(title.clone(), description.clone(), body.clone(), metadata);
+    // Preserve the id pinned on disk so the rewrite hits the same
+    // canonical path and stays addressable by UUID across the edit.
+    if let Some(id) = resolved.id {
+        file.frontmatter = file.frontmatter.clone().with_id(id);
+    }
     let rendered = file
         .to_string()
         .map_err(|e| FeatureError::Memory(ImportError::Render(e.to_string())))?;
@@ -359,10 +373,10 @@ pub async fn update_feature(
         .message
         .clone()
         .unwrap_or_else(|| format!("update feature {slug}"));
-    let commit_id = update_memory_file(
+    let commit_id = write_file_at_path(
         backend,
         &entry.handle,
-        slug,
+        &resolved.path,
         &rendered,
         author,
         Some(&message),
@@ -385,6 +399,138 @@ pub async fn update_feature(
 /// Commit a deletion. Propagates `MemoryNotFound` verbatim so CLI
 /// and MCP callers can distinguish "slug never existed" from "slug
 /// is an unrelated memory kind" (`FeatureError::NotAFeature`).
+/// Rename every feature under `old_slug` to `new_slug`, committing
+/// the moves in a single atomic batch. UUIDs are stable across
+/// the rename so cross-refs in other features keep resolving
+/// without any further rewrite — the slug is a directory-level
+/// label, not a primary key.
+///
+/// When multiple memories share `old_slug` (post-FR-028
+/// duplicate-slug support), every entry moves in the same commit.
+/// When no memory lives at `old_slug`, returns
+/// [`ImportError::MemoryNotFound`] so callers don't silently
+/// succeed on a non-existent rename.
+pub async fn rename_feature(
+    backend: &NativeBackend,
+    entry: &GroupEntry,
+    old_slug: &str,
+    new_slug: &str,
+    author: &ResolvedAuthor,
+    message: Option<&str>,
+) -> Result<Vec<FeatureRecord>, FeatureError> {
+    validate_slug(old_slug).map_err(FeatureError::Memory)?;
+    validate_slug(new_slug).map_err(FeatureError::Memory)?;
+    if old_slug == new_slug {
+        // Explicit short-circuit so operators don't pay a commit
+        // for a no-op. A fresh listing is cheap and matches the
+        // semantics callers expect from "rename to the same slug".
+        return Ok(list_features_for_slug(backend, entry, old_slug).await?);
+    }
+
+    let old_dir = format!("{MEMORIES_DIR}/{old_slug}");
+    let entries = backend
+        .list_tree(&entry.handle, &old_dir, &Rev::head())
+        .await
+        .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?;
+    if entries.is_empty() {
+        return Err(FeatureError::Memory(ImportError::MemoryNotFound {
+            slug: Some(old_slug.to_string()),
+            id: None,
+        }));
+    }
+
+    // Plan the moves: one commit, new paths written and old paths
+    // removed in the same tree rewrite so `git log` never shows a
+    // half-renamed state.
+    let mut moves: Vec<(String, Option<Vec<u8>>)> = Vec::with_capacity(entries.len() * 2);
+    let mut moved_uuids: Vec<Uuid> = Vec::with_capacity(entries.len());
+    for filename in &entries {
+        let Some(stem) = filename.strip_suffix(MEMORY_EXTENSION) else {
+            continue;
+        };
+        let Ok(id) = Uuid::parse_str(stem) else {
+            // Not a UUID-named file — out-of-shape content we
+            // refuse to silently move. Skip so the rename stays
+            // narrow to legitimate memory files.
+            continue;
+        };
+        let old_path = memory_path(old_slug, id);
+        let new_path = memory_path(new_slug, id);
+        let bytes = backend
+            .read_file(&entry.handle, &old_path, &Rev::head())
+            .await
+            .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?;
+
+        // Reject rename when the source is not a feature; keeps
+        // the tool aligned with `delete_feature`'s not-a-feature
+        // guard.
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let file =
+            MemoryFile::parse(&text).map_err(|e| FeatureError::Memory(ImportError::Parse(e)))?;
+        if file.frontmatter.kind != MemoryKind::Feature {
+            return Err(FeatureError::NotAFeature {
+                slug: old_slug.to_string(),
+                kind: file.frontmatter.kind.as_str().to_string(),
+            });
+        }
+
+        moves.push((new_path, Some(bytes.to_vec())));
+        moves.push((old_path, None));
+        moved_uuids.push(id);
+    }
+    if moved_uuids.is_empty() {
+        return Err(FeatureError::Memory(ImportError::MemoryNotFound {
+            slug: Some(old_slug.to_string()),
+            id: None,
+        }));
+    }
+
+    let fallback = format!("rename feature {old_slug} -> {new_slug}");
+    let commit_message = message.unwrap_or(fallback.as_str());
+    backend
+        .write_commit(
+            &entry.handle,
+            mmcp_git::CommitSpec::mmcp_commit(
+                commit_message.to_string(),
+                moves,
+                &author.name,
+                &author.email,
+            ),
+        )
+        .await
+        .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?;
+
+    list_features_for_slug(backend, entry, new_slug).await
+}
+
+/// Read every feature currently living under `slug` in the
+/// two-level layout. Shared between [`rename_feature`] and
+/// future per-slug enumeration paths so the walk + record
+/// construction stays in one place.
+async fn list_features_for_slug(
+    backend: &NativeBackend,
+    entry: &GroupEntry,
+    slug: &str,
+) -> Result<Vec<FeatureRecord>, FeatureError> {
+    let dir = format!("{MEMORIES_DIR}/{slug}");
+    let filenames = backend
+        .list_tree(&entry.handle, &dir, &Rev::head())
+        .await
+        .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?;
+    let mut out = Vec::with_capacity(filenames.len());
+    for filename in filenames {
+        let Some(stem) = filename.strip_suffix(MEMORY_EXTENSION) else {
+            continue;
+        };
+        if Uuid::parse_str(stem).is_err() {
+            continue;
+        }
+        let record = read_feature(backend, entry, slug, None).await?;
+        out.push(record);
+    }
+    Ok(out)
+}
+
 pub async fn delete_feature(
     backend: &NativeBackend,
     entry: &GroupEntry,
@@ -406,10 +552,19 @@ pub async fn delete_feature(
         }
         Err(other) => return Err(other),
     }
+    let resolved = resolve_memory(backend, &entry.handle, Some(slug), None)
+        .await
+        .map_err(FeatureError::Memory)?;
     let fallback = format!("delete feature {slug}");
     let commit_message = message.unwrap_or(fallback.as_str());
-    let commit_id =
-        delete_memory_file(backend, &entry.handle, slug, author, Some(commit_message)).await?;
+    let commit_id = delete_file_at_path(
+        backend,
+        &entry.handle,
+        &resolved.path,
+        author,
+        Some(commit_message),
+    )
+    .await?;
     Ok(commit_id)
 }
 
@@ -437,17 +592,33 @@ pub async fn list_features(
     status_filter: Option<FeatureStatus>,
     show_all: bool,
 ) -> Result<Vec<FeatureRecord>, FeatureError> {
-    let tree = backend
+    // Post-FR-028 every memory lives at `memories/<slug>/<uuid>.md`,
+    // so the slug directories are the enumeration surface.
+    // Pre-FR-028 flat files also still resolve cleanly through
+    // the generic `read_feature` path, so fall back to listing
+    // `memories/*.md` blobs for any group that has not migrated
+    // yet.
+    let mut slugs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for subtree in backend
+        .list_subtrees(&entry.handle, MEMORIES_DIR, &Rev::head())
+        .await
+        .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?
+    {
+        slugs.insert(subtree);
+    }
+    for flat in backend
         .list_tree(&entry.handle, MEMORIES_DIR, &Rev::head())
         .await
-        .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?;
+        .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?
+    {
+        if let Some(stem) = flat.strip_suffix(MEMORY_EXTENSION) {
+            slugs.insert(stem.to_string());
+        }
+    }
 
     let mut out = Vec::new();
-    for entry_name in tree {
-        let Some(slug) = entry_name.strip_suffix(MEMORY_EXTENSION) else {
-            continue;
-        };
-        match read_feature(backend, entry, slug, None).await {
+    for slug in slugs {
+        match read_feature(backend, entry, &slug, None).await {
             Ok(record) => {
                 let keep = match status_filter {
                     Some(want) => record.status == want,
@@ -841,6 +1012,110 @@ mod tests {
         .await
         .expect("next");
         assert_eq!(next.number, Some(43));
+    }
+
+    #[tokio::test]
+    async fn rename_feature_moves_every_entry_under_slug() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        let original = add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("old-name".into()),
+                title: "Original".into(),
+                body: "body".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed");
+
+        let moved = rename_feature(
+            scratch.backend(),
+            &entry,
+            "old-name",
+            "new-name",
+            scratch.author(),
+            None,
+        )
+        .await
+        .expect("rename");
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].slug, "new-name");
+        assert_eq!(moved[0].number, original.number);
+
+        // The new slug resolves; the old slug no longer does.
+        read_feature(scratch.backend(), &entry, "new-name", None)
+            .await
+            .expect("read at new slug");
+        let missing = read_feature(scratch.backend(), &entry, "old-name", None).await;
+        assert!(
+            matches!(
+                missing,
+                Err(FeatureError::Memory(ImportError::MemoryNotFound { .. }))
+            ),
+            "old slug must be gone after rename: got {missing:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_feature_errors_when_old_slug_has_no_entries() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        let err = rename_feature(
+            scratch.backend(),
+            &entry,
+            "ghost",
+            "spirit",
+            scratch.author(),
+            None,
+        )
+        .await
+        .expect_err("must refuse renaming a non-existent slug");
+        assert!(matches!(
+            err,
+            FeatureError::Memory(ImportError::MemoryNotFound { slug: Some(s), .. }) if s == "ghost"
+        ));
+    }
+
+    #[tokio::test]
+    async fn rename_feature_same_slug_is_a_no_op_listing() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("static".into()),
+                title: "No-op".into(),
+                body: "body".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed");
+
+        let records = rename_feature(
+            scratch.backend(),
+            &entry,
+            "static",
+            "static",
+            scratch.author(),
+            None,
+        )
+        .await
+        .expect("no-op rename");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].slug, "static");
     }
 
     #[tokio::test]

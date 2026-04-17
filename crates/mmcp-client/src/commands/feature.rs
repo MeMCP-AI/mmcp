@@ -39,6 +39,8 @@ pub enum FeatureCommand {
     Delete(DeleteArgs),
     /// List feature requests, optionally filtered by status.
     List(ListArgs),
+    /// Rename every feature under a slug to a new slug (FR-027).
+    Rename(RenameArgs),
 }
 
 #[derive(Debug, Args, Default)]
@@ -142,6 +144,21 @@ pub struct UpdateArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct RenameArgs {
+    /// Current slug directory.
+    pub old_slug: String,
+
+    /// Target slug directory. Must satisfy the slug contract;
+    /// duplicate slugs are allowed post-FR-028, so this may land
+    /// under an existing slug as a sibling.
+    pub new_slug: String,
+
+    /// Override for the git commit message.
+    #[arg(long)]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Args)]
 pub struct DeleteArgs {
     /// Slug to delete.
     pub slug: String,
@@ -180,7 +197,39 @@ pub async fn run(args: FeatureArgs) -> Result<()> {
         Some(FeatureCommand::Update(a)) => run_update(a).await,
         Some(FeatureCommand::Delete(a)) => run_delete(a).await,
         Some(FeatureCommand::List(a)) => run_list(a).await,
+        Some(FeatureCommand::Rename(a)) => run_rename(a).await,
     }
+}
+
+async fn run_rename(args: RenameArgs) -> Result<()> {
+    let cwd = std::env::current_dir().context("reading current working directory")?;
+    let home = MmcpHome::discover()?;
+    let (backend, groups) = home.init_backend().await?;
+    let (entry, _root) = resolve_project_group(&groups, &cwd)
+        .await
+        .map_err(anyhow::Error::from)?;
+    let author = home.resolve_author();
+
+    let records = mmcp_store::rename_feature(
+        &backend,
+        &entry,
+        &args.old_slug,
+        &args.new_slug,
+        &author,
+        args.message.as_deref(),
+    )
+    .await
+    .map_err(anyhow::Error::from)?;
+    println!(
+        "renamed {} feature(s) from `{}` to `{}`",
+        records.len(),
+        args.old_slug,
+        args.new_slug
+    );
+    for record in &records {
+        print_record_summary(record);
+    }
+    Ok(())
 }
 
 // ── Handlers ────────────────────────────────────────────────────

@@ -893,6 +893,23 @@ struct DeleteFeatureArgs {
     pub message: Option<String>,
 }
 
+/// Args for `rename_feature` (FR-027).
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct RenameFeatureArgs {
+    /// Current slug directory. Every memory under
+    /// `memories/<old_slug>/` moves in one atomic commit.
+    pub old_slug: String,
+
+    /// Target slug directory. UUIDs stay stable across the move
+    /// so cross-refs in other features continue to resolve.
+    pub new_slug: String,
+
+    /// Optional override for the git commit message.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
 /// Args for `list_features`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
@@ -2373,6 +2390,40 @@ impl McpServer {
             "group":     entry.manifest.group_id.to_string(),
             "slug":      args.slug,
             "commit_id": commit_id,
+        })))
+    }
+
+    #[tool(
+        description = "Rename every feature memory under `old_slug` to `new_slug` in a single atomic commit (FR-027). UUIDs stay stable across the rename so cross-references in other features keep resolving without further rewrites. Duplicate slugs (FR-028) move as a batch — every entry under `memories/<old_slug>/` lands under `memories/<new_slug>/`. Errors with `memory_not_found` when no memory lives at `old_slug` and with `not_a_feature` when the source is a non-FR memory."
+    )]
+    async fn rename_feature(
+        &self,
+        Parameters(args): Parameters<RenameFeatureArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group(&self.state.groups, &cwd)
+            .await
+            .map_err(map_feature_error_to_mcp)?;
+        let records = mmcp_store::rename_feature(
+            &self.state.backend,
+            &entry,
+            &args.old_slug,
+            &args.new_slug,
+            &self.state.author,
+            args.message.as_deref(),
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        let features: Vec<_> = records
+            .iter()
+            .map(|record| feature_record_to_json(&entry, record))
+            .collect();
+        Ok(ok_json(json!({
+            "group":      entry.manifest.group_id.to_string(),
+            "old_slug":   args.old_slug,
+            "new_slug":   args.new_slug,
+            "renamed":    features.len(),
+            "features":   features,
         })))
     }
 
