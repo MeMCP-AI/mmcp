@@ -14,6 +14,7 @@ members = [
     "crates/mmcp-proto",
     "crates/mmcp-session",
     "crates/mmcp-sync",
+    "crates/mmcp-store",
     "crates/mmcp-server",
     "crates/mmcp-client",
 ]
@@ -33,6 +34,7 @@ mmcp-auth = { path = "crates/mmcp-auth", version = "0.1.0" }
 mmcp-proto = { path = "crates/mmcp-proto", version = "0.1.0" }
 mmcp-session = { path = "crates/mmcp-session", version = "0.1.0" }
 mmcp-sync = { path = "crates/mmcp-sync", version = "0.1.0" }
+mmcp-store = { path = "crates/mmcp-store", version = "0.1.0" }
 
 # Error handling
 thiserror = "2"
@@ -89,8 +91,17 @@ sea-orm-migration = { version = "1.1", default-features = false, features = ["sq
 # enough to force bundled linking across every transitive use.
 libsqlite3-sys = { version = "0.30", features = ["bundled"] }
 
-# Git backend (gitoxide)
-gix = { version = "0.72", default-features = false, features = ["revision", "blob-diff", "index", "worktree-mutation"] }
+# Git backend (gitoxide). Transport features enable clone/fetch/push
+# over HTTP via reqwest+rustls — required so every git operation stays
+# inside gix without shelling out to the `git` binary.
+gix = { version = "0.81", default-features = false, features = [
+    "sha1",
+    "revision",
+    "blob-diff",
+    "index",
+    "worktree-mutation",
+    "blocking-http-transport-reqwest-rust-tls",
+] }
 
 # Bytes container
 bytes = "1"

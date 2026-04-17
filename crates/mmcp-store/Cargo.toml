@@ -1,0 +1,43 @@
+[package]
+name = "mmcp-store"
+description = "mmcp's programmatic store layer: home discovery, group index, project config, memory CRUD, sync orchestration, and diagnostics. Shared by the CLI, the MCP stdio tools, the desktop GUI, and any third-party consumer — carries no clap / rmcp / inquire / egui dependencies so the surface stays consumer-agnostic."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+mmcp-core = { workspace = true }
+mmcp-git = { workspace = true }
+mmcp-sync = { workspace = true }
+
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = "1"
+uuid = { workspace = true }
+jiff = { workspace = true }
+slug = { workspace = true }
+
+# Optional — pulled in only when the `testing` feature is enabled
+# so downstream consumers can activate the fixture module without
+# paying the tempfile compile cost at release time.
+tempfile = { version = "3", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+# Opt-in module with tempdir-backed fixtures reused by consumer
+# test suites. `#[cfg(test)]` alone would lock the fixtures to this
+# crate's own tests; gating them behind a feature lets downstream
+# crates (mmcp-client integration tests, mmcp-gui widget tests,
+# future third-party consumers) pull in the same helpers via
+# `mmcp-store = { …, features = ["testing"] }` without paying the
+# fixture compile cost at release time.
+testing = ["dep:tempfile"]
+
+[lints]
+workspace = true
