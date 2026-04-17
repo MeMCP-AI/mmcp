@@ -295,6 +295,166 @@ struct DeleteMemoryArgs {
     pub message: Option<String>,
 }
 
+/// Args for `read_memory_body_sections` (FR-026).
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct ReadMemoryBodySectionsArgs {
+    /// Target group UUID.
+    pub group: String,
+    /// Memory slug to inspect.
+    pub slug: String,
+}
+
+/// Args for `edit_memory_body` (FR-026).
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct EditMemoryBodyArgs {
+    /// Target group UUID.
+    pub group: String,
+    /// Memory slug to mutate.
+    pub slug: String,
+    /// Ordered list of body edits. Each op is a tagged union
+    /// whose `op` field names the variant. See the
+    /// [`ToolMemoryEditOp`] enum for the per-variant fields.
+    #[serde(default)]
+    pub ops: Vec<ToolMemoryEditOp>,
+    /// Optional override for the git commit message.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// Tool-layer mirror of `mmcp_store::MemoryEditOp`. The store
+/// enum deliberately does not depend on `rmcp::schemars` so the
+/// store crate stays consumer-agnostic; this mirror carries the
+/// `JsonSchema` derive the MCP tool schema needs and converts
+/// into the store type before `apply_ops` runs.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(tag = "op", rename_all = "snake_case")]
+enum ToolMemoryEditOp {
+    UpsertSection {
+        path: String,
+        level: u8,
+        heading: String,
+        body: String,
+    },
+    DeleteSection {
+        path: String,
+    },
+    InsertSectionBefore {
+        anchor_path: String,
+        level: u8,
+        heading: String,
+        body: String,
+    },
+    InsertSectionAfter {
+        anchor_path: String,
+        level: u8,
+        heading: String,
+        body: String,
+    },
+    MoveSectionBefore {
+        target_path: String,
+        anchor_path: String,
+    },
+    MoveSectionAfter {
+        target_path: String,
+        anchor_path: String,
+    },
+    ReplaceSectionBody {
+        path: String,
+        body: String,
+    },
+    InsertAtLine {
+        line: u32,
+        content: String,
+    },
+    ReplaceLines {
+        start: u32,
+        end: u32,
+        content: String,
+    },
+    DeleteLines {
+        start: u32,
+        end: u32,
+    },
+}
+
+impl From<ToolMemoryEditOp> for mmcp_store::MemoryEditOp {
+    fn from(op: ToolMemoryEditOp) -> Self {
+        match op {
+            ToolMemoryEditOp::UpsertSection {
+                path,
+                level,
+                heading,
+                body,
+            } => mmcp_store::MemoryEditOp::UpsertSection {
+                path,
+                level,
+                heading,
+                body,
+            },
+            ToolMemoryEditOp::DeleteSection { path } => {
+                mmcp_store::MemoryEditOp::DeleteSection { path }
+            }
+            ToolMemoryEditOp::InsertSectionBefore {
+                anchor_path,
+                level,
+                heading,
+                body,
+            } => mmcp_store::MemoryEditOp::InsertSectionBefore {
+                anchor_path,
+                level,
+                heading,
+                body,
+            },
+            ToolMemoryEditOp::InsertSectionAfter {
+                anchor_path,
+                level,
+                heading,
+                body,
+            } => mmcp_store::MemoryEditOp::InsertSectionAfter {
+                anchor_path,
+                level,
+                heading,
+                body,
+            },
+            ToolMemoryEditOp::MoveSectionBefore {
+                target_path,
+                anchor_path,
+            } => mmcp_store::MemoryEditOp::MoveSectionBefore {
+                target_path,
+                anchor_path,
+            },
+            ToolMemoryEditOp::MoveSectionAfter {
+                target_path,
+                anchor_path,
+            } => mmcp_store::MemoryEditOp::MoveSectionAfter {
+                target_path,
+                anchor_path,
+            },
+            ToolMemoryEditOp::ReplaceSectionBody { path, body } => {
+                mmcp_store::MemoryEditOp::ReplaceSectionBody { path, body }
+            }
+            ToolMemoryEditOp::InsertAtLine { line, content } => {
+                mmcp_store::MemoryEditOp::InsertAtLine { line, content }
+            }
+            ToolMemoryEditOp::ReplaceLines {
+                start,
+                end,
+                content,
+            } => mmcp_store::MemoryEditOp::ReplaceLines {
+                start,
+                end,
+                content,
+            },
+            ToolMemoryEditOp::DeleteLines { start, end } => {
+                mmcp_store::MemoryEditOp::DeleteLines { start, end }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct SearchMemoriesArgs {
@@ -1198,6 +1358,167 @@ impl McpServer {
             "group": args.group,
             "slug": args.slug,
             "commit_id": commit_id,
+        })))
+    }
+
+    #[tool(
+        description = "Return the section tree of a memory's markdown body (FR-026). Every heading gets a stable dot-separated path id (slugified heading trail with `-2`, `-3` disambiguators for duplicate siblings) plus its level, raw heading text, and half-open line range. Callers discover addressable nodes here before issuing `edit_memory_body` ops. A synthetic `preamble` section covers content before the first heading so even headingless bodies return one entry."
+    )]
+    async fn read_memory_body_sections(
+        &self,
+        Parameters(args): Parameters<ReadMemoryBodySectionsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.read_memory_body_sections_inner(args).await
+    }
+
+    /// Peer-less core of `read_memory_body_sections`. Tests call
+    /// this directly to avoid constructing a mock `Peer`.
+    async fn read_memory_body_sections_inner(
+        &self,
+        args: ReadMemoryBodySectionsArgs,
+    ) -> Result<CallToolResult, McpError> {
+        let group_id = parse_group_id(&args.group)?;
+        let entry = self
+            .state
+            .groups
+            .get(&group_id)
+            .await
+            .ok_or_else(|| McpError::invalid_params("group not found in local mirror", None))?;
+        let path = memory_path(&args.slug);
+        let bytes = self
+            .state
+            .backend
+            .read_file(&entry.handle, &path, &Rev::head())
+            .await
+            .map_err(|e| match e {
+                mmcp_git::GitError::PathNotFound(_) => {
+                    map_memory_error_to_mcp(ImportError::MemoryNotFound {
+                        slug: args.slug.clone(),
+                    })
+                }
+                other => git_error(other),
+            })?;
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let file = mmcp_core::memory::MemoryFile::parse(&text).map_err(|e| {
+            McpError::internal_error(Cow::Owned(format!("parsing existing memory: {e}")), None)
+        })?;
+        let sections = mmcp_core::memory::parse_sections(&file.body).map_err(|e| {
+            McpError::internal_error(Cow::Owned(format!("parsing body: {e}")), None)
+        })?;
+        let as_json: Vec<_> = sections
+            .iter()
+            .map(|s| {
+                json!({
+                    "path": s.path,
+                    "level": s.level,
+                    "heading": s.heading,
+                    "line_start": s.line_start,
+                    "line_end": s.line_end,
+                })
+            })
+            .collect();
+        Ok(ok_json(json!({
+            "group": args.group,
+            "slug": args.slug,
+            "sections": as_json,
+            "count": sections.len(),
+        })))
+    }
+
+    #[tool(
+        description = "Apply an ordered list of section-level or line-level edits to a memory's markdown body and commit the result (FR-026). Section ops address a whole section (heading + nested children) by the dot-path id returned from `read_memory_body_sections`. Line ops are escape hatches for non-heading content. Ops run transactionally: the first error aborts the batch. Structured error codes: `section_not_found`, `move_would_loop`, `level_out_of_range`, `invalid_line_range`, `line_past_eof`, `body_parse_failed`. The protected-group guard from FR-019 / FR-011 still gates this path."
+    )]
+    async fn edit_memory_body(
+        &self,
+        Parameters(args): Parameters<EditMemoryBodyArgs>,
+        peer: Peer<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let group_id = parse_group_id(&args.group)?;
+        let entry = self
+            .state
+            .groups
+            .get(&group_id)
+            .await
+            .ok_or_else(|| McpError::invalid_params("group not found in local mirror", None))?;
+        confirm_protected_write(&peer, &entry, &args.slug, "edit_body").await?;
+        self.edit_memory_body_unguarded(args).await
+    }
+
+    /// Peer-less core of `edit_memory_body`. Tests call this
+    /// directly so the pre-elicitation write path is still
+    /// exercised without a mock `Peer`.
+    async fn edit_memory_body_unguarded(
+        &self,
+        args: EditMemoryBodyArgs,
+    ) -> Result<CallToolResult, McpError> {
+        let group_id = parse_group_id(&args.group)?;
+        let entry = self
+            .state
+            .groups
+            .get(&group_id)
+            .await
+            .ok_or_else(|| McpError::invalid_params("group not found in local mirror", None))?;
+
+        let path = memory_path(&args.slug);
+        let bytes = self
+            .state
+            .backend
+            .read_file(&entry.handle, &path, &Rev::head())
+            .await
+            .map_err(|e| match e {
+                mmcp_git::GitError::PathNotFound(_) => {
+                    map_memory_error_to_mcp(ImportError::MemoryNotFound {
+                        slug: args.slug.clone(),
+                    })
+                }
+                other => git_error(other),
+            })?;
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let mut file = mmcp_core::memory::MemoryFile::parse(&text).map_err(|e| {
+            McpError::internal_error(Cow::Owned(format!("parsing existing memory: {e}")), None)
+        })?;
+
+        let store_ops: Vec<mmcp_store::MemoryEditOp> =
+            args.ops.into_iter().map(Into::into).collect();
+        let new_body =
+            mmcp_store::apply_ops(&file.body, &store_ops).map_err(map_memory_edit_error_to_mcp)?;
+        file.body = new_body;
+        let rendered = file
+            .to_string()
+            .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
+
+        let commit_id = mmcp_store::update_memory_file(
+            &self.state.backend,
+            &entry.handle,
+            &args.slug,
+            &rendered,
+            &self.state.author,
+            args.message.as_deref(),
+        )
+        .await
+        .map_err(map_memory_error_to_mcp)?;
+
+        // Re-parse the freshly-written body so callers see the
+        // post-edit section tree without a second round trip.
+        let sections = mmcp_core::memory::parse_sections(&file.body).map_err(|e| {
+            McpError::internal_error(Cow::Owned(format!("parsing body: {e}")), None)
+        })?;
+        let sections_json: Vec<_> = sections
+            .iter()
+            .map(|s| {
+                json!({
+                    "path": s.path,
+                    "level": s.level,
+                    "heading": s.heading,
+                })
+            })
+            .collect();
+
+        Ok(ok_json(json!({
+            "group": args.group,
+            "slug": args.slug,
+            "commit_id": commit_id,
+            "sections": sections_json,
         })))
     }
 
@@ -2575,6 +2896,49 @@ fn map_memory_error_to_mcp(err: ImportError) -> McpError {
         ImportError::GroupNotFound(group) => json!({
             "code": "group_not_found",
             "group": group,
+        }),
+    };
+    McpError::invalid_params(message, Some(payload))
+}
+
+/// FR-026: map the section-applier's typed errors onto stable
+/// MCP wire codes. Keeps the tool body terse and every error
+/// path consistent across the `edit_memory_body` surface.
+fn map_memory_edit_error_to_mcp(err: mmcp_store::MemoryEditError) -> McpError {
+    use mmcp_store::MemoryEditError as E;
+    let message = err.to_string();
+    let payload = match &err {
+        E::SectionNotFound { path } => json!({
+            "code": "section_not_found",
+            "path": path,
+        }),
+        E::MoveWouldLoop { target, anchor } => json!({
+            "code": "move_would_loop",
+            "target": target,
+            "anchor": anchor,
+        }),
+        E::LevelOutOfRange { level } => json!({
+            "code": "level_out_of_range",
+            "level": level,
+        }),
+        E::InvalidLineRange {
+            start,
+            end,
+            line_count,
+        } => json!({
+            "code": "invalid_line_range",
+            "start": start,
+            "end": end,
+            "line_count": line_count,
+        }),
+        E::LinePastEof { line, line_count } => json!({
+            "code": "line_past_eof",
+            "line": line,
+            "line_count": line_count,
+        }),
+        E::Parse(inner) => json!({
+            "code": "body_parse_failed",
+            "detail": inner.to_string(),
         }),
     };
     McpError::invalid_params(message, Some(payload))
@@ -4281,6 +4645,105 @@ mod tests {
             .write_memory_unguarded(write_memory_args(&sibling, "added", false))
             .await
             .expect("write into unprotected sibling must succeed");
+    }
+
+    // ── edit_memory_body (FR-026) ─────────────────────────────────
+
+    const SECTIONED_MEMORY: &str = "+++\nname = \"Sample\"\ndescription = \"A sectioned memory\"\nkind = \"rule\"\nmandatory = false\ntags = [\"sample\"]\n+++\n## Need\n\nneed body\n\n## Resolution\n\nresolution body\n";
+
+    #[tokio::test]
+    async fn read_memory_body_sections_returns_addressable_tree() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "rules", SECTIONED_MEMORY).await;
+        let server = McpServer::new(state);
+
+        let res = server
+            .read_memory_body_sections_inner(ReadMemoryBodySectionsArgs {
+                group: group.to_string(),
+                slug: "rules".into(),
+            })
+            .await
+            .expect("read sections");
+        let parsed = parse_ok_json(res);
+        let sections = parsed
+            .get("sections")
+            .and_then(|v| v.as_array())
+            .expect("sections array");
+        let paths: Vec<&str> = sections
+            .iter()
+            .filter_map(|s| s.get("path").and_then(|v| v.as_str()))
+            .collect();
+        assert_eq!(paths, vec!["preamble", "need", "resolution"]);
+    }
+
+    #[tokio::test]
+    async fn edit_memory_body_upsert_replaces_section() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "rules", SECTIONED_MEMORY).await;
+        let server = McpServer::new(state.clone());
+
+        server
+            .edit_memory_body_unguarded(EditMemoryBodyArgs {
+                group: group.to_string(),
+                slug: "rules".into(),
+                ops: vec![ToolMemoryEditOp::UpsertSection {
+                    path: "need".into(),
+                    level: 2,
+                    heading: "Need".into(),
+                    body: "rewritten need body".into(),
+                }],
+                message: None,
+            })
+            .await
+            .expect("edit body");
+
+        // Reread to confirm the write landed.
+        let res = server
+            .read_memory(Parameters(ReadMemoryArgs {
+                group: group.to_string(),
+                slug: "rules".into(),
+                version: None,
+            }))
+            .await
+            .expect("read");
+        let parsed = parse_ok_json(res);
+        let body = parsed
+            .get("body")
+            .and_then(|v| v.as_str())
+            .expect("body inline");
+        assert!(body.contains("## Need\n\nrewritten need body"));
+        assert!(
+            body.contains("## Resolution\n\nresolution body"),
+            "untouched section must survive; got:\n{body}",
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_memory_body_section_not_found_errors_with_structured_code() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "rules", SECTIONED_MEMORY).await;
+        let server = McpServer::new(state);
+
+        let err = server
+            .edit_memory_body_unguarded(EditMemoryBodyArgs {
+                group: group.to_string(),
+                slug: "rules".into(),
+                ops: vec![ToolMemoryEditOp::DeleteSection {
+                    path: "does-not-exist".into(),
+                }],
+                message: None,
+            })
+            .await
+            .expect_err("must error on missing section");
+        let payload = err.data.as_ref().expect("error payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("section_not_found"),
+        );
+        assert_eq!(
+            payload.get("path").and_then(|v| v.as_str()),
+            Some("does-not-exist"),
+        );
     }
 
     #[tokio::test]
