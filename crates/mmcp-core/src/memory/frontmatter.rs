@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::memory::{BumpIntent, MemoryKind};
+use crate::memory::{BumpIntent, FeatureMetadata, MemoryKind};
 
 /// User-visible metadata written in the `+++`-delimited TOML block at
 /// the top of a memory file.
@@ -45,4 +45,13 @@ pub struct MemoryFrontmatter {
     /// this; the server consumes and clears it at push time.
     #[serde(default)]
     pub bump_intent: Option<BumpIntent>,
+
+    /// Structured metadata populated only when `kind == MemoryKind::Fr`.
+    /// Carries the feature-request lifecycle (status + cross-ref slugs)
+    /// so FR tools avoid re-parsing the body to classify memories.
+    /// Absent on every non-FR memory; the TOML serializer skips the
+    /// field when unset so unrelated memories keep their existing
+    /// wire shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature: Option<FeatureMetadata>,
 }

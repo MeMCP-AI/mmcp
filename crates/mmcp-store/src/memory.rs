@@ -258,6 +258,7 @@ pub async fn import_memory(
                 version: None,
                 tags: Vec::new(),
                 bump_intent: None,
+                feature: None,
             },
             body: content.to_string(),
             format: mmcp_core::memory::FrontmatterFormat::TomlPlus,

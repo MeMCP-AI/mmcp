@@ -12,9 +12,7 @@
 //! 3. `to_toml_string` always produces TOML-fenced output that
 //!    re-parses to a TOML-formatted `MemoryFile`.
 
-use mmcp_core::memory::{
-    BumpIntent, FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryKind,
-};
+use mmcp_core::memory::{BumpIntent, FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryKind};
 use proptest::prelude::*;
 
 // ── Generators ───────────────────────────────────────────────────────
@@ -49,7 +47,8 @@ fn bump_intent_strategy() -> impl Strategy<Value = Option<BumpIntent>> {
 fn semver_strategy() -> impl Strategy<Value = Option<semver::Version>> {
     prop_oneof![
         Just(None),
-        (0u64..100, 0u64..100, 0u64..100).prop_map(|(ma, mi, pa)| Some(semver::Version::new(ma, mi, pa))),
+        (0u64..100, 0u64..100, 0u64..100)
+            .prop_map(|(ma, mi, pa)| Some(semver::Version::new(ma, mi, pa))),
     ]
 }
 
@@ -71,16 +70,15 @@ fn frontmatter_strategy() -> impl Strategy<Value = MemoryFrontmatter> {
         bump_intent_strategy(),
     )
         .prop_map(
-            |(name, description, kind, mandatory, version, tags, bump_intent)| {
-                MemoryFrontmatter {
-                    name,
-                    description,
-                    kind,
-                    mandatory,
-                    version,
-                    tags,
-                    bump_intent,
-                }
+            |(name, description, kind, mandatory, version, tags, bump_intent)| MemoryFrontmatter {
+                name,
+                description,
+                kind,
+                mandatory,
+                version,
+                tags,
+                bump_intent,
+                feature: None,
             },
         )
 }

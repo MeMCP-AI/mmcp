@@ -765,6 +765,7 @@ impl McpServer {
                 version: None,
                 tags: args.tags,
                 bump_intent: None,
+                feature: None,
             },
             body: args.body,
             format: FrontmatterFormat::TomlPlus,

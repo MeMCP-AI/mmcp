@@ -11,6 +11,7 @@
 
 mod bump;
 mod entry;
+mod feature;
 mod frontmatter;
 mod kind;
 mod parser;
@@ -18,6 +19,7 @@ mod version;
 
 pub use bump::BumpIntent;
 pub use entry::Memory;
+pub use feature::{FeatureMetadata, FeatureStatus, FeatureStatusParseError};
 pub use frontmatter::MemoryFrontmatter;
 pub use kind::MemoryKind;
 pub use parser::{FrontmatterFormat, MemoryFile, MemoryParseError};

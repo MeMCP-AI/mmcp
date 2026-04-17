@@ -33,6 +33,12 @@ pub enum MemoryKind {
 
     /// Short-lived working notes. Not versioned, no warnings.
     Scratch,
+
+    /// Feature request. Carries a structured
+    /// [`FeatureMetadata`](crate::memory::FeatureMetadata) block in
+    /// frontmatter (status, depends_on, blocks) so the FR lifecycle
+    /// tools can filter and cross-reference without parsing the body.
+    Fr,
 }
 
 impl MemoryKind {
@@ -46,6 +52,7 @@ impl MemoryKind {
             MemoryKind::Log => "log",
             MemoryKind::Reference => "reference",
             MemoryKind::Scratch => "scratch",
+            MemoryKind::Fr => "fr",
         }
     }
 

@@ -623,6 +623,7 @@ async fn convert_and_write(
                 version: None,
                 tags: section.tags.clone(),
                 bump_intent: None,
+                feature: None,
             },
             body: section.body.clone(),
             format: FrontmatterFormat::TomlPlus,
