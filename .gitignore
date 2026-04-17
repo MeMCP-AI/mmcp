@@ -3,6 +3,13 @@
 *.local.yml
 *.local.toml
 
+# Local environment files — hold secrets (token signing keys, DB
+# passwords, OAuth client secrets). Never tracked. `.env.example`
+# stays in the repo as the template.
+.env
+.env.*
+!.env.example
+
 # Rust build artifacts
 /target
 **/*.rs.bk
