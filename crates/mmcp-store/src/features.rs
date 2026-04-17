@@ -22,13 +22,17 @@
 //! shapes for `GitError` — flows through `crate::memory`, keeping
 //! the CRUD guarantees identical between FR and non-FR memories.
 
+use std::path::{Path, PathBuf};
+
 use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION, memory_path};
+use mmcp_core::id::GroupId;
 use mmcp_core::memory::{
     FeatureMetadata, FeatureStatus, FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryKind,
 };
 use mmcp_git::{GitBackend, NativeBackend, Rev};
 
-use crate::groups::GroupEntry;
+use crate::config::{find_project_root, load as load_project_config};
+use crate::groups::{GroupEntry, GroupIndex};
 use crate::home::ResolvedAuthor;
 use crate::memory::{
     ImportError, create_memory_file, delete_memory_file, slugify_filename, update_memory_file,
@@ -58,6 +62,29 @@ pub enum FeatureError {
     /// an explicit slug or a title must be supplied.
     #[error("feature title is required when no slug is provided")]
     TitleRequired,
+
+    /// `resolve_project_group` found no `.mmcp.toml` on any ancestor
+    /// of the supplied cwd. FR tools run in the project scope by
+    /// default, so they refuse to operate outside an initialised
+    /// project rather than silently writing into an unrelated group.
+    #[error(
+        "no mmcp project found: run `mmcp init project` first or `cd` into a directory with a `.mmcp.toml`"
+    )]
+    ProjectNotFound,
+
+    /// `resolve_project_group` loaded the project config but could
+    /// not find the backing group in the local mirror. Typically
+    /// means `mmcp pull` has not yet cloned it.
+    #[error(
+        "project group {project_uuid} is not present in the local mirror; run `mmcp pull` or `mmcp init project` to populate it"
+    )]
+    ProjectGroupMissing { project_uuid: String },
+
+    /// `.mmcp.toml` was found but failed to load. Separate variant
+    /// so the wire code can disambiguate "no config" from "broken
+    /// config".
+    #[error("failed to load project config at {path}: {detail}")]
+    ProjectConfigBroken { path: String, detail: String },
 }
 
 /// Input for [`add_feature`].
@@ -350,6 +377,36 @@ pub async fn list_features(
         }
     }
     Ok(out)
+}
+
+/// Resolve the group whose UUID is stored in the project's
+/// `.mmcp.toml`, starting from `cwd` and walking ancestors the same
+/// way the generic `find_project_root` does.
+///
+/// Errors are structured so every consumer (CLI exit code, MCP
+/// tool payload, GUI banner) can branch on the precise failure mode
+/// without parsing strings: no project discovered at all, config
+/// unreadable, or config fine but the backing group is not in the
+/// local mirror yet. The shape mirrors `bootstrap_context`'s
+/// resolution logic but refuses to silently fall back to a no-op —
+/// FR tools always want an error when the project context is
+/// missing.
+pub async fn resolve_project_group(
+    groups: &GroupIndex,
+    cwd: &Path,
+) -> Result<(GroupEntry, PathBuf), FeatureError> {
+    let root = find_project_root(cwd).ok_or(FeatureError::ProjectNotFound)?;
+    let cfg = load_project_config(&root).map_err(|e| FeatureError::ProjectConfigBroken {
+        path: root.join(".mmcp.toml").display().to_string(),
+        detail: e.to_string(),
+    })?;
+    let uuid = *cfg.project_uuid.as_uuid();
+    let entry = groups.get(&GroupId::from_uuid(uuid)).await.ok_or_else(|| {
+        FeatureError::ProjectGroupMissing {
+            project_uuid: uuid.to_string(),
+        }
+    })?;
+    Ok((entry, root))
 }
 
 /// Build a `MemoryFile` with the Fr kind and a populated feature

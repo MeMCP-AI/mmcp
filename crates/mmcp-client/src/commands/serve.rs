@@ -524,6 +524,130 @@ struct InitProjectArgs {
     pub project_uuid: Option<String>,
 }
 
+// ── Feature-request tool arg shapes (FR-007) ─────────────────────
+//
+// Each FR tool auto-resolves the project group from the server
+// process's cwd (same discovery as `status`/`bootstrap_context`),
+// so none of these structs carry a `group` field — writing into
+// anything other than the project's own FR backlog goes through
+// `write_memory`.
+
+/// Args for `add_feature`.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct AddFeatureArgs {
+    /// Stable slug for the FR. Auto-minted from the title when
+    /// omitted; when present must satisfy the memory-slug contract.
+    #[serde(default)]
+    pub slug: Option<String>,
+
+    /// Human-readable title shown in listings. Required unless a
+    /// slug is supplied explicitly.
+    #[serde(default)]
+    pub title: String,
+
+    /// One-line summary, used by listings and relevance inference.
+    #[serde(default)]
+    pub description: String,
+
+    /// Full FR body as freeform markdown. Convention: `## Need`
+    /// first, optional `## Resolution` / `## Non-goals` sections
+    /// after. Not parsed by the tool — preserved verbatim.
+    #[serde(default)]
+    pub body: String,
+
+    /// Initial status. Defaults to `open` when absent. Wire form is
+    /// the snake_case enum: `open | resolved | blocked | deferred | duplicate`.
+    #[serde(default)]
+    pub status: Option<String>,
+
+    /// Slugs of FRs this one depends on.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+
+    /// Slugs of FRs whose resolution is gated on this one.
+    #[serde(default)]
+    pub blocks: Vec<String>,
+
+    /// Optional override for the git commit message.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// Args for `read_feature`.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct ReadFeatureArgs {
+    /// Slug of the FR to read.
+    pub slug: String,
+
+    /// Branch name, tag, or 40-char commit hex. Defaults to the
+    /// group's `main` when absent.
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
+/// Args for `update_feature`.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct UpdateFeatureArgs {
+    /// Slug of the FR to mutate.
+    pub slug: String,
+
+    /// New title; omit to leave unchanged.
+    #[serde(default)]
+    pub title: Option<String>,
+
+    /// New description; omit to leave unchanged.
+    #[serde(default)]
+    pub description: Option<String>,
+
+    /// Replacement body; omit to leave unchanged.
+    #[serde(default)]
+    pub body: Option<String>,
+
+    /// New status; omit to leave unchanged. Wire form matches
+    /// `AddFeatureArgs::status`.
+    #[serde(default)]
+    pub status: Option<String>,
+
+    /// Replacement `depends_on` list; omit to leave unchanged.
+    /// Pass `[]` to clear.
+    #[serde(default)]
+    pub depends_on: Option<Vec<String>>,
+
+    /// Replacement `blocks` list; omit to leave unchanged.
+    /// Pass `[]` to clear.
+    #[serde(default)]
+    pub blocks: Option<Vec<String>>,
+
+    /// Optional override for the git commit message.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// Args for `delete_feature`.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct DeleteFeatureArgs {
+    /// Slug of the FR to delete.
+    pub slug: String,
+
+    /// Optional override for the git commit message.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// Args for `list_features`.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct ListFeaturesArgs {
+    /// Restrict to FRs with this status. Wire form matches
+    /// `AddFeatureArgs::status`.
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
 #[tool_router]
 impl McpServer {
     fn new(state: ClientState) -> Self {
@@ -1541,6 +1665,159 @@ impl McpServer {
             "created_repo":   report.created_repo,
         })))
     }
+
+    // ── Feature-request tools (FR-007) ───────────────────────────
+    //
+    // All five auto-resolve the project group from the server's
+    // cwd via `mmcp_store::features::resolve_project_group`. FR
+    // tools intentionally refuse to fall through to a no-op when
+    // the project context is missing: the caller gets a structured
+    // `project_not_found` payload and can decide whether to offer
+    // `init_project` or ask the user to `cd` into the repo.
+
+    #[tool(
+        description = "File a new feature request in the current project's group. Slug is auto-minted from the title when omitted. Status defaults to `open`; supply one of `open | resolved | blocked | deferred | duplicate` to override. Errors with code `project_not_found` when no `.mmcp.toml` is on any ancestor of the server's cwd, `invalid_slug` when the supplied or derived slug fails validation, and `memory_already_exists` when the slug collides with an existing memory in the project group."
+    )]
+    async fn add_feature(
+        &self,
+        Parameters(args): Parameters<AddFeatureArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group(&self.state.groups, &cwd)
+            .await
+            .map_err(map_feature_error_to_mcp)?;
+        let status = parse_status_arg(args.status.as_deref())?.unwrap_or_default();
+        let spec = mmcp_store::features::AddSpec {
+            slug: args.slug,
+            title: args.title,
+            description: args.description,
+            body: args.body,
+            status,
+            depends_on: args.depends_on,
+            blocks: args.blocks,
+            message: args.message,
+        };
+        let record = mmcp_store::features::add_feature(
+            &self.state.backend,
+            &entry,
+            spec,
+            &self.state.author,
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        Ok(ok_json(feature_record_to_json(&entry, &record)))
+    }
+
+    #[tool(
+        description = "Read a feature request by slug from the current project's group. Returns the full FR record (title, description, body, status, depends_on, blocks, commit_id). Set `version` to a branch, tag, or 40-char commit hex to read a specific revision. Errors with `not_a_feature` when the slug resolves to a memory whose kind is not `fr`."
+    )]
+    async fn read_feature(
+        &self,
+        Parameters(args): Parameters<ReadFeatureArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group(&self.state.groups, &cwd)
+            .await
+            .map_err(map_feature_error_to_mcp)?;
+        let record = mmcp_store::features::read_feature(
+            &self.state.backend,
+            &entry,
+            &args.slug,
+            args.version.as_deref(),
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        Ok(ok_json(feature_record_to_json(&entry, &record)))
+    }
+
+    #[tool(
+        description = "Apply partial updates to an existing feature request and commit the result. Every mutator is optional — omit to leave untouched. `depends_on` and `blocks` are full-list replacements; pass `[]` to clear, omit to preserve. `status` takes the wire form of the status enum. Errors with `memory_not_found` when the slug has no FR, `not_a_feature` when the slug is a non-FR memory, and `invalid_feature_status` when `status` is not one of the five variants."
+    )]
+    async fn update_feature(
+        &self,
+        Parameters(args): Parameters<UpdateFeatureArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group(&self.state.groups, &cwd)
+            .await
+            .map_err(map_feature_error_to_mcp)?;
+        let status = match args.status.as_deref() {
+            Some(raw) => Some(parse_status_arg(Some(raw))?.unwrap_or_default()),
+            None => None,
+        };
+        let spec = mmcp_store::features::UpdateSpec {
+            title: args.title,
+            description: args.description,
+            body: args.body,
+            status,
+            depends_on: args.depends_on,
+            blocks: args.blocks,
+            message: args.message,
+        };
+        let record = mmcp_store::features::update_feature(
+            &self.state.backend,
+            &entry,
+            &args.slug,
+            spec,
+            &self.state.author,
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        Ok(ok_json(feature_record_to_json(&entry, &record)))
+    }
+
+    #[tool(
+        description = "Delete a feature request by slug. The deletion is committed on the group's main branch so the FR is recoverable via `list_versions`. Refuses with `not_a_feature` when the slug points at a non-FR memory so the FR tools never drop unrelated memories."
+    )]
+    async fn delete_feature(
+        &self,
+        Parameters(args): Parameters<DeleteFeatureArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group(&self.state.groups, &cwd)
+            .await
+            .map_err(map_feature_error_to_mcp)?;
+        let commit_id = mmcp_store::features::delete_feature(
+            &self.state.backend,
+            &entry,
+            &args.slug,
+            &self.state.author,
+            args.message.as_deref(),
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        Ok(ok_json(json!({
+            "group":     entry.manifest.group_id.to_string(),
+            "slug":      args.slug,
+            "commit_id": commit_id,
+        })))
+    }
+
+    #[tool(
+        description = "List every feature request in the current project's group, optionally filtered by status. Non-FR memories in the same group are skipped so the listing stays FR-shaped. Memories whose frontmatter fails to parse are quietly omitted; use `diagnose` to surface those."
+    )]
+    async fn list_features(
+        &self,
+        Parameters(args): Parameters<ListFeaturesArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group(&self.state.groups, &cwd)
+            .await
+            .map_err(map_feature_error_to_mcp)?;
+        let status = parse_status_arg(args.status.as_deref())?;
+        let records = mmcp_store::features::list_features(&self.state.backend, &entry, status)
+            .await
+            .map_err(map_feature_error_to_mcp)?;
+        let features: Vec<_> = records
+            .iter()
+            .map(|record| feature_record_to_json(&entry, record))
+            .collect();
+        Ok(ok_json(json!({
+            "group":    entry.manifest.group_id.to_string(),
+            "features": features,
+            "count":    records.len(),
+        })))
+    }
 }
 
 /// Compose the `status` tool response from a cwd + a pre-built
@@ -1685,6 +1962,108 @@ fn map_sync_error_to_mcp(err: mmcp_sync::SyncError) -> McpError {
         }),
     };
     McpError::invalid_params(message, Some(payload))
+}
+
+/// Read the server process's current working directory, mapping
+/// `io::Error` onto `McpError::internal_error` so every FR tool
+/// surfaces the failure identically. Factored out because five
+/// tools share it and an inline expression would drift between
+/// variants.
+fn current_dir_for_mcp() -> Result<std::path::PathBuf, McpError> {
+    std::env::current_dir()
+        .map_err(|e| McpError::internal_error(format!("cannot read working directory: {e}"), None))
+}
+
+/// Parse the wire form of [`FeatureStatus`] from an optional string
+/// argument. `None` → `Ok(None)`; a known variant → `Ok(Some(...))`;
+/// an unknown variant → structured `invalid_feature_status` error.
+fn parse_status_arg(
+    raw: Option<&str>,
+) -> Result<Option<mmcp_core::memory::FeatureStatus>, McpError> {
+    let Some(s) = raw else {
+        return Ok(None);
+    };
+    mmcp_core::memory::FeatureStatus::parse(s)
+        .map(Some)
+        .map_err(|err| {
+            McpError::invalid_params(
+                err.to_string(),
+                Some(json!({
+                    "code":  "invalid_feature_status",
+                    "input": err.input,
+                    "allowed": mmcp_core::memory::FeatureStatus::all()
+                        .iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                })),
+            )
+        })
+}
+
+/// Serialize a [`FeatureRecord`] to the JSON shape returned by the
+/// FR tools. Includes the group id so callers can cross-reference
+/// without a second `status` call.
+fn feature_record_to_json(
+    entry: &GroupEntry,
+    record: &mmcp_store::features::FeatureRecord,
+) -> serde_json::Value {
+    json!({
+        "group":       entry.manifest.group_id.to_string(),
+        "slug":        record.slug,
+        "title":       record.title,
+        "description": record.description,
+        "body":        record.body,
+        "status":      record.status.as_str(),
+        "depends_on":  record.depends_on,
+        "blocks":      record.blocks,
+        "commit_id":   record.commit_id,
+    })
+}
+
+/// Map a [`features::FeatureError`] onto an [`McpError`] with a
+/// structured `code` payload so AI callers branch on state rather
+/// than parsing strings. Covers the FR-specific cases first, then
+/// delegates to `map_memory_error_to_mcp` for the wrapped memory
+/// CRUD failures so the wire contract stays identical between FR
+/// tools and `write_memory` / `edit_memory` / `delete_memory`.
+fn map_feature_error_to_mcp(err: mmcp_store::features::FeatureError) -> McpError {
+    use mmcp_store::features::FeatureError;
+    let message = err.to_string();
+    match err {
+        FeatureError::NotAFeature { slug, kind } => McpError::invalid_params(
+            message,
+            Some(json!({
+                "code": "not_a_feature",
+                "slug": slug,
+                "kind": kind,
+            })),
+        ),
+        FeatureError::TitleRequired => {
+            McpError::invalid_params(message, Some(json!({ "code": "feature_title_required" })))
+        }
+        FeatureError::ProjectNotFound => McpError::invalid_params(
+            message,
+            Some(json!({
+                "code": "project_not_found",
+                "retry_hint": "run `init_project` or cd into a directory that contains a `.mmcp.toml`",
+            })),
+        ),
+        FeatureError::ProjectGroupMissing { project_uuid } => McpError::invalid_params(
+            message,
+            Some(json!({
+                "code": "project_group_missing",
+                "project_uuid": project_uuid,
+                "retry_hint": "run `sync_pull` to fetch the project group, or `init_project` to create it locally",
+            })),
+        ),
+        FeatureError::ProjectConfigBroken { path, detail } => McpError::invalid_params(
+            message,
+            Some(json!({
+                "code": "project_config_broken",
+                "path": path,
+                "detail": detail,
+            })),
+        ),
+        FeatureError::Memory(inner) => map_memory_error_to_mcp(inner),
+    }
 }
 
 /// Map a [`commands::init::InitProjectError`] to an [`McpError`]
