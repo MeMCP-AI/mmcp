@@ -110,6 +110,26 @@ impl MmcpHome {
             .map_err(|e| anyhow::anyhow!("parsing {}: {e}", path.display()))
     }
 
+    /// Initialize a `NativeBackend` and `GroupIndex` from this home.
+    ///
+    /// Canonical way to get a ready-to-use git backend and group
+    /// index; every consumer (CLI, MCP, GUI, third-party) calls
+    /// this once at startup.
+    pub async fn init_backend(
+        &self,
+    ) -> anyhow::Result<(std::sync::Arc<mmcp_git::NativeBackend>, crate::groups::GroupIndex)> {
+        use anyhow::Context;
+        let repos_root = self.repos_root();
+        let backend = std::sync::Arc::new(
+            mmcp_git::NativeBackend::new(&repos_root)
+                .with_context(|| format!("initializing repo root {}", repos_root.display()))?,
+        );
+        let groups = crate::groups::GroupIndex::build(repos_root, backend.clone())
+            .await
+            .with_context(|| format!("building group index at {}", self.repos_root().display()))?;
+        Ok((backend, groups))
+    }
+
     /// Resolve the commit author using the three-tier cascade:
     ///
     /// 1. `~/.mmcp/config.toml` `[author].name` / `[author].email`

@@ -89,7 +89,7 @@ impl ClientState {
         std::fs::create_dir_all(home.root())
             .with_context(|| format!("creating {}", home.root().display()))?;
 
-        let (backend, groups) = crate::home::init_backend(&home).await?;
+        let (backend, groups) = home.init_backend().await?;
 
         let sessions_root = home.sessions_root();
         let sessions = SessionStore::open(&sessions_root)

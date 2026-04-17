@@ -41,6 +41,10 @@
 #![forbid(unsafe_code)]
 
 pub mod config;
+pub mod error;
+pub mod groups;
 pub mod home;
 
+pub use error::StoreError;
+pub use groups::{GroupEntry, GroupIndex};
 pub use home::{MmcpHome, ResolvedAuthor, read_git_global};
