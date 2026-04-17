@@ -43,6 +43,7 @@
 pub mod config;
 pub mod diagnostics;
 pub mod error;
+pub mod features;
 pub mod groups;
 pub mod home;
 pub mod memory;
@@ -57,6 +58,10 @@ pub use diagnostics::{
     health_check_group,
 };
 pub use error::StoreError;
+pub use features::{
+    AddSpec as FeatureAddSpec, FeatureError, FeatureRecord, UpdateSpec as FeatureUpdateSpec,
+    add_feature, delete_feature, list_features, read_feature, update_feature,
+};
 pub use groups::{GroupEntry, GroupIndex};
 pub use home::{MmcpHome, ResolvedAuthor, read_git_global};
 pub use memory::{
