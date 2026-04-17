@@ -592,7 +592,7 @@ async fn convert_and_write(
         .with_context(|| format!("loading project config from {}", root.display()))?;
     let project_uuid = *project_cfg.project_uuid.as_uuid();
 
-    let (backend, groups) = home.init_backend().await?;
+    let (backend, groups) = crate::home::init_backend(home).await?;
     let group_id = mmcp_core::id::GroupId::from_uuid(project_uuid);
     let entry = groups.get(&group_id).await.ok_or_else(|| {
         anyhow!(

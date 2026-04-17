@@ -39,3 +39,7 @@
 //! git writes, index coherence, and error shapes.
 
 #![forbid(unsafe_code)]
+
+pub mod home;
+
+pub use home::{MmcpHome, ResolvedAuthor, read_git_global};

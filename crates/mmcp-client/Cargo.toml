@@ -17,6 +17,7 @@ mmcp-auth = { workspace = true }
 mmcp-proto = { workspace = true }
 mmcp-session = { workspace = true }
 mmcp-sync = { workspace = true }
+mmcp-store = { workspace = true }
 
 gix = { workspace = true }
 

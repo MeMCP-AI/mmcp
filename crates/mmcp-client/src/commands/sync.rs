@@ -46,7 +46,7 @@ pub async fn run(pull: bool, push: bool) -> Result<()> {
     };
 
     let mmcp_home = MmcpHome::discover()?;
-    let (backend, group_index) = mmcp_home.init_backend().await?;
+    let (backend, group_index) = crate::home::init_backend(&mmcp_home).await?;
     let (engine, resolver, queue) = build_engine(backend, group_index, &sync_cfg.server_url)?;
 
     let report = match (pull, push) {

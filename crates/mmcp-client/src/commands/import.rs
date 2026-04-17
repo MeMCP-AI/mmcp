@@ -406,7 +406,7 @@ pub async fn run(
     force: bool,
 ) -> Result<()> {
     let mmcp_home = crate::home::MmcpHome::discover()?;
-    let (backend, group_index) = mmcp_home.init_backend().await?;
+    let (backend, group_index) = crate::home::init_backend(&mmcp_home).await?;
     let author = mmcp_home.resolve_author();
 
     let entry = resolve_group(&group_index, &group)

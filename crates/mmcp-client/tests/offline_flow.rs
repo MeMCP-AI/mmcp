@@ -53,7 +53,9 @@ async fn offline_env() -> (
         "remoteless test must start from a sync-less config"
     );
 
-    let (backend, groups) = home.init_backend().await.expect("init_backend");
+    let (backend, groups) = mmcp_client::home::init_backend(&home)
+        .await
+        .expect("init_backend");
     let author = home.resolve_author();
     (home, backend, groups, author, tmp)
 }

@@ -508,7 +508,7 @@ fn check_project_config(issues: &mut Vec<Issue>) {
 /// `mmcp check` - quick surface health check.
 pub async fn run_check(group: Option<String>) -> Result<()> {
     let home = crate::home::MmcpHome::discover()?;
-    let (backend, groups) = home.init_backend().await?;
+    let (backend, groups) = crate::home::init_backend(&home).await?;
 
     let reports = if let Some(id) = group {
         let entry = crate::commands::import::resolve_group(&groups, &id)
@@ -530,7 +530,7 @@ pub async fn run_check(group: Option<String>) -> Result<()> {
 /// `mmcp diagnose` - deep diagnostic analysis.
 pub async fn run_diagnose(group: Option<String>) -> Result<()> {
     let home = crate::home::MmcpHome::discover()?;
-    let (backend, groups) = home.init_backend().await?;
+    let (backend, groups) = crate::home::init_backend(&home).await?;
 
     let diag = if let Some(id) = group {
         let entry = crate::commands::import::resolve_group(&groups, &id)

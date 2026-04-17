@@ -139,7 +139,7 @@ pub async fn run_project(args: ProjectArgs) -> Result<()> {
         project_uuid: args.project_uuid,
     };
 
-    let (backend, groups) = home.init_backend().await?;
+    let (backend, groups) = crate::home::init_backend(&home).await?;
     let report = bootstrap_project(&backend, &groups, &cwd, &opts, /* tty_slug_prompt */ true)
         .await
         .map_err(anyhow::Error::from)?;
@@ -167,8 +167,7 @@ pub async fn create_project_group(
     cwd: &Path,
     opts: &InitProjectOptions,
 ) -> Result<ProjectGroupReport, InitProjectError> {
-    let (backend, groups) = home
-        .init_backend()
+    let (backend, groups) = crate::home::init_backend(home)
         .await
         .map_err(|e| InitProjectError::GitBackend(e.to_string()))?;
     bootstrap_project(&backend, &groups, cwd, opts, false).await

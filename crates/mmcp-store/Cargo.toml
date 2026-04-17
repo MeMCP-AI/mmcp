@@ -11,6 +11,12 @@ mmcp-core = { workspace = true }
 mmcp-git = { workspace = true }
 mmcp-sync = { workspace = true }
 
+# Used directly by `home::read_git_global` to parse the operator's
+# global git config; mmcp-git also depends on gix so the transitive
+# dep already compiles, listing it directly keeps the crate-level
+# dep set explicit.
+gix = { workspace = true }
+
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
