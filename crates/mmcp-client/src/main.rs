@@ -127,6 +127,11 @@ enum Command {
         #[command(subcommand)]
         command: HookCommand,
     },
+
+    /// Manage the project's feature requests (FR-007).
+    /// Subcommands: `add`, `read`, `update`, `delete`, `list`.
+    /// Running `mmcp feature` with no subcommand prints this help.
+    Feature(commands::feature::FeatureArgs),
 }
 
 #[derive(Subcommand)]
@@ -208,6 +213,7 @@ async fn main() -> Result<()> {
         Command::Hook { command } => match command {
             HookCommand::UserPrompt => commands::hook::user_prompt().await?,
         },
+        Command::Feature(args) => commands::feature::run(args).await?,
     }
 
     Ok(())

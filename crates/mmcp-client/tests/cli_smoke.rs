@@ -210,3 +210,105 @@ fn init_claude_dry_run_against_override_announces_plan_without_writing() {
         "dry-run must not write the file"
     );
 }
+
+#[test]
+fn bare_feature_prints_help_instead_of_hard_error() {
+    // `mmcp feature` without a subcommand prints the subcommand
+    // index rather than exiting with a terse "required subcommand"
+    // message. Same contract as `mmcp init`.
+    mmcp()
+        .arg("feature")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Usage"))
+        .stderr(predicate::str::contains("add"))
+        .stderr(predicate::str::contains("list"));
+}
+
+#[test]
+fn feature_list_outside_project_reports_project_not_found() {
+    // FR tools refuse to operate outside an initialised project
+    // rather than silently falling back to a no-op. The error
+    // message points the operator at the right fix (`init project`
+    // or `cd` into a project dir).
+    let tmp = tempfile::tempdir().unwrap();
+    let mmcp_home = tmp.path().join("mmcp-home");
+    mmcp()
+        .args(["feature", "list"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no mmcp project"));
+}
+
+#[test]
+fn feature_add_list_read_round_trips_inside_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mmcp_home = tmp.path().join("mmcp-home");
+    mmcp()
+        .args(["init", "project", "--slug", "feature-smoke"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+
+    mmcp()
+        .args([
+            "feature",
+            "add",
+            "--slug",
+            "fr-first",
+            "--title",
+            "First FR",
+            "--description",
+            "smoke-test FR",
+            "--body",
+            "## Need\nTest the CLI FR path.\n",
+        ])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("created feature `fr-first`"))
+        .stdout(predicate::str::contains("status: open"));
+
+    mmcp()
+        .args(["feature", "list"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fr-first"))
+        .stdout(predicate::str::contains("[open]"))
+        .stdout(predicate::str::contains("1 feature"));
+
+    mmcp()
+        .args(["feature", "read", "fr-first"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("slug        : fr-first"))
+        .stdout(predicate::str::contains("status      : open"))
+        .stdout(predicate::str::contains("Test the CLI FR path."));
+
+    mmcp()
+        .args(["feature", "update", "fr-first", "--status", "resolved"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("updated feature `fr-first`"))
+        .stdout(predicate::str::contains("status: resolved"));
+
+    mmcp()
+        .args(["feature", "list", "--status", "open"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "no feature requests with status `open`",
+        ));
+}
