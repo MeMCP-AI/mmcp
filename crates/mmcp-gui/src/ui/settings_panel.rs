@@ -7,9 +7,11 @@
 //! gear again.
 
 use eframe::egui;
+use mmcp_core::memory::MemoryKind;
 
 use crate::state::AppState;
 use crate::state::settings::KindDisplay;
+use crate::ui::kind_glyph;
 
 pub fn show(ctx: &egui::Context, state: &mut AppState) {
     if !state.settings_panel_open {
@@ -41,6 +43,10 @@ fn render_body(ui: &mut egui::Ui, state: &mut AppState) {
             ui.label(egui::RichText::new("Memory list prefix").strong());
             render_kind_display_radio(ui, &mut state.settings.kind_display);
             ui.end_row();
+
+            ui.label(egui::RichText::new("Preview").small().weak());
+            render_prefix_preview(ui, state.settings.kind_display);
+            ui.end_row();
         });
 }
 
@@ -55,6 +61,29 @@ fn render_kind_display_radio(ui: &mut egui::Ui, value: &mut KindDisplay) {
             ui.radio_value(value, option, option.label());
         }
     });
+}
+
+/// One sample row per kind, rendered exactly as the memory list
+/// would. Makes the difference between `Icon` and `Icon + text`
+/// immediately obvious.
+fn render_prefix_preview(ui: &mut egui::Ui, mode: KindDisplay) {
+    egui::Frame::group(ui.style())
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            ui.vertical(|ui| {
+                for (kind, sample_slug) in [
+                    (MemoryKind::Rule, "branch-policy"),
+                    (MemoryKind::Snapshot, "repo-state-2026-04-17"),
+                    (MemoryKind::Log, "incident-2026-03-05"),
+                    (MemoryKind::Reference, "gitoxide-upstream"),
+                    (MemoryKind::Scratch, "draft-notes"),
+                    (MemoryKind::Fr, "fr-020-extract-mmcp-store"),
+                ] {
+                    let prefix = kind_glyph::prefix_for(mode, kind);
+                    ui.monospace(format!("{prefix}{sample_slug}"));
+                }
+            });
+        });
 }
 
 fn render_footer(ui: &mut egui::Ui) {

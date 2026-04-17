@@ -59,6 +59,20 @@ impl MmcpGuiApp {
                     self.state.groups = groups;
                 }
                 TaskOutcome::MemoryListLoaded { group_id, slugs } => {
+                    // Eager-load each slug's frontmatter so the
+                    // memory-list kind prefix can render the real
+                    // kind rather than the placeholder. Order is
+                    // preserved by the worker's sequential queue;
+                    // already-cached entries are skipped so
+                    // re-selecting a group is free.
+                    for slug in &slugs {
+                        if self.state.viewer.get(&group_id, slug).is_none() {
+                            self.background.send(BackgroundTask::LoadMemory {
+                                group_id,
+                                slug: slug.clone(),
+                            });
+                        }
+                    }
                     self.state.memory_slugs.insert(group_id, slugs);
                 }
                 TaskOutcome::MemoryLoaded {
