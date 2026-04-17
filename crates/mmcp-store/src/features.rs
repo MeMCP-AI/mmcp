@@ -241,7 +241,8 @@ pub async fn read_feature(
         .map_err(|err| match err {
             mmcp_git::GitError::PathNotFound(_) => {
                 FeatureError::Memory(ImportError::MemoryNotFound {
-                    slug: slug.to_string(),
+                    slug: Some(slug.to_string()),
+                    id: None,
                 })
             }
             other => FeatureError::Memory(ImportError::Git(other)),

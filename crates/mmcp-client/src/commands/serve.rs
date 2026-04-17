@@ -1251,7 +1251,8 @@ impl McpServer {
             Ok(b) => b,
             Err(mmcp_git::GitError::PathNotFound(_)) => {
                 return Err(map_memory_error_to_mcp(ImportError::MemoryNotFound {
-                    slug: args.slug.clone(),
+                    slug: Some(args.slug.clone()),
+                    id: None,
                 }));
             }
             Err(e) => return Err(git_error(e)),
@@ -1394,7 +1395,8 @@ impl McpServer {
             .map_err(|e| match e {
                 mmcp_git::GitError::PathNotFound(_) => {
                     map_memory_error_to_mcp(ImportError::MemoryNotFound {
-                        slug: args.slug.clone(),
+                        slug: Some(args.slug.clone()),
+                        id: None,
                     })
                 }
                 other => git_error(other),
@@ -1469,7 +1471,8 @@ impl McpServer {
             .map_err(|e| match e {
                 mmcp_git::GitError::PathNotFound(_) => {
                     map_memory_error_to_mcp(ImportError::MemoryNotFound {
-                        slug: args.slug.clone(),
+                        slug: Some(args.slug.clone()),
+                        id: None,
                     })
                 }
                 other => git_error(other),
@@ -2862,14 +2865,30 @@ async fn elicit_claude_conflict_choice(
 fn map_memory_error_to_mcp(err: ImportError) -> McpError {
     let message = err.to_string();
     let payload = match &err {
-        ImportError::MemoryNotFound { slug } => json!({
+        ImportError::MemoryNotFound { slug, id } => json!({
             "code": "memory_not_found",
             "slug": slug,
+            "id": id.map(|u| u.to_string()),
         }),
         ImportError::MemoryAlreadyExists { slug } => json!({
             "code": "memory_already_exists",
             "slug": slug,
             "retry_hint": "use edit_memory to update in place, delete_memory to remove, or pass override: true to replace",
+        }),
+        ImportError::MemoryAmbiguous { slug, candidates } => json!({
+            "code": "memory_ambiguous",
+            "slug": slug,
+            "candidates": candidates.iter().map(|u| u.to_string()).collect::<Vec<_>>(),
+            "retry_hint": "pass an explicit id to disambiguate",
+        }),
+        ImportError::MemoryIdMismatch { slug, expected, got } => json!({
+            "code": "memory_id_mismatch",
+            "slug": slug,
+            "expected": expected.to_string(),
+            "got": got.to_string(),
+        }),
+        ImportError::ResolveArgsMissing => json!({
+            "code": "resolve_args_missing",
         }),
         ImportError::InvalidSlug(slug) => json!({
             "code": "invalid_slug",

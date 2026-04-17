@@ -82,9 +82,39 @@ pub enum ImportError {
 
     /// An `update` or `delete` was attempted against a slug that
     /// has no file in the group. Distinct from `GroupNotFound`,
-    /// which signals a missing group altogether.
-    #[error("memory '{slug}' does not exist in this group")]
-    MemoryNotFound { slug: String },
+    /// which signals a missing group altogether. Post-FR-028 the
+    /// lookup may have been keyed on either `slug`, `id`, or both,
+    /// so both fields are optional; callers populate whichever
+    /// addresses they actually tried.
+    #[error("memory not found (slug={slug:?}, id={id:?})")]
+    MemoryNotFound {
+        slug: Option<String>,
+        id: Option<Uuid>,
+    },
+
+    /// A slug-only lookup resolved to more than one memory under
+    /// `memories/<slug>/`. The caller must re-query with an
+    /// explicit `id` from the candidate list.
+    #[error("memory slug '{slug}' has multiple entries; disambiguate with id")]
+    MemoryAmbiguous {
+        slug: String,
+        candidates: Vec<Uuid>,
+    },
+
+    /// Both `slug` and `id` were supplied but the on-disk memory's
+    /// frontmatter carries a different id. Signals either a stale
+    /// client cache or a corrupted frontmatter pair.
+    #[error("memory '{slug}' id mismatch: expected {expected}, got {got}")]
+    MemoryIdMismatch {
+        slug: String,
+        expected: Uuid,
+        got: Uuid,
+    },
+
+    /// Neither `slug` nor `id` was provided to a resolver call that
+    /// requires at least one addressing key.
+    #[error("resolve_memory requires at least one of slug or id")]
+    ResolveArgsMissing,
 }
 
 /// Probe whether `memories/<slug>.md` exists at the group's
@@ -105,6 +135,209 @@ pub async fn memory_exists(
         Err(GitError::PathNotFound(_)) => Ok(false),
         Err(err) => Err(ImportError::Git(err)),
     }
+}
+
+/// Addressing result from [`resolve_memory`]. Carries the slug,
+/// the canonical UUID (minted for pre-FR-028 files that still
+/// lack one in frontmatter), and the in-repo path that a subsequent
+/// `read_file` can consume verbatim.
+#[derive(Debug, Clone)]
+pub struct ResolvedMemory {
+    pub slug: String,
+    /// May be `None` when the on-disk file is still in the legacy
+    /// `memories/<slug>.md` layout and its frontmatter has no `id`.
+    /// Resolvers never synthesize an id on the fly; the migration
+    /// binary is the only path that mints UUIDs for legacy files.
+    pub id: Option<Uuid>,
+    pub path: String,
+}
+
+/// Locate a memory by slug, id, or both.
+///
+/// Lookup rules (mirrors the FR-028 plan):
+/// - `slug + id`: address `memories/<slug>/<id>.md` first; if the
+///   file exists and its frontmatter id matches, return it. If the
+///   frontmatter id disagrees, surface [`ImportError::MemoryIdMismatch`].
+///   Fall back to `memories/<slug>.md` (legacy layout) when the
+///   two-level path is missing; require frontmatter id match there
+///   too, or return [`ImportError::MemoryNotFound`].
+/// - `slug` only: walk `memories/<slug>/` and use the single entry
+///   found; ≥2 entries yields [`ImportError::MemoryAmbiguous`]; 0
+///   entries falls back to the flat `memories/<slug>.md` legacy
+///   path; missing both is [`ImportError::MemoryNotFound`].
+/// - `id` only: enumerate `memories/*/` and pick the single
+///   directory whose listing contains `<id>.md`.
+/// - neither: [`ImportError::ResolveArgsMissing`].
+///
+/// The helper does not read the memory body; it only resolves the
+/// logical address to a filesystem path so callers can proceed with
+/// `read_file` / `write_commit` on a known key.
+pub async fn resolve_memory(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    slug: Option<&str>,
+    id: Option<Uuid>,
+) -> Result<ResolvedMemory, ImportError> {
+    match (slug, id) {
+        (Some(s), Some(i)) => resolve_slug_and_id(backend, handle, s, i).await,
+        (Some(s), None) => resolve_by_slug(backend, handle, s).await,
+        (None, Some(i)) => resolve_by_id(backend, handle, i).await,
+        (None, None) => Err(ImportError::ResolveArgsMissing),
+    }
+}
+
+async fn resolve_slug_and_id(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    slug: &str,
+    expected: Uuid,
+) -> Result<ResolvedMemory, ImportError> {
+    let two_level = mmcp_core::conventions::memory_path(slug, expected);
+    match backend.read_file(handle, &two_level, &Rev::head()).await {
+        Ok(bytes) => {
+            verify_id_match(slug, &bytes, expected)?;
+            Ok(ResolvedMemory {
+                slug: slug.to_string(),
+                id: Some(expected),
+                path: two_level,
+            })
+        }
+        Err(GitError::PathNotFound(_)) => {
+            // Legacy fallback: the file predates FR-028 and still
+            // lives at `memories/<slug>.md`. We still require the
+            // frontmatter id to match when it's present so stale
+            // client caches never masquerade as fresh hits.
+            let legacy = mmcp_core::conventions::legacy_memory_path(slug);
+            match backend.read_file(handle, &legacy, &Rev::head()).await {
+                Ok(bytes) => {
+                    verify_id_match(slug, &bytes, expected)?;
+                    Ok(ResolvedMemory {
+                        slug: slug.to_string(),
+                        id: Some(expected),
+                        path: legacy,
+                    })
+                }
+                Err(GitError::PathNotFound(_)) => Err(ImportError::MemoryNotFound {
+                    slug: Some(slug.to_string()),
+                    id: Some(expected),
+                }),
+                Err(err) => Err(ImportError::Git(err)),
+            }
+        }
+        Err(err) => Err(ImportError::Git(err)),
+    }
+}
+
+async fn resolve_by_slug(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    slug: &str,
+) -> Result<ResolvedMemory, ImportError> {
+    // Two-level layout first. `list_tree` on `memories/<slug>`
+    // returns only the direct UUID-named blobs; subtrees would be
+    // a schema violation here.
+    let two_level_dir = format!(
+        "{}/{}",
+        mmcp_core::conventions::MEMORIES_DIR,
+        slug
+    );
+    let entries = backend
+        .list_tree(handle, &two_level_dir, &Rev::head())
+        .await?;
+    let uuids: Vec<Uuid> = entries
+        .iter()
+        .filter_map(|name| {
+            name.strip_suffix(mmcp_core::conventions::MEMORY_EXTENSION)
+                .and_then(|stem| Uuid::parse_str(stem).ok())
+        })
+        .collect();
+    match uuids.len() {
+        1 => {
+            let only = uuids[0];
+            Ok(ResolvedMemory {
+                slug: slug.to_string(),
+                id: Some(only),
+                path: mmcp_core::conventions::memory_path(slug, only),
+            })
+        }
+        n if n >= 2 => Err(ImportError::MemoryAmbiguous {
+            slug: slug.to_string(),
+            candidates: uuids,
+        }),
+        _ => {
+            // Fall back to the flat legacy layout.
+            let legacy = mmcp_core::conventions::legacy_memory_path(slug);
+            match backend.read_file(handle, &legacy, &Rev::head()).await {
+                Ok(bytes) => {
+                    let id_from_file = parse_frontmatter_id(&bytes);
+                    Ok(ResolvedMemory {
+                        slug: slug.to_string(),
+                        id: id_from_file,
+                        path: legacy,
+                    })
+                }
+                Err(GitError::PathNotFound(_)) => Err(ImportError::MemoryNotFound {
+                    slug: Some(slug.to_string()),
+                    id: None,
+                }),
+                Err(err) => Err(ImportError::Git(err)),
+            }
+        }
+    }
+}
+
+async fn resolve_by_id(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    expected: Uuid,
+) -> Result<ResolvedMemory, ImportError> {
+    let filename = format!(
+        "{}{}",
+        expected,
+        mmcp_core::conventions::MEMORY_EXTENSION
+    );
+    let dirs = backend
+        .list_subtrees(handle, mmcp_core::conventions::MEMORIES_DIR, &Rev::head())
+        .await?;
+    for slug in dirs {
+        let dir = format!("{}/{}", mmcp_core::conventions::MEMORIES_DIR, slug);
+        let entries = backend.list_tree(handle, &dir, &Rev::head()).await?;
+        if entries.iter().any(|name| name == &filename) {
+            return Ok(ResolvedMemory {
+                slug: slug.clone(),
+                id: Some(expected),
+                path: mmcp_core::conventions::memory_path(&slug, expected),
+            });
+        }
+    }
+    Err(ImportError::MemoryNotFound {
+        slug: None,
+        id: Some(expected),
+    })
+}
+
+fn verify_id_match(slug: &str, bytes: &[u8], expected: Uuid) -> Result<(), ImportError> {
+    let Some(actual) = parse_frontmatter_id(bytes) else {
+        // Pre-FR-028 file with no frontmatter id. Treat as a match
+        // so migration flows can address by expected id without
+        // erroring; the migration binary is what stamps the id.
+        return Ok(());
+    };
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(ImportError::MemoryIdMismatch {
+            slug: slug.to_string(),
+            expected,
+            got: actual,
+        })
+    }
+}
+
+fn parse_frontmatter_id(bytes: &[u8]) -> Option<Uuid> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let file = MemoryFile::parse(text).ok()?;
+    file.frontmatter.id
 }
 
 /// Create a fresh memory file. Errors with
@@ -145,7 +378,8 @@ pub async fn update_memory_file(
     validate_slug(slug)?;
     if !memory_exists(backend, handle, slug).await? {
         return Err(ImportError::MemoryNotFound {
-            slug: slug.to_string(),
+            slug: Some(slug.to_string()),
+            id: None,
         });
     }
     let commit_message = message
@@ -168,7 +402,8 @@ pub async fn delete_memory_file(
     validate_slug(slug)?;
     if !memory_exists(backend, handle, slug).await? {
         return Err(ImportError::MemoryNotFound {
-            slug: slug.to_string(),
+            slug: Some(slug.to_string()),
+            id: None,
         });
     }
     let commit_message = message
@@ -498,7 +733,7 @@ mod tests {
         let err = update_memory_file(&backend, &handle, "missing", SAMPLE_RENDERED, &author, None)
             .await
             .expect_err("update on absent slug");
-        assert!(matches!(err, ImportError::MemoryNotFound { slug } if slug == "missing"));
+        assert!(matches!(err, ImportError::MemoryNotFound { slug: Some(s), .. } if s == "missing"));
     }
 
     #[tokio::test]
@@ -550,7 +785,7 @@ mod tests {
         let err = delete_memory_file(&backend, &handle, "ghost", &author, None)
             .await
             .expect_err("delete on absent slug");
-        assert!(matches!(err, ImportError::MemoryNotFound { slug } if slug == "ghost"));
+        assert!(matches!(err, ImportError::MemoryNotFound { slug: Some(s), .. } if s == "ghost"));
     }
 
     #[tokio::test]
@@ -615,6 +850,149 @@ mod tests {
         .expect("second with override");
         assert_ne!(first.commit_id, second.commit_id);
         assert_eq!(first.slug, second.slug);
+    }
+
+    async fn seed_two_level_memory(
+        backend: &NativeBackend,
+        handle: &RepoHandle,
+        slug: &str,
+        id: Uuid,
+        author: &ResolvedAuthor,
+    ) {
+        let body = format!(
+            "+++\nid = \"{id}\"\nname = \"m\"\ndescription = \"m\"\nkind = \"rule\"\n+++\nbody\n"
+        );
+        backend
+            .write_commit(
+                handle,
+                CommitSpec::mmcp_commit(
+                    format!("seed {slug}/{id}"),
+                    vec![(
+                        mmcp_core::conventions::memory_path(slug, id),
+                        Some(body.into_bytes()),
+                    )],
+                    &author.name,
+                    &author.email,
+                ),
+            )
+            .await
+            .expect("seed commit");
+    }
+
+    #[tokio::test]
+    async fn resolve_memory_requires_slug_or_id() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let err = resolve_memory(&backend, &handle, None, None)
+            .await
+            .expect_err("neither arg");
+        assert!(matches!(err, ImportError::ResolveArgsMissing));
+    }
+
+    #[tokio::test]
+    async fn resolve_memory_by_slug_hits_two_level_layout() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let id = Uuid::now_v7();
+        seed_two_level_memory(&backend, &handle, "rt", id, &author).await;
+
+        let resolved = resolve_memory(&backend, &handle, Some("rt"), None)
+            .await
+            .expect("resolve");
+        assert_eq!(resolved.slug, "rt");
+        assert_eq!(resolved.id, Some(id));
+        assert_eq!(resolved.path, format!("memories/rt/{id}.md"));
+    }
+
+    #[tokio::test]
+    async fn resolve_memory_by_slug_falls_back_to_legacy_path() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        import_memory(
+            &backend,
+            &handle,
+            "legacy",
+            SAMPLE_RENDERED,
+            None,
+            &author,
+            false,
+        )
+        .await
+        .expect("seed legacy");
+
+        let resolved = resolve_memory(&backend, &handle, Some("legacy"), None)
+            .await
+            .expect("resolve");
+        assert_eq!(resolved.slug, "legacy");
+        assert_eq!(resolved.id, None);
+        assert_eq!(resolved.path, "memories/legacy.md");
+    }
+
+    #[tokio::test]
+    async fn resolve_memory_by_slug_is_ambiguous_when_multiple_ids_exist() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let id1 = Uuid::now_v7();
+        let id2 = Uuid::now_v7();
+        seed_two_level_memory(&backend, &handle, "dup", id1, &author).await;
+        seed_two_level_memory(&backend, &handle, "dup", id2, &author).await;
+
+        let err = resolve_memory(&backend, &handle, Some("dup"), None)
+            .await
+            .expect_err("ambiguous");
+        let ImportError::MemoryAmbiguous { slug, candidates } = err else {
+            panic!("expected MemoryAmbiguous, got different variant");
+        };
+        assert_eq!(slug, "dup");
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.contains(&id1));
+        assert!(candidates.contains(&id2));
+    }
+
+    #[tokio::test]
+    async fn resolve_memory_by_id_finds_slug_directory() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let id = Uuid::now_v7();
+        seed_two_level_memory(&backend, &handle, "byid", id, &author).await;
+
+        let resolved = resolve_memory(&backend, &handle, None, Some(id))
+            .await
+            .expect("resolve by id");
+        assert_eq!(resolved.slug, "byid");
+        assert_eq!(resolved.id, Some(id));
+    }
+
+    #[tokio::test]
+    async fn resolve_memory_slug_and_id_detects_mismatch() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let real = Uuid::now_v7();
+        let other = Uuid::now_v7();
+        seed_two_level_memory(&backend, &handle, "mm", real, &author).await;
+
+        // Caller supplies `other`; the two-level path `memories/mm/<other>.md`
+        // doesn't exist, so the resolver falls back to the legacy flat
+        // path `memories/mm.md`. That also doesn't exist here, so the
+        // error should be MemoryNotFound with both keys populated.
+        let err = resolve_memory(&backend, &handle, Some("mm"), Some(other))
+            .await
+            .expect_err("not found");
+        assert!(matches!(
+            err,
+            ImportError::MemoryNotFound { slug: Some(s), id: Some(i) } if s == "mm" && i == other
+        ));
+    }
+
+    #[tokio::test]
+    async fn resolve_memory_not_found_returns_typed_error() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let err = resolve_memory(&backend, &handle, Some("missing"), None)
+            .await
+            .expect_err("missing");
+        assert!(matches!(
+            err,
+            ImportError::MemoryNotFound { slug: Some(s), id: None } if s == "missing"
+        ));
     }
 
     #[tokio::test]

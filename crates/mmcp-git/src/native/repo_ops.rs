@@ -346,7 +346,12 @@ pub fn list_tree(
         Err(other) => return Err(other),
     };
     let commit_obj = repo.find_object(commit_id).map_err(gix_err)?;
-    let commit: gix::objs::Commit = commit_obj.into_commit().decode().map_err(gix_err)?.into();
+    let commit: gix::objs::Commit = commit_obj
+        .into_commit()
+        .decode()
+        .map_err(gix_err)?
+        .into_owned()
+        .map_err(gix_err)?;
 
     // Walk from the commit's root tree down into `path_prefix`.
     let target_tree_id = match resolve_tree_prefix(&repo, commit.tree, path_prefix)? {
@@ -362,6 +367,46 @@ pub fn list_tree(
             entry.mode.kind(),
             EntryKind::Blob | EntryKind::BlobExecutable
         ) {
+            let name = String::from_utf8_lossy(&entry.filename).into_owned();
+            out.push(name);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// List the subtree names directly under `path_prefix` at the
+/// given revision. Mirror of [`list_tree`] but filtered to
+/// directory entries instead of blobs.
+pub fn list_subtrees(
+    repo_path: &Path,
+    path_prefix: &str,
+    rev: &Rev,
+) -> Result<Vec<String>, GitError> {
+    let repo = open_bare(repo_path)?;
+    let commit_id = match resolve_rev(&repo, rev) {
+        Ok(id) => id,
+        Err(GitError::RevNotFound(_)) => return Ok(Vec::new()),
+        Err(other) => return Err(other),
+    };
+    let commit_obj = repo.find_object(commit_id).map_err(gix_err)?;
+    let commit: gix::objs::Commit = commit_obj
+        .into_commit()
+        .decode()
+        .map_err(gix_err)?
+        .into_owned()
+        .map_err(gix_err)?;
+
+    let target_tree_id = match resolve_tree_prefix(&repo, commit.tree, path_prefix)? {
+        Some(id) => id,
+        None => return Ok(Vec::new()),
+    };
+
+    let obj = repo.find_object(target_tree_id).map_err(gix_err)?;
+    let tree: gix::objs::Tree = obj.into_tree().decode().map_err(gix_err)?.into();
+    let mut out = Vec::new();
+    for entry in tree.entries {
+        if entry.mode.kind() == EntryKind::Tree {
             let name = String::from_utf8_lossy(&entry.filename).into_owned();
             out.push(name);
         }
@@ -407,7 +452,12 @@ pub fn read_file(repo_path: &Path, path: &str, rev: &Rev) -> Result<Bytes, GitEr
     let repo = open_bare(repo_path)?;
     let commit_id = resolve_rev(&repo, rev)?;
     let commit_obj = repo.find_object(commit_id).map_err(gix_err)?;
-    let commit: gix::objs::Commit = commit_obj.into_commit().decode().map_err(gix_err)?.into();
+    let commit: gix::objs::Commit = commit_obj
+        .into_commit()
+        .decode()
+        .map_err(gix_err)?
+        .into_owned()
+        .map_err(gix_err)?;
     let blob_id = find_blob_in_tree(&repo, commit.tree, path)?
         .ok_or_else(|| GitError::PathNotFound(path.to_string()))?;
     let blob = repo.find_object(blob_id).map_err(gix_err)?;
@@ -560,8 +610,12 @@ pub fn write_commit(repo_path: &Path, spec: CommitSpec) -> Result<String, GitErr
         Ok(reference) => {
             let parent_commit_id = reference.id().detach();
             let commit_obj = repo.find_object(parent_commit_id).map_err(gix_err)?;
-            let commit: gix::objs::Commit =
-                commit_obj.into_commit().decode().map_err(gix_err)?.into();
+            let commit: gix::objs::Commit = commit_obj
+                .into_commit()
+                .decode()
+                .map_err(gix_err)?
+                .into_owned()
+                .map_err(gix_err)?;
             (Some(parent_commit_id), Some(commit.tree))
         }
         Err(_) => (None, None),
@@ -642,8 +696,12 @@ pub fn walk_history(repo_path: &Path, path: &str) -> Result<Vec<CommitMeta>, Git
     for info in walk {
         let info = info.map_err(gix_err)?;
         let commit_obj = repo.find_object(info.id).map_err(gix_err)?;
-        let decoded_commit: gix::objs::Commit =
-            commit_obj.into_commit().decode().map_err(gix_err)?.into();
+        let decoded_commit: gix::objs::Commit = commit_obj
+            .into_commit()
+            .decode()
+            .map_err(gix_err)?
+            .into_owned()
+            .map_err(gix_err)?;
 
         // Only include commits that contain `path` in their tree.
         let blob = find_blob_in_tree(&repo, decoded_commit.tree, path)?;

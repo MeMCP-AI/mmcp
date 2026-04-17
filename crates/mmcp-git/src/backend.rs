@@ -134,4 +134,19 @@ pub trait GitBackend: Send + Sync {
         path_prefix: &str,
         rev: &Rev,
     ) -> Result<Vec<String>, GitError>;
+
+    /// List every subtree (directory) directly under `path_prefix`
+    /// at the given revision. Mirror of [`list_tree`] but for
+    /// directory entries, introduced for FR-028 so resolvers can
+    /// enumerate slug directories under `memories/`.
+    ///
+    /// Returned values are the subtree names *relative to*
+    /// `path_prefix`. Nested subtrees are not recursed into.
+    /// Missing prefix returns an empty vector.
+    async fn list_subtrees(
+        &self,
+        repo: &RepoHandle,
+        path_prefix: &str,
+        rev: &Rev,
+    ) -> Result<Vec<String>, GitError>;
 }
