@@ -1,0 +1,18 @@
+[package]
+name = "mmcp-gui"
+description = "mmcp-gui: desktop visual client for local memory stores. Reads, writes, and syncs memories straight from ~/.mmcp/ through mmcp-store's typed façade — no MCP protocol round-trip."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+eframe = "0.34"
+
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

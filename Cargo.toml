@@ -17,6 +17,7 @@ members = [
     "crates/mmcp-store",
     "crates/mmcp-server",
     "crates/mmcp-client",
+    "crates/mmcp-gui",
 ]
 
 [workspace.package]
