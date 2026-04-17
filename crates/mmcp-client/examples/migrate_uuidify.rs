@@ -128,7 +128,7 @@ async fn main() -> Result<()> {
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            if kind == "fr" {
+            if kind == "fr" || kind == "feature" {
                 fr_candidates.push((group_uuid.clone(), slug.to_string(), id));
             }
             slug_to_id.insert(slug.to_string(), id);

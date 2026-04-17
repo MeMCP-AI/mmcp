@@ -19,7 +19,7 @@ pub const fn kind_icon(kind: MemoryKind) -> &'static str {
         MemoryKind::Log => "≡",
         MemoryKind::Reference => "→",
         MemoryKind::Scratch => "▢",
-        MemoryKind::Fr => "★",
+        MemoryKind::Feature => "★",
     }
 }
 
@@ -33,7 +33,7 @@ pub const fn kind_text(kind: MemoryKind) -> &'static str {
         MemoryKind::Log => "LOG ",
         MemoryKind::Reference => "REF ",
         MemoryKind::Scratch => "SCR ",
-        MemoryKind::Fr => "FR  ",
+        MemoryKind::Feature => "FEAT",
     }
 }
 

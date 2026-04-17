@@ -77,7 +77,7 @@ fn render_prefix_preview(ui: &mut egui::Ui, mode: KindDisplay) {
                     (MemoryKind::Log, "incident-2026-03-05"),
                     (MemoryKind::Reference, "gitoxide-upstream"),
                     (MemoryKind::Scratch, "draft-notes"),
-                    (MemoryKind::Fr, "fr-020-extract-mmcp-store"),
+                    (MemoryKind::Feature, "fr-020-extract-mmcp-store"),
                 ] {
                     let prefix = kind_glyph::prefix_for(mode, kind);
                     ui.monospace(format!("{prefix}{sample_slug}"));

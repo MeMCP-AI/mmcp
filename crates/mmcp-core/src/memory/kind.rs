@@ -36,14 +36,22 @@ pub enum MemoryKind {
 
     /// Feature request. Carries a structured
     /// [`FeatureMetadata`](crate::memory::FeatureMetadata) block in
-    /// frontmatter (status, depends_on, blocks) so the FR lifecycle
-    /// tools can filter and cross-reference without parsing the body.
-    Fr,
+    /// frontmatter (status, depends_on, blocks) so the feature
+    /// lifecycle tools can filter and cross-reference without
+    /// parsing the body.
+    ///
+    /// The `fr` serde alias keeps pre-FR-027 memories readable;
+    /// writers emit `feature` so a rewrite on the next edit
+    /// auto-upgrades the on-disk wire form.
+    #[serde(alias = "fr")]
+    Feature,
 }
 
 impl MemoryKind {
     /// The canonical string representation of this kind, matching
-    /// the serde `snake_case` serialization.
+    /// the serde `snake_case` serialization. FR-027 renamed the
+    /// former `Fr` variant to `Feature`; the wire emits `feature`
+    /// while the `fr` serde alias preserves read compatibility.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -52,7 +60,7 @@ impl MemoryKind {
             MemoryKind::Log => "log",
             MemoryKind::Reference => "reference",
             MemoryKind::Scratch => "scratch",
-            MemoryKind::Fr => "fr",
+            MemoryKind::Feature => "feature",
         }
     }
 
@@ -76,5 +84,36 @@ impl MemoryKind {
     #[must_use]
     pub const fn is_versioned(self) -> bool {
         !matches!(self, MemoryKind::Scratch)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feature_kind_serializes_as_feature() {
+        let json = serde_json::to_string(&MemoryKind::Feature).expect("serialize");
+        assert_eq!(json, "\"feature\"");
+    }
+
+    #[test]
+    fn feature_kind_accepts_fr_serde_alias_for_read_compat() {
+        // Pre-FR-027 memories on disk carry `kind = "fr"`; the
+        // alias keeps them readable without a migration so the
+        // rename can land before the disk rewrite.
+        let parsed: MemoryKind = serde_json::from_str("\"fr\"").expect("fr alias");
+        assert_eq!(parsed, MemoryKind::Feature);
+    }
+
+    #[test]
+    fn feature_kind_also_reads_canonical_feature_string() {
+        let parsed: MemoryKind = serde_json::from_str("\"feature\"").expect("feature");
+        assert_eq!(parsed, MemoryKind::Feature);
+    }
+
+    #[test]
+    fn as_str_returns_canonical_feature_token() {
+        assert_eq!(MemoryKind::Feature.as_str(), "feature");
     }
 }

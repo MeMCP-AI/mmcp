@@ -465,7 +465,7 @@ fn build_memory_file(
     metadata: FeatureMetadata,
 ) -> MemoryFile {
     MemoryFile {
-        frontmatter: MemoryFrontmatter::new(title, description, MemoryKind::Fr)
+        frontmatter: MemoryFrontmatter::new(title, description, MemoryKind::Feature)
             .with_feature(metadata),
         body,
         format: FrontmatterFormat::TomlPlus,
@@ -480,7 +480,7 @@ fn record_from_file(
     file: MemoryFile,
     commit_id: String,
 ) -> Result<FeatureRecord, FeatureError> {
-    if file.frontmatter.kind != MemoryKind::Fr {
+    if file.frontmatter.kind != MemoryKind::Feature {
         return Err(FeatureError::NotAFeature {
             slug: slug.to_string(),
             kind: file.frontmatter.kind.as_str().to_string(),

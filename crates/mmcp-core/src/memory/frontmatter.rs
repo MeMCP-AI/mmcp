@@ -53,7 +53,7 @@ pub struct MemoryFrontmatter {
     #[serde(default)]
     pub bump_intent: Option<BumpIntent>,
 
-    /// Structured metadata populated only when `kind == MemoryKind::Fr`.
+    /// Structured metadata populated only when `kind == MemoryKind::Feature`.
     /// Carries the feature-request lifecycle (status + cross-ref slugs)
     /// so FR tools avoid re-parsing the body to classify memories.
     /// Absent on every non-FR memory; the TOML serializer skips the

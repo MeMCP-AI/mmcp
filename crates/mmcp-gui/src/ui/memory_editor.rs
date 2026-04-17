@@ -153,7 +153,7 @@ fn kind_combo(ui: &mut egui::Ui, kind: &mut MemoryKind) {
                 MemoryKind::Log,
                 MemoryKind::Reference,
                 MemoryKind::Scratch,
-                MemoryKind::Fr,
+                MemoryKind::Feature,
             ] {
                 ui.selectable_value(kind, candidate, candidate.as_str());
             }
