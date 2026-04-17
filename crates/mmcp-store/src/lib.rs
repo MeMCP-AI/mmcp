@@ -41,12 +41,17 @@
 #![forbid(unsafe_code)]
 
 pub mod config;
+pub mod diagnostics;
 pub mod error;
 pub mod groups;
 pub mod home;
 pub mod memory;
 pub mod sync;
 
+pub use diagnostics::{
+    DiagReport, GroupReport, Issue, diagnose_all, diagnose_group, health_check_all,
+    health_check_group,
+};
 pub use error::StoreError;
 pub use groups::{GroupEntry, GroupIndex};
 pub use home::{MmcpHome, ResolvedAuthor, read_git_global};
