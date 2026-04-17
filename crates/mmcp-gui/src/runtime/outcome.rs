@@ -3,13 +3,17 @@
 //! Errors are flattened into a pre-rendered `String` so the UI side
 //! doesn't have to pattern-match on non-`Clone` error variants each
 //! frame; the background worker formats them once at the failure
-//! site.
+//! site. Sync failures are distinguished from generic failures via
+//! [`TaskOutcome::SyncFailed`] so the UI can route them to the
+//! sync status bar instead of the toast queue.
 
 use std::sync::Arc;
 
 use mmcp_core::id::GroupId;
 use mmcp_core::memory::MemoryFile;
 use mmcp_store::GroupEntry;
+
+use crate::state::sync_status::SyncOp;
 
 #[derive(Debug)]
 pub enum TaskOutcome {
@@ -22,6 +26,23 @@ pub enum TaskOutcome {
         group_id: GroupId,
         slug: String,
         memory: Arc<MemoryFile>,
+    },
+    /// Reported once at worker startup. `server_url = None` means
+    /// sync is not configured for this project and the UI should
+    /// keep the Pull / Push buttons disabled.
+    SyncAvailable {
+        server_url: Option<String>,
+    },
+    SyncPullCompleted {
+        updated: usize,
+        new_groups: usize,
+    },
+    SyncPushCompleted {
+        drained: usize,
+    },
+    SyncFailed {
+        op: SyncOp,
+        message: String,
     },
     Error(String),
 }

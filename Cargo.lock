@@ -4392,6 +4392,7 @@ dependencies = [
  "mmcp-core",
  "mmcp-git",
  "mmcp-store",
+ "mmcp-sync",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

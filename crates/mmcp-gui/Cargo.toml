@@ -10,6 +10,7 @@ authors.workspace = true
 mmcp-core = { workspace = true }
 mmcp-git = { workspace = true }
 mmcp-store = { workspace = true }
+mmcp-sync = { workspace = true }
 
 eframe = "0.34"
 egui_commonmark = "0.23"
