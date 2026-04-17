@@ -7,10 +7,16 @@ rust-version.workspace = true
 authors.workspace = true
 
 [dependencies]
+mmcp-core = { workspace = true }
+mmcp-git = { workspace = true }
+mmcp-store = { workspace = true }
+
 eframe = "0.34"
+egui_commonmark = "0.23"
 
 anyhow = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 

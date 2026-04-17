@@ -1,19 +1,27 @@
 //! `mmcp-gui` binary entry point.
 //!
-//! Boots a `tracing` subscriber, initialises `eframe`, and hands the
-//! native window to [`app::MmcpGuiApp`]. Every piece of UI or I/O
-//! lives in the library modules — `main.rs` stays a thin launcher so
-//! integration tests can construct `MmcpGuiApp` directly without
-//! going through the eframe event loop.
+//! Boots a `tracing` subscriber, spins up a multi-thread tokio
+//! runtime, spawns the background worker that owns every
+//! `mmcp-store` call, and hands the native window off to
+//! [`app::MmcpGuiApp`]. Every piece of UI or I/O lives in the
+//! library modules — `main.rs` stays a thin launcher so integration
+//! tests can construct `MmcpGuiApp` directly without going through
+//! the eframe event loop.
 
 #![forbid(unsafe_code)]
 
 mod app;
+mod error;
+mod io;
+mod runtime;
+mod state;
+mod ui;
 
 use anyhow::Result;
 use tracing_subscriber::EnvFilter;
 
 use crate::app::MmcpGuiApp;
+use crate::runtime::BackgroundHandle;
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -21,6 +29,12 @@ fn main() -> Result<()> {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| anyhow::anyhow!("tokio runtime: {e}"))?;
+    let background = BackgroundHandle::spawn(&runtime);
 
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
@@ -33,7 +47,13 @@ fn main() -> Result<()> {
     eframe::run_native(
         "mmcp-gui",
         native_options,
-        Box::new(|_cc| Ok(Box::new(MmcpGuiApp))),
+        Box::new(move |_cc| Ok(Box::new(MmcpGuiApp::new(background)))),
     )
-    .map_err(|err| anyhow::anyhow!("eframe::run_native failed: {err}"))
+    .map_err(|err| anyhow::anyhow!("eframe::run_native failed: {err}"))?;
+
+    // Hold the runtime until eframe returns so the worker lives as
+    // long as the window. Dropping here shuts the worker down
+    // cleanly.
+    drop(runtime);
+    Ok(())
 }
