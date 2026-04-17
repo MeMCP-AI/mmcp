@@ -138,6 +138,21 @@ async fn main() -> Result<()> {
     }
 
     // ── Pass 2: rewrite FR cross-refs from slugs to UUIDs ──────────
+    // In dry-run mode the pass-1 moves never hit the backend, so
+    // `memories/<slug>/<id>.md` doesn't exist yet. Log the planned
+    // work and bail out — the real run will visit the written
+    // files and do the actual rewrites.
+    if dry_run {
+        eprintln!(
+            "[migrate_uuidify] dry-run: would re-visit {} FR memor{} for cross-ref rewrites (skipped in dry-run)",
+            fr_candidates.len(),
+            if fr_candidates.len() == 1 { "y" } else { "ies" }
+        );
+        eprintln!(
+            "[migrate_uuidify] done: migrated={total_migrated} skipped={total_skipped} cross_refs_rewritten=0 (dry-run)"
+        );
+        return Ok(());
+    }
     let mut total_cross_refs_rewritten = 0usize;
     for (group_uuid, slug, id) in &fr_candidates {
         let entry = groups
