@@ -7,9 +7,16 @@
 //! itself owns a long-lived `NativeBackend`, `GroupIndex`, optional
 //! `SyncEngine` bundle, and cached `ResolvedAuthor` so repeat calls
 //! don't re-open the bare repos or re-resolve the commit author.
+//!
+//! Outcome delivery is event-driven: every outcome send wakes the
+//! egui event loop via `ctx.request_repaint()`, so the UI paints
+//! immediately instead of waiting on the next input event. This
+//! replaces the old per-frame polling timer and keeps CPU idle when
+//! no tasks are in flight.
 
 use std::sync::Arc;
 
+use eframe::egui;
 use mmcp_core::config::ProjectConfig;
 use mmcp_git::NativeBackend;
 use mmcp_store::{
@@ -40,10 +47,14 @@ impl BackgroundHandle {
     /// `NativeBackend` + `GroupIndex` + (optional) `SyncEngine` +
     /// `ResolvedAuthor` eagerly, so a broken home surfaces as the
     /// first `TaskOutcome::Error` before any user action.
-    pub fn spawn(runtime: &tokio::runtime::Runtime) -> Self {
+    ///
+    /// `egui_ctx` is cloned into every task that might emit an
+    /// outcome so the UI repaints the moment new data lands,
+    /// without a polling timer.
+    pub fn spawn(runtime: &tokio::runtime::Runtime, egui_ctx: egui::Context) -> Self {
         let (task_tx, task_rx) = mpsc::unbounded_channel::<BackgroundTask>();
         let (outcome_tx, outcome_rx) = mpsc::unbounded_channel::<TaskOutcome>();
-        runtime.spawn(worker_loop(task_rx, outcome_tx));
+        runtime.spawn(worker_loop(task_rx, outcome_tx, egui_ctx));
         Self {
             tx: task_tx,
             rx: outcome_rx,
@@ -75,43 +86,65 @@ struct WorkerContext {
     author: ResolvedAuthor,
 }
 
+/// Wrapper that pairs each outcome send with an egui repaint wake.
+/// Keeping the wake side of the channel colocated with the send side
+/// means every call site (main worker, probe loop, init failure
+/// branch) does the right thing without remembering the kick.
+#[derive(Clone)]
+struct OutcomeBus {
+    tx: mpsc::UnboundedSender<TaskOutcome>,
+    egui_ctx: egui::Context,
+}
+
+impl OutcomeBus {
+    fn send(&self, outcome: TaskOutcome) -> bool {
+        if self.tx.send(outcome).is_err() {
+            return false;
+        }
+        self.egui_ctx.request_repaint();
+        true
+    }
+}
+
 async fn worker_loop(
     mut task_rx: mpsc::UnboundedReceiver<BackgroundTask>,
     outcome_tx: mpsc::UnboundedSender<TaskOutcome>,
+    egui_ctx: egui::Context,
 ) {
+    let bus = OutcomeBus {
+        tx: outcome_tx,
+        egui_ctx,
+    };
+
     let ctx = match init_context().await {
         Ok(c) => c,
         Err(err) => {
-            let _ = outcome_tx.send(TaskOutcome::Error(err.to_string()));
+            bus.send(TaskOutcome::Error(err.to_string()));
             return;
         }
     };
 
-    let _ = outcome_tx.send(TaskOutcome::SyncAvailable {
+    bus.send(TaskOutcome::SyncAvailable {
         server_url: ctx.sync.as_ref().map(|s| s.server_url.clone()),
     });
 
-    // Spawn the reachability probe when sync is configured, so the
-    // toolbar can disable Pull/Push the moment the server becomes
-    // unreachable. Probe client is separate from the main sync
-    // engine's client so a long-running pull doesn't starve the
-    // probe (or vice versa).
+    // Spawn the reachability probe when sync is configured.
     if let Some(bundle) = ctx.sync.as_ref() {
-        tokio::spawn(probe_loop(bundle.server_url.clone(), outcome_tx.clone()));
+        tokio::spawn(probe_loop(bundle.server_url.clone(), bus.clone()));
     }
 
     match refresh_groups(&ctx).await {
         Ok(groups) => {
-            let _ = outcome_tx.send(TaskOutcome::GroupsRefreshed(groups));
+            bus.send(TaskOutcome::GroupsRefreshed(groups));
         }
         Err(err) => {
-            let _ = outcome_tx.send(TaskOutcome::Error(err.to_string()));
+            bus.send(TaskOutcome::Error(err.to_string()));
         }
     }
 
     while let Some(task) = task_rx.recv().await {
         let outcome = execute(&ctx, task).await;
-        if outcome_tx.send(outcome).is_err() {
+        if !bus.send(outcome) {
             break;
         }
     }
@@ -171,11 +204,11 @@ fn load_project_sync() -> anyhow::Result<Option<mmcp_core::config::SyncConfig>> 
 /// user-visible delay.
 const PROBE_INTERVAL: Duration = Duration::from_secs(15);
 
-async fn probe_loop(server_url: String, tx: mpsc::UnboundedSender<TaskOutcome>) {
+async fn probe_loop(server_url: String, bus: OutcomeBus) {
     let client = match SyncClient::new(&server_url) {
         Ok(c) => c,
         Err(err) => {
-            let _ = tx.send(TaskOutcome::HealthChanged {
+            bus.send(TaskOutcome::HealthChanged {
                 online: false,
                 reason: Some(err.to_string()),
             });
@@ -204,7 +237,7 @@ async fn probe_loop(server_url: String, tx: mpsc::UnboundedSender<TaskOutcome>) 
                 reason: None,
             },
         };
-        if tx.send(outcome).is_err() {
+        if !bus.send(outcome) {
             break;
         }
     }

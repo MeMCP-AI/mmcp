@@ -25,14 +25,18 @@ pub struct MmcpGuiApp {
     state: AppState,
     background: BackgroundHandle,
     viewer: ViewerWidget,
+    /// Held so the tokio runtime lives as long as the window. Dropped
+    /// after `eframe::run_native` returns, which cancels the worker.
+    _runtime: tokio::runtime::Runtime,
 }
 
 impl MmcpGuiApp {
-    pub fn new(background: BackgroundHandle) -> Self {
+    pub fn new(background: BackgroundHandle, runtime: tokio::runtime::Runtime) -> Self {
         Self {
             state: AppState::default(),
             background,
             viewer: ViewerWidget::default(),
+            _runtime: runtime,
         }
     }
 
@@ -139,7 +143,8 @@ impl eframe::App for MmcpGuiApp {
         diagnostics_panel::show(ui.ctx(), &mut self.state);
         delete_confirmation::show(ui.ctx(), &mut self.state, &self.background);
 
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(100));
+        // No unconditional repaint: the background worker wakes egui
+        // via `ctx.request_repaint()` on every outcome, so idle
+        // frames cost zero CPU.
     }
 }

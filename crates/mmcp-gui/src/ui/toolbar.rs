@@ -19,15 +19,20 @@ use crate::state::sync_status::{SyncOp, SyncStatus};
 
 pub fn show(ui: &mut egui::Ui, state: &mut AppState, background: &BackgroundHandle) {
     egui::Panel::top("mmcp_gui_toolbar").show_inside(ui, |ui| {
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.add_space(4.0);
-
+            ui.add_space(6.0);
             render_crud_buttons(ui, state);
+            ui.add_space(12.0);
             ui.separator();
+            ui.add_space(12.0);
             render_sync_buttons(ui, state, background);
+            ui.add_space(12.0);
             ui.separator();
+            ui.add_space(12.0);
             render_diagnose_button(ui, state, background);
         });
+        ui.add_space(4.0);
     });
 }
 
@@ -42,7 +47,7 @@ fn render_crud_buttons(ui: &mut egui::Ui, state: &mut AppState) {
 
     let new_enabled = selected_group.is_some() && not_editing;
     if ui
-        .add_enabled(new_enabled, egui::Button::new("New"))
+        .add_enabled(new_enabled, egui::Button::new("＋  New"))
         .on_disabled_hover_text("select a group first")
         .clicked()
     {
@@ -53,7 +58,7 @@ fn render_crud_buttons(ui: &mut egui::Ui, state: &mut AppState) {
 
     let edit_enabled = has_loaded_memory && not_editing;
     if ui
-        .add_enabled(edit_enabled, egui::Button::new("Edit"))
+        .add_enabled(edit_enabled, egui::Button::new("✎  Edit"))
         .on_disabled_hover_text("select a loaded memory to edit")
         .clicked()
     {
@@ -66,7 +71,7 @@ fn render_crud_buttons(ui: &mut egui::Ui, state: &mut AppState) {
 
     let delete_enabled = has_loaded_memory && not_editing && state.pending_delete.is_none();
     if ui
-        .add_enabled(delete_enabled, egui::Button::new("Delete"))
+        .add_enabled(delete_enabled, egui::Button::new("✕  Delete"))
         .on_disabled_hover_text("select a memory to delete")
         .clicked()
     {
@@ -83,7 +88,7 @@ fn render_sync_buttons(ui: &mut egui::Ui, state: &mut AppState, background: &Bac
     let pull_hint = disabled_hint(&state.sync, &state.reachability, SyncOp::Pull);
     let push_hint = disabled_hint(&state.sync, &state.reachability, SyncOp::Push);
     if ui
-        .add_enabled(enabled, egui::Button::new("Pull"))
+        .add_enabled(enabled, egui::Button::new("↓  Pull"))
         .on_disabled_hover_text(pull_hint)
         .clicked()
     {
@@ -91,7 +96,7 @@ fn render_sync_buttons(ui: &mut egui::Ui, state: &mut AppState, background: &Bac
         background.send(BackgroundTask::SyncPull);
     }
     if ui
-        .add_enabled(enabled, egui::Button::new("Push"))
+        .add_enabled(enabled, egui::Button::new("↑  Push"))
         .on_disabled_hover_text(push_hint)
         .clicked()
     {
@@ -101,7 +106,7 @@ fn render_sync_buttons(ui: &mut egui::Ui, state: &mut AppState, background: &Bac
 }
 
 fn render_diagnose_button(ui: &mut egui::Ui, state: &mut AppState, background: &BackgroundHandle) {
-    if ui.button("Diagnose").clicked() {
+    if ui.button("◈  Diagnose").clicked() {
         state.diag_panel_open = true;
         state.diag_report = None;
         background.send(BackgroundTask::RunDiagnose);
