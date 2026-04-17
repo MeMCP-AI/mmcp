@@ -103,35 +103,33 @@ Elicitation-based slug defaulting on the MCP side is still gated on FR-011 (rmcp
 
 **Status**: Open. Discovered while running the re-read checkpoint against the project group, which is not mirrored locally yet — the empty response led to a premature stop.
 
-### FR-016: `edit_memory` tool for partial updates (2026-04-17)
+### FR-016: `edit_memory` tool for partial updates (2026-04-17) - RESOLVED
 
 **Need**: The current `write_memory` MCP tool is the only write path. It requires every frontmatter field (name, description, kind, tags, mandatory) on every call and rebuilds the file from those typed args — so an AI session that "just wants to fix a typo in the body" must re-specify all metadata defensively, risking silent drift when a field is forgotten. There is no way to mutate one slice of a memory in place.
 
-**How to apply**: Add an `edit_memory(group, slug, body?, name?, description?, kind?, tags_add?, tags_remove?, mandatory?, message?)` tool. All mutator fields are optional; the server reads the existing `MemoryFile`, applies per-field deltas, re-renders, and commits. `tags_add` / `tags_remove` are additive operators that compose cleanly under repeat calls; `tags` as a full replacement stays available via `write_memory` with `override: true` (see FR-018). Errors `memory_not_found` when the slug is absent.
+**Status**: Resolved (2026-04-17). New `edit_memory(group, slug, body?, name?, description?, kind?, tags_add?, tags_remove?, mandatory?, message?)` tool reads the existing `MemoryFile` via the shared `update_memory_file` primitive, applies per-field deltas, re-renders, and commits. All mutator fields are optional; absent fields leave their slice untouched. `tags_add` / `tags_remove` are additive operators with sort+dedup so repeated calls converge. Errors with code `memory_not_found` when the slug is absent; `map_memory_error_to_mcp` shares the same payload shape with `write_memory` and `delete_memory`.
 
-**Status**: Open. Paired with FR-017 + FR-018 for the full CRUD completion.
-
-### FR-017: `delete_memory` tool (2026-04-17)
+### FR-017: `delete_memory` tool (2026-04-17) - RESOLVED
 
 **Need**: `write_memory` and the forthcoming `edit_memory` can create and update, but there is no supported path to remove a memory through MCP. `debug_write_file` with an empty body is a workaround, and it requires debug mode enabled — not a viable surface for an AI session iterating on a draft rule and wanting to discard it.
 
-**How to apply**: Add `delete_memory(group, slug, message?)` that commits a file deletion against the group's main branch. Returns `{slug, commit_id}`. Errors `memory_not_found` when the slug is absent; no silent no-op.
+**Status**: Resolved (2026-04-17). New `delete_memory(group, slug, message?)` tool commits a file deletion via the shared `delete_memory_file` primitive (which leans on `build_tree`'s `(path, None)` delete semantic on the native backend). Returns `{group, slug, commit_id}`. Double-delete errors `memory_not_found` rather than silently succeeding. The removal shows up in `list_versions` like any other mutation so it is auditable.
 
-**Status**: Open. Symmetric counterpart to FR-016.
-
-### FR-018: `write_memory` becomes strict CREATE with an `override` escape hatch (2026-04-17)
+### FR-018: `write_memory` becomes strict CREATE with an `override` escape hatch (2026-04-17) - RESOLVED
 
 **Need**: Today `write_memory` silently overwrites when the slug already exists, which is the wrong default for an AI session iterating on rules: the natural "re-run defensively" pattern blasts away any refinements a subsequent `edit_memory` would have applied. The tool needs to be CREATE-only by default, with an explicit opt-in when the caller genuinely wants replace-whole-file behavior.
 
-**How to apply**: Add `override: bool` (default `false`) to `WriteMemoryArgs`. When `false` and the slug already exists, return the structured error `{code: "memory_already_exists", slug}` pointing the caller at `edit_memory`. When `true`, keep today's overwrite behavior — useful for bulk-reset flows (schema migrations, test fixtures) where the operator knowingly wants to replace the whole file. Rewrite the tool description to lead with "CREATE" and name `edit_memory` / `delete_memory` explicitly; add the same language to the `get_info().instructions` block so every session sees the separation on handshake.
+**Status**: Resolved (2026-04-17). `WriteMemoryArgs` gained `override: bool` (serde-renamed from the Rust field `override_` to sidestep the keyword). Default false → strict CREATE via `create_memory_file`; collision errors `memory_already_exists` with a retry hint naming `edit_memory`, `delete_memory`, and the `override: true` escape hatch. Default true → continues today's replace-whole-file behavior through the shared `import_memory` upsert wrapper, now with `"replaced": true` on the response so audit trails distinguish the two flows.
 
-The shared `import_memory` helper in `commands/import.rs` splits (or gains a mode arg) so the CLI `mmcp import` path continues to upsert — operators running bulk imports have explicit intent, the AI-driven MCP path doesn't.
+Per user direction ("full consistency across surfaces"), the CLI `mmcp import` command mirrors the semantics: new `--override` flag, strict CREATE by default, with the collision error naming both `--override` and `mmcp__edit_memory` so operators see the escape hatches explicitly. The `SESSION_INSTRUCTIONS` constant was rewritten to lead with the three-tool CRUD separation (create / edit / delete) so AI sessions see the contract on handshake.
 
-**Status**: Open. Behavior change (not breaking the wire format — `override` defaults to false), so existing MCP callers that relied on the upsert now see `memory_already_exists` on the second call. Callers adapt by switching to `edit_memory` (FR-016) or supplying `override: true` when they genuinely meant overwrite.
-
-### FR-019: Elicitation-gated guard on mutations to protected groups (2026-04-17)
+### FR-019: Elicitation-gated guard on mutations to protected groups (2026-04-17) - RESOLVED
 
 **Need**: Global memories are cross-project shared rules — a single accidental or misguided modification propagates to every project that pulls the shared group. Today the CRUD surface treats them identically to scratch notes: an AI session can override, edit, or delete `global-coding-rules` just as easily as a per-project note. The natural AI pattern of "defensive writing" becomes dangerous at the global scope. A guard is needed so any mutation of a protected memory requires explicit, user-visible confirmation delivered through MCP elicitation — no bool-arg escape hatch on the MCP path, no silent pass-through.
+
+**Status**: Resolved (2026-04-17) in its pre-elicitation form. `GroupManifest.protected: bool` carries the flag (serde-default-false, skip-when-false, backward-compatible with pre-flag manifests). The `ensure_not_protected` helper gates every MCP mutation path — `write_memory` (create AND override), `edit_memory`, `delete_memory`, and the debug-mode `debug_write_file` escape hatch — with a stable `{code: "protected_requires_elicitation", group_slug, group_id, slug, action, retry_hint}` payload. Read-only paths stay unaffected. No bool-arg bypass on the MCP surface.
+
+CLI parity lands via `protected_confirm` in `mmcp import`: TTY invocations fire `inquire::Confirm` (default no); non-TTY invocations require `--force`. When rmcp ships elicitation (FR-011), the guard migrates to firing an `ElicitationRequest` with the same `{group, slug, action}` context — the wire `code` stays stable so callers that already branch on it continue to work. Flipping an existing group's manifest to `protected: true` stays an operational follow-up: the code is in place but no group in this tree is marked protected yet.
 
 **How to apply**:
 
