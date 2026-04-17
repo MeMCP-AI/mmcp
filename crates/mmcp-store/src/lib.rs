@@ -49,6 +49,9 @@ pub mod memory;
 pub mod sessions;
 pub mod sync;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use diagnostics::{
     DiagReport, GroupReport, Issue, diagnose_all, diagnose_group, health_check_all,
     health_check_group,

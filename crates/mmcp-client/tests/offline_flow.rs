@@ -9,7 +9,6 @@
 //! this test will fail and surface the regression.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use mmcp_core::config::{GroupsConfig, LanguagesConfig, ProjectConfig};
 use mmcp_core::id::{GroupId, ProjectUuid};
@@ -17,27 +16,14 @@ use mmcp_core::manifest::GroupManifest;
 use mmcp_core::memory::MemoryKind;
 use mmcp_git::{GitBackend, NativeBackend};
 use mmcp_store::diagnostics as health;
-use mmcp_store::groups::GroupIndex;
-use mmcp_store::home::{MmcpHome, ResolvedAuthor};
 use mmcp_store::memory::{self as import, SynthFrontmatter};
+use mmcp_store::testing::ScratchHome;
 use tempfile::TempDir;
 use uuid::Uuid;
 
-/// Build a fully offline client environment: a tempdir-backed
-/// `MmcpHome`, a real `NativeBackend` on local disk, and a project
-/// config whose `sync` field is explicitly unset so any accidental
-/// path that tries to dial a remote server will misbehave
-/// observably.
-async fn offline_env() -> (
-    MmcpHome,
-    Arc<NativeBackend>,
-    GroupIndex,
-    ResolvedAuthor,
-    TempDir,
-) {
-    let tmp = TempDir::new().expect("tempdir");
-    let home = MmcpHome::from_root(tmp.path().join("mmcp-home"));
-    std::fs::create_dir_all(home.repos_root()).expect("repos root");
+#[tokio::test]
+async fn import_list_read_health_and_diagnose_run_without_any_remote() {
+    let scratch = ScratchHome::new().await.expect("scratch home");
 
     // The project config explicitly has no [sync] block; this is the
     // canonical shape for a user who has never run `mmcp link`.
@@ -53,36 +39,17 @@ async fn offline_env() -> (
         "remoteless test must start from a sync-less config"
     );
 
-    let (backend, groups) = home.init_backend().await.expect("init_backend");
-    let author = home.resolve_author();
-    (home, backend, groups, author, tmp)
-}
-
-async fn seed_group(backend: &NativeBackend, groups: &GroupIndex, slug: &str) -> GroupId {
-    let group_id = GroupId::new();
-    let manifest = GroupManifest::new_user_owned(group_id, slug, Uuid::now_v7());
-    backend
-        .create_group_repo(&manifest)
-        .await
-        .expect("create group repo");
-    groups.refresh().await.expect("refresh groups");
-    group_id
-}
-
-#[tokio::test]
-async fn import_list_read_health_and_diagnose_run_without_any_remote() {
-    let (_home, backend, groups, author, _tmp) = offline_env().await;
-
     // Seed a group locally. No remote URL is involved anywhere.
-    let group_id = seed_group(&backend, &groups, "team-rust").await;
-    let entry = groups
-        .get(&group_id)
+    let seeded = scratch.seed_group("team-rust").await.expect("seed group");
+    let entry = scratch
+        .groups()
+        .get(&seeded.group_id)
         .await
         .expect("seeded group resolvable");
 
     // Import a memory — writes stay on local disk via the native backend.
     let result = import::import_memory(
-        &backend,
+        scratch.backend(),
         &entry.handle,
         "offline-rule",
         "This is the body of an offline-authored memory.\n",
@@ -91,7 +58,7 @@ async fn import_list_read_health_and_diagnose_run_without_any_remote() {
             description: "Written with no network".into(),
             kind: MemoryKind::Rule,
         }),
-        &author,
+        scratch.author(),
         false,
     )
     .await
@@ -101,7 +68,7 @@ async fn import_list_read_health_and_diagnose_run_without_any_remote() {
 
     // Surface checks: manifest + memory must parse without any I/O
     // beyond the local bare repo.
-    let surface = health::health_check_all(&backend, &groups).await;
+    let surface = health::health_check_all(scratch.backend(), scratch.groups()).await;
     assert_eq!(surface.len(), 1, "exactly one group should be reported");
     let group_surface = &surface[0];
     assert_eq!(group_surface.memory_count, 1, "memory should be visible");
@@ -119,7 +86,7 @@ async fn import_list_read_health_and_diagnose_run_without_any_remote() {
     // Deep checks: same guarantee, plus the project-level issue
     // reporter is allowed to warn about missing sync config but
     // must not fail fast or raise a hard error.
-    let diag = health::diagnose_all(&backend, &groups).await;
+    let diag = health::diagnose_all(scratch.backend(), scratch.groups()).await;
     assert_eq!(diag.groups.len(), 1, "diagnose matches health");
     let has_error = diag
         .groups
