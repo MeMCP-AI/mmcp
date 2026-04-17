@@ -15,6 +15,7 @@ use mmcp_store::{DiagReport, GroupEntry};
 
 use crate::state::editor_buffer::EditorBuffer;
 use crate::state::selection::Selection;
+use crate::state::settings::UiSettings;
 use crate::state::sync_reachability::SyncReachability;
 use crate::state::sync_status::SyncStatus;
 use crate::state::viewer_cache::ViewerCache;
@@ -60,6 +61,13 @@ pub struct AppState {
     /// Pending delete confirmation target (group, slug). `Some`
     /// renders the confirmation modal; `None` hides it.
     pub pending_delete: Option<(GroupId, String)>,
+
+    /// Persisted user preferences. Loaded from eframe storage on
+    /// startup and saved back on the `save` hook.
+    pub settings: UiSettings,
+
+    /// Whether the floating settings window is visible.
+    pub settings_panel_open: bool,
 
     /// Last error string emitted by the background worker. Phase 2
     /// renders this inline; phase 3+ promotes it to a toast queue.

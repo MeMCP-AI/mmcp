@@ -23,6 +23,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::app::MmcpGuiApp;
 use crate::runtime::BackgroundHandle;
+use crate::state::settings::{STORAGE_KEY, UiSettings};
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -49,8 +50,12 @@ fn main() -> Result<()> {
         native_options,
         Box::new(move |cc| {
             style::configure(&cc.egui_ctx);
+            let settings = cc
+                .storage
+                .and_then(|s| eframe::get_value::<UiSettings>(s, STORAGE_KEY))
+                .unwrap_or_default();
             let background = BackgroundHandle::spawn(&runtime, cc.egui_ctx.clone());
-            Ok(Box::new(MmcpGuiApp::new(background, runtime)))
+            Ok(Box::new(MmcpGuiApp::new(background, runtime, settings)))
         }),
     )
     .map_err(|err| anyhow::anyhow!("eframe::run_native failed: {err}"))

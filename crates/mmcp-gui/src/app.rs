@@ -16,10 +16,11 @@ use eframe::egui;
 
 use crate::runtime::{BackgroundHandle, BackgroundTask, TaskOutcome};
 use crate::state::AppState;
+use crate::state::settings::{STORAGE_KEY, UiSettings};
 use crate::ui::memory_editor::EditorWidget;
 use crate::ui::{
     ViewerWidget, delete_confirmation, diagnostics_panel, group_panel, memory_list_panel,
-    status_bar, toolbar,
+    settings_panel, status_bar, toolbar,
 };
 
 pub struct MmcpGuiApp {
@@ -33,9 +34,17 @@ pub struct MmcpGuiApp {
 }
 
 impl MmcpGuiApp {
-    pub fn new(background: BackgroundHandle, runtime: tokio::runtime::Runtime) -> Self {
+    pub fn new(
+        background: BackgroundHandle,
+        runtime: tokio::runtime::Runtime,
+        settings: UiSettings,
+    ) -> Self {
+        let state = AppState {
+            settings,
+            ..AppState::default()
+        };
         Self {
-            state: AppState::default(),
+            state,
             background,
             viewer: ViewerWidget::default(),
             editor: EditorWidget::default(),
@@ -145,9 +154,14 @@ impl eframe::App for MmcpGuiApp {
         // Floating / modal overlays render after the central area.
         diagnostics_panel::show(ui.ctx(), &mut self.state);
         delete_confirmation::show(ui.ctx(), &mut self.state, &self.background);
+        settings_panel::show(ui.ctx(), &mut self.state);
 
         // No unconditional repaint: the background worker wakes egui
         // via `ctx.request_repaint()` on every outcome, so idle
         // frames cost zero CPU.
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, STORAGE_KEY, &self.state.settings);
     }
 }

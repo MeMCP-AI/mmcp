@@ -12,11 +12,12 @@ mmcp-git = { workspace = true }
 mmcp-store = { workspace = true }
 mmcp-sync = { workspace = true }
 
-eframe = "0.34"
+eframe = { version = "0.34", features = ["persistence"] }
 egui_commonmark = { version = "0.23", features = ["better_syntax_highlighting"] }
 
 anyhow = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

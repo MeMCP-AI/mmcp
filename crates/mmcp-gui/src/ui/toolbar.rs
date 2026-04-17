@@ -31,6 +31,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, background: &BackgroundHand
             ui.separator();
             ui.add_space(12.0);
             render_diagnose_button(ui, state, background);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(6.0);
+                render_settings_button(ui, state);
+            });
         });
         ui.add_space(4.0);
     });
@@ -110,6 +114,12 @@ fn render_diagnose_button(ui: &mut egui::Ui, state: &mut AppState, background: &
         state.diag_panel_open = true;
         state.diag_report = None;
         background.send(BackgroundTask::RunDiagnose);
+    }
+}
+
+fn render_settings_button(ui: &mut egui::Ui, state: &mut AppState) {
+    if ui.button("⚙  Settings").clicked() {
+        state.settings_panel_open = !state.settings_panel_open;
     }
 }
 
