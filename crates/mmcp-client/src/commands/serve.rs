@@ -216,6 +216,15 @@ struct WriteMemoryArgs {
     /// Whether this memory must be read at least once per session.
     #[serde(default)]
     pub mandatory: bool,
+    /// Opt into replacing an already-existing memory at this slug.
+    /// `false` (default) makes the tool a strict CREATE — the wire
+    /// name is `override` via serde rename; the Rust field uses a
+    /// suffix to sidestep the reserved keyword. Callers almost
+    /// never want this; prefer `edit_memory` for partial updates
+    /// and reach for `override` only on deliberate replace-whole-
+    /// file flows.
+    #[serde(default, rename = "override")]
+    pub override_: bool,
 }
 
 /// Argument shape for `edit_memory`.
@@ -716,7 +725,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Write a memory into a group. All metadata fields (name, description, kind, tags, mandatory) are typed parameters - the server builds the frontmatter. If the slug already exists it is overwritten with a new commit."
+        description = "CREATE a new memory in a group. All metadata fields (name, description, kind, tags, mandatory) are typed parameters — the server builds the frontmatter. Errors with code `memory_already_exists` when the slug is already on disk; use `edit_memory` to apply partial updates, `delete_memory` to remove, or pass `override: true` to deliberately replace the whole file (bulk-reset flows only — the default should almost always stay false)."
     )]
     async fn write_memory(
         &self,
@@ -757,13 +766,15 @@ impl McpServer {
             &rendered,
             None,
             &self.state.author,
+            args.override_,
         )
         .await
-        .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
+        .map_err(map_memory_error_to_mcp)?;
         Ok(ok_json(json!({
             "slug": result.slug,
             "commit_id": result.commit_id,
             "group": args.group,
+            "replaced": args.override_,
         })))
     }
 
@@ -1808,12 +1819,22 @@ const SESSION_INSTRUCTIONS: &str = concat!(
     "a branch, tag, or commit hex). `group_info(group)` returns manifest ",
     "metadata. `list_versions(group, slug)` walks the memory's commit history.\n\n",
     "## Authoring and maintenance\n\n",
-    "`write_memory(group, slug, name, description, kind, body[, tags, mandatory])` ",
-    "authors or updates a memory. The server builds frontmatter from typed ",
-    "parameters — you never construct fence blocks by hand. Use `check_health` ",
-    "for surface validation (manifest readable, memories parse), `diagnose` for ",
-    "deep structural checks (missing fields, empty bodies, cross-group slug ",
-    "collisions, config gaps).\n\n",
+    "The memory CRUD surface is three separate tools; pick the right one:\n",
+    "- `write_memory(group, slug, name, description, kind, body[, tags, mandatory])` ",
+    "CREATES a new memory. Errors with `memory_already_exists` on collision — ",
+    "the tool will NOT overwrite silently. Pass `override: true` only when you ",
+    "genuinely mean replace-the-whole-file (bulk-reset flows); almost never.\n",
+    "- `edit_memory(group, slug[, body, name, description, kind, tags_add, ",
+    "tags_remove, mandatory, message])` applies partial deltas to an existing ",
+    "memory. Omit a field to leave it untouched. `tags_add` / `tags_remove` ",
+    "compose additively with dedup. Use this to tweak a rule, NOT `write_memory`.\n",
+    "- `delete_memory(group, slug[, message])` removes a memory by commit. ",
+    "The removal is auditable through `list_versions`; double-delete errors ",
+    "with `memory_not_found`.\n\n",
+    "The server builds all frontmatter from typed parameters — you never ",
+    "construct fence blocks by hand. Use `check_health` for surface validation ",
+    "(manifest readable, memories parse), `diagnose` for deep structural checks ",
+    "(missing fields, empty bodies, cross-group slug collisions, config gaps).\n\n",
     "## CLAUDE.md management\n\n",
     "Never hand-edit CLAUDE.md to add rules. If `bootstrap_context` emits a ",
     "`claude_md_missing` / `claude_md_unmanaged` / `claude_md_stale` diagnostic, ",
@@ -2808,6 +2829,71 @@ mod tests {
             err,
             crate::commands::init::InitProjectError::SlugRequired
         ));
+    }
+
+    // ── write_memory (FR-018 tightening) ──────────────────────────
+
+    fn write_memory_args(group: &GroupId, slug: &str, override_: bool) -> WriteMemoryArgs {
+        WriteMemoryArgs {
+            group: group.to_string(),
+            slug: slug.to_string(),
+            name: "Draft".into(),
+            description: "Short desc".into(),
+            kind: ToolMemoryKind::Rule,
+            body: "# Draft\nBody.".into(),
+            tags: Vec::new(),
+            mandatory: false,
+            override_,
+        }
+    }
+
+    #[tokio::test]
+    async fn write_memory_creates_fresh_slug_without_override() {
+        let (state, _tmp) = test_state().await;
+        // Seed one memory so the group repo exists; the write
+        // targets a different slug.
+        let group = seed_group_with_memory(&state, "rules", "existing", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+        let res = server
+            .write_memory(Parameters(write_memory_args(&group, "fresh", false)))
+            .await
+            .expect("create");
+        let parsed = parse_ok_json(res);
+        assert_eq!(parsed.get("slug").and_then(|v| v.as_str()), Some("fresh"));
+        assert_eq!(parsed.get("replaced").and_then(|v| v.as_bool()), Some(false));
+    }
+
+    #[tokio::test]
+    async fn write_memory_rejects_existing_slug_by_default() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "taken", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+        let err = server
+            .write_memory(Parameters(write_memory_args(&group, "taken", false)))
+            .await
+            .expect_err("must refuse collision");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("memory_already_exists")
+        );
+        assert_eq!(
+            payload.get("slug").and_then(|v| v.as_str()),
+            Some("taken")
+        );
+    }
+
+    #[tokio::test]
+    async fn write_memory_accepts_existing_slug_when_override_is_true() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "replaced", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+        let res = server
+            .write_memory(Parameters(write_memory_args(&group, "replaced", true)))
+            .await
+            .expect("override replaces");
+        let parsed = parse_ok_json(res);
+        assert_eq!(parsed.get("replaced").and_then(|v| v.as_bool()), Some(true));
     }
 
     // ── edit_memory (FR-016) ──────────────────────────────────────

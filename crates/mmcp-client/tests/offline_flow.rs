@@ -96,6 +96,7 @@ async fn import_list_read_health_and_diagnose_run_without_any_remote() {
             kind: MemoryKind::Rule,
         }),
         &author,
+        false,
     )
     .await
     .expect("import succeeds offline");

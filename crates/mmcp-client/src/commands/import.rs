@@ -210,11 +210,17 @@ async fn write_memory_commit(
     Ok(commit_id)
 }
 
-/// Upsert wrapper used by the CLI `mmcp import` path. Reads the
-/// slug's existence, then delegates to `create_memory_file` or
-/// `update_memory_file`. Kept distinct from the strict MCP CRUD
-/// tools so the CLI continues to accept the operator-driven
-/// "replace whatever is there" semantics until FR-018 tightens it.
+/// Import a memory into a group repo, respecting a caller-chosen
+/// create-or-replace policy.
+///
+/// `override_existing` controls the collision branch:
+/// - `false` (strict create): error with
+///   [`ImportError::MemoryAlreadyExists`] when the slug is on disk.
+///   Used by the tightened MCP `write_memory` path and the CLI
+///   `mmcp import` default.
+/// - `true` (replace): silently update in place when the slug
+///   exists. Used by the MCP `write_memory` tool when the caller
+///   passes `override: true`, and by `mmcp import --override`.
 ///
 /// `content` is the full markdown text. If it starts with `+++`
 /// fences the frontmatter is parsed from it. Otherwise
@@ -226,6 +232,7 @@ pub async fn import_memory(
     content: &str,
     synth_frontmatter: Option<SynthFrontmatter>,
     author: &crate::home::ResolvedAuthor,
+    override_existing: bool,
 ) -> Result<ImportResult, ImportError> {
     validate_slug(slug)?;
 
@@ -253,26 +260,16 @@ pub async fn import_memory(
         .to_string()
         .map_err(|e| ImportError::Render(e.to_string()))?;
 
+    let message = format!("import memory {slug}");
     let commit_id = if memory_exists(backend, handle, slug).await? {
-        update_memory_file(
-            backend,
-            handle,
-            slug,
-            &rendered,
-            author,
-            Some(&format!("import memory {slug}")),
-        )
-        .await?
+        if !override_existing {
+            return Err(ImportError::MemoryAlreadyExists {
+                slug: slug.to_string(),
+            });
+        }
+        update_memory_file(backend, handle, slug, &rendered, author, Some(&message)).await?
     } else {
-        create_memory_file(
-            backend,
-            handle,
-            slug,
-            &rendered,
-            author,
-            Some(&format!("import memory {slug}")),
-        )
-        .await?
+        create_memory_file(backend, handle, slug, &rendered, author, Some(&message)).await?
     };
 
     Ok(ImportResult {
@@ -349,6 +346,14 @@ pub async fn resolve_group(
 // ── CLI entry point ─────────────────────────────────────────────
 
 /// CLI entry point for `mmcp import`.
+///
+/// `override_existing` mirrors the MCP `write_memory` tool's
+/// `override` argument: `false` (default) is strict CREATE and
+/// errors with a user-facing hint when the slug is already on
+/// disk; `true` replaces the file in place. The collision error
+/// names both `--override` and `mmcp__edit_memory` so operators
+/// see the two escape hatches explicitly.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     group: String,
     file: Option<PathBuf>,
@@ -357,6 +362,7 @@ pub async fn run(
     name: Option<String>,
     description: Option<String>,
     kind: Option<String>,
+    override_existing: bool,
 ) -> Result<()> {
     let mmcp_home = crate::home::MmcpHome::discover()?;
     let (backend, group_index) = mmcp_home.init_backend().await?;
@@ -386,8 +392,27 @@ pub async fn run(
                     .unwrap_or("unnamed"),
             )
         });
-        let result = import_memory(&backend, &entry.handle, &slug, &content, synth, &author).await?;
-        println!("imported {} (commit {})", result.slug, result.commit_id);
+        match import_memory(
+            &backend,
+            &entry.handle,
+            &slug,
+            &content,
+            synth,
+            &author,
+            override_existing,
+        )
+        .await
+        {
+            Ok(result) => {
+                println!("imported {} (commit {})", result.slug, result.commit_id);
+            }
+            Err(ImportError::MemoryAlreadyExists { slug }) => {
+                bail!(
+                    "memory `{slug}` already exists in group `{group}`; pass --override to replace it, or use `mmcp__edit_memory` for partial updates"
+                );
+            }
+            Err(err) => return Err(err.into()),
+        }
     } else if let Some(dir_path) = dir {
         let mut count = 0;
         let mut entries: Vec<_> = std::fs::read_dir(&dir_path)
@@ -410,7 +435,17 @@ pub async fn run(
             );
             let content = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
-            match import_memory(&backend, &entry.handle, &slug, &content, synth.clone(), &author).await {
+            match import_memory(
+                &backend,
+                &entry.handle,
+                &slug,
+                &content,
+                synth.clone(),
+                &author,
+                override_existing,
+            )
+            .await
+            {
                 Ok(result) => {
                     println!("imported {} (commit {})", result.slug, result.commit_id);
                     count += 1;
@@ -491,7 +526,7 @@ mod tests {
         let (backend, handle, _tmp) = test_backend().await;
         let content = "+++\nname = \"test\"\ndescription = \"a test\"\nkind = \"rule\"\n+++\n\nBody here.\n";
         let author = test_author();
-        let result = import_memory(&backend, &handle, "test-mem", content, None, &author)
+        let result = import_memory(&backend, &handle, "test-mem", content, None, &author, false)
             .await
             .expect("import");
         assert_eq!(result.slug, "test-mem");
@@ -508,7 +543,7 @@ mod tests {
             description: "imported plain".to_string(),
             kind: MemoryKind::Reference,
         });
-        let result = import_memory(&backend, &handle, "plain-mem", content, synth, &author)
+        let result = import_memory(&backend, &handle, "plain-mem", content, synth, &author, false)
             .await
             .expect("import");
         assert_eq!(result.slug, "plain-mem");
@@ -519,7 +554,7 @@ mod tests {
         let (backend, handle, _tmp) = test_backend().await;
         let author = test_author();
         let content = "No frontmatter here.\n";
-        let err = import_memory(&backend, &handle, "bad", content, None, &author)
+        let err = import_memory(&backend, &handle, "bad", content, None, &author, false)
             .await
             .unwrap_err();
         assert!(matches!(err, ImportError::MissingFrontmatter));
@@ -608,18 +643,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn import_memory_upsert_wrapper_creates_then_updates() {
-        // Legacy CLI `import` semantics: first call creates, second
-        // call silently overwrites. The new primitives compose into
-        // the same observable behavior via the upsert wrapper.
+    async fn import_memory_rejects_collision_without_override() {
+        // Tightened CLI / MCP default: `override_existing = false`
+        // must surface the collision instead of silently replacing.
         let (backend, handle, _tmp) = test_backend().await;
         let author = test_author();
-        let first = import_memory(&backend, &handle, "upsert", SAMPLE_RENDERED, None, &author)
+        import_memory(&backend, &handle, "taken", SAMPLE_RENDERED, None, &author, false)
+            .await
+            .expect("seed");
+        let err = import_memory(&backend, &handle, "taken", SAMPLE_RENDERED, None, &author, false)
+            .await
+            .expect_err("second create must refuse");
+        assert!(matches!(err, ImportError::MemoryAlreadyExists { slug } if slug == "taken"));
+    }
+
+    #[tokio::test]
+    async fn import_memory_replaces_when_override_is_true() {
+        // `override_existing = true` preserves the old upsert
+        // behavior so `mmcp import --override` + MCP `write_memory`
+        // with `override: true` keep working.
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let first = import_memory(&backend, &handle, "upsert", SAMPLE_RENDERED, None, &author, false)
             .await
             .expect("first");
-        let second = import_memory(&backend, &handle, "upsert", SAMPLE_RENDERED, None, &author)
+        let second = import_memory(&backend, &handle, "upsert", SAMPLE_RENDERED, None, &author, true)
             .await
-            .expect("second");
+            .expect("second with override");
         assert_ne!(first.commit_id, second.commit_id);
         assert_eq!(first.slug, second.slug);
     }
@@ -629,7 +679,7 @@ mod tests {
         let (backend, handle, _tmp) = test_backend().await;
         let author = test_author();
         let content = "+++\nname = \"rt\"\ndescription = \"round trip\"\nkind = \"rule\"\nmandatory = true\ntags = [\"test\"]\n+++\n\nRound trip body.\n";
-        import_memory(&backend, &handle, "rt-test", content, None, &author)
+        import_memory(&backend, &handle, "rt-test", content, None, &author, false)
             .await
             .expect("import");
 

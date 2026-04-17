@@ -64,6 +64,9 @@ enum Command {
     },
 
     /// Import memories from external markdown files into a group.
+    /// Errors on slug collision by default — pass `--override` to
+    /// replace the existing memory, mirroring the MCP
+    /// `write_memory` contract.
     Import {
         /// Target group (UUID or slug).
         #[arg(long)]
@@ -93,6 +96,14 @@ enum Command {
         /// (required if file has no +++ frontmatter).
         #[arg(long)]
         kind: Option<String>,
+
+        /// Replace an existing memory instead of erroring. Default
+        /// is strict create — prefer editing memories via the MCP
+        /// `edit_memory` tool or a direct file edit in the bare
+        /// repo, and reach for `--override` only when replacing
+        /// the whole file is the intent.
+        #[arg(long, default_value_t = false)]
+        r#override: bool,
     },
 
     /// Hook handler subcommands invoked by Claude Code hook entries.
@@ -162,7 +173,11 @@ async fn main() -> Result<()> {
             name,
             description,
             kind,
-        } => commands::import::run(group, file, dir, slug, name, description, kind).await?,
+            r#override,
+        } => {
+            commands::import::run(group, file, dir, slug, name, description, kind, r#override)
+                .await?
+        }
         Command::Hook { command } => match command {
             HookCommand::UserPrompt => commands::hook::user_prompt().await?,
         },
