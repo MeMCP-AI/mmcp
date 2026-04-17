@@ -738,6 +738,14 @@ impl McpServer {
             .get(&group_id)
             .await
             .ok_or_else(|| McpError::invalid_params("group not found", None))?;
+        // Even a fresh CREATE on a protected group needs user-
+        // visible confirmation: adding an unauthorized rule to
+        // `global` has the same blast radius as editing one.
+        ensure_not_protected(
+            &entry,
+            &args.slug,
+            if args.override_ { "override" } else { "create" },
+        )?;
 
         let kind = args.kind.into_core();
 
@@ -792,6 +800,7 @@ impl McpServer {
             .get(&group_id)
             .await
             .ok_or_else(|| McpError::invalid_params("group not found", None))?;
+        ensure_not_protected(&entry, &args.slug, "edit")?;
 
         let path = memory_path(&args.slug);
         let bytes = match self
@@ -884,6 +893,7 @@ impl McpServer {
             .get(&group_id)
             .await
             .ok_or_else(|| McpError::invalid_params("group not found", None))?;
+        ensure_not_protected(&entry, &args.slug, "delete")?;
 
         let commit_id = crate::commands::import::delete_memory_file(
             &self.state.backend,
@@ -1086,7 +1096,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Write any file at any path in a group's git repo. Requires debug mode. Use for low-level repairs."
+        description = "Write any file at any path in a group's git repo. Requires debug mode. Use for low-level repairs. Protected groups are gated the same as `edit_memory` / `delete_memory`: the write errors with `protected_requires_elicitation` so a raw debug path can't silently poke at shared rules."
     )]
     async fn debug_write_file(
         &self,
@@ -1100,6 +1110,12 @@ impl McpServer {
             .get(&group_id)
             .await
             .ok_or_else(|| McpError::invalid_params("group not found", None))?;
+        // The protection guard lives here too so a debug-mode
+        // operator can't accidentally sidestep the typed CRUD
+        // surface to mutate a global rule. `args.path` stands in
+        // for a memory slug — we surface it on the error payload
+        // so callers still see which path tripped the guard.
+        ensure_not_protected(&entry, &args.path, "debug_write")?;
         let commit_id = self
             .state
             .backend
@@ -1716,6 +1732,39 @@ fn map_init_project_error_to_mcp(err: crate::commands::init::InitProjectError) -
     McpError::invalid_params(message, Some(payload))
 }
 
+/// Guard the three MCP mutation paths against accidental writes
+/// into a group that carries `GroupManifest.protected = true`.
+///
+/// Today the guard hard-errors with a structured
+/// `protected_requires_elicitation` payload — no bool-arg bypass on
+/// purpose, since the point of protection is a user-visible
+/// confirmation, not a flag the AI can flip. Once rmcp exposes
+/// `ElicitationRequest` (FR-011), this helper will instead fire an
+/// elicitation with the group / slug / action in the request shape
+/// and only proceed on a positive answer. The wire contract stays
+/// stable across that migration because callers that can't
+/// elicit will still see the same error `code`.
+fn ensure_not_protected(entry: &GroupEntry, slug: &str, action: &str) -> Result<(), McpError> {
+    if !entry.manifest.protected {
+        return Ok(());
+    }
+    Err(McpError::invalid_params(
+        format!(
+            "group `{group}` is protected; {action} requires user confirmation",
+            group = entry.manifest.slug,
+            action = action,
+        ),
+        Some(json!({
+            "code": "protected_requires_elicitation",
+            "group_slug": entry.manifest.slug,
+            "group_id": entry.manifest.group_id.to_string(),
+            "slug": slug,
+            "action": action,
+            "retry_hint": "run the operation via CLI (mmcp import --override / direct edit with operator intent) or wait for elicitation support (FR-011)",
+        })),
+    ))
+}
+
 /// Map an [`ImportError`] coming from the memory CRUD primitives
 /// onto an [`McpError`] with a structured `code` payload. The four
 /// wire codes (`memory_not_found`, `memory_already_exists`,
@@ -2058,9 +2107,32 @@ mod tests {
         memory_slug: &str,
         memory_body: &str,
     ) -> GroupId {
+        seed_group_with_memory_inner(state, slug, memory_slug, memory_body, false).await
+    }
+
+    /// Same as [`seed_group_with_memory`] but marks the group's
+    /// manifest as `protected`, so tests can exercise the
+    /// FR-019 guard.
+    async fn seed_protected_group_with_memory(
+        state: &ClientState,
+        slug: &str,
+        memory_slug: &str,
+        memory_body: &str,
+    ) -> GroupId {
+        seed_group_with_memory_inner(state, slug, memory_slug, memory_body, true).await
+    }
+
+    async fn seed_group_with_memory_inner(
+        state: &ClientState,
+        slug: &str,
+        memory_slug: &str,
+        memory_body: &str,
+        protected: bool,
+    ) -> GroupId {
         let owner = Uuid::now_v7();
         let group_id = GroupId::new();
-        let manifest = GroupManifest::new_user_owned(group_id, slug, owner);
+        let mut manifest = GroupManifest::new_user_owned(group_id, slug, owner);
+        manifest.protected = protected;
         let handle = state
             .backend
             .create_group_repo(&manifest)
@@ -3057,6 +3129,116 @@ mod tests {
             payload.get("code").and_then(|v| v.as_str()),
             Some("memory_not_found")
         );
+    }
+
+    // ── protected-group guard (FR-019) ────────────────────────────
+
+    #[tokio::test]
+    async fn write_memory_against_protected_group_errors_with_elicitation_hint() {
+        let (state, _tmp) = test_state().await;
+        let group =
+            seed_protected_group_with_memory(&state, "global", "existing", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+        let err = server
+            .write_memory(Parameters(write_memory_args(&group, "fresh", false)))
+            .await
+            .expect_err("protected group must gate writes");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("protected_requires_elicitation")
+        );
+        assert_eq!(
+            payload.get("group_slug").and_then(|v| v.as_str()),
+            Some("global")
+        );
+        assert_eq!(
+            payload.get("action").and_then(|v| v.as_str()),
+            Some("create")
+        );
+    }
+
+    #[tokio::test]
+    async fn write_memory_override_against_protected_group_reports_override_action() {
+        let (state, _tmp) = test_state().await;
+        let group =
+            seed_protected_group_with_memory(&state, "global", "existing", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+        let err = server
+            .write_memory(Parameters(write_memory_args(&group, "existing", true)))
+            .await
+            .expect_err("protected group must gate override too");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("action").and_then(|v| v.as_str()),
+            Some("override")
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_memory_against_protected_group_is_gated() {
+        let (state, _tmp) = test_state().await;
+        let group =
+            seed_protected_group_with_memory(&state, "global", "rule", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+        let err = server
+            .edit_memory(Parameters(EditMemoryArgs {
+                group: group.to_string(),
+                slug: "rule".into(),
+                body: Some("edit attempt".into()),
+                ..Default::default()
+            }))
+            .await
+            .expect_err("edit on protected group must be gated");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("protected_requires_elicitation")
+        );
+        assert_eq!(
+            payload.get("action").and_then(|v| v.as_str()),
+            Some("edit")
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_memory_against_protected_group_is_gated() {
+        let (state, _tmp) = test_state().await;
+        let group =
+            seed_protected_group_with_memory(&state, "global", "rule", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+        let err = server
+            .delete_memory(Parameters(DeleteMemoryArgs {
+                group: group.to_string(),
+                slug: "rule".into(),
+                message: None,
+            }))
+            .await
+            .expect_err("delete on protected group must be gated");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("protected_requires_elicitation")
+        );
+        assert_eq!(
+            payload.get("action").and_then(|v| v.as_str()),
+            Some("delete")
+        );
+    }
+
+    #[tokio::test]
+    async fn unprotected_sibling_group_continues_to_accept_writes() {
+        // Seed one protected and one unprotected group in the same
+        // mirror; the guard must only affect the protected one.
+        let (state, _tmp) = test_state().await;
+        let _protected =
+            seed_protected_group_with_memory(&state, "global", "anchored", SAMPLE_MEMORY).await;
+        let sibling = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+        server
+            .write_memory(Parameters(write_memory_args(&sibling, "added", false)))
+            .await
+            .expect("write into unprotected sibling must succeed");
     }
 
     #[tokio::test]

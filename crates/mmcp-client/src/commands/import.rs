@@ -10,9 +10,11 @@
 //! path happens in a separate track alongside the MCP
 //! `write_memory` rework).
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
+use inquire::Confirm;
 use mmcp_core::id::GroupId;
 use mmcp_core::memory::{MemoryFile, MemoryFrontmatter, MemoryKind};
 use mmcp_git::{CommitSpec, GitBackend, GitError, NativeBackend, RepoHandle, Rev};
@@ -321,6 +323,44 @@ pub fn parse_kind(s: &str) -> Result<MemoryKind, ImportError> {
     }
 }
 
+/// CLI-side parity of the MCP `ensure_not_protected` guard.
+///
+/// When the target group is protected, prompts the operator with
+/// `inquire::Confirm` on a TTY (default: no). Non-TTY invocations
+/// must pass `force = true` explicitly so scripted imports never
+/// silently poke at protected groups. Unprotected groups are a
+/// no-op — the operator's `mmcp import` intent is the confirmation.
+pub fn protected_confirm(entry: &GroupEntry, force: bool) -> Result<()> {
+    if !entry.manifest.protected {
+        return Ok(());
+    }
+    eprintln!(
+        "notice: group `{}` is marked protected; writes into it are audited.",
+        entry.manifest.slug,
+    );
+    if force {
+        return Ok(());
+    }
+    if !std::io::stdin().is_terminal() {
+        bail!(
+            "group `{}` is protected; pass --force on non-TTY invocations to confirm the write",
+            entry.manifest.slug,
+        );
+    }
+    let prompt = format!(
+        "Writing into protected group `{}` — continue?",
+        entry.manifest.slug,
+    );
+    let confirmed = Confirm::new(&prompt)
+        .with_default(false)
+        .prompt()
+        .context("reading protected-group confirmation from TTY")?;
+    if !confirmed {
+        bail!("aborted: operator declined to write into protected group");
+    }
+    Ok(())
+}
+
 /// Resolve a group by UUID or slug.
 pub async fn resolve_group(
     groups: &GroupIndex,
@@ -363,6 +403,7 @@ pub async fn run(
     description: Option<String>,
     kind: Option<String>,
     override_existing: bool,
+    force: bool,
 ) -> Result<()> {
     let mmcp_home = crate::home::MmcpHome::discover()?;
     let (backend, group_index) = mmcp_home.init_backend().await?;
@@ -371,6 +412,8 @@ pub async fn run(
     let entry = resolve_group(&group_index, &group)
         .await
         .with_context(|| format!("resolving group '{group}'"))?;
+
+    protected_confirm(&entry, force)?;
 
     let synth = match (name, description, kind) {
         (Some(n), Some(d), Some(k)) => Some(SynthFrontmatter {

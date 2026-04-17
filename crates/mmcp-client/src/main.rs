@@ -66,7 +66,9 @@ enum Command {
     /// Import memories from external markdown files into a group.
     /// Errors on slug collision by default — pass `--override` to
     /// replace the existing memory, mirroring the MCP
-    /// `write_memory` contract.
+    /// `write_memory` contract. Writes into a protected group
+    /// prompt for confirmation on a TTY; non-TTY invocations
+    /// require `--force`.
     Import {
         /// Target group (UUID or slug).
         #[arg(long)]
@@ -104,6 +106,13 @@ enum Command {
         /// the whole file is the intent.
         #[arg(long, default_value_t = false)]
         r#override: bool,
+
+        /// Skip the protected-group confirmation prompt. Required
+        /// on non-TTY stdin when the target group is marked
+        /// protected; otherwise the command errors rather than
+        /// silently writing.
+        #[arg(long, default_value_t = false)]
+        force: bool,
     },
 
     /// Hook handler subcommands invoked by Claude Code hook entries.
@@ -174,9 +183,20 @@ async fn main() -> Result<()> {
             description,
             kind,
             r#override,
+            force,
         } => {
-            commands::import::run(group, file, dir, slug, name, description, kind, r#override)
-                .await?
+            commands::import::run(
+                group,
+                file,
+                dir,
+                slug,
+                name,
+                description,
+                kind,
+                r#override,
+                force,
+            )
+            .await?
         }
         Command::Hook { command } => match command {
             HookCommand::UserPrompt => commands::hook::user_prompt().await?,
