@@ -340,6 +340,98 @@ fn parse_frontmatter_id(bytes: &[u8]) -> Option<Uuid> {
     file.frontmatter.id
 }
 
+/// Commit a write of `rendered` at an explicit repo-relative
+/// `path`. Unconditional — callers decide the create-vs-update
+/// collision semantics themselves. FR-028 uses this to commit to
+/// `memories/<slug>/<uuid>.md` once `resolve_memory` has already
+/// picked the target.
+pub async fn write_file_at_path(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    path: &str,
+    rendered: &str,
+    author: &ResolvedAuthor,
+    message: Option<&str>,
+) -> Result<String, ImportError> {
+    let commit_message = message
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("write {path}"));
+    let commit_id = backend
+        .write_commit(
+            handle,
+            CommitSpec::mmcp_commit(
+                commit_message,
+                vec![(path.to_string(), Some(rendered.as_bytes().to_vec()))],
+                &author.name,
+                &author.email,
+            ),
+        )
+        .await?;
+    Ok(commit_id)
+}
+
+/// Commit a deletion of `path`. Unconditional; callers probe first
+/// if they want a "not found" error.
+pub async fn delete_file_at_path(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    path: &str,
+    author: &ResolvedAuthor,
+    message: Option<&str>,
+) -> Result<String, ImportError> {
+    let commit_message = message
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("delete {path}"));
+    let commit_id = backend
+        .write_commit(
+            handle,
+            CommitSpec::mmcp_commit(
+                commit_message,
+                vec![(path.to_string(), None)],
+                &author.name,
+                &author.email,
+            ),
+        )
+        .await?;
+    Ok(commit_id)
+}
+
+/// Write a memory at the two-level `memories/<slug>/<id>.md` path
+/// with create-or-override semantics. Returns
+/// [`ImportError::MemoryAlreadyExists`] on collision when
+/// `override_existing` is `false`; otherwise overwrites in place.
+pub async fn write_memory_by_id(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    slug: &str,
+    id: Uuid,
+    rendered: &str,
+    author: &ResolvedAuthor,
+    override_existing: bool,
+    message: Option<&str>,
+) -> Result<String, ImportError> {
+    validate_slug(slug)?;
+    let path = mmcp_core::conventions::memory_path(slug, id);
+    let exists = match backend.read_file(handle, &path, &Rev::head()).await {
+        Ok(_) => true,
+        Err(GitError::PathNotFound(_)) => false,
+        Err(err) => return Err(ImportError::Git(err)),
+    };
+    if exists && !override_existing {
+        return Err(ImportError::MemoryAlreadyExists {
+            slug: slug.to_string(),
+        });
+    }
+    let commit_message = message.map(str::to_string).unwrap_or_else(|| {
+        if exists {
+            format!("update memory {slug}/{id}")
+        } else {
+            format!("create memory {slug}/{id}")
+        }
+    });
+    write_file_at_path(backend, handle, &path, rendered, author, Some(&commit_message)).await
+}
+
 /// Create a fresh memory file. Errors with
 /// [`ImportError::MemoryAlreadyExists`] when the slug is already
 /// on disk so callers never silently overwrite.

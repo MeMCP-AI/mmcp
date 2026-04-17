@@ -39,7 +39,7 @@ use mmcp_store::diagnostics::{
 };
 use mmcp_store::groups::{GroupEntry, GroupIndex};
 use mmcp_store::home::{MmcpHome, ResolvedAuthor};
-use mmcp_store::memory::{ImportError, delete_memory_file, import_memory, update_memory_file};
+use mmcp_store::memory::ImportError;
 use mmcp_store::sessions::SessionStore;
 
 use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION, legacy_memory_path};
@@ -155,8 +155,16 @@ struct ListMemoriesArgs {
 struct ReadMemoryArgs {
     /// Group UUID that owns the memory.
     pub group: String,
-    /// Memory slug (file name under `memories/` without the `.md` extension).
-    pub slug: String,
+    /// Memory slug (directory under `memories/`). Optional when
+    /// `id` is supplied; if both are present the server verifies
+    /// that the memory at `memories/<slug>/<id>.md` has matching
+    /// frontmatter.
+    #[serde(default)]
+    pub slug: Option<String>,
+    /// Canonical UUID of the memory (FR-028). Optional when `slug`
+    /// is supplied; required when multiple memories share a slug.
+    #[serde(default)]
+    pub id: Option<String>,
     /// Optional branch name, tag name, or commit hex. Defaults to `main`.
     #[serde(default)]
     pub version: Option<String>,
@@ -208,8 +216,16 @@ impl ToolMemoryKind {
 struct WriteMemoryArgs {
     /// Target group UUID or slug.
     pub group: String,
-    /// Memory slug (lowercase alphanumeric + hyphens).
+    /// Memory slug (lowercase alphanumeric + hyphens). Duplicate
+    /// slugs are allowed post-FR-028; the server distinguishes
+    /// memories by `id` inside the shared slug directory.
     pub slug: String,
+    /// Canonical UUID to stamp into frontmatter and the on-disk
+    /// path (FR-028). Leave absent to mint a fresh UUIDv7; supply
+    /// an explicit id to pin an existing memory or to collide
+    /// deliberately with `override: true`.
+    #[serde(default)]
+    pub id: Option<String>,
     /// Human-readable title.
     pub name: String,
     /// One-line summary for relevance inference.
@@ -248,8 +264,12 @@ struct WriteMemoryArgs {
 struct EditMemoryArgs {
     /// Target group UUID.
     pub group: String,
-    /// Memory slug.
-    pub slug: String,
+    /// Memory slug (directory). Optional when `id` is supplied.
+    #[serde(default)]
+    pub slug: Option<String>,
+    /// Canonical UUID of the memory (FR-028).
+    #[serde(default)]
+    pub id: Option<String>,
     /// Replace the markdown body verbatim. Absent leaves it
     /// untouched.
     #[serde(default)]
@@ -287,8 +307,12 @@ struct EditMemoryArgs {
 struct DeleteMemoryArgs {
     /// Target group UUID.
     pub group: String,
-    /// Memory slug to remove.
-    pub slug: String,
+    /// Memory slug to remove. Optional when `id` is supplied.
+    #[serde(default)]
+    pub slug: Option<String>,
+    /// Canonical UUID of the memory (FR-028).
+    #[serde(default)]
+    pub id: Option<String>,
     /// Commit message override. Absent falls back to
     /// `"delete memory {slug}"`.
     #[serde(default)]
@@ -301,8 +325,12 @@ struct DeleteMemoryArgs {
 struct ReadMemoryBodySectionsArgs {
     /// Target group UUID.
     pub group: String,
-    /// Memory slug to inspect.
-    pub slug: String,
+    /// Memory slug to inspect. Optional when `id` is supplied.
+    #[serde(default)]
+    pub slug: Option<String>,
+    /// Canonical UUID of the memory (FR-028).
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
 /// Args for `edit_memory_body` (FR-026).
@@ -311,8 +339,12 @@ struct ReadMemoryBodySectionsArgs {
 struct EditMemoryBodyArgs {
     /// Target group UUID.
     pub group: String,
-    /// Memory slug to mutate.
-    pub slug: String,
+    /// Memory slug to mutate. Optional when `id` is supplied.
+    #[serde(default)]
+    pub slug: Option<String>,
+    /// Canonical UUID of the memory (FR-028).
+    #[serde(default)]
+    pub id: Option<String>,
     /// Ordered list of body edits. Each op is a tagged union
     /// whose `op` field names the variant. See the
     /// [`ToolMemoryEditOp`] enum for the per-variant fields.
@@ -964,11 +996,19 @@ impl McpServer {
             )
         })?;
         let rev = parse_rev(args.version.as_deref());
-        let path = legacy_memory_path(&args.slug);
+        let id = parse_optional_uuid(args.id.as_deref())?;
+        let resolved = mmcp_store::resolve_memory(
+            &self.state.backend,
+            &entry.handle,
+            args.slug.as_deref(),
+            id,
+        )
+        .await
+        .map_err(map_memory_error_to_mcp)?;
         let bytes = self
             .state
             .backend
-            .read_file(&entry.handle, &path, &rev)
+            .read_file(&entry.handle, &resolved.path, &rev)
             .await
             .map_err(|e| match e {
                 mmcp_git::GitError::PathNotFound(p) => McpError::invalid_params(
@@ -989,12 +1029,13 @@ impl McpServer {
         let file = MemoryFile::parse(text).map_err(|e| {
             McpError::invalid_params(
                 Cow::Owned(format!("memory frontmatter did not parse: {e}")),
-                Some(json!({ "slug": args.slug })),
+                Some(json!({ "slug": resolved.slug })),
             )
         })?;
         Ok(ok_json(json!({
             "group": entry.manifest.group_id,
-            "slug": args.slug,
+            "slug": resolved.slug,
+            "id": resolved.id.map(|u| u.to_string()),
             "version": rev_label(&rev),
             "frontmatter": frontmatter_to_json(&file.frontmatter),
             "body": file.body,
@@ -1169,10 +1210,16 @@ impl McpServer {
 
         let kind = args.kind.into_core();
 
+        // FR-028: every new memory gets a UUIDv7 primary key.
+        // Callers can pin an explicit id (for migrations or to
+        // collide under `override: true`); otherwise we mint one.
+        let supplied_id = parse_optional_uuid(args.id.as_deref())?;
+        let id = supplied_id.unwrap_or_else(Uuid::now_v7);
+
         use mmcp_core::memory::{FrontmatterFormat, MemoryFile, MemoryFrontmatter};
         let file = MemoryFile {
             frontmatter: MemoryFrontmatter {
-                id: None,
+                id: Some(id),
                 name: args.name,
                 description: args.description,
                 kind,
@@ -1189,20 +1236,22 @@ impl McpServer {
             .to_string()
             .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
 
-        let result = import_memory(
+        let commit_id = mmcp_store::write_memory_by_id(
             &self.state.backend,
             &entry.handle,
             &args.slug,
+            id,
             &rendered,
-            None,
             &self.state.author,
             args.override_,
+            None,
         )
         .await
         .map_err(map_memory_error_to_mcp)?;
         Ok(ok_json(json!({
-            "slug": result.slug,
-            "commit_id": result.commit_id,
+            "slug": args.slug,
+            "id": id.to_string(),
+            "commit_id": commit_id,
             "group": args.group,
             "replaced": args.override_,
         })))
@@ -1223,7 +1272,12 @@ impl McpServer {
             .get(&group_id)
             .await
             .ok_or_else(|| McpError::invalid_params("group not found", None))?;
-        confirm_protected_write(&peer, &entry, &args.slug, "edit").await?;
+        let slug_for_guard = args.slug.clone().unwrap_or_else(|| {
+            args.id
+                .clone()
+                .unwrap_or_else(|| "<unknown>".to_string())
+        });
+        confirm_protected_write(&peer, &entry, &slug_for_guard, "edit").await?;
         self.edit_memory_unguarded(args).await
     }
 
@@ -1241,22 +1295,22 @@ impl McpServer {
             .await
             .ok_or_else(|| McpError::invalid_params("group not found", None))?;
 
-        let path = legacy_memory_path(&args.slug);
-        let bytes = match self
+        let id = parse_optional_uuid(args.id.as_deref())?;
+        let resolved = mmcp_store::resolve_memory(
+            &self.state.backend,
+            &entry.handle,
+            args.slug.as_deref(),
+            id,
+        )
+        .await
+        .map_err(map_memory_error_to_mcp)?;
+
+        let bytes = self
             .state
             .backend
-            .read_file(&entry.handle, &path, &Rev::head())
+            .read_file(&entry.handle, &resolved.path, &Rev::head())
             .await
-        {
-            Ok(b) => b,
-            Err(mmcp_git::GitError::PathNotFound(_)) => {
-                return Err(map_memory_error_to_mcp(ImportError::MemoryNotFound {
-                    slug: Some(args.slug.clone()),
-                    id: None,
-                }));
-            }
-            Err(e) => return Err(git_error(e)),
-        };
+            .map_err(git_error)?;
         let text = String::from_utf8_lossy(&bytes).into_owned();
         let mut file = mmcp_core::memory::MemoryFile::parse(&text).map_err(|e| {
             McpError::internal_error(Cow::Owned(format!("parsing existing memory: {e}")), None)
@@ -1296,20 +1350,24 @@ impl McpServer {
             .to_string()
             .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
 
-        let commit_id = update_memory_file(
+        let commit_message = args
+            .message
+            .unwrap_or_else(|| format!("update memory {}", resolved.slug));
+        let commit_id = mmcp_store::write_file_at_path(
             &self.state.backend,
             &entry.handle,
-            &args.slug,
+            &resolved.path,
             &rendered,
             &self.state.author,
-            args.message.as_deref(),
+            Some(&commit_message),
         )
         .await
         .map_err(map_memory_error_to_mcp)?;
 
         Ok(ok_json(json!({
             "group": args.group,
-            "slug": args.slug,
+            "slug": resolved.slug,
+            "id": resolved.id.map(|u| u.to_string()),
             "commit_id": commit_id,
         })))
     }
@@ -1329,7 +1387,12 @@ impl McpServer {
             .get(&group_id)
             .await
             .ok_or_else(|| McpError::invalid_params("group not found", None))?;
-        confirm_protected_write(&peer, &entry, &args.slug, "delete").await?;
+        let slug_for_guard = args.slug.clone().unwrap_or_else(|| {
+            args.id
+                .clone()
+                .unwrap_or_else(|| "<unknown>".to_string())
+        });
+        confirm_protected_write(&peer, &entry, &slug_for_guard, "delete").await?;
         self.delete_memory_unguarded(args).await
     }
 
@@ -1346,19 +1409,33 @@ impl McpServer {
             .await
             .ok_or_else(|| McpError::invalid_params("group not found", None))?;
 
-        let commit_id = delete_memory_file(
+        let id = parse_optional_uuid(args.id.as_deref())?;
+        let resolved = mmcp_store::resolve_memory(
             &self.state.backend,
             &entry.handle,
-            &args.slug,
+            args.slug.as_deref(),
+            id,
+        )
+        .await
+        .map_err(map_memory_error_to_mcp)?;
+
+        let commit_message = args
+            .message
+            .unwrap_or_else(|| format!("delete memory {}", resolved.slug));
+        let commit_id = mmcp_store::delete_file_at_path(
+            &self.state.backend,
+            &entry.handle,
+            &resolved.path,
             &self.state.author,
-            args.message.as_deref(),
+            Some(&commit_message),
         )
         .await
         .map_err(map_memory_error_to_mcp)?;
 
         Ok(ok_json(json!({
             "group": args.group,
-            "slug": args.slug,
+            "slug": resolved.slug,
+            "id": resolved.id.map(|u| u.to_string()),
             "commit_id": commit_id,
         })))
     }
@@ -1386,21 +1463,21 @@ impl McpServer {
             .get(&group_id)
             .await
             .ok_or_else(|| McpError::invalid_params("group not found in local mirror", None))?;
-        let path = legacy_memory_path(&args.slug);
+        let id = parse_optional_uuid(args.id.as_deref())?;
+        let resolved = mmcp_store::resolve_memory(
+            &self.state.backend,
+            &entry.handle,
+            args.slug.as_deref(),
+            id,
+        )
+        .await
+        .map_err(map_memory_error_to_mcp)?;
         let bytes = self
             .state
             .backend
-            .read_file(&entry.handle, &path, &Rev::head())
+            .read_file(&entry.handle, &resolved.path, &Rev::head())
             .await
-            .map_err(|e| match e {
-                mmcp_git::GitError::PathNotFound(_) => {
-                    map_memory_error_to_mcp(ImportError::MemoryNotFound {
-                        slug: Some(args.slug.clone()),
-                        id: None,
-                    })
-                }
-                other => git_error(other),
-            })?;
+            .map_err(git_error)?;
         let text = String::from_utf8_lossy(&bytes).into_owned();
         let file = mmcp_core::memory::MemoryFile::parse(&text).map_err(|e| {
             McpError::internal_error(Cow::Owned(format!("parsing existing memory: {e}")), None)
@@ -1422,7 +1499,8 @@ impl McpServer {
             .collect();
         Ok(ok_json(json!({
             "group": args.group,
-            "slug": args.slug,
+            "slug": resolved.slug,
+            "id": resolved.id.map(|u| u.to_string()),
             "sections": as_json,
             "count": sections.len(),
         })))
@@ -1443,7 +1521,12 @@ impl McpServer {
             .get(&group_id)
             .await
             .ok_or_else(|| McpError::invalid_params("group not found in local mirror", None))?;
-        confirm_protected_write(&peer, &entry, &args.slug, "edit_body").await?;
+        let slug_for_guard = args.slug.clone().unwrap_or_else(|| {
+            args.id
+                .clone()
+                .unwrap_or_else(|| "<unknown>".to_string())
+        });
+        confirm_protected_write(&peer, &entry, &slug_for_guard, "edit_body").await?;
         self.edit_memory_body_unguarded(args).await
     }
 
@@ -1462,21 +1545,22 @@ impl McpServer {
             .await
             .ok_or_else(|| McpError::invalid_params("group not found in local mirror", None))?;
 
-        let path = legacy_memory_path(&args.slug);
+        let id = parse_optional_uuid(args.id.as_deref())?;
+        let resolved = mmcp_store::resolve_memory(
+            &self.state.backend,
+            &entry.handle,
+            args.slug.as_deref(),
+            id,
+        )
+        .await
+        .map_err(map_memory_error_to_mcp)?;
+
         let bytes = self
             .state
             .backend
-            .read_file(&entry.handle, &path, &Rev::head())
+            .read_file(&entry.handle, &resolved.path, &Rev::head())
             .await
-            .map_err(|e| match e {
-                mmcp_git::GitError::PathNotFound(_) => {
-                    map_memory_error_to_mcp(ImportError::MemoryNotFound {
-                        slug: Some(args.slug.clone()),
-                        id: None,
-                    })
-                }
-                other => git_error(other),
-            })?;
+            .map_err(git_error)?;
         let text = String::from_utf8_lossy(&bytes).into_owned();
         let mut file = mmcp_core::memory::MemoryFile::parse(&text).map_err(|e| {
             McpError::internal_error(Cow::Owned(format!("parsing existing memory: {e}")), None)
@@ -1491,13 +1575,16 @@ impl McpServer {
             .to_string()
             .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
 
-        let commit_id = mmcp_store::update_memory_file(
+        let commit_message = args
+            .message
+            .unwrap_or_else(|| format!("update memory {}", resolved.slug));
+        let commit_id = mmcp_store::write_file_at_path(
             &self.state.backend,
             &entry.handle,
-            &args.slug,
+            &resolved.path,
             &rendered,
             &self.state.author,
-            args.message.as_deref(),
+            Some(&commit_message),
         )
         .await
         .map_err(map_memory_error_to_mcp)?;
@@ -1520,7 +1607,8 @@ impl McpServer {
 
         Ok(ok_json(json!({
             "group": args.group,
-            "slug": args.slug,
+            "slug": resolved.slug,
+            "id": resolved.id.map(|u| u.to_string()),
             "commit_id": commit_id,
             "sections": sections_json,
         })))
@@ -3103,6 +3191,21 @@ fn parse_group_id(value: &str) -> Result<GroupId, McpError> {
     Ok(GroupId::from_uuid(uuid))
 }
 
+/// Parse an optional UUID argument from the wire. Rejects malformed
+/// strings with a typed `invalid_memory_id` code so the AI client
+/// can surface a clean error instead of a generic parse failure.
+fn parse_optional_uuid(value: Option<&str>) -> Result<Option<Uuid>, McpError> {
+    match value {
+        None => Ok(None),
+        Some(s) => Uuid::parse_str(s).map(Some).map_err(|_| {
+            McpError::invalid_params(
+                "memory id is not a valid UUID",
+                Some(json!({ "code": "invalid_memory_id", "id": s })),
+            )
+        }),
+    }
+}
+
 fn parse_rev(value: Option<&str>) -> Rev {
     match value {
         // Default: resolve via HEAD so repos whose default branch is
@@ -3474,7 +3577,8 @@ mod tests {
         let res = server
             .read_memory(Parameters(ReadMemoryArgs {
                 group: group.to_string(),
-                slug: "rules".into(),
+                slug: Some("rules".into()),
+                id: None,
                 version: None,
             }))
             .await
@@ -3504,7 +3608,8 @@ mod tests {
         let err = server
             .read_memory(Parameters(ReadMemoryArgs {
                 group: group.to_string(),
-                slug: "missing".into(),
+                slug: Some("missing".into()),
+                id: None,
                 version: None,
             }))
             .await
@@ -4346,6 +4451,7 @@ mod tests {
         WriteMemoryArgs {
             group: group.to_string(),
             slug: slug.to_string(),
+            id: None,
             name: "Draft".into(),
             description: "Short desc".into(),
             kind: ToolMemoryKind::Rule,
@@ -4376,14 +4482,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_memory_rejects_existing_slug_by_default() {
+    async fn write_memory_rejects_existing_id_by_default() {
+        // FR-028 flipped the collision key from slug to id. Two
+        // memories may share a slug, but the primary key is the
+        // UUID; re-using one without `override` must surface the
+        // existing-exists code so callers don't silently overwrite.
         let (state, _tmp) = test_state().await;
-        let group = seed_group_with_memory(&state, "rules", "taken", SAMPLE_MEMORY).await;
+        let group = seed_group_with_memory(&state, "rules", "seed", SAMPLE_MEMORY).await;
         let server = McpServer::new(state);
-        let err = server
+        let first = server
             .write_memory_unguarded(write_memory_args(&group, "taken", false))
             .await
-            .expect_err("must refuse collision");
+            .expect("first write");
+        let pinned_id = parse_ok_json(first)
+            .get("id")
+            .and_then(|v| v.as_str())
+            .expect("id echoed")
+            .to_string();
+
+        let mut retry = write_memory_args(&group, "taken", false);
+        retry.id = Some(pinned_id.clone());
+        let err = server
+            .write_memory_unguarded(retry)
+            .await
+            .expect_err("must refuse id collision");
         let payload = err.data.as_ref().expect("payload");
         assert_eq!(
             payload.get("code").and_then(|v| v.as_str()),
@@ -4393,16 +4515,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_memory_accepts_existing_slug_when_override_is_true() {
+    async fn write_memory_accepts_duplicate_slug_with_distinct_minted_ids() {
+        // Post-FR-028: two memories with the same slug but distinct
+        // ids are a valid coexistence. No override needed.
         let (state, _tmp) = test_state().await;
-        let group = seed_group_with_memory(&state, "rules", "replaced", SAMPLE_MEMORY).await;
+        let group = seed_group_with_memory(&state, "rules", "seed", SAMPLE_MEMORY).await;
         let server = McpServer::new(state);
+        let first = server
+            .write_memory_unguarded(write_memory_args(&group, "twins", false))
+            .await
+            .expect("first twin");
+        let second = server
+            .write_memory_unguarded(write_memory_args(&group, "twins", false))
+            .await
+            .expect("second twin");
+        let first_id = parse_ok_json(first)
+            .get("id")
+            .and_then(|v| v.as_str())
+            .expect("first id")
+            .to_string();
+        let second_id = parse_ok_json(second)
+            .get("id")
+            .and_then(|v| v.as_str())
+            .expect("second id")
+            .to_string();
+        assert_ne!(first_id, second_id, "duplicate slugs must get distinct ids");
+    }
+
+    #[tokio::test]
+    async fn write_memory_accepts_existing_id_when_override_is_true() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "seed", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+        let first = server
+            .write_memory_unguarded(write_memory_args(&group, "replaced", false))
+            .await
+            .expect("first");
+        let pinned_id = parse_ok_json(first)
+            .get("id")
+            .and_then(|v| v.as_str())
+            .expect("id echoed")
+            .to_string();
+
+        let mut retry = write_memory_args(&group, "replaced", true);
+        retry.id = Some(pinned_id.clone());
         let res = server
-            .write_memory_unguarded(write_memory_args(&group, "replaced", true))
+            .write_memory_unguarded(retry)
             .await
             .expect("override replaces");
         let parsed = parse_ok_json(res);
         assert_eq!(parsed.get("replaced").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(parsed.get("id").and_then(|v| v.as_str()), Some(pinned_id.as_str()));
     }
 
     // ── edit_memory (FR-016) ──────────────────────────────────────
@@ -4415,7 +4578,8 @@ mod tests {
         let res = server
             .edit_memory_unguarded(EditMemoryArgs {
                 group: group.to_string(),
-                slug: "first".into(),
+                slug: Some("first".into()),
+                id: None,
                 body: Some("# Edited\nNew body.".into()),
                 ..Default::default()
             })
@@ -4428,7 +4592,8 @@ mod tests {
         let read = server
             .read_memory(Parameters(ReadMemoryArgs {
                 group: group.to_string(),
-                slug: "first".into(),
+                slug: Some("first".into()),
+                id: None,
                 version: None,
             }))
             .await
@@ -4454,7 +4619,8 @@ mod tests {
         server
             .edit_memory_unguarded(EditMemoryArgs {
                 group: group.to_string(),
-                slug: "taggy".into(),
+                slug: Some("taggy".into()),
+                id: None,
                 tags_add: vec!["alpha".into(), "beta".into(), "sample".into()],
                 tags_remove: vec!["sample".into()],
                 ..Default::default()
@@ -4464,7 +4630,8 @@ mod tests {
         let read = server
             .read_memory(Parameters(ReadMemoryArgs {
                 group: group.to_string(),
-                slug: "taggy".into(),
+                slug: Some("taggy".into()),
+                id: None,
                 version: None,
             }))
             .await
@@ -4498,7 +4665,8 @@ mod tests {
         let err = server
             .edit_memory_unguarded(EditMemoryArgs {
                 group: group.to_string(),
-                slug: "ghost".into(),
+                slug: Some("ghost".into()),
+                id: None,
                 body: Some("n/a".into()),
                 ..Default::default()
             })
@@ -4522,7 +4690,8 @@ mod tests {
         server
             .delete_memory_unguarded(DeleteMemoryArgs {
                 group: group.to_string(),
-                slug: "doomed".into(),
+                slug: Some("doomed".into()),
+                id: None,
                 message: None,
             })
             .await
@@ -4557,7 +4726,8 @@ mod tests {
         let err = server
             .delete_memory_unguarded(DeleteMemoryArgs {
                 group: group.to_string(),
-                slug: "never-existed".into(),
+                slug: Some("never-existed".into()),
+                id: None,
                 message: None,
             })
             .await
@@ -4680,7 +4850,8 @@ mod tests {
         let res = server
             .read_memory_body_sections_inner(ReadMemoryBodySectionsArgs {
                 group: group.to_string(),
-                slug: "rules".into(),
+                slug: Some("rules".into()),
+                id: None,
             })
             .await
             .expect("read sections");
@@ -4705,7 +4876,8 @@ mod tests {
         server
             .edit_memory_body_unguarded(EditMemoryBodyArgs {
                 group: group.to_string(),
-                slug: "rules".into(),
+                slug: Some("rules".into()),
+                id: None,
                 ops: vec![ToolMemoryEditOp::UpsertSection {
                     path: "need".into(),
                     level: 2,
@@ -4721,7 +4893,8 @@ mod tests {
         let res = server
             .read_memory(Parameters(ReadMemoryArgs {
                 group: group.to_string(),
-                slug: "rules".into(),
+                slug: Some("rules".into()),
+                id: None,
                 version: None,
             }))
             .await
@@ -4747,7 +4920,8 @@ mod tests {
         let err = server
             .edit_memory_body_unguarded(EditMemoryBodyArgs {
                 group: group.to_string(),
-                slug: "rules".into(),
+                slug: Some("rules".into()),
+                id: None,
                 ops: vec![ToolMemoryEditOp::DeleteSection {
                     path: "does-not-exist".into(),
                 }],
