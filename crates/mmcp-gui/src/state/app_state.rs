@@ -15,6 +15,7 @@ use mmcp_store::{DiagReport, GroupEntry};
 
 use crate::state::editor_buffer::EditorBuffer;
 use crate::state::selection::Selection;
+use crate::state::sync_reachability::SyncReachability;
 use crate::state::sync_status::SyncStatus;
 use crate::state::viewer_cache::ViewerCache;
 
@@ -39,6 +40,10 @@ pub struct AppState {
     /// by the toolbar (before firing a task) and partly by the
     /// outcome drain (after a task completes).
     pub sync: SyncStatus,
+
+    /// Orthogonal "is the sync server reachable?" signal. Updated
+    /// by the background worker's periodic probe.
+    pub reachability: SyncReachability,
 
     /// Last diagnose report, populated when the worker reports
     /// `TaskOutcome::DiagnoseCompleted`. `None` before the first

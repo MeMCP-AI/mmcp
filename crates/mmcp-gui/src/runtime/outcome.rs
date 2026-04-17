@@ -44,6 +44,13 @@ pub enum TaskOutcome {
         op: SyncOp,
         message: String,
     },
+    /// Emitted by the periodic health probe each tick. `reason` is
+    /// the transport error string when `online == false`, or `None`
+    /// on success.
+    HealthChanged {
+        online: bool,
+        reason: Option<String>,
+    },
     DiagnoseCompleted(DiagReport),
     MemoryCreated {
         group_id: GroupId,

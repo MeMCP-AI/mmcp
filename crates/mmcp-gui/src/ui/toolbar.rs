@@ -14,6 +14,7 @@ use crate::runtime::BackgroundHandle;
 use crate::runtime::task::BackgroundTask;
 use crate::state::AppState;
 use crate::state::editor_buffer::EditorBuffer;
+use crate::state::sync_reachability::SyncReachability;
 use crate::state::sync_status::{SyncOp, SyncStatus};
 
 pub fn show(ui: &mut egui::Ui, state: &mut AppState, background: &BackgroundHandle) {
@@ -76,18 +77,22 @@ fn render_crud_buttons(ui: &mut egui::Ui, state: &mut AppState) {
 }
 
 fn render_sync_buttons(ui: &mut egui::Ui, state: &mut AppState, background: &BackgroundHandle) {
-    let ready = state.sync.is_ready();
+    let op_ready = state.sync.is_ready();
+    let online = state.reachability.is_online();
+    let enabled = op_ready && online;
+    let pull_hint = disabled_hint(&state.sync, &state.reachability, SyncOp::Pull);
+    let push_hint = disabled_hint(&state.sync, &state.reachability, SyncOp::Push);
     if ui
-        .add_enabled(ready, egui::Button::new("Pull"))
-        .on_disabled_hover_text(disabled_hint(&state.sync, SyncOp::Pull))
+        .add_enabled(enabled, egui::Button::new("Pull"))
+        .on_disabled_hover_text(pull_hint)
         .clicked()
     {
         begin_sync(state, SyncOp::Pull);
         background.send(BackgroundTask::SyncPull);
     }
     if ui
-        .add_enabled(ready, egui::Button::new("Push"))
-        .on_disabled_hover_text(disabled_hint(&state.sync, SyncOp::Push))
+        .add_enabled(enabled, egui::Button::new("Push"))
+        .on_disabled_hover_text(push_hint)
         .clicked()
     {
         begin_sync(state, SyncOp::Push);
@@ -109,7 +114,10 @@ fn begin_sync(state: &mut AppState, op: SyncOp) {
     }
 }
 
-fn disabled_hint(status: &SyncStatus, op: SyncOp) -> String {
+fn disabled_hint(status: &SyncStatus, reach: &SyncReachability, op: SyncOp) -> String {
+    if let SyncReachability::Offline { reason } = reach {
+        return format!("offline — {reason}");
+    }
     match status {
         SyncStatus::Unknown => "starting up…".to_string(),
         SyncStatus::NotConfigured => {

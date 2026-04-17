@@ -15,8 +15,9 @@ use mmcp_git::NativeBackend;
 use mmcp_store::{
     GroupIndex, IndexResolver, MmcpHome, ResolvedAuthor, build_engine, config as project_config,
 };
-use mmcp_sync::{PendingQueue, SyncEngine};
+use mmcp_sync::{PendingQueue, SyncClient, SyncEngine, SyncError};
 use tokio::sync::mpsc;
+use tokio::time::{Duration, interval};
 
 use crate::error::GuiError;
 use crate::io::diagnostics_ops::run_diagnose;
@@ -90,6 +91,15 @@ async fn worker_loop(
         server_url: ctx.sync.as_ref().map(|s| s.server_url.clone()),
     });
 
+    // Spawn the reachability probe when sync is configured, so the
+    // toolbar can disable Pull/Push the moment the server becomes
+    // unreachable. Probe client is separate from the main sync
+    // engine's client so a long-running pull doesn't starve the
+    // probe (or vice versa).
+    if let Some(bundle) = ctx.sync.as_ref() {
+        tokio::spawn(probe_loop(bundle.server_url.clone(), outcome_tx.clone()));
+    }
+
     match refresh_groups(&ctx).await {
         Ok(groups) => {
             let _ = outcome_tx.send(TaskOutcome::GroupsRefreshed(groups));
@@ -152,6 +162,52 @@ fn load_project_sync() -> anyhow::Result<Option<mmcp_core::config::SyncConfig>> 
     };
     let cfg: ProjectConfig = project_config::load(&root)?;
     Ok(cfg.sync)
+}
+
+/// Interval between reachability probes. 15 s is short enough that a
+/// dropped network is visible to the user in time for the next click
+/// and long enough to keep the wire noise trivial. The first tick
+/// fires immediately so the UI learns the initial state without a
+/// user-visible delay.
+const PROBE_INTERVAL: Duration = Duration::from_secs(15);
+
+async fn probe_loop(server_url: String, tx: mpsc::UnboundedSender<TaskOutcome>) {
+    let client = match SyncClient::new(&server_url) {
+        Ok(c) => c,
+        Err(err) => {
+            let _ = tx.send(TaskOutcome::HealthChanged {
+                online: false,
+                reason: Some(err.to_string()),
+            });
+            return;
+        }
+    };
+    let mut ticker = interval(PROBE_INTERVAL);
+    loop {
+        ticker.tick().await;
+        let outcome = match client.get_manifest().await {
+            Ok(_) => TaskOutcome::HealthChanged {
+                online: true,
+                reason: None,
+            },
+            // Only transport failures mean "offline". A Remote error
+            // (401 / 403 / 500) means the server responded — we are
+            // online, auth or server-side state just isn't happy.
+            // The user clicks Pull / Push and gets a clear toast
+            // instead of a silently-disabled button.
+            Err(SyncError::Transport(msg)) => TaskOutcome::HealthChanged {
+                online: false,
+                reason: Some(msg),
+            },
+            Err(_) => TaskOutcome::HealthChanged {
+                online: true,
+                reason: None,
+            },
+        };
+        if tx.send(outcome).is_err() {
+            break;
+        }
+    }
 }
 
 async fn refresh_groups(ctx: &WorkerContext) -> Result<Vec<mmcp_store::GroupEntry>, GuiError> {

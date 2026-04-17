@@ -69,6 +69,15 @@ impl MmcpGuiApp {
                     tracing::warn!(op = op.as_str(), error = %message, "sync failed");
                     toolbar::apply_sync_failed(&mut self.state, op, message);
                 }
+                TaskOutcome::HealthChanged { online, reason } => {
+                    self.state.reachability = if online {
+                        crate::state::sync_reachability::SyncReachability::Online
+                    } else {
+                        crate::state::sync_reachability::SyncReachability::Offline {
+                            reason: reason.unwrap_or_else(|| "unreachable".to_string()),
+                        }
+                    };
+                }
                 TaskOutcome::DiagnoseCompleted(report) => {
                     self.state.diag_report = Some(report);
                 }

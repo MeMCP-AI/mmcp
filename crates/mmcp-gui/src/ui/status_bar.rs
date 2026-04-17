@@ -10,11 +10,14 @@
 use eframe::egui;
 
 use crate::state::AppState;
+use crate::state::sync_reachability::SyncReachability;
 use crate::state::sync_status::SyncStatus;
 
 pub fn show(ui: &mut egui::Ui, state: &AppState) {
     egui::Panel::bottom("mmcp_gui_status_bar").show_inside(ui, |ui| {
         ui.horizontal(|ui| {
+            render_reachability(ui, &state.reachability, &state.sync);
+            ui.separator();
             render_sync(ui, &state.sync);
 
             if let Some(report) = &state.diag_report {
@@ -27,6 +30,25 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) {
             });
         });
     });
+}
+
+fn render_reachability(ui: &mut egui::Ui, reach: &SyncReachability, sync: &SyncStatus) {
+    // If sync isn't configured, connectivity is moot.
+    if matches!(sync, SyncStatus::NotConfigured) {
+        return;
+    }
+    match reach {
+        SyncReachability::Unknown => {
+            ui.colored_label(egui::Color32::GRAY, "● probing…");
+        }
+        SyncReachability::Online => {
+            ui.colored_label(egui::Color32::from_rgb(120, 200, 120), "● online");
+        }
+        SyncReachability::Offline { reason } => {
+            ui.colored_label(egui::Color32::from_rgb(220, 120, 120), "● offline")
+                .on_hover_text(reason);
+        }
+    }
 }
 
 fn render_diag_summary(ui: &mut egui::Ui, report: &mmcp_store::DiagReport) {
