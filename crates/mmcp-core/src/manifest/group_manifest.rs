@@ -56,6 +56,19 @@ pub struct GroupManifest {
     #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub protected: bool,
 
+    /// Cross-project reach of this group's memories. Consumed by
+    /// `bootstrap_context` to decide whether mandatory memories in
+    /// this group surface outside the group's own project. See
+    /// [`GroupScope`] for the three-variant semantics and the
+    /// FR-025 context.
+    ///
+    /// Serde-default `Project` + skip-when-default keeps pre-field
+    /// manifests parsing unchanged and omits the field from
+    /// project-scoped manifests — the wire shape stays minimal
+    /// and the common case matches legacy output byte-for-byte.
+    #[serde(default, skip_serializing_if = "GroupScope::is_default")]
+    pub scope: GroupScope,
+
     /// Creation time of the group on the original server, as
     /// milliseconds since the Unix epoch.
     pub created_at: i64,
@@ -71,6 +84,48 @@ pub struct GroupManifest {
 pub enum GroupOwnerHint {
     User(Uuid),
     Org(Uuid),
+}
+
+/// Declares whether a group's memories cross project boundaries.
+///
+/// Consumed by `bootstrap_context`'s mandatory-memory filter so
+/// project-specific rules cannot leak into unrelated projects'
+/// mandatory re-read checkpoints (FR-025). Three variants:
+///
+/// - `Global`: mandatory memories surface during every session
+///   regardless of `project_uuid`. The canonical "global" group
+///   every install seeds sits here.
+/// - `Shared`: mandatory memories surface only when the session's
+///   project config adopts the group via `groups.additional` or
+///   `languages.use_`. Language-convention groups and team-wide
+///   standards live here. No implicit cross-project leak — the
+///   project must opt in explicitly.
+/// - `Project`: mandatory memories surface only when the session's
+///   `project_uuid` matches this group's `group_id`. The default,
+///   matching how project groups already worked before this field
+///   landed.
+///
+/// Default is `Project` so an unknown or legacy manifest never
+/// accidentally leaks its mandatory rules across project
+/// boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupScope {
+    Global,
+    Shared,
+    #[default]
+    Project,
+}
+
+impl GroupScope {
+    /// True when the variant equals the serde default. Used by
+    /// `GroupManifest`'s `skip_serializing_if` so the common
+    /// Project-scoped case writes no `scope` key — pre-field
+    /// manifests round-trip byte-identical.
+    #[must_use]
+    pub const fn is_default(&self) -> bool {
+        matches!(self, GroupScope::Project)
+    }
 }
 
 impl GroupManifest {
@@ -89,6 +144,7 @@ impl GroupManifest {
             display_name: None,
             owner: GroupOwnerHint::User(owner),
             protected: false,
+            scope: GroupScope::Project,
             created_at: Timestamp::now().as_millisecond(),
         }
     }
@@ -103,6 +159,7 @@ impl GroupManifest {
             display_name: None,
             owner: GroupOwnerHint::Org(owner),
             protected: false,
+            scope: GroupScope::Project,
             created_at: Timestamp::now().as_millisecond(),
         }
     }
@@ -213,6 +270,65 @@ mod tests {
         assert!(
             !text.contains("protected"),
             "unprotected manifest must not emit the field; got:\n{text}",
+        );
+    }
+
+    #[test]
+    fn scope_defaults_to_project_when_missing() {
+        // Pre-scope-field manifests on disk still parse unchanged.
+        // Render a legacy manifest (no scope field emitted because
+        // of skip_serializing_if on the default), reparse, assert
+        // the default variant round-trips.
+        let manifest = GroupManifest::new_user_owned(GroupId::new(), "legacy", Uuid::now_v7());
+        let text = manifest.to_toml().unwrap();
+        assert!(
+            !text.contains("scope"),
+            "project-scoped manifest must not emit the field (precondition); got:\n{text}",
+        );
+        let parsed = GroupManifest::from_toml(&text).expect("pre-flag manifest must parse");
+        assert_eq!(parsed.scope, GroupScope::Project);
+    }
+
+    #[test]
+    fn global_scope_round_trips_through_toml() {
+        let mut manifest = GroupManifest::new_user_owned(GroupId::new(), "global", Uuid::now_v7());
+        manifest.scope = GroupScope::Global;
+        let text = manifest.to_toml().unwrap();
+        assert!(
+            text.contains("scope = \"global\""),
+            "rendered manifest must serialize the scope when non-default; got:\n{text}",
+        );
+        let parsed = GroupManifest::from_toml(&text).unwrap();
+        assert_eq!(parsed.scope, GroupScope::Global);
+        assert_eq!(parsed, manifest);
+    }
+
+    #[test]
+    fn shared_scope_round_trips_through_toml() {
+        let mut manifest =
+            GroupManifest::new_user_owned(GroupId::new(), "team/house-rules", Uuid::now_v7());
+        manifest.scope = GroupScope::Shared;
+        let text = manifest.to_toml().unwrap();
+        assert!(
+            text.contains("scope = \"shared\""),
+            "rendered manifest must serialize the Shared variant; got:\n{text}",
+        );
+        let parsed = GroupManifest::from_toml(&text).unwrap();
+        assert_eq!(parsed.scope, GroupScope::Shared);
+    }
+
+    #[test]
+    fn project_scope_is_skipped_on_output() {
+        // skip_serializing_if keeps legacy project-scoped manifests
+        // byte-identical on the wire. Without this guarantee, every
+        // existing manifest would gain a `scope = "project"` line
+        // on the next rewrite — a pointless migration churn.
+        let manifest = GroupManifest::new_user_owned(GroupId::new(), "team-rust", Uuid::now_v7());
+        assert_eq!(manifest.scope, GroupScope::Project);
+        let text = manifest.to_toml().unwrap();
+        assert!(
+            !text.contains("scope"),
+            "project-scoped manifest must not emit the field; got:\n{text}",
         );
     }
 }

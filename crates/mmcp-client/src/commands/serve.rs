@@ -1467,19 +1467,44 @@ impl McpServer {
         let project_root = std::env::current_dir()
             .ok()
             .and_then(|cwd| find_project_root(&cwd));
-        let project_uuid = project_root
+        let project_cfg = project_root
             .as_ref()
-            .and_then(|root| load_project_config(root).ok())
-            .map(|cfg| *cfg.project_uuid.as_uuid());
+            .and_then(|root| load_project_config(root).ok());
+        let project_uuid = project_cfg.as_ref().map(|cfg| *cfg.project_uuid.as_uuid());
 
         let wants_project = matches!(scope, BootstrapScope::Project | BootstrapScope::All);
         let wants_mandatory = matches!(scope, BootstrapScope::Mandatory | BootstrapScope::All);
+
+        // FR-025: precompute the set of Shared-scoped groups the
+        // current project has opted into via `.mmcp.toml`. Resolved
+        // once up front so the per-memory loop doesn't re-match the
+        // adoption strings against every group.
+        let adopted_shared: std::collections::HashSet<Uuid> = match project_cfg.as_ref() {
+            None => std::collections::HashSet::new(),
+            Some(cfg) => self
+                .state
+                .groups
+                .list()
+                .await
+                .iter()
+                .filter(|entry| entry.manifest.scope == mmcp_core::manifest::GroupScope::Shared)
+                .filter(|entry| is_group_adopted(&entry.manifest.slug, cfg))
+                .map(|entry| *entry.manifest.group_id.as_uuid())
+                .collect(),
+        };
 
         // Walk every local group, collecting memories that match scope.
         let mut memories: Vec<serde_json::Value> = Vec::new();
         for entry in self.state.groups.list().await {
             let entry_uuid = *entry.manifest.group_id.as_uuid();
             let is_project = project_uuid == Some(entry_uuid);
+            // FR-025: mandatory memories only fan out when their
+            // owning group is in scope for the current session.
+            let mandatory_applies = match entry.manifest.scope {
+                mmcp_core::manifest::GroupScope::Global => true,
+                mmcp_core::manifest::GroupScope::Shared => adopted_shared.contains(&entry_uuid),
+                mmcp_core::manifest::GroupScope::Project => is_project,
+            };
             let slugs = list_memory_files(&self.state.backend, &entry)
                 .await
                 .unwrap_or_default();
@@ -1510,11 +1535,13 @@ impl McpServer {
                 };
                 let is_mandatory = file.frontmatter.mandatory;
 
-                let include = (wants_mandatory && is_mandatory) || (wants_project && is_project);
+                let include = (wants_mandatory && is_mandatory && mandatory_applies)
+                    || (wants_project && is_project);
                 if !include {
                     continue;
                 }
-                let reason = match (wants_mandatory && is_mandatory, wants_project && is_project) {
+                let qualifies_mandatory = wants_mandatory && is_mandatory && mandatory_applies;
+                let reason = match (qualifies_mandatory, wants_project && is_project) {
                     (true, true) => "mandatory,project",
                     (true, false) => "mandatory",
                     (false, true) => "project",
@@ -2201,6 +2228,20 @@ fn map_sync_error_to_mcp(err: mmcp_sync::SyncError) -> McpError {
 /// surfaces the failure identically. Factored out because five
 /// tools share it and an inline expression would drift between
 /// variants.
+/// FR-025: does `cfg` adopt the given group slug? Checks both the
+/// explicit `groups.additional` list and the `lang/<name>` mapping
+/// implied by `languages.use_`. Bare string equality for now —
+/// namespace-aware resolution is a follow-up when the adoption
+/// format stabilises.
+fn is_group_adopted(slug: &str, cfg: &mmcp_core::config::ProjectConfig) -> bool {
+    cfg.groups.additional.iter().any(|s| s == slug)
+        || cfg
+            .languages
+            .use_
+            .iter()
+            .any(|lang| slug == format!("lang/{lang}"))
+}
+
 fn current_dir_for_mcp() -> Result<std::path::PathBuf, McpError> {
     std::env::current_dir()
         .map_err(|e| McpError::internal_error(format!("cannot read working directory: {e}"), None))
@@ -2824,7 +2865,15 @@ mod tests {
         memory_slug: &str,
         memory_body: &str,
     ) -> GroupId {
-        seed_group_with_memory_inner(state, slug, memory_slug, memory_body, false).await
+        seed_group_with_memory_inner(
+            state,
+            slug,
+            memory_slug,
+            memory_body,
+            false,
+            mmcp_core::manifest::GroupScope::Project,
+        )
+        .await
     }
 
     /// Same as [`seed_group_with_memory`] but marks the group's
@@ -2836,7 +2885,29 @@ mod tests {
         memory_slug: &str,
         memory_body: &str,
     ) -> GroupId {
-        seed_group_with_memory_inner(state, slug, memory_slug, memory_body, true).await
+        seed_group_with_memory_inner(
+            state,
+            slug,
+            memory_slug,
+            memory_body,
+            true,
+            mmcp_core::manifest::GroupScope::Project,
+        )
+        .await
+    }
+
+    /// Seed a group whose manifest carries an explicit
+    /// [`GroupScope`](mmcp_core::manifest::GroupScope) so tests can
+    /// exercise the FR-025 mandatory-memory filter without hand-
+    /// rolling the manifest mutation.
+    async fn seed_scoped_group_with_memory(
+        state: &ClientState,
+        slug: &str,
+        memory_slug: &str,
+        memory_body: &str,
+        scope: mmcp_core::manifest::GroupScope,
+    ) -> GroupId {
+        seed_group_with_memory_inner(state, slug, memory_slug, memory_body, false, scope).await
     }
 
     async fn seed_group_with_memory_inner(
@@ -2845,11 +2916,13 @@ mod tests {
         memory_slug: &str,
         memory_body: &str,
         protected: bool,
+        scope: mmcp_core::manifest::GroupScope,
     ) -> GroupId {
         let owner = Uuid::now_v7();
         let group_id = GroupId::new();
         let mut manifest = GroupManifest::new_user_owned(group_id, slug, owner);
         manifest.protected = protected;
+        manifest.scope = scope;
         let handle = state
             .backend
             .create_group_repo(&manifest)
@@ -3170,7 +3243,19 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_context_mandatory_scope_returns_only_mandatory_with_body() {
         let (state, _tmp) = test_state().await;
-        seed_group_with_memory(&state, "globals", "mandatory-rule", MANDATORY_MEMORY).await;
+        // FR-025: the mandatory memory must live in a Global-scoped
+        // group to surface when no `.mmcp.toml` is in cwd. The
+        // optional memory stays Project-scoped; it would be filtered
+        // by the new predicate anyway, but the wants_mandatory path
+        // is what this test cares about.
+        seed_scoped_group_with_memory(
+            &state,
+            "global",
+            "mandatory-rule",
+            MANDATORY_MEMORY,
+            mmcp_core::manifest::GroupScope::Global,
+        )
+        .await;
         seed_group_with_memory(&state, "globals2", "optional-note", OPTIONAL_MEMORY).await;
         let server = McpServer::new(state);
 
@@ -3204,8 +3289,19 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_context_all_scope_includes_mandatory_when_no_project_configured() {
         let (state, _tmp) = test_state().await;
-        seed_group_with_memory(&state, "globals", "rule-one", MANDATORY_MEMORY).await;
-        seed_group_with_memory(&state, "globals", "optional", OPTIONAL_MEMORY).await;
+        // FR-025: the mandatory memory sits in a Global-scoped group
+        // so it surfaces through the `All` scope even without a
+        // project in cwd. A second project-scoped seed proves its
+        // own memory does NOT leak.
+        seed_scoped_group_with_memory(
+            &state,
+            "global",
+            "rule-one",
+            MANDATORY_MEMORY,
+            mmcp_core::manifest::GroupScope::Global,
+        )
+        .await;
+        seed_group_with_memory(&state, "team-project", "optional", OPTIONAL_MEMORY).await;
         let server = McpServer::new(state);
 
         // No project config reachable from cwd → `All` collapses to mandatory-only.
@@ -3226,6 +3322,145 @@ mod tests {
             mandatory_count >= 1,
             "mandatory memories must flow through All scope; saw: {memories:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn mandatory_memory_in_unrelated_project_group_does_not_leak() {
+        // FR-025 regression guard. A mandatory memory in a
+        // Project-scoped group must NOT surface when the session
+        // has no `.mmcp.toml` pointing at that group's UUID.
+        // Mirrors the real bug (gitoxide mandatory rules appearing
+        // in mmcp sessions) with a minimal two-group fixture.
+        let (state, _tmp) = test_state().await;
+        seed_scoped_group_with_memory(
+            &state,
+            "global",
+            "global-rule",
+            MANDATORY_MEMORY,
+            mmcp_core::manifest::GroupScope::Global,
+        )
+        .await;
+        seed_scoped_group_with_memory(
+            &state,
+            "gitoxide-like",
+            "project-rule",
+            MANDATORY_MEMORY,
+            mmcp_core::manifest::GroupScope::Project,
+        )
+        .await;
+        let server = McpServer::new(state);
+
+        let res = server
+            .bootstrap_context(Parameters(BootstrapContextArgs {
+                scope: Some(BootstrapScope::Mandatory),
+            }))
+            .await
+            .expect("bootstrap_context");
+        let parsed = parse_ok_json(res);
+        let memories = parsed
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .expect("memories array");
+        let slugs: Vec<&str> = memories
+            .iter()
+            .filter_map(|m| m.get("slug").and_then(|v| v.as_str()))
+            .collect();
+        assert_eq!(
+            slugs,
+            vec!["global-rule"],
+            "only the Global-scoped mandatory memory should surface; saw: {slugs:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_mandatory_memory_surfaces_only_when_project_adopts() {
+        // FR-025: a Shared-scoped group's mandatory memory reaches
+        // the session only if the project's `.mmcp.toml` adopts the
+        // group via `groups.additional`. Without adoption the
+        // memory must stay hidden — same class of leak-prevention
+        // as the unrelated-project test, but for Shared groups.
+        let (state, tmp) = test_state().await;
+        let shared_group = seed_scoped_group_with_memory(
+            &state,
+            "team/house-rules",
+            "team-rule",
+            MANDATORY_MEMORY,
+            mmcp_core::manifest::GroupScope::Shared,
+        )
+        .await;
+        let server = McpServer::new(state);
+
+        // No project config in cwd → Shared group is not adopted → must not surface.
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).expect("mkdir project root");
+        let cwd_guard = CwdGuard::push(&project_root);
+        let res = server
+            .bootstrap_context(Parameters(BootstrapContextArgs {
+                scope: Some(BootstrapScope::Mandatory),
+            }))
+            .await
+            .expect("bootstrap_context without adoption");
+        let parsed = parse_ok_json(res);
+        let memories = parsed
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .expect("memories array");
+        assert!(
+            memories.is_empty(),
+            "Shared mandatory memory must not leak pre-adoption; saw: {memories:?}",
+        );
+
+        // Now write `.mmcp.toml` with `groups.additional = ["team/house-rules"]`
+        // and confirm the mandatory memory surfaces.
+        let toml_body = format!(
+            "project_uuid = \"{}\"\n\n[groups]\nadditional = [\"team/house-rules\"]\n",
+            Uuid::now_v7()
+        );
+        std::fs::write(project_root.join(".mmcp.toml"), toml_body)
+            .expect("seed project .mmcp.toml");
+        let res = server
+            .bootstrap_context(Parameters(BootstrapContextArgs {
+                scope: Some(BootstrapScope::Mandatory),
+            }))
+            .await
+            .expect("bootstrap_context after adoption");
+        let parsed = parse_ok_json(res);
+        let slugs: Vec<&str> = parsed
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .expect("memories array")
+            .iter()
+            .filter_map(|m| m.get("slug").and_then(|v| v.as_str()))
+            .collect();
+        assert_eq!(
+            slugs,
+            vec!["team-rule"],
+            "adopted Shared mandatory memory must surface; saw: {slugs:?}",
+        );
+        drop(cwd_guard);
+        let _ = shared_group;
+    }
+
+    /// Process-scoped cwd override used by
+    /// `shared_mandatory_memory_surfaces_only_when_project_adopts`.
+    /// Restores the previous cwd on drop so follow-up tests in the
+    /// same process see a deterministic working directory.
+    struct CwdGuard {
+        previous: std::path::PathBuf,
+    }
+
+    impl CwdGuard {
+        fn push(new_cwd: &std::path::Path) -> Self {
+            let previous = std::env::current_dir().expect("read cwd");
+            std::env::set_current_dir(new_cwd).expect("set cwd");
+            Self { previous }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.previous);
+        }
     }
 
     #[test]
