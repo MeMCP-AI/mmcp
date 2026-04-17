@@ -5,7 +5,7 @@
 # (gix, rustls, sqlx with bundled sqlite) so distroless-cc provides
 # everything needed at runtime: libc, libgcc, CA roots, tzdata.
 
-FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-1-bookworm AS chef
 WORKDIR /build
 
 FROM chef AS planner
