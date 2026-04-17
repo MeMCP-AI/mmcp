@@ -11,6 +11,7 @@
 //! clarity.
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// Lifecycle state of a feature request.
 ///
@@ -109,17 +110,19 @@ pub struct FeatureMetadata {
     #[serde(default)]
     pub status: FeatureStatus,
 
-    /// Slugs of FRs this one depends on; usually the prerequisite
-    /// surface must land first. Rendered as a list in diagnostics so
-    /// cycles surface visibly.
+    /// UUIDs of FRs this one depends on; usually the prerequisite
+    /// surface must land first. Post-FR-028 cross-refs hold memory
+    /// UUIDs (not slugs) so a rename on either side never breaks
+    /// the graph. Rendered as a list in diagnostics so cycles
+    /// surface visibly.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub depends_on: Vec<String>,
+    pub depends_on: Vec<Uuid>,
 
-    /// Slugs of FRs whose own resolution is gated on this one. The
+    /// UUIDs of FRs whose own resolution is gated on this one. The
     /// inverse of `depends_on` maintained explicitly so neither
     /// direction of the graph needs a scan to enumerate.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blocks: Vec<String>,
+    pub blocks: Vec<Uuid>,
 }
 
 #[cfg(test)]

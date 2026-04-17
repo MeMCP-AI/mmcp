@@ -91,16 +91,8 @@ impl EditorBuffer {
         let mut fm = self
             .original_frontmatter
             .clone()
-            .unwrap_or(MemoryFrontmatter {
-                id: None,
-                name: String::new(),
-                description: String::new(),
-                kind: MemoryKind::Scratch,
-                mandatory: false,
-                version: None,
-                tags: Vec::new(),
-                bump_intent: None,
-                feature: None,
+            .unwrap_or_else(|| {
+                MemoryFrontmatter::new(String::new(), String::new(), MemoryKind::Scratch)
             });
         fm.name = self.name.clone();
         fm.description = self.description.clone();

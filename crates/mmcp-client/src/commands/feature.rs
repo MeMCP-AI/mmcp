@@ -185,14 +185,18 @@ async fn run_add(args: AddArgs) -> Result<()> {
     let author = home.resolve_author();
 
     let status = parse_status_cli(args.status.as_deref())?.unwrap_or_default();
+    let depends_on =
+        mmcp_store::parse_cross_refs(&args.depends_on, "depends_on").map_err(anyhow::Error::from)?;
+    let blocks =
+        mmcp_store::parse_cross_refs(&args.blocks, "blocks").map_err(anyhow::Error::from)?;
     let spec = AddSpec {
         slug: args.slug,
         title: args.title.unwrap_or_default(),
         description: args.description,
         body: read_body(&args.body)?,
         status,
-        depends_on: args.depends_on,
-        blocks: args.blocks,
+        depends_on,
+        blocks,
         message: args.message,
     };
     let record = add_feature(&backend, &entry, spec, &author)
@@ -243,14 +247,17 @@ async fn run_update(args: UpdateArgs) -> Result<()> {
     } else if args.depends_on.is_empty() {
         None
     } else {
-        Some(args.depends_on)
+        Some(
+            mmcp_store::parse_cross_refs(&args.depends_on, "depends_on")
+                .map_err(anyhow::Error::from)?,
+        )
     };
     let blocks = if args.blocks_clear {
         Some(Vec::new())
     } else if args.blocks.is_empty() {
         None
     } else {
-        Some(args.blocks)
+        Some(mmcp_store::parse_cross_refs(&args.blocks, "blocks").map_err(anyhow::Error::from)?)
     };
 
     let spec = UpdateSpec {
@@ -349,10 +356,10 @@ fn print_record_full(record: &FeatureRecord) {
         println!("description : {}", record.description);
     }
     if !record.depends_on.is_empty() {
-        println!("depends_on  : {}", record.depends_on.join(", "));
+        println!("depends_on  : {}", join_uuids(&record.depends_on));
     }
     if !record.blocks.is_empty() {
-        println!("blocks      : {}", record.blocks.join(", "));
+        println!("blocks      : {}", join_uuids(&record.blocks));
     }
     if !record.commit_id.is_empty() {
         println!("commit      : {}", record.commit_id);
@@ -382,6 +389,16 @@ fn parse_status_cli(raw: Option<&str>) -> Result<Option<FeatureStatus>> {
             )
         }),
     }
+}
+
+/// Join UUIDs into a comma-separated display string for the
+/// human-readable CLI output.
+fn join_uuids(values: &[uuid::Uuid]) -> String {
+    values
+        .iter()
+        .map(uuid::Uuid::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Interpret a body argument: the literal `-` reads from stdin so

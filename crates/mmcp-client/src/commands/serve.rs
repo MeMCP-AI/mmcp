@@ -988,23 +988,10 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<ReadMemoryArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let group_id = parse_group_id(&args.group)?;
-        let entry = self.state.groups.get(&group_id).await.ok_or_else(|| {
-            McpError::invalid_params(
-                "group not found in local mirror",
-                Some(json!({ "group": group_id.to_string() })),
-            )
-        })?;
+        let (entry, resolved) = self
+            .resolve_memory_address(&args.group, args.slug.as_deref(), args.id.as_deref())
+            .await?;
         let rev = parse_rev(args.version.as_deref());
-        let id = parse_optional_uuid(args.id.as_deref())?;
-        let resolved = mmcp_store::resolve_memory(
-            &self.state.backend,
-            &entry.handle,
-            args.slug.as_deref(),
-            id,
-        )
-        .await
-        .map_err(map_memory_error_to_mcp)?;
         let bytes = self
             .state
             .backend
@@ -1013,7 +1000,7 @@ impl McpServer {
             .map_err(|e| match e {
                 mmcp_git::GitError::PathNotFound(p) => McpError::invalid_params(
                     "memory not found in group",
-                    Some(json!({ "group": group_id.to_string(), "path": p })),
+                    Some(json!({ "group": entry.manifest.group_id.to_string(), "path": p })),
                 ),
                 mmcp_git::GitError::RevNotFound(r) => {
                     McpError::invalid_params("revision not found", Some(json!({ "revision": r })))
@@ -1170,13 +1157,7 @@ impl McpServer {
         Parameters(args): Parameters<WriteMemoryArgs>,
         peer: Peer<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let group_id = parse_group_id(&args.group)?;
-        let entry = self
-            .state
-            .groups
-            .get(&group_id)
-            .await
-            .ok_or_else(|| McpError::invalid_params("group not found", None))?;
+        let entry = self.resolve_group_entry(&args.group).await?;
         // Even a fresh CREATE on a protected group needs user-
         // visible confirmation: adding an unauthorized rule to
         // `global` has the same blast radius as editing one.
@@ -1200,13 +1181,7 @@ impl McpServer {
         &self,
         args: WriteMemoryArgs,
     ) -> Result<CallToolResult, McpError> {
-        let group_id = parse_group_id(&args.group)?;
-        let entry = self
-            .state
-            .groups
-            .get(&group_id)
-            .await
-            .ok_or_else(|| McpError::invalid_params("group not found", None))?;
+        let entry = self.resolve_group_entry(&args.group).await?;
 
         let kind = args.kind.into_core();
 
@@ -1218,17 +1193,10 @@ impl McpServer {
 
         use mmcp_core::memory::{FrontmatterFormat, MemoryFile, MemoryFrontmatter};
         let file = MemoryFile {
-            frontmatter: MemoryFrontmatter {
-                id: Some(id),
-                name: args.name,
-                description: args.description,
-                kind,
-                mandatory: args.mandatory,
-                version: None,
-                tags: args.tags,
-                bump_intent: None,
-                feature: None,
-            },
+            frontmatter: MemoryFrontmatter::new(args.name, args.description, kind)
+                .with_id(id)
+                .with_mandatory(args.mandatory)
+                .with_tags(args.tags),
             body: args.body,
             format: FrontmatterFormat::TomlPlus,
         };
@@ -1265,18 +1233,8 @@ impl McpServer {
         Parameters(args): Parameters<EditMemoryArgs>,
         peer: Peer<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let group_id = parse_group_id(&args.group)?;
-        let entry = self
-            .state
-            .groups
-            .get(&group_id)
-            .await
-            .ok_or_else(|| McpError::invalid_params("group not found", None))?;
-        let slug_for_guard = args.slug.clone().unwrap_or_else(|| {
-            args.id
-                .clone()
-                .unwrap_or_else(|| "<unknown>".to_string())
-        });
+        let entry = self.resolve_group_entry(&args.group).await?;
+        let slug_for_guard = memory_label_for_guard(args.slug.as_deref(), args.id.as_deref());
         confirm_protected_write(&peer, &entry, &slug_for_guard, "edit").await?;
         self.edit_memory_unguarded(args).await
     }
@@ -1287,23 +1245,9 @@ impl McpServer {
         &self,
         args: EditMemoryArgs,
     ) -> Result<CallToolResult, McpError> {
-        let group_id = parse_group_id(&args.group)?;
-        let entry = self
-            .state
-            .groups
-            .get(&group_id)
-            .await
-            .ok_or_else(|| McpError::invalid_params("group not found", None))?;
-
-        let id = parse_optional_uuid(args.id.as_deref())?;
-        let resolved = mmcp_store::resolve_memory(
-            &self.state.backend,
-            &entry.handle,
-            args.slug.as_deref(),
-            id,
-        )
-        .await
-        .map_err(map_memory_error_to_mcp)?;
+        let (entry, resolved) = self
+            .resolve_memory_address(&args.group, args.slug.as_deref(), args.id.as_deref())
+            .await?;
 
         let bytes = self
             .state
@@ -1380,18 +1324,8 @@ impl McpServer {
         Parameters(args): Parameters<DeleteMemoryArgs>,
         peer: Peer<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let group_id = parse_group_id(&args.group)?;
-        let entry = self
-            .state
-            .groups
-            .get(&group_id)
-            .await
-            .ok_or_else(|| McpError::invalid_params("group not found", None))?;
-        let slug_for_guard = args.slug.clone().unwrap_or_else(|| {
-            args.id
-                .clone()
-                .unwrap_or_else(|| "<unknown>".to_string())
-        });
+        let entry = self.resolve_group_entry(&args.group).await?;
+        let slug_for_guard = memory_label_for_guard(args.slug.as_deref(), args.id.as_deref());
         confirm_protected_write(&peer, &entry, &slug_for_guard, "delete").await?;
         self.delete_memory_unguarded(args).await
     }
@@ -1401,23 +1335,9 @@ impl McpServer {
         &self,
         args: DeleteMemoryArgs,
     ) -> Result<CallToolResult, McpError> {
-        let group_id = parse_group_id(&args.group)?;
-        let entry = self
-            .state
-            .groups
-            .get(&group_id)
-            .await
-            .ok_or_else(|| McpError::invalid_params("group not found", None))?;
-
-        let id = parse_optional_uuid(args.id.as_deref())?;
-        let resolved = mmcp_store::resolve_memory(
-            &self.state.backend,
-            &entry.handle,
-            args.slug.as_deref(),
-            id,
-        )
-        .await
-        .map_err(map_memory_error_to_mcp)?;
+        let (entry, resolved) = self
+            .resolve_memory_address(&args.group, args.slug.as_deref(), args.id.as_deref())
+            .await?;
 
         let commit_message = args
             .message
@@ -1456,22 +1376,9 @@ impl McpServer {
         &self,
         args: ReadMemoryBodySectionsArgs,
     ) -> Result<CallToolResult, McpError> {
-        let group_id = parse_group_id(&args.group)?;
-        let entry = self
-            .state
-            .groups
-            .get(&group_id)
-            .await
-            .ok_or_else(|| McpError::invalid_params("group not found in local mirror", None))?;
-        let id = parse_optional_uuid(args.id.as_deref())?;
-        let resolved = mmcp_store::resolve_memory(
-            &self.state.backend,
-            &entry.handle,
-            args.slug.as_deref(),
-            id,
-        )
-        .await
-        .map_err(map_memory_error_to_mcp)?;
+        let (entry, resolved) = self
+            .resolve_memory_address(&args.group, args.slug.as_deref(), args.id.as_deref())
+            .await?;
         let bytes = self
             .state
             .backend
@@ -1514,18 +1421,8 @@ impl McpServer {
         Parameters(args): Parameters<EditMemoryBodyArgs>,
         peer: Peer<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let group_id = parse_group_id(&args.group)?;
-        let entry = self
-            .state
-            .groups
-            .get(&group_id)
-            .await
-            .ok_or_else(|| McpError::invalid_params("group not found in local mirror", None))?;
-        let slug_for_guard = args.slug.clone().unwrap_or_else(|| {
-            args.id
-                .clone()
-                .unwrap_or_else(|| "<unknown>".to_string())
-        });
+        let entry = self.resolve_group_entry(&args.group).await?;
+        let slug_for_guard = memory_label_for_guard(args.slug.as_deref(), args.id.as_deref());
         confirm_protected_write(&peer, &entry, &slug_for_guard, "edit_body").await?;
         self.edit_memory_body_unguarded(args).await
     }
@@ -1537,23 +1434,9 @@ impl McpServer {
         &self,
         args: EditMemoryBodyArgs,
     ) -> Result<CallToolResult, McpError> {
-        let group_id = parse_group_id(&args.group)?;
-        let entry = self
-            .state
-            .groups
-            .get(&group_id)
-            .await
-            .ok_or_else(|| McpError::invalid_params("group not found in local mirror", None))?;
-
-        let id = parse_optional_uuid(args.id.as_deref())?;
-        let resolved = mmcp_store::resolve_memory(
-            &self.state.backend,
-            &entry.handle,
-            args.slug.as_deref(),
-            id,
-        )
-        .await
-        .map_err(map_memory_error_to_mcp)?;
+        let (entry, resolved) = self
+            .resolve_memory_address(&args.group, args.slug.as_deref(), args.id.as_deref())
+            .await?;
 
         let bytes = self
             .state
@@ -2357,14 +2240,18 @@ impl McpServer {
             .await
             .map_err(map_feature_error_to_mcp)?;
         let status = parse_status_arg(args.status.as_deref())?.unwrap_or_default();
+        let depends_on =
+            mmcp_store::parse_cross_refs(&args.depends_on, "depends_on").map_err(map_feature_error_to_mcp)?;
+        let blocks = mmcp_store::parse_cross_refs(&args.blocks, "blocks")
+            .map_err(map_feature_error_to_mcp)?;
         let spec = mmcp_store::features::AddSpec {
             slug: args.slug,
             title: args.title,
             description: args.description,
             body: args.body,
             status,
-            depends_on: args.depends_on,
-            blocks: args.blocks,
+            depends_on,
+            blocks,
             message: args.message,
         };
         let record = mmcp_store::features::add_feature(
@@ -2415,13 +2302,25 @@ impl McpServer {
             Some(raw) => Some(parse_status_arg(Some(raw))?.unwrap_or_default()),
             None => None,
         };
+        let depends_on = args
+            .depends_on
+            .as_deref()
+            .map(|v| mmcp_store::parse_cross_refs(v, "depends_on"))
+            .transpose()
+            .map_err(map_feature_error_to_mcp)?;
+        let blocks = args
+            .blocks
+            .as_deref()
+            .map(|v| mmcp_store::parse_cross_refs(v, "blocks"))
+            .transpose()
+            .map_err(map_feature_error_to_mcp)?;
         let spec = mmcp_store::features::UpdateSpec {
             title: args.title,
             description: args.description,
             body: args.body,
             status,
-            depends_on: args.depends_on,
-            blocks: args.blocks,
+            depends_on,
+            blocks,
             message: args.message,
         };
         let record = mmcp_store::features::update_feature(
@@ -2538,6 +2437,42 @@ impl McpServer {
                 None,
             ))
         }
+    }
+
+    /// Parse the wire `group` string into a `GroupId` and look up
+    /// the entry from the local mirror. Every memory-addressing
+    /// tool starts with the same two lines; keeping them here
+    /// makes adding new tools a one-line preamble instead of a
+    /// copy-pasted ten-line chain.
+    async fn resolve_group_entry(&self, group: &str) -> Result<GroupEntry, McpError> {
+        let group_id = parse_group_id(group)?;
+        self.state.groups.get(&group_id).await.ok_or_else(|| {
+            McpError::invalid_params(
+                "group not found in local mirror",
+                Some(json!({ "group": group_id.to_string() })),
+            )
+        })
+    }
+
+    /// Resolve the group entry **and** a specific memory within it
+    /// in one call. Every read / edit / delete / body tool runs
+    /// this exact chain post-FR-028: parse the group, look up the
+    /// entry, parse the optional UUID, then call `resolve_memory`.
+    /// Centralising it here keeps tool bodies to their actual
+    /// per-tool logic.
+    async fn resolve_memory_address(
+        &self,
+        group: &str,
+        slug: Option<&str>,
+        id: Option<&str>,
+    ) -> Result<(GroupEntry, mmcp_store::ResolvedMemory), McpError> {
+        let entry = self.resolve_group_entry(group).await?;
+        let id = parse_optional_uuid(id)?;
+        let resolved =
+            mmcp_store::resolve_memory(&self.state.backend, &entry.handle, slug, id)
+                .await
+                .map_err(map_memory_error_to_mcp)?;
+        Ok((entry, resolved))
     }
 
     /// Discover the current project and enforce that `[sync]` is
@@ -2746,6 +2681,14 @@ fn map_feature_error_to_mcp(err: mmcp_store::features::FeatureError) -> McpError
                 "code": "project_config_broken",
                 "path": path,
                 "detail": detail,
+            })),
+        ),
+        FeatureError::InvalidCrossRef { field, value } => McpError::invalid_params(
+            message,
+            Some(json!({
+                "code": "invalid_feature_cross_reference",
+                "field": field,
+                "value": value,
             })),
         ),
         FeatureError::Memory(inner) => map_memory_error_to_mcp(inner),
@@ -3191,6 +3134,17 @@ fn parse_group_id(value: &str) -> Result<GroupId, McpError> {
     Ok(GroupId::from_uuid(uuid))
 }
 
+/// Pick a user-visible label for the protected-group guard when
+/// the caller addressed the memory by `id` only (slug absent) or
+/// by neither (the error is surfaced later). Kept here so every
+/// tool that runs `confirm_protected_write` before resolution
+/// picks the same fallback.
+fn memory_label_for_guard(slug: Option<&str>, id: Option<&str>) -> String {
+    slug.map(str::to_string)
+        .or_else(|| id.map(str::to_string))
+        .unwrap_or_else(|| "<unknown>".to_string())
+}
+
 /// Parse an optional UUID argument from the wire. Rejects malformed
 /// strings with a typed `invalid_memory_id` code so the AI client
 /// can surface a clean error instead of a generic parse failure.
@@ -3205,6 +3159,7 @@ fn parse_optional_uuid(value: Option<&str>) -> Result<Option<Uuid>, McpError> {
         }),
     }
 }
+
 
 fn parse_rev(value: Option<&str>) -> Rev {
     match value {

@@ -70,16 +70,12 @@ fn frontmatter_strategy() -> impl Strategy<Value = MemoryFrontmatter> {
         bump_intent_strategy(),
     )
         .prop_map(
-            |(name, description, kind, mandatory, version, tags, bump_intent)| MemoryFrontmatter {
-                id: None,
-                name,
-                description,
-                kind,
-                mandatory,
-                version,
-                tags,
-                bump_intent,
-                feature: None,
+            |(name, description, kind, mandatory, version, tags, bump_intent)| {
+                MemoryFrontmatter::new(name, description, kind)
+                    .with_mandatory(mandatory)
+                    .with_version(version)
+                    .with_tags(tags)
+                    .with_bump_intent(bump_intent)
             },
         )
 }

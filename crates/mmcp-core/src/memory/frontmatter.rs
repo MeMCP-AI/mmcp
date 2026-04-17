@@ -62,3 +62,78 @@ pub struct MemoryFrontmatter {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feature: Option<FeatureMetadata>,
 }
+
+impl MemoryFrontmatter {
+    /// Build a frontmatter record with sensible defaults for every
+    /// optional field. Call sites set the three required fields
+    /// (name / description / kind) and reach for the `with_*`
+    /// helpers only when they need to override a default. Keeping
+    /// this constructor is load-bearing: it is the single place
+    /// that has to learn about a new optional frontmatter field,
+    /// so "add one field to MemoryFrontmatter" stays a one-file
+    /// change across the workspace.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        kind: MemoryKind,
+    ) -> Self {
+        Self {
+            id: None,
+            name: name.into(),
+            description: description.into(),
+            kind,
+            mandatory: false,
+            version: None,
+            tags: Vec::new(),
+            bump_intent: None,
+            feature: None,
+        }
+    }
+
+    /// Pin the canonical UUIDv7 primary key (FR-028).
+    #[must_use]
+    pub fn with_id(mut self, id: uuid::Uuid) -> Self {
+        self.id = Some(id);
+        self
+    }
+
+    /// Flip the mandatory-read flag.
+    #[must_use]
+    pub fn with_mandatory(mut self, mandatory: bool) -> Self {
+        self.mandatory = mandatory;
+        self
+    }
+
+    /// Replace the tag set.
+    #[must_use]
+    pub fn with_tags(mut self, tags: Vec<String>) -> Self {
+        self.tags = tags;
+        self
+    }
+
+    /// Attach the feature-request metadata block. Used by the FR
+    /// tooling layer; ordinary writers leave this absent.
+    #[must_use]
+    pub fn with_feature(mut self, feature: FeatureMetadata) -> Self {
+        self.feature = Some(feature);
+        self
+    }
+
+    /// Override the server-managed version. Production writers
+    /// leave this at the default `None`; tests and migrations may
+    /// need to pin it explicitly.
+    #[must_use]
+    pub fn with_version(mut self, version: Option<semver::Version>) -> Self {
+        self.version = version;
+        self
+    }
+
+    /// Override the `bump_intent` hint. Editors set this before a
+    /// push so the server can assign the next semantic version.
+    #[must_use]
+    pub fn with_bump_intent(mut self, bump_intent: Option<BumpIntent>) -> Self {
+        self.bump_intent = bump_intent;
+        self
+    }
+}

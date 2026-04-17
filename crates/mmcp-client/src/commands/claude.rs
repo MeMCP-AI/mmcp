@@ -615,17 +615,13 @@ async fn convert_and_write(
     let mut created = Vec::with_capacity(sections.len());
     for section in sections {
         let file = MemoryFile {
-            frontmatter: MemoryFrontmatter {
-                id: None,
-                name: section.title.clone(),
-                description: section.description.clone(),
-                kind: section.kind,
-                mandatory: section.mandatory,
-                version: None,
-                tags: section.tags.clone(),
-                bump_intent: None,
-                feature: None,
-            },
+            frontmatter: MemoryFrontmatter::new(
+                section.title.clone(),
+                section.description.clone(),
+                section.kind,
+            )
+            .with_mandatory(section.mandatory)
+            .with_tags(section.tags.clone()),
             body: section.body.clone(),
             format: FrontmatterFormat::TomlPlus,
         };

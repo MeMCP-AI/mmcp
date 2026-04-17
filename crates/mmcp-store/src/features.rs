@@ -30,6 +30,7 @@ use mmcp_core::memory::{
     FeatureMetadata, FeatureStatus, FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryKind,
 };
 use mmcp_git::{GitBackend, NativeBackend, Rev};
+use uuid::Uuid;
 
 use crate::config::{find_project_root, load as load_project_config};
 use crate::groups::{GroupEntry, GroupIndex};
@@ -85,6 +86,34 @@ pub enum FeatureError {
     /// config".
     #[error("failed to load project config at {path}: {detail}")]
     ProjectConfigBroken { path: String, detail: String },
+
+    /// A `depends_on` / `blocks` entry was not a valid UUID. Post-
+    /// FR-028 cross-refs are typed as UUIDs; the surface layer
+    /// (CLI + MCP) funnels every raw entry through
+    /// [`parse_cross_refs`] so this error is the single source of
+    /// truth for malformed cross-ref input.
+    #[error("feature cross-reference '{value}' on field `{field}` is not a valid UUID")]
+    InvalidCrossRef {
+        field: &'static str,
+        value: String,
+    },
+}
+
+/// Parse a list of raw cross-reference strings (as they arrive on
+/// the CLI `--depends-on` flag or the MCP `depends_on` JSON field)
+/// into the `Vec<Uuid>` shape that [`AddSpec`] / [`UpdateSpec`]
+/// expect. Keeps the parse / error-attribution logic in one place
+/// so both surfaces report malformed input identically.
+pub fn parse_cross_refs(values: &[String], field: &'static str) -> Result<Vec<Uuid>, FeatureError> {
+    values
+        .iter()
+        .map(|raw| {
+            Uuid::parse_str(raw).map_err(|_| FeatureError::InvalidCrossRef {
+                field,
+                value: raw.clone(),
+            })
+        })
+        .collect()
 }
 
 /// Input for [`add_feature`].
@@ -102,8 +131,8 @@ pub struct AddSpec {
     pub description: String,
     pub body: String,
     pub status: FeatureStatus,
-    pub depends_on: Vec<String>,
-    pub blocks: Vec<String>,
+    pub depends_on: Vec<Uuid>,
+    pub blocks: Vec<Uuid>,
     /// Optional override for the git commit message; when absent,
     /// defaults to `create feature <slug>` so history stays
     /// self-describing.
@@ -122,8 +151,8 @@ pub struct UpdateSpec {
     pub description: Option<String>,
     pub body: Option<String>,
     pub status: Option<FeatureStatus>,
-    pub depends_on: Option<Vec<String>>,
-    pub blocks: Option<Vec<String>>,
+    pub depends_on: Option<Vec<Uuid>>,
+    pub blocks: Option<Vec<Uuid>>,
     pub message: Option<String>,
 }
 
@@ -139,8 +168,8 @@ pub struct FeatureRecord {
     pub description: String,
     pub body: String,
     pub status: FeatureStatus,
-    pub depends_on: Vec<String>,
-    pub blocks: Vec<String>,
+    pub depends_on: Vec<Uuid>,
+    pub blocks: Vec<Uuid>,
     /// Commit id of the most recent write for this FR, or the head
     /// commit that produced the record on a read. Empty string on a
     /// freshly read FR whose history starts before this field was
@@ -436,17 +465,8 @@ fn build_memory_file(
     metadata: FeatureMetadata,
 ) -> MemoryFile {
     MemoryFile {
-        frontmatter: MemoryFrontmatter {
-            id: None,
-            name: title,
-            description,
-            kind: MemoryKind::Fr,
-            mandatory: false,
-            version: None,
-            tags: Vec::new(),
-            bump_intent: None,
-            feature: Some(metadata),
-        },
+        frontmatter: MemoryFrontmatter::new(title, description, MemoryKind::Fr)
+            .with_feature(metadata),
         body,
         format: FrontmatterFormat::TomlPlus,
     }
@@ -490,14 +510,16 @@ mod tests {
         let seeded = scratch.seed_group("fr-group").await.expect("seed");
         let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
 
+        let prior_id = Uuid::now_v7();
+        let later_id = Uuid::now_v7();
         let spec = AddSpec {
             slug: Some("fr-round-trip".into()),
             title: "Round trip".into(),
             description: "Sanity test for the add/read round trip".into(),
             body: "## Need\n\nA round trip.\n".into(),
             status: FeatureStatus::Open,
-            depends_on: vec!["fr-prior".into()],
-            blocks: vec!["fr-later".into()],
+            depends_on: vec![prior_id],
+            blocks: vec![later_id],
             message: None,
         };
         let created = add_feature(scratch.backend(), &entry, spec.clone(), scratch.author())
@@ -505,14 +527,14 @@ mod tests {
             .expect("add");
         assert_eq!(created.slug, "fr-round-trip");
         assert_eq!(created.status, FeatureStatus::Open);
-        assert_eq!(created.depends_on, vec!["fr-prior".to_string()]);
+        assert_eq!(created.depends_on, vec![prior_id]);
 
         let loaded = read_feature(scratch.backend(), &entry, "fr-round-trip", None)
             .await
             .expect("read");
         assert_eq!(loaded.title, "Round trip");
-        assert_eq!(loaded.depends_on, vec!["fr-prior".to_string()]);
-        assert_eq!(loaded.blocks, vec!["fr-later".to_string()]);
+        assert_eq!(loaded.depends_on, vec![prior_id]);
+        assert_eq!(loaded.blocks, vec![later_id]);
         // Parser trims trailing newlines; compare structurally.
         assert_eq!(loaded.body.trim_end(), "## Need\n\nA round trip.");
     }

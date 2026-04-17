@@ -577,17 +577,7 @@ pub async fn import_memory(
         MemoryFile::parse(content)?
     } else if let Some(synth) = synth_frontmatter {
         MemoryFile {
-            frontmatter: MemoryFrontmatter {
-                id: None,
-                name: synth.name,
-                description: synth.description,
-                kind: synth.kind,
-                mandatory: false,
-                version: None,
-                tags: Vec::new(),
-                bump_intent: None,
-                feature: None,
-            },
+            frontmatter: MemoryFrontmatter::new(synth.name, synth.description, synth.kind),
             body: content.to_string(),
             format: mmcp_core::memory::FrontmatterFormat::TomlPlus,
         }
