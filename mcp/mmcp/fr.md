@@ -38,9 +38,31 @@ Elicitation-based slug defaulting on the MCP side is still gated on FR-011 (rmcp
 
 ### FR-007: Feature request tracking integrated into mmcp (2026-04-17)
 
-**Need**: FRs currently live in flat markdown files under `mcp/<server>/fr.md` at the project root. Once mmcp stabilizes, these could live as memories in a dedicated "mmcp-feedback" group synced to the mmcp-server so FRs survive across machines and can be queried via the MCP itself.
+**Need**: FRs currently live in flat markdown files under `mcp/<server>/fr.md` at the project root. The file is hand-edited, nothing indexes it, nothing validates the schema, and there is no path toward an external issue tracker beyond copy-paste. As mmcp stabilizes we want FRs to be first-class, per-project-group, git-versioned, queryable through the MCP surface, and shaped so a future bridge to GitHub / Linear / Jira issues is a serialization step — not a re-design.
 
-**Status**: Open. Waiting for server deployment.
+**Resolution**: expose a dedicated FR surface on the MCP and the CLI, backed by memories in the project group so the sync / versioning / search infrastructure is reused rather than duplicated.
+
+**Tool surface** (verb-first singular, mirroring the existing memory tools):
+
+- `add_feature(slug?, title, need, resolution?, blocks?, depends_on?)` — creates a new FR in the project group. Slug auto-minted from title when omitted; status defaults to `open`. Rejects slug collisions like `write_memory` does.
+- `read_feature(slug[, version])` — returns the full FR (every frontmatter field + body). `version` mirrors `read_memory` so FR history is addressable at a specific commit.
+- `update_feature(slug, title?, need?, resolution?, status?, blocks?, depends_on?)` — partial-update mutator; every field is optional, omitted fields left untouched. `status` takes the typed enum below — no separate `mark_resolved` / `feature_complete(bool)` tool, per design discussion on 2026-04-17.
+- `delete_feature(slug)` — removes the FR by committing a deletion. Keeps history via `list_versions` so closed-by-accident FRs can be recovered.
+- `list_features(status?)` — enumerate FRs, optionally filtered by status.
+
+**Status enum**: `open | resolved | blocked | deferred | duplicate`. Richer than a boolean so the real lifecycle is representable; narrow enough that the issue-bridge mapping is 1:1 (GitHub: `open` / `closed` with labels for `blocked` / `deferred` / `duplicate`; Linear: map onto workflow state ids).
+
+**Storage shape**: adds an `fr` variant to `MemoryKind` and a typed FR frontmatter (title, status, depends_on, blocks) so the existing memory CRUD, search, and sync paths carry FRs without a parallel pipeline. The project group (`project_uuid`-keyed) is the default home; a later flag can route FRs to a shared "feedback" group once cross-project feedback becomes a real workflow rather than a hypothetical.
+
+**Issue-bridge sketch** (follow-up, not this FR): a sync adapter maps each FR memory to an external issue — slug to issue handle, status to open/closed + label, body to issue body, commit history to issue comments. The bridge runs one-way first (mmcp → tracker) and becomes two-way only after write-back conflicts are understood.
+
+**Non-goals for FR-007**: no issue-tracker integration in this FR (filed separately once the tool surface is stable); no workflow automation (auto-close on commit, auto-link to PRs); no rich FR fields beyond what the current markdown file already carries. The aim is to retire `mcp/<server>/fr.md` as the authoring surface, not to expand what an FR records.
+
+**Depends on**: FR-020 (landed). The typed FR tools bodies live in `mmcp_store::features` (or a `features` submodule of `memory`), so the CLI, MCP, and GUI all compose the same calls — exactly the consumer-split the extraction just set up for.
+
+**Blocks**: nothing hard. External issue-bridge work depends on the tool surface but does not depend on issue-bridge UX being ready.
+
+**Status**: Open. Tool surface specified 2026-04-17; schema and `MemoryKind::Fr` variant to be drafted before implementation lands.
 
 ### FR-004: Debug/raw access tools (2026-04-16) - RESOLVED
 
