@@ -45,5 +45,17 @@ pub enum TaskOutcome {
         message: String,
     },
     DiagnoseCompleted(DiagReport),
+    MemoryCreated {
+        group_id: GroupId,
+        slug: String,
+    },
+    MemoryUpdated {
+        group_id: GroupId,
+        slug: String,
+    },
+    MemoryDeleted {
+        group_id: GroupId,
+        slug: String,
+    },
     Error(String),
 }

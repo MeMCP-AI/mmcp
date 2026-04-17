@@ -4,14 +4,16 @@
 //! state (scroll positions, hover tracking) stays inside the pane
 //! modules via `egui::Id`. The app state is mutated in two places
 //! only: the UI handlers (selection changes, sync-status
-//! transitions, diag-panel toggling) and the outcome-drain in
-//! `MmcpGuiApp::ui` (after a background task reports back).
+//! transitions, diag-panel toggling, editor lifecycle) and the
+//! outcome-drain in `MmcpGuiApp::ui` (after a background task
+//! reports back).
 
 use std::collections::HashMap;
 
 use mmcp_core::id::GroupId;
 use mmcp_store::{DiagReport, GroupEntry};
 
+use crate::state::editor_buffer::EditorBuffer;
 use crate::state::selection::Selection;
 use crate::state::sync_status::SyncStatus;
 use crate::state::viewer_cache::ViewerCache;
@@ -45,6 +47,14 @@ pub struct AppState {
 
     /// Whether the floating diagnostics window is visible.
     pub diag_panel_open: bool,
+
+    /// Current edit-mode buffer. `Some` replaces the viewer with
+    /// the editor in the central pane; `None` shows the viewer.
+    pub editor: Option<EditorBuffer>,
+
+    /// Pending delete confirmation target (group, slug). `Some`
+    /// renders the confirmation modal; `None` hides it.
+    pub pending_delete: Option<(GroupId, String)>,
 
     /// Last error string emitted by the background worker. Phase 2
     /// renders this inline; phase 3+ promotes it to a toast queue.

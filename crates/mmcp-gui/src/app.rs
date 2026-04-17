@@ -1,17 +1,24 @@
 //! Top-level `eframe::App` implementation.
 //!
-//! Owns the four-region layout (toolbar, two side panels, central
-//! viewer, status bar) and the background worker handle. Each
+//! Owns the full layout (toolbar, two side panels, central viewer
+//! or editor, status bar, floating diagnostics window, delete
+//! confirmation modal) and the background worker handle. Each
 //! frame: drain the worker outcome channel into `AppState`, render
-//! the regions, and request a repaint shortly so that background
+//! the regions, and request a repaint shortly so background
 //! responses don't wait for a UI input event to paint.
+//!
+//! The central area swaps between viewer and editor based on
+//! `state.editor.is_some()`: editing replaces viewing, which avoids
+//! the ambiguity of a side-by-side layout while a memory is being
+//! edited.
 
 use eframe::egui;
 
 use crate::runtime::{BackgroundHandle, BackgroundTask, TaskOutcome};
 use crate::state::AppState;
 use crate::ui::{
-    ViewerWidget, diagnostics_panel, group_panel, memory_list_panel, status_bar, toolbar,
+    ViewerWidget, delete_confirmation, diagnostics_panel, group_panel, memory_editor,
+    memory_list_panel, status_bar, toolbar,
 };
 
 pub struct MmcpGuiApp {
@@ -53,9 +60,6 @@ impl MmcpGuiApp {
                     new_groups,
                 } => {
                     toolbar::apply_pull_completed(&mut self.state, updated, new_groups);
-                    // After a successful pull, mirrored groups may
-                    // have shifted; refresh so the left pane picks
-                    // up new groups or removed ones.
                     self.background.send(BackgroundTask::RefreshGroups);
                 }
                 TaskOutcome::SyncPushCompleted { drained } => {
@@ -67,6 +71,33 @@ impl MmcpGuiApp {
                 }
                 TaskOutcome::DiagnoseCompleted(report) => {
                     self.state.diag_report = Some(report);
+                }
+                TaskOutcome::MemoryCreated { group_id, slug } => {
+                    tracing::info!(%group_id, %slug, "memory created");
+                    self.state.editor = None;
+                    self.state.selection.memory = Some(slug.clone());
+                    self.state.memory_slugs.remove(&group_id);
+                    self.background
+                        .send(BackgroundTask::LoadMemoryList { group_id });
+                    self.background
+                        .send(BackgroundTask::LoadMemory { group_id, slug });
+                }
+                TaskOutcome::MemoryUpdated { group_id, slug } => {
+                    tracing::info!(%group_id, %slug, "memory updated");
+                    self.state.editor = None;
+                    // Invalidate the viewer cache entry so the next
+                    // render fetches the just-written body.
+                    self.background
+                        .send(BackgroundTask::LoadMemory { group_id, slug });
+                }
+                TaskOutcome::MemoryDeleted { group_id, slug } => {
+                    tracing::info!(%group_id, %slug, "memory deleted");
+                    if self.state.selection.memory.as_deref() == Some(slug.as_str()) {
+                        self.state.selection.memory = None;
+                    }
+                    self.state.memory_slugs.remove(&group_id);
+                    self.background
+                        .send(BackgroundTask::LoadMemoryList { group_id });
                 }
                 TaskOutcome::Error(msg) => {
                     tracing::warn!(error = %msg, "background task failed");
@@ -83,13 +114,21 @@ impl eframe::App for MmcpGuiApp {
 
         // Order matters: outermost panels claim space first. Toolbar
         // on top, status bar on bottom, then groups and memory list
-        // from the left, then the viewer paints into what's left.
+        // from the left, then viewer / editor paints into what's
+        // left.
         toolbar::show(ui, &mut self.state, &self.background);
         status_bar::show(ui, &self.state);
         group_panel::show(ui, &mut self.state, &self.background);
         memory_list_panel::show(ui, &mut self.state, &self.background);
-        self.viewer.show(ui, &self.state);
+        if self.state.editor.is_some() {
+            memory_editor::show(ui, &mut self.state, &self.background);
+        } else {
+            self.viewer.show(ui, &self.state);
+        }
+
+        // Floating / modal overlays render after the central area.
         diagnostics_panel::show(ui.ctx(), &mut self.state);
+        delete_confirmation::show(ui.ctx(), &mut self.state, &self.background);
 
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));

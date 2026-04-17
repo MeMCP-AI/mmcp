@@ -4,21 +4,25 @@
 //! The UI never awaits. Each frame it pushes zero or more
 //! [`BackgroundTask`] values into the command channel and drains the
 //! outcome channel via [`BackgroundHandle::try_recv`]. The worker
-//! itself owns a long-lived `NativeBackend`, `GroupIndex`, and
-//! optional `SyncEngine` bundle so repeat calls don't re-open the
-//! bare repos or re-construct the sync client.
+//! itself owns a long-lived `NativeBackend`, `GroupIndex`, optional
+//! `SyncEngine` bundle, and cached `ResolvedAuthor` so repeat calls
+//! don't re-open the bare repos or re-resolve the commit author.
 
 use std::sync::Arc;
 
 use mmcp_core::config::ProjectConfig;
 use mmcp_git::NativeBackend;
-use mmcp_store::{GroupIndex, IndexResolver, MmcpHome, build_engine, config as project_config};
+use mmcp_store::{
+    GroupIndex, IndexResolver, MmcpHome, ResolvedAuthor, build_engine, config as project_config,
+};
 use mmcp_sync::{PendingQueue, SyncEngine};
 use tokio::sync::mpsc;
 
 use crate::error::GuiError;
 use crate::io::diagnostics_ops::run_diagnose;
-use crate::io::memory_ops::{list_memory_slugs, read_memory_body};
+use crate::io::memory_ops::{
+    create_memory, delete_memory, list_memory_slugs, read_memory_body, update_memory,
+};
 use crate::io::sync_ops;
 use crate::runtime::outcome::TaskOutcome;
 use crate::runtime::task::BackgroundTask;
@@ -32,9 +36,9 @@ pub struct BackgroundHandle {
 impl BackgroundHandle {
     /// Spawn the worker on `runtime` and return the handle the UI uses
     /// to talk to it. The worker initialises `MmcpHome` +
-    /// `NativeBackend` + `GroupIndex` + (optional) `SyncEngine`
-    /// eagerly, so a broken home surfaces as the first
-    /// `TaskOutcome::Error` before any user action.
+    /// `NativeBackend` + `GroupIndex` + (optional) `SyncEngine` +
+    /// `ResolvedAuthor` eagerly, so a broken home surfaces as the
+    /// first `TaskOutcome::Error` before any user action.
     pub fn spawn(runtime: &tokio::runtime::Runtime) -> Self {
         let (task_tx, task_rx) = mpsc::unbounded_channel::<BackgroundTask>();
         let (outcome_tx, outcome_rx) = mpsc::unbounded_channel::<TaskOutcome>();
@@ -67,6 +71,7 @@ struct WorkerContext {
     backend: Arc<NativeBackend>,
     index: GroupIndex,
     sync: Option<SyncBundle>,
+    author: ResolvedAuthor,
 }
 
 async fn worker_loop(
@@ -107,6 +112,7 @@ async fn init_context() -> Result<WorkerContext, GuiError> {
     let repos_root = home.repos_root();
     let backend = Arc::new(NativeBackend::new(&repos_root)?);
     let index = GroupIndex::build(repos_root, Arc::clone(&backend)).await?;
+    let author = home.resolve_author();
 
     let sync = match load_project_sync().map_err(|e| GuiError::Other(e.to_string()))? {
         Some(config) => {
@@ -128,6 +134,7 @@ async fn init_context() -> Result<WorkerContext, GuiError> {
         backend,
         index,
         sync,
+        author,
     })
 }
 
@@ -176,6 +183,10 @@ async fn execute(ctx: &WorkerContext, task: BackgroundTask) -> TaskOutcome {
                 Err(err) => TaskOutcome::Error(err.to_string()),
             },
         },
+        BackgroundTask::RunDiagnose => {
+            let report = run_diagnose(&ctx.backend, &ctx.index).await;
+            TaskOutcome::DiagnoseCompleted(report)
+        }
         BackgroundTask::SyncPull => match &ctx.sync {
             None => TaskOutcome::SyncFailed {
                 op: SyncOp::Pull,
@@ -192,10 +203,6 @@ async fn execute(ctx: &WorkerContext, task: BackgroundTask) -> TaskOutcome {
                 },
             },
         },
-        BackgroundTask::RunDiagnose => {
-            let report = run_diagnose(&ctx.backend, &ctx.index).await;
-            TaskOutcome::DiagnoseCompleted(report)
-        }
         BackgroundTask::SyncPush => match &ctx.sync {
             None => TaskOutcome::SyncFailed {
                 op: SyncOp::Push,
@@ -210,6 +217,43 @@ async fn execute(ctx: &WorkerContext, task: BackgroundTask) -> TaskOutcome {
                         op: SyncOp::Push,
                         message: err.to_string(),
                     },
+                }
+            }
+        },
+        BackgroundTask::CreateMemory {
+            group_id,
+            slug,
+            memory,
+        } => match ctx.index.get(&group_id).await {
+            None => TaskOutcome::Error(format!("group {group_id} is not in the local mirror")),
+            Some(entry) => {
+                match create_memory(&ctx.backend, &entry.handle, &slug, &memory, &ctx.author).await
+                {
+                    Ok(_commit_id) => TaskOutcome::MemoryCreated { group_id, slug },
+                    Err(err) => TaskOutcome::Error(err.to_string()),
+                }
+            }
+        },
+        BackgroundTask::UpdateMemory {
+            group_id,
+            slug,
+            memory,
+        } => match ctx.index.get(&group_id).await {
+            None => TaskOutcome::Error(format!("group {group_id} is not in the local mirror")),
+            Some(entry) => {
+                match update_memory(&ctx.backend, &entry.handle, &slug, &memory, &ctx.author).await
+                {
+                    Ok(_commit_id) => TaskOutcome::MemoryUpdated { group_id, slug },
+                    Err(err) => TaskOutcome::Error(err.to_string()),
+                }
+            }
+        },
+        BackgroundTask::DeleteMemory { group_id, slug } => match ctx.index.get(&group_id).await {
+            None => TaskOutcome::Error(format!("group {group_id} is not in the local mirror")),
+            Some(entry) => {
+                match delete_memory(&ctx.backend, &entry.handle, &slug, &ctx.author).await {
+                    Ok(_commit_id) => TaskOutcome::MemoryDeleted { group_id, slug },
+                    Err(err) => TaskOutcome::Error(err.to_string()),
                 }
             }
         },
