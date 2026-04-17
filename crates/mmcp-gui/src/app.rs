@@ -16,15 +16,17 @@ use eframe::egui;
 
 use crate::runtime::{BackgroundHandle, BackgroundTask, TaskOutcome};
 use crate::state::AppState;
+use crate::ui::memory_editor::EditorWidget;
 use crate::ui::{
-    ViewerWidget, delete_confirmation, diagnostics_panel, group_panel, memory_editor,
-    memory_list_panel, status_bar, toolbar,
+    ViewerWidget, delete_confirmation, diagnostics_panel, group_panel, memory_list_panel,
+    status_bar, toolbar,
 };
 
 pub struct MmcpGuiApp {
     state: AppState,
     background: BackgroundHandle,
     viewer: ViewerWidget,
+    editor: EditorWidget,
     /// Held so the tokio runtime lives as long as the window. Dropped
     /// after `eframe::run_native` returns, which cancels the worker.
     _runtime: tokio::runtime::Runtime,
@@ -36,6 +38,7 @@ impl MmcpGuiApp {
             state: AppState::default(),
             background,
             viewer: ViewerWidget::default(),
+            editor: EditorWidget::default(),
             _runtime: runtime,
         }
     }
@@ -134,7 +137,7 @@ impl eframe::App for MmcpGuiApp {
         group_panel::show(ui, &mut self.state, &self.background);
         memory_list_panel::show(ui, &mut self.state, &self.background);
         if self.state.editor.is_some() {
-            memory_editor::show(ui, &mut self.state, &self.background);
+            self.editor.show(ui, &mut self.state, &self.background);
         } else {
             self.viewer.show(ui, &self.state);
         }
