@@ -18,12 +18,13 @@ use mmcp_core::id::GroupId;
 use mmcp_core::memory::{MemoryFile, MemoryFrontmatter};
 use mmcp_git::{GitBackend, NativeBackend, Rev};
 use rmcp::{
-    ErrorData as McpError, ServerHandler, ServiceExt,
+    ErrorData as McpError, Peer, RoleServer, ServerHandler, ServiceExt, elicit_safe,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
         CallToolResult, Content, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo,
     },
     schemars::JsonSchema,
+    service::ElicitationError,
     tool, tool_handler, tool_router,
     transport::stdio,
 };
@@ -473,6 +474,49 @@ struct StatusArgs {}
 #[schemars(crate = "rmcp::schemars")]
 struct ListGroupsArgs {}
 
+// ── Elicitation payload shapes (FR-011) ──────────────────────────
+//
+// Each struct defines the JSON schema the server sends in the
+// elicitation request; the client renders a matching form and
+// returns the filled payload. `elicit_safe!` registers the type
+// as eligible for the peer.elicit() API.
+//
+// The string fields use a `choice` discriminator rather than a
+// typed Rust enum because the elicitation schema subset supports
+// string + enum constraints cleanly but can refuse nested
+// `oneOf`-style enums depending on the client implementation; a
+// plain string keeps the wire shape portable across every rmcp
+// client that speaks elicitation.
+
+/// Response shape for the CLAUDE.md conflict-resolution prompt.
+///
+/// Mirrors the pre-elicitation `conflict_unresolved` structured
+/// error: the three legal choices are `override` (overwrite with no
+/// backup), `backup_override` (write `.bak`, then overwrite), and
+/// `cancel` (abort). Anything else round-trips back as a generic
+/// bad-response error.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ClaudeConflictPrompt {
+    /// One of `override`, `backup_override`, `cancel`. The
+    /// elicitation client displays these as radio options.
+    choice: String,
+}
+elicit_safe!(ClaudeConflictPrompt);
+
+/// Response shape for the protected-group confirmation prompt.
+///
+/// A single boolean so the client renders a "confirm the write
+/// into `<group>`" checkbox. Absent / false → abort the write with
+/// `protected_write_cancelled`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ProtectedWriteConfirm {
+    /// `true` → proceed with the write. Any other value aborts.
+    confirmed: bool,
+}
+elicit_safe!(ProtectedWriteConfirm);
+
 /// Shared argument shape for `sync_pull`, `sync_push`, and `sync`.
 ///
 /// The `group` field is a forward-compatibility slot: today the
@@ -914,6 +958,7 @@ impl McpServer {
     async fn write_memory(
         &self,
         Parameters(args): Parameters<WriteMemoryArgs>,
+        peer: Peer<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let group_id = parse_group_id(&args.group)?;
         let entry = self
@@ -925,11 +970,33 @@ impl McpServer {
         // Even a fresh CREATE on a protected group needs user-
         // visible confirmation: adding an unauthorized rule to
         // `global` has the same blast radius as editing one.
-        ensure_not_protected(
+        confirm_protected_write(
+            &peer,
             &entry,
             &args.slug,
             if args.override_ { "override" } else { "create" },
-        )?;
+        )
+        .await?;
+        self.write_memory_unguarded(args).await
+    }
+
+    /// Peer-less test entry point: re-resolves the entry and
+    /// commits the write WITHOUT firing the elicitation guard.
+    /// The public `write_memory` tool calls this after
+    /// `confirm_protected_write` returns `Ok`; tests call it
+    /// directly to cover memory-layer behaviour without
+    /// constructing a mock `Peer`.
+    async fn write_memory_unguarded(
+        &self,
+        args: WriteMemoryArgs,
+    ) -> Result<CallToolResult, McpError> {
+        let group_id = parse_group_id(&args.group)?;
+        let entry = self
+            .state
+            .groups
+            .get(&group_id)
+            .await
+            .ok_or_else(|| McpError::invalid_params("group not found", None))?;
 
         let kind = args.kind.into_core();
 
@@ -977,6 +1044,7 @@ impl McpServer {
     async fn edit_memory(
         &self,
         Parameters(args): Parameters<EditMemoryArgs>,
+        peer: Peer<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let group_id = parse_group_id(&args.group)?;
         let entry = self
@@ -985,7 +1053,23 @@ impl McpServer {
             .get(&group_id)
             .await
             .ok_or_else(|| McpError::invalid_params("group not found", None))?;
-        ensure_not_protected(&entry, &args.slug, "edit")?;
+        confirm_protected_write(&peer, &entry, &args.slug, "edit").await?;
+        self.edit_memory_unguarded(args).await
+    }
+
+    /// Peer-less test entry point for `edit_memory`. Mirrors
+    /// `write_memory_unguarded`.
+    async fn edit_memory_unguarded(
+        &self,
+        args: EditMemoryArgs,
+    ) -> Result<CallToolResult, McpError> {
+        let group_id = parse_group_id(&args.group)?;
+        let entry = self
+            .state
+            .groups
+            .get(&group_id)
+            .await
+            .ok_or_else(|| McpError::invalid_params("group not found", None))?;
 
         let path = memory_path(&args.slug);
         let bytes = match self
@@ -1065,6 +1149,7 @@ impl McpServer {
     async fn delete_memory(
         &self,
         Parameters(args): Parameters<DeleteMemoryArgs>,
+        peer: Peer<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let group_id = parse_group_id(&args.group)?;
         let entry = self
@@ -1073,7 +1158,22 @@ impl McpServer {
             .get(&group_id)
             .await
             .ok_or_else(|| McpError::invalid_params("group not found", None))?;
-        ensure_not_protected(&entry, &args.slug, "delete")?;
+        confirm_protected_write(&peer, &entry, &args.slug, "delete").await?;
+        self.delete_memory_unguarded(args).await
+    }
+
+    /// Peer-less test entry point for `delete_memory`.
+    async fn delete_memory_unguarded(
+        &self,
+        args: DeleteMemoryArgs,
+    ) -> Result<CallToolResult, McpError> {
+        let group_id = parse_group_id(&args.group)?;
+        let entry = self
+            .state
+            .groups
+            .get(&group_id)
+            .await
+            .ok_or_else(|| McpError::invalid_params("group not found", None))?;
 
         let commit_id = delete_memory_file(
             &self.state.backend,
@@ -1291,6 +1391,7 @@ impl McpServer {
     async fn debug_write_file(
         &self,
         Parameters(args): Parameters<DebugWriteFileArgs>,
+        peer: Peer<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         self.require_debug()?;
         let group_id = parse_group_id(&args.group)?;
@@ -1305,7 +1406,25 @@ impl McpServer {
         // surface to mutate a global rule. `args.path` stands in
         // for a memory slug — we surface it on the error payload
         // so callers still see which path tripped the guard.
-        ensure_not_protected(&entry, &args.path, "debug_write")?;
+        confirm_protected_write(&peer, &entry, &args.path, "debug_write").await?;
+        self.debug_write_file_unguarded(args).await
+    }
+
+    /// Peer-less test entry point for `debug_write_file`. Keeps
+    /// the `require_debug` gate so debug-mode semantics are still
+    /// exercised without constructing a mock `Peer`.
+    async fn debug_write_file_unguarded(
+        &self,
+        args: DebugWriteFileArgs,
+    ) -> Result<CallToolResult, McpError> {
+        self.require_debug()?;
+        let group_id = parse_group_id(&args.group)?;
+        let entry = self
+            .state
+            .groups
+            .get(&group_id)
+            .await
+            .ok_or_else(|| McpError::invalid_params("group not found", None))?;
         let commit_id = self
             .state
             .backend
@@ -1424,6 +1543,51 @@ impl McpServer {
     async fn init_claude(
         &self,
         Parameters(args): Parameters<InitClaudeArgs>,
+        peer: Peer<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        // FR-011: when the caller did not pre-supply `on_conflict`
+        // and the file is in a conflict state, prompt via MCP
+        // elicitation. Resolved choice is stamped back onto `args`
+        // before the unguarded body runs, so the rest of the logic
+        // is unchanged regardless of whether the choice came from
+        // `on_conflict` or from the elicitation response.
+        let path = args
+            .path
+            .as_deref()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("CLAUDE.md"));
+        let state = crate::commands::claude::inspect(&path);
+        let args = if state.is_conflict() && args.on_conflict.is_none() {
+            let choice = elicit_claude_conflict_choice(&peer, state).await?;
+            let wire = match choice {
+                crate::commands::claude::ConflictChoice::Override => InitClaudeConflict::Override,
+                crate::commands::claude::ConflictChoice::BackupOverride => {
+                    InitClaudeConflict::BackupOverride
+                }
+                crate::commands::claude::ConflictChoice::Cancel => InitClaudeConflict::Cancel,
+                crate::commands::claude::ConflictChoice::NotApplicable => {
+                    // Unreachable: we only enter this branch when
+                    // `state.is_conflict()` is true.
+                    unreachable!("conflict state guarded by is_conflict()")
+                }
+            };
+            InitClaudeArgs {
+                on_conflict: Some(wire),
+                ..args
+            }
+        } else {
+            args
+        };
+        self.init_claude_unguarded(args).await
+    }
+
+    /// Peer-less test entry point for `init_claude`. Preserves the
+    /// legacy `conflict_unresolved` structured error when
+    /// `on_conflict` is absent on a dirty / untracked file, so
+    /// existing tests keep covering that wire shape.
+    async fn init_claude_unguarded(
+        &self,
+        args: InitClaudeArgs,
     ) -> Result<CallToolResult, McpError> {
         let path = args
             .path
@@ -1465,9 +1629,12 @@ impl McpServer {
                 })));
             }
             (true, None) => {
-                // Structured error: caller decides how to resolve and
-                // re-invokes with `on_conflict` set. Future elicitation
-                // support turns this into a prompt instead of an error.
+                // Legacy structured-error path. `init_claude`
+                // (the public tool) normally converts this into an
+                // elicitation round-trip first; this branch only
+                // fires for callers that bypass the tool wrapper
+                // (tests, future CLI consumers, pre-elicitation
+                // retry flows).
                 return Err(McpError::invalid_params(
                     "CLAUDE.md state requires an explicit conflict resolution",
                     Some(json!({
@@ -2193,9 +2360,123 @@ fn ensure_not_protected(entry: &GroupEntry, slug: &str, action: &str) -> Result<
             "group_id": entry.manifest.group_id.to_string(),
             "slug": slug,
             "action": action,
-            "retry_hint": "run the operation via CLI (mmcp import --override / direct edit with operator intent) or wait for elicitation support (FR-011)",
+            "retry_hint": "run the operation via CLI (mmcp import --override / direct edit with operator intent) or wait for an elicitation-capable MCP client",
         })),
     ))
+}
+
+/// FR-011: route protected-group mutations through an elicitation
+/// prompt when the client supports it; fall back to the
+/// `protected_requires_elicitation` structured error otherwise.
+///
+/// Returns `Ok(())` only when the client explicitly confirms the
+/// write. Declines, cancels, or any non-`true` `confirmed` field
+/// map to `protected_write_cancelled` so the caller can show a
+/// user-facing abort message. Transport / timeout errors bubble
+/// up as `internal_error` so retries are allowed.
+async fn confirm_protected_write(
+    peer: &Peer<RoleServer>,
+    entry: &GroupEntry,
+    slug: &str,
+    action: &str,
+) -> Result<(), McpError> {
+    if !entry.manifest.protected {
+        return Ok(());
+    }
+    let message = format!(
+        "Confirm writing into protected group `{group}` (action: {action}, slug: {slug})",
+        group = entry.manifest.slug,
+    );
+    match peer.elicit::<ProtectedWriteConfirm>(message.clone()).await {
+        Ok(Some(ProtectedWriteConfirm { confirmed: true })) => Ok(()),
+        Ok(Some(ProtectedWriteConfirm { confirmed: false })) | Ok(None) => {
+            Err(McpError::invalid_params(
+                "write into protected group cancelled",
+                Some(json!({
+                    "code": "protected_write_cancelled",
+                    "group_slug": entry.manifest.slug,
+                    "group_id": entry.manifest.group_id.to_string(),
+                    "slug": slug,
+                    "action": action,
+                })),
+            ))
+        }
+        Err(ElicitationError::UserDeclined) | Err(ElicitationError::UserCancelled) => {
+            Err(McpError::invalid_params(
+                "write into protected group cancelled",
+                Some(json!({
+                    "code": "protected_write_cancelled",
+                    "group_slug": entry.manifest.slug,
+                    "group_id": entry.manifest.group_id.to_string(),
+                    "slug": slug,
+                    "action": action,
+                })),
+            ))
+        }
+        Err(ElicitationError::CapabilityNotSupported) => {
+            // Pre-elicitation fallback — the existing structured
+            // error shape that CLI operators already know how to
+            // round-trip through `mmcp import`.
+            ensure_not_protected(entry, slug, action)
+        }
+        Err(other) => Err(McpError::internal_error(
+            format!("elicitation failed: {other}"),
+            Some(json!({ "code": "protected_elicitation_failed" })),
+        )),
+    }
+}
+
+/// FR-011: prompt the operator to choose how to resolve a
+/// CLAUDE.md conflict via an elicitation request. Returns the
+/// resolved `ConflictChoice` on success; pre-elicitation clients
+/// fall back to the legacy `conflict_unresolved` structured error
+/// so `on_conflict`-retry flows keep working.
+async fn elicit_claude_conflict_choice(
+    peer: &Peer<RoleServer>,
+    state: crate::commands::claude::FileState,
+) -> Result<crate::commands::claude::ConflictChoice, McpError> {
+    let message = format!(
+        "CLAUDE.md is {state}. Choose how to proceed: `override` (overwrite without backup), `backup_override` (write .bak, then overwrite), or `cancel`.",
+        state = state.as_wire_str(),
+    );
+    match peer.elicit::<ClaudeConflictPrompt>(message).await {
+        Ok(Some(ClaudeConflictPrompt { choice })) => match choice.as_str() {
+            "override" => Ok(crate::commands::claude::ConflictChoice::Override),
+            "backup_override" => Ok(crate::commands::claude::ConflictChoice::BackupOverride),
+            "cancel" => Ok(crate::commands::claude::ConflictChoice::Cancel),
+            other => Err(McpError::invalid_params(
+                format!("unknown conflict choice `{other}`"),
+                Some(json!({
+                    "code": "conflict_invalid_choice",
+                    "got": other,
+                    "allowed": ["override", "backup_override", "cancel"],
+                })),
+            )),
+        },
+        // No content on an accepted response, or an explicit cancel
+        // / decline, all map to the same "don't touch the file"
+        // outcome so the downstream logic stays single-branch.
+        Ok(None) | Err(ElicitationError::UserDeclined) | Err(ElicitationError::UserCancelled) => {
+            Ok(crate::commands::claude::ConflictChoice::Cancel)
+        }
+        Err(ElicitationError::CapabilityNotSupported) => Err(McpError::invalid_params(
+            "CLAUDE.md state requires an explicit conflict resolution",
+            Some(json!({
+                "code": "conflict_unresolved",
+                "state": state.as_wire_str(),
+                "choices": [
+                    { "value": "override", "description": "overwrite without backup (lose local changes)" },
+                    { "value": "backup_override", "description": "write .bak, then overwrite (recommended)" },
+                    { "value": "cancel", "description": "abort; do not touch CLAUDE.md" }
+                ],
+                "retry_with": { "on_conflict": "backup_override" }
+            })),
+        )),
+        Err(other) => Err(McpError::internal_error(
+            format!("elicitation failed: {other}"),
+            Some(json!({ "code": "conflict_elicitation_failed" })),
+        )),
+    }
 }
 
 /// Map an [`ImportError`] coming from the memory CRUD primitives
@@ -2990,13 +3271,13 @@ mod tests {
         let target = tmp.path().join("CLAUDE.md");
 
         let res = server
-            .init_claude(Parameters(InitClaudeArgs {
+            .init_claude_unguarded(InitClaudeArgs {
                 action: InitClaudeAction::Override,
                 backup: None,
                 dry_run: true,
                 on_conflict: None,
                 path: Some(target.to_string_lossy().into_owned()),
-            }))
+            })
             .await
             .expect("init_claude dry_run");
         let parsed = parse_ok_json(res);
@@ -3021,13 +3302,13 @@ mod tests {
         std::fs::write(&target, "# existing\n").expect("write fixture");
 
         let err = server
-            .init_claude(Parameters(InitClaudeArgs {
+            .init_claude_unguarded(InitClaudeArgs {
                 action: InitClaudeAction::Override,
                 backup: None,
                 dry_run: false,
                 on_conflict: None,
                 path: Some(target.to_string_lossy().into_owned()),
-            }))
+            })
             .await
             .expect_err("must surface conflict");
         // Error data carries the structured code the client uses to
@@ -3051,13 +3332,13 @@ mod tests {
         let target = tmp.path().join("CLAUDE.md");
 
         let res = server
-            .init_claude(Parameters(InitClaudeArgs {
+            .init_claude_unguarded(InitClaudeArgs {
                 action: InitClaudeAction::Override,
                 backup: None,
                 dry_run: false,
                 on_conflict: None,
                 path: Some(target.to_string_lossy().into_owned()),
-            }))
+            })
             .await
             .expect("init_claude override");
         let parsed = parse_ok_json(res);
@@ -3453,7 +3734,7 @@ mod tests {
         let group = seed_group_with_memory(&state, "rules", "existing", SAMPLE_MEMORY).await;
         let server = McpServer::new(state);
         let res = server
-            .write_memory(Parameters(write_memory_args(&group, "fresh", false)))
+            .write_memory_unguarded(write_memory_args(&group, "fresh", false))
             .await
             .expect("create");
         let parsed = parse_ok_json(res);
@@ -3470,7 +3751,7 @@ mod tests {
         let group = seed_group_with_memory(&state, "rules", "taken", SAMPLE_MEMORY).await;
         let server = McpServer::new(state);
         let err = server
-            .write_memory(Parameters(write_memory_args(&group, "taken", false)))
+            .write_memory_unguarded(write_memory_args(&group, "taken", false))
             .await
             .expect_err("must refuse collision");
         let payload = err.data.as_ref().expect("payload");
@@ -3487,7 +3768,7 @@ mod tests {
         let group = seed_group_with_memory(&state, "rules", "replaced", SAMPLE_MEMORY).await;
         let server = McpServer::new(state);
         let res = server
-            .write_memory(Parameters(write_memory_args(&group, "replaced", true)))
+            .write_memory_unguarded(write_memory_args(&group, "replaced", true))
             .await
             .expect("override replaces");
         let parsed = parse_ok_json(res);
@@ -3502,12 +3783,12 @@ mod tests {
         let group = seed_group_with_memory(&state, "rules", "first", SAMPLE_MEMORY).await;
         let server = McpServer::new(state.clone());
         let res = server
-            .edit_memory(Parameters(EditMemoryArgs {
+            .edit_memory_unguarded(EditMemoryArgs {
                 group: group.to_string(),
                 slug: "first".into(),
                 body: Some("# Edited\nNew body.".into()),
                 ..Default::default()
-            }))
+            })
             .await
             .expect("edit");
         let parsed = parse_ok_json(res);
@@ -3541,13 +3822,13 @@ mod tests {
         let group = seed_group_with_memory(&state, "rules", "taggy", SAMPLE_MEMORY).await;
         let server = McpServer::new(state.clone());
         server
-            .edit_memory(Parameters(EditMemoryArgs {
+            .edit_memory_unguarded(EditMemoryArgs {
                 group: group.to_string(),
                 slug: "taggy".into(),
                 tags_add: vec!["alpha".into(), "beta".into(), "sample".into()],
                 tags_remove: vec!["sample".into()],
                 ..Default::default()
-            }))
+            })
             .await
             .expect("edit");
         let read = server
@@ -3585,12 +3866,12 @@ mod tests {
         let group = seed_group_with_memory(&state, "rules", "existing", SAMPLE_MEMORY).await;
         let server = McpServer::new(state);
         let err = server
-            .edit_memory(Parameters(EditMemoryArgs {
+            .edit_memory_unguarded(EditMemoryArgs {
                 group: group.to_string(),
                 slug: "ghost".into(),
                 body: Some("n/a".into()),
                 ..Default::default()
-            }))
+            })
             .await
             .expect_err("must surface not-found");
         let payload = err.data.as_ref().expect("payload");
@@ -3609,11 +3890,11 @@ mod tests {
         let group = seed_group_with_memory(&state, "rules", "doomed", SAMPLE_MEMORY).await;
         let server = McpServer::new(state);
         server
-            .delete_memory(Parameters(DeleteMemoryArgs {
+            .delete_memory_unguarded(DeleteMemoryArgs {
                 group: group.to_string(),
                 slug: "doomed".into(),
                 message: None,
-            }))
+            })
             .await
             .expect("delete");
         let list = server
@@ -3644,11 +3925,11 @@ mod tests {
         let group = seed_group_with_memory(&state, "rules", "present", SAMPLE_MEMORY).await;
         let server = McpServer::new(state);
         let err = server
-            .delete_memory(Parameters(DeleteMemoryArgs {
+            .delete_memory_unguarded(DeleteMemoryArgs {
                 group: group.to_string(),
                 slug: "never-existed".into(),
                 message: None,
-            }))
+            })
             .await
             .expect_err("must surface not-found");
         let payload = err.data.as_ref().expect("payload");
@@ -3658,18 +3939,30 @@ mod tests {
         );
     }
 
-    // ── protected-group guard (FR-019) ────────────────────────────
+    // ── protected-group guard (FR-019 + FR-011 fallback) ──────────
+    //
+    // The elicitation-enabled path lives behind a Peer<RoleServer>
+    // and is exercised end-to-end at the integration / MCP-client
+    // layer. These unit tests cover the pre-elicitation fallback
+    // (`ensure_not_protected`), which is the payload shape every
+    // caller sees when the client lacks elicitation capability.
+
+    async fn protected_entry_for(state: &ClientState, slug: &str) -> GroupEntry {
+        let group_id =
+            seed_protected_group_with_memory(state, slug, "anchored", SAMPLE_MEMORY).await;
+        state
+            .groups
+            .get(&group_id)
+            .await
+            .expect("seeded protected group resolvable")
+    }
 
     #[tokio::test]
     async fn write_memory_against_protected_group_errors_with_elicitation_hint() {
         let (state, _tmp) = test_state().await;
-        let group =
-            seed_protected_group_with_memory(&state, "global", "existing", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
-        let err = server
-            .write_memory(Parameters(write_memory_args(&group, "fresh", false)))
-            .await
-            .expect_err("protected group must gate writes");
+        let entry = protected_entry_for(&state, "global").await;
+        let err = ensure_not_protected(&entry, "fresh", "create")
+            .expect_err("protected-group fallback must error on create");
         let payload = err.data.as_ref().expect("payload");
         assert_eq!(
             payload.get("code").and_then(|v| v.as_str()),
@@ -3688,13 +3981,9 @@ mod tests {
     #[tokio::test]
     async fn write_memory_override_against_protected_group_reports_override_action() {
         let (state, _tmp) = test_state().await;
-        let group =
-            seed_protected_group_with_memory(&state, "global", "existing", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
-        let err = server
-            .write_memory(Parameters(write_memory_args(&group, "existing", true)))
-            .await
-            .expect_err("protected group must gate override too");
+        let entry = protected_entry_for(&state, "global").await;
+        let err = ensure_not_protected(&entry, "existing", "override")
+            .expect_err("protected-group fallback must gate override");
         let payload = err.data.as_ref().expect("payload");
         assert_eq!(
             payload.get("action").and_then(|v| v.as_str()),
@@ -3705,17 +3994,9 @@ mod tests {
     #[tokio::test]
     async fn edit_memory_against_protected_group_is_gated() {
         let (state, _tmp) = test_state().await;
-        let group = seed_protected_group_with_memory(&state, "global", "rule", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
-        let err = server
-            .edit_memory(Parameters(EditMemoryArgs {
-                group: group.to_string(),
-                slug: "rule".into(),
-                body: Some("edit attempt".into()),
-                ..Default::default()
-            }))
-            .await
-            .expect_err("edit on protected group must be gated");
+        let entry = protected_entry_for(&state, "global").await;
+        let err = ensure_not_protected(&entry, "rule", "edit")
+            .expect_err("protected-group fallback must gate edit");
         let payload = err.data.as_ref().expect("payload");
         assert_eq!(
             payload.get("code").and_then(|v| v.as_str()),
@@ -3727,16 +4008,9 @@ mod tests {
     #[tokio::test]
     async fn delete_memory_against_protected_group_is_gated() {
         let (state, _tmp) = test_state().await;
-        let group = seed_protected_group_with_memory(&state, "global", "rule", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
-        let err = server
-            .delete_memory(Parameters(DeleteMemoryArgs {
-                group: group.to_string(),
-                slug: "rule".into(),
-                message: None,
-            }))
-            .await
-            .expect_err("delete on protected group must be gated");
+        let entry = protected_entry_for(&state, "global").await;
+        let err = ensure_not_protected(&entry, "rule", "delete")
+            .expect_err("protected-group fallback must gate delete");
         let payload = err.data.as_ref().expect("payload");
         assert_eq!(
             payload.get("code").and_then(|v| v.as_str()),
@@ -3758,7 +4032,7 @@ mod tests {
         let sibling = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
         let server = McpServer::new(state);
         server
-            .write_memory(Parameters(write_memory_args(&sibling, "added", false)))
+            .write_memory_unguarded(write_memory_args(&sibling, "added", false))
             .await
             .expect("write into unprotected sibling must succeed");
     }
