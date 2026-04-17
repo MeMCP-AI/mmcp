@@ -128,3 +128,21 @@ Elicitation-based slug defaulting on the MCP side is still gated on FR-011 (rmcp
 The shared `import_memory` helper in `commands/import.rs` splits (or gains a mode arg) so the CLI `mmcp import` path continues to upsert — operators running bulk imports have explicit intent, the AI-driven MCP path doesn't.
 
 **Status**: Open. Behavior change (not breaking the wire format — `override` defaults to false), so existing MCP callers that relied on the upsert now see `memory_already_exists` on the second call. Callers adapt by switching to `edit_memory` (FR-016) or supplying `override: true` when they genuinely meant overwrite.
+
+### FR-019: Elicitation-gated guard on mutations to protected groups (2026-04-17)
+
+**Need**: Global memories are cross-project shared rules — a single accidental or misguided modification propagates to every project that pulls the shared group. Today the CRUD surface treats them identically to scratch notes: an AI session can override, edit, or delete `global-coding-rules` just as easily as a per-project note. The natural AI pattern of "defensive writing" becomes dangerous at the global scope. A guard is needed so any mutation of a protected memory requires explicit, user-visible confirmation delivered through MCP elicitation — no bool-arg escape hatch on the MCP path, no silent pass-through.
+
+**How to apply**:
+
+1. **Identify protection**. Add `protected: bool` (serde-default `false`, serde-skip-when-false) to `GroupManifest` so any group can opt in without schema churn. Set `true` on the `global` group's manifest at seed time; future protected groups (language convention groups, shared team standards) opt in the same way. The flag lives in the manifest rather than the project config so it travels with the repo — a project pulling the `global` group inherits the protection automatically.
+
+2. **Guard the three write paths**. `write_memory` (with `override: true` from FR-018), `edit_memory` (FR-016), and `delete_memory` (FR-017) consult the target group's manifest and, when `protected == true`, issue an MCP `ElicitationRequest` describing: group slug, memory slug, action (`create_override` / `edit` / `delete`), diff preview for `edit`, and a checkbox confirming intent. The write proceeds only after a positive elicitation response; a decline or cancel returns `{code: "protected_write_cancelled"}`.
+
+3. **Pre-elicitation graceful degradation**. Until FR-011 lands (rmcp exposes elicitation), the MCP surface hard-errors with `{code: "protected_requires_elicitation", group, slug, action}` on every mutation targeting a protected group. No bypass — explicitly no `confirm_protected_write: true` back-door, which would defeat the point of routing confirmation through the user. Operators who genuinely need to mutate global memories today run the CLI (which has operator-intent-by-construction), same as the shared-group bulk flows.
+
+4. **CLI parity**. The CLI's `mmcp import`, `mmcp memory delete`, and future `mmcp memory edit` do *not* require elicitation — the operator at a shell IS the confirmation — but they print a clear "writing into a protected group" notice before committing, and gate the write behind an interactive `inquire::Confirm` prompt on a TTY (non-TTY requires `--force`). This matches the CLAUDE.md / dirty-file prompt pattern already used by `mmcp init claude`.
+
+5. **Read paths stay open**. `list_memories`, `read_memory`, `list_versions`, `group_info`, `search_memories`, `bootstrap_context` are unaffected. Protection is a write concern only.
+
+**Status**: Open. Depends on FR-016 / FR-017 / FR-018 for the surface the guard attaches to, and on FR-011 for the fully-featured elicitation path. Until FR-011 ships, the MCP side is hard-gated (operators use the CLI), which is acceptable because protected-group mutations are rare and deliberate by definition.
