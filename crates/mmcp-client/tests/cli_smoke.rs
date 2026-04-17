@@ -311,4 +311,28 @@ fn feature_add_list_read_round_trips_inside_project() {
         .stdout(predicate::str::contains(
             "no feature requests with status `open`",
         ));
+
+    // FR-024: default listing now hides closed-like FRs. The
+    // resolved entry above must drop out, and the help text has to
+    // point operators at `--all` so the hide is self-documenting.
+    mmcp()
+        .args(["feature", "list"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "no open feature requests in this project; pass --all to include closed ones",
+        ));
+
+    // `--all` re-includes the resolved FR with its status marker.
+    mmcp()
+        .args(["feature", "list", "--all"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fr-first"))
+        .stdout(predicate::str::contains("[resolved]"))
+        .stdout(predicate::str::contains("1 feature"));
 }

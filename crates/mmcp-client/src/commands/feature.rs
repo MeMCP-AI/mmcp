@@ -143,9 +143,18 @@ pub struct DeleteArgs {
 
 #[derive(Debug, Args, Default)]
 pub struct ListArgs {
-    /// Restrict to FRs with this status.
+    /// Restrict to FRs with this status. Explicit status wins
+    /// over the default open-only hide, so `--status resolved`
+    /// returns resolved FRs without needing `--all`.
     #[arg(long)]
     pub status: Option<String>,
+
+    /// Include FRs whose status is not `open`. Without this flag
+    /// the listing hides closed-like FRs (resolved, blocked,
+    /// deferred, duplicate) so the default signal is "what still
+    /// needs work?". FR-024.
+    #[arg(long)]
+    pub all: bool,
 }
 
 // ── Dispatcher ──────────────────────────────────────────────────
@@ -296,14 +305,17 @@ async fn run_list(args: ListArgs) -> Result<()> {
         .map_err(anyhow::Error::from)?;
 
     let status_filter = parse_status_cli(args.status.as_deref())?;
-    let records = list_features(&backend, &entry, status_filter)
+    let records = list_features(&backend, &entry, status_filter, args.all)
         .await
         .map_err(anyhow::Error::from)?;
 
     if records.is_empty() {
-        match status_filter {
-            Some(s) => println!("no feature requests with status `{}`", s.as_str()),
-            None => println!("no feature requests filed in this project yet"),
+        match (status_filter, args.all) {
+            (Some(s), _) => println!("no feature requests with status `{}`", s.as_str()),
+            (None, true) => println!("no feature requests filed in this project yet"),
+            (None, false) => println!(
+                "no open feature requests in this project; pass --all to include closed ones"
+            ),
         }
         return Ok(());
     }

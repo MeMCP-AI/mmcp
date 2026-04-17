@@ -338,7 +338,17 @@ pub async fn delete_feature(
     Ok(commit_id)
 }
 
-/// Enumerate every FR in the group, optionally filtered by status.
+/// Enumerate FRs in the group, optionally filtered by status.
+///
+/// Filter precedence (FR-024):
+/// 1. `status_filter = Some(x)` → include every FR whose status
+///    matches, regardless of `show_all`. Explicit selector wins so
+///    a caller asking for `resolved` FRs always sees them.
+/// 2. `status_filter = None` + `show_all = true` → include every
+///    FR. The "show me literally everything" escape hatch.
+/// 3. `status_filter = None` + `show_all = false` → include only
+///    `FeatureStatus::Open`. Default listing, matches the
+///    "what still needs work?" mental model operators reach for.
 ///
 /// Non-FR memories in the same group are skipped silently — FRs
 /// share the group with rules / snapshots / logs / references /
@@ -350,6 +360,7 @@ pub async fn list_features(
     backend: &NativeBackend,
     entry: &GroupEntry,
     status_filter: Option<FeatureStatus>,
+    show_all: bool,
 ) -> Result<Vec<FeatureRecord>, FeatureError> {
     let tree = backend
         .list_tree(&entry.handle, MEMORIES_DIR, &Rev::head())
@@ -363,7 +374,12 @@ pub async fn list_features(
         };
         match read_feature(backend, entry, slug, None).await {
             Ok(record) => {
-                if status_filter.is_none_or(|want| record.status == want) {
+                let keep = match status_filter {
+                    Some(want) => record.status == want,
+                    None if show_all => true,
+                    None => record.status == FeatureStatus::Open,
+                };
+                if keep {
                     out.push(record);
                 }
             }
@@ -565,9 +581,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn list_filters_by_status() {
-        let scratch = ScratchHome::new().await.expect("scratch home");
+    async fn seed_mixed_status_fixture(scratch: &ScratchHome) -> GroupEntry {
         let seeded = scratch.seed_group("fr-group").await.expect("seed");
         let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
 
@@ -593,18 +607,75 @@ mod tests {
             .await
             .expect("seed");
         }
+        entry
+    }
 
-        let opens = list_features(scratch.backend(), &entry, Some(FeatureStatus::Open))
+    #[tokio::test]
+    async fn list_filters_by_status() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let entry = seed_mixed_status_fixture(&scratch).await;
+
+        // Explicit status selector wins over the default open-only
+        // filter — even with `show_all=false` the caller receives
+        // every FR matching the requested status.
+        let opens = list_features(scratch.backend(), &entry, Some(FeatureStatus::Open), false)
             .await
             .expect("list open");
         let mut open_slugs: Vec<_> = opens.into_iter().map(|r| r.slug).collect();
         open_slugs.sort();
         assert_eq!(open_slugs, vec!["fr-a".to_string(), "fr-c".to_string()]);
 
-        let all = list_features(scratch.backend(), &entry, None)
+        let resolved = list_features(
+            scratch.backend(),
+            &entry,
+            Some(FeatureStatus::Resolved),
+            false,
+        )
+        .await
+        .expect("list resolved with show_all=false still returns matches");
+        assert_eq!(
+            resolved.len(),
+            1,
+            "explicit status filter wins over default open-only hide",
+        );
+    }
+
+    #[tokio::test]
+    async fn list_hides_closed_like_fr_by_default() {
+        // FR-024: `list_features(None, false)` returns only FRs
+        // whose status is `open`. Resolved, blocked, deferred, and
+        // duplicate all drop out of the listing so the default
+        // signal is "what still needs work?".
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let entry = seed_mixed_status_fixture(&scratch).await;
+
+        let visible = list_features(scratch.backend(), &entry, None, false)
             .await
-            .expect("list all");
-        assert_eq!(all.len(), 4, "list without filter returns every FR");
+            .expect("default list");
+        let mut slugs: Vec<_> = visible.into_iter().map(|r| r.slug).collect();
+        slugs.sort();
+        assert_eq!(
+            slugs,
+            vec!["fr-a".to_string(), "fr-c".to_string()],
+            "default listing must hide resolved / blocked / duplicate FRs",
+        );
+    }
+
+    #[tokio::test]
+    async fn list_show_all_returns_every_status() {
+        // FR-024: `show_all=true` re-includes every FR regardless
+        // of status. Pairs with the hide-by-default test above.
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let entry = seed_mixed_status_fixture(&scratch).await;
+
+        let all = list_features(scratch.backend(), &entry, None, true)
+            .await
+            .expect("list show_all");
+        assert_eq!(
+            all.len(),
+            4,
+            "show_all must re-include every FR regardless of status",
+        );
     }
 
     #[tokio::test]

@@ -694,9 +694,18 @@ struct DeleteFeatureArgs {
 #[schemars(crate = "rmcp::schemars")]
 struct ListFeaturesArgs {
     /// Restrict to FRs with this status. Wire form matches
-    /// `AddFeatureArgs::status`.
+    /// `AddFeatureArgs::status`. Explicit selector wins over the
+    /// `all` flag — an operator asking for `resolved` FRs always
+    /// sees them even when the default hide is on.
     #[serde(default)]
     pub status: Option<String>,
+
+    /// When `true`, include FRs whose status is not `open`.
+    /// Defaults to `false` — the tool returns only `open` FRs
+    /// unless `status` selects a different variant or `all` is set.
+    /// FR-024.
+    #[serde(default)]
+    pub all: Option<bool>,
 }
 
 #[tool_router]
@@ -2015,7 +2024,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List every feature request in the current project's group, optionally filtered by status. Non-FR memories in the same group are skipped so the listing stays FR-shaped. Memories whose frontmatter fails to parse are quietly omitted; use `diagnose` to surface those."
+        description = "List feature requests in the current project's group. By default returns only FRs whose status is `open` — pass `all: true` to include every status, or `status: <variant>` to pin a specific lifecycle state (explicit `status` wins over the `all` flag). Non-FR memories in the same group are skipped so the listing stays FR-shaped. Memories whose frontmatter fails to parse are quietly omitted; use `diagnose` to surface those."
     )]
     async fn list_features(
         &self,
@@ -2026,9 +2035,11 @@ impl McpServer {
             .await
             .map_err(map_feature_error_to_mcp)?;
         let status = parse_status_arg(args.status.as_deref())?;
-        let records = mmcp_store::features::list_features(&self.state.backend, &entry, status)
-            .await
-            .map_err(map_feature_error_to_mcp)?;
+        let show_all = args.all.unwrap_or(false);
+        let records =
+            mmcp_store::features::list_features(&self.state.backend, &entry, status, show_all)
+                .await
+                .map_err(map_feature_error_to_mcp)?;
         let features: Vec<_> = records
             .iter()
             .map(|record| feature_record_to_json(&entry, record))
