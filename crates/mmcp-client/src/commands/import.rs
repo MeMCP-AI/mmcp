@@ -1,15 +1,21 @@
-//! Memory import - shared core logic for CLI and MCP tool.
+//! Shared memory CRUD primitives for the CLI and the MCP tools.
 //!
-//! Writes a memory file into a group's bare git repository.
-//! The same `import_memory` function is called by both the
-//! `mmcp import` CLI subcommand and the `import_memory` MCP tool.
+//! Three typed primitives (`create_memory_file`, `update_memory_file`,
+//! `delete_memory_file`) wrap `NativeBackend::write_commit` with
+//! existence checks so the MCP tools (`write_memory`, `edit_memory`,
+//! `delete_memory`) can enforce their strict CRUD contracts without
+//! each tool re-implementing the probe. The `import_memory` upsert
+//! wrapper is retained so the CLI `mmcp import` path keeps its
+//! operator-driven overwrite-on-collision behavior (tightening that
+//! path happens in a separate track alongside the MCP
+//! `write_memory` rework).
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use mmcp_core::id::GroupId;
 use mmcp_core::memory::{MemoryFile, MemoryFrontmatter, MemoryKind};
-use mmcp_git::{CommitSpec, GitBackend, NativeBackend, RepoHandle};
+use mmcp_git::{CommitSpec, GitBackend, GitError, NativeBackend, RepoHandle, Rev};
 use uuid::Uuid;
 
 use crate::state::{GroupEntry, GroupIndex};
@@ -29,7 +35,12 @@ pub struct SynthFrontmatter {
     pub kind: MemoryKind,
 }
 
-/// Errors specific to the import operation.
+/// Errors specific to memory CRUD operations.
+///
+/// Named `ImportError` for historical reasons (this module started
+/// out as the `mmcp import` implementation); it now covers the
+/// shared create/update/delete primitives too. A rename is a
+/// cosmetic follow-up.
 #[derive(Debug, thiserror::Error)]
 pub enum ImportError {
     #[error("invalid slug '{0}': must be 1-128 chars, lowercase alphanumeric with hyphens, no leading/trailing hyphens")]
@@ -52,9 +63,158 @@ pub enum ImportError {
 
     #[error("group not found: {0}")]
     GroupNotFound(String),
+
+    /// A `create` was attempted against a slug that is already on
+    /// disk. The caller picks between `update` (edit-in-place) and
+    /// `create` with an explicit override to replace.
+    #[error("memory '{slug}' already exists in this group")]
+    MemoryAlreadyExists { slug: String },
+
+    /// An `update` or `delete` was attempted against a slug that
+    /// has no file in the group. Distinct from `GroupNotFound`,
+    /// which signals a missing group altogether.
+    #[error("memory '{slug}' does not exist in this group")]
+    MemoryNotFound { slug: String },
 }
 
-/// Import a single memory into a group repository.
+/// Probe whether `memories/<slug>.md` exists at the group's
+/// current `main` head.
+///
+/// Returns `Ok(false)` on `PathNotFound` — the "does not exist"
+/// case is not an error condition. Any other git failure
+/// propagates as `ImportError::Git` so callers don't confuse
+/// transport / corruption errors with a missing file.
+pub async fn memory_exists(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    slug: &str,
+) -> Result<bool, ImportError> {
+    let path = mmcp_core::conventions::memory_path(slug);
+    match backend.read_file(handle, &path, &Rev::head()).await {
+        Ok(_) => Ok(true),
+        Err(GitError::PathNotFound(_)) => Ok(false),
+        Err(err) => Err(ImportError::Git(err)),
+    }
+}
+
+/// Create a fresh memory file. Errors with
+/// [`ImportError::MemoryAlreadyExists`] when the slug is already
+/// on disk so callers never silently overwrite.
+pub async fn create_memory_file(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    slug: &str,
+    rendered: &str,
+    author: &crate::home::ResolvedAuthor,
+    message: Option<&str>,
+) -> Result<String, ImportError> {
+    validate_slug(slug)?;
+    if memory_exists(backend, handle, slug).await? {
+        return Err(ImportError::MemoryAlreadyExists {
+            slug: slug.to_string(),
+        });
+    }
+    let commit_message = message
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("create memory {slug}"));
+    write_memory_commit(backend, handle, slug, rendered, author, commit_message).await
+}
+
+/// Update an existing memory file. Errors with
+/// [`ImportError::MemoryNotFound`] when the slug has no file, so a
+/// caller that forgot a `create_memory_file` call never silently
+/// creates a new memory here.
+pub async fn update_memory_file(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    slug: &str,
+    rendered: &str,
+    author: &crate::home::ResolvedAuthor,
+    message: Option<&str>,
+) -> Result<String, ImportError> {
+    validate_slug(slug)?;
+    if !memory_exists(backend, handle, slug).await? {
+        return Err(ImportError::MemoryNotFound {
+            slug: slug.to_string(),
+        });
+    }
+    let commit_message = message
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("update memory {slug}"));
+    write_memory_commit(backend, handle, slug, rendered, author, commit_message).await
+}
+
+/// Commit a deletion of `memories/<slug>.md`. Errors with
+/// [`ImportError::MemoryNotFound`] when the slug has no file, to
+/// keep the wire contract symmetric with `update_memory_file`
+/// rather than silently no-op'ing.
+pub async fn delete_memory_file(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    slug: &str,
+    author: &crate::home::ResolvedAuthor,
+    message: Option<&str>,
+) -> Result<String, ImportError> {
+    validate_slug(slug)?;
+    if !memory_exists(backend, handle, slug).await? {
+        return Err(ImportError::MemoryNotFound {
+            slug: slug.to_string(),
+        });
+    }
+    let commit_message = message
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("delete memory {slug}"));
+    let commit_id = backend
+        .write_commit(
+            handle,
+            CommitSpec::mmcp_commit(
+                commit_message,
+                // `build_tree` interprets `(path, None)` as a
+                // delete, so we don't need a separate delete API.
+                vec![(mmcp_core::conventions::memory_path(slug), None)],
+                &author.name,
+                &author.email,
+            ),
+        )
+        .await?;
+    Ok(commit_id)
+}
+
+/// Internal: render-agnostic commit helper shared by
+/// `create_memory_file` / `update_memory_file`. Keeps the
+/// `CommitSpec` construction in one place so the `mmcp_commit`
+/// conventions and author plumbing don't drift between create and
+/// update.
+async fn write_memory_commit(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    slug: &str,
+    rendered: &str,
+    author: &crate::home::ResolvedAuthor,
+    commit_message: String,
+) -> Result<String, ImportError> {
+    let commit_id = backend
+        .write_commit(
+            handle,
+            CommitSpec::mmcp_commit(
+                commit_message,
+                vec![(
+                    mmcp_core::conventions::memory_path(slug),
+                    Some(rendered.as_bytes().to_vec()),
+                )],
+                &author.name,
+                &author.email,
+            ),
+        )
+        .await?;
+    Ok(commit_id)
+}
+
+/// Upsert wrapper used by the CLI `mmcp import` path. Reads the
+/// slug's existence, then delegates to `create_memory_file` or
+/// `update_memory_file`. Kept distinct from the strict MCP CRUD
+/// tools so the CLI continues to accept the operator-driven
+/// "replace whatever is there" semantics until FR-018 tightens it.
 ///
 /// `content` is the full markdown text. If it starts with `+++`
 /// fences the frontmatter is parsed from it. Otherwise
@@ -93,20 +253,27 @@ pub async fn import_memory(
         .to_string()
         .map_err(|e| ImportError::Render(e.to_string()))?;
 
-    let commit_id = backend
-        .write_commit(
+    let commit_id = if memory_exists(backend, handle, slug).await? {
+        update_memory_file(
+            backend,
             handle,
-            CommitSpec::mmcp_commit(
-                format!("import memory {slug}"),
-                vec![(
-                    mmcp_core::conventions::memory_path(slug),
-                    Some(rendered.into_bytes()),
-                )],
-                &author.name,
-                &author.email,
-            ),
+            slug,
+            &rendered,
+            author,
+            Some(&format!("import memory {slug}")),
         )
-        .await?;
+        .await?
+    } else {
+        create_memory_file(
+            backend,
+            handle,
+            slug,
+            &rendered,
+            author,
+            Some(&format!("import memory {slug}")),
+        )
+        .await?
+    };
 
     Ok(ImportResult {
         slug: slug.to_string(),
@@ -356,6 +523,105 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ImportError::MissingFrontmatter));
+    }
+
+    const SAMPLE_RENDERED: &str = "+++\nname = \"sample\"\ndescription = \"s\"\nkind = \"rule\"\nmandatory = false\ntags = []\n+++\nBody text.\n";
+
+    #[tokio::test]
+    async fn create_memory_file_writes_when_absent() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let commit_id = create_memory_file(&backend, &handle, "new-mem", SAMPLE_RENDERED, &author, None)
+            .await
+            .expect("create");
+        assert!(!commit_id.is_empty());
+        assert!(memory_exists(&backend, &handle, "new-mem").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn create_memory_file_errors_when_slug_already_exists() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        create_memory_file(&backend, &handle, "taken", SAMPLE_RENDERED, &author, None)
+            .await
+            .expect("seed");
+        let err = create_memory_file(&backend, &handle, "taken", SAMPLE_RENDERED, &author, None)
+            .await
+            .expect_err("second create must refuse");
+        assert!(matches!(err, ImportError::MemoryAlreadyExists { slug } if slug == "taken"));
+    }
+
+    #[tokio::test]
+    async fn update_memory_file_errors_when_slug_does_not_exist() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let err =
+            update_memory_file(&backend, &handle, "missing", SAMPLE_RENDERED, &author, None)
+                .await
+                .expect_err("update on absent slug");
+        assert!(matches!(err, ImportError::MemoryNotFound { slug } if slug == "missing"));
+    }
+
+    #[tokio::test]
+    async fn update_memory_file_replaces_content_when_slug_exists() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        create_memory_file(&backend, &handle, "editable", SAMPLE_RENDERED, &author, None)
+            .await
+            .expect("seed");
+        let updated = "+++\nname = \"updated\"\ndescription = \"s\"\nkind = \"rule\"\nmandatory = false\ntags = []\n+++\nNew body.\n";
+        update_memory_file(&backend, &handle, "editable", updated, &author, None)
+            .await
+            .expect("update");
+        let bytes = backend
+            .read_file(&handle, "memories/editable.md", &Rev::head())
+            .await
+            .expect("read back");
+        let text = std::str::from_utf8(&bytes).expect("utf8");
+        assert!(text.contains("name = \"updated\""));
+        assert!(text.contains("New body."));
+    }
+
+    #[tokio::test]
+    async fn delete_memory_file_removes_blob_and_advances_main() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        create_memory_file(&backend, &handle, "doomed", SAMPLE_RENDERED, &author, None)
+            .await
+            .expect("seed");
+        assert!(memory_exists(&backend, &handle, "doomed").await.unwrap());
+        let commit_id = delete_memory_file(&backend, &handle, "doomed", &author, None)
+            .await
+            .expect("delete");
+        assert!(!commit_id.is_empty());
+        assert!(!memory_exists(&backend, &handle, "doomed").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn delete_memory_file_errors_when_slug_absent() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let err = delete_memory_file(&backend, &handle, "ghost", &author, None)
+            .await
+            .expect_err("delete on absent slug");
+        assert!(matches!(err, ImportError::MemoryNotFound { slug } if slug == "ghost"));
+    }
+
+    #[tokio::test]
+    async fn import_memory_upsert_wrapper_creates_then_updates() {
+        // Legacy CLI `import` semantics: first call creates, second
+        // call silently overwrites. The new primitives compose into
+        // the same observable behavior via the upsert wrapper.
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let first = import_memory(&backend, &handle, "upsert", SAMPLE_RENDERED, None, &author)
+            .await
+            .expect("first");
+        let second = import_memory(&backend, &handle, "upsert", SAMPLE_RENDERED, None, &author)
+            .await
+            .expect("second");
+        assert_ne!(first.commit_id, second.commit_id);
+        assert_eq!(first.slug, second.slug);
     }
 
     #[tokio::test]
