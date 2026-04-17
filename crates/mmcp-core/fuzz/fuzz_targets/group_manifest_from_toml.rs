@@ -3,7 +3,7 @@
 //! The group manifest sits inside every bare repo under
 //! `~/.mmcp/repos/<uuid>.git` and is parsed on every group scan.
 //! A panicking parser propagates all the way up to
-//! `mmcp_client::state::GroupIndex::build`, which runs at MCP
+//! `mmcp_store::groups::GroupIndex::build`, which runs at MCP
 //! session start.
 
 #![no_main]
