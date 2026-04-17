@@ -2,24 +2,22 @@
 //!
 //! All three subcommands share this entry point: the booleans
 //! `pull` and `push` toggle which halves of a full sync run. The
-//! body opens a real `SyncClient` pointed at the project's
-//! configured server and calls through to `SyncEngine`.
+//! body calls through to `mmcp_store::sync::build_engine` (the
+//! shared wiring used by the MCP tools as well) and formats the
+//! resulting report for stdout.
 //!
-//! The [`build_engine`] helper is `pub(crate)` so the MCP server
-//! (`commands/serve.rs`) can build the same engine + resolver pair
-//! without duplicating the glue. Both paths share one
-//! [`IndexResolver`] implementation.
-
-use std::sync::Arc;
+//! `build_engine` and `IndexResolver` now live in
+//! `mmcp-store::sync`; the `pub(crate) use` below keeps the
+//! `crate::commands::sync::build_engine` import path working for
+//! `commands/serve.rs` until commit 8 deletes the shim layer.
 
 use anyhow::{Context, Result, bail};
-use mmcp_git::{NativeBackend, RepoHandle};
-use mmcp_sync::{GroupHandleResolver, PendingQueue, SyncClient, SyncEngine, SyncError};
-use uuid::Uuid;
+use mmcp_sync::SyncError;
 
 use crate::config::{find_project_root, load};
 use crate::home::MmcpHome;
-use crate::state::GroupIndex;
+
+pub(crate) use mmcp_store::sync::build_engine;
 
 /// Run the sync engine.
 ///
@@ -105,54 +103,6 @@ pub async fn run(pull: bool, push: bool) -> Result<()> {
 
     println!("{report}");
     Ok(())
-}
-
-/// Build a fresh [`SyncEngine`], [`IndexResolver`], and
-/// [`PendingQueue`] pointed at `server_url`.
-///
-/// Shared between the CLI (`commands::sync`) and the MCP server
-/// (`commands::serve`) so both paths converge on the exact same
-/// engine configuration. The caller supplies an already-initialized
-/// backend and group index because the MCP server holds them in
-/// `ClientState` and re-initializing would open a duplicate backend.
-pub(crate) fn build_engine(
-    backend: Arc<NativeBackend>,
-    groups: GroupIndex,
-    server_url: &str,
-) -> Result<(SyncEngine, IndexResolver, PendingQueue)> {
-    let client = SyncClient::new(server_url.to_owned())
-        .with_context(|| format!("configuring sync client for {server_url}"))?;
-    let engine = SyncEngine::new(backend, client);
-    let resolver = IndexResolver { index: groups };
-    let queue = PendingQueue::new();
-    Ok((engine, resolver, queue))
-}
-
-/// Resolver that walks the live `GroupIndex` snapshot to answer
-/// `resolve` calls from the sync engine.
-pub(crate) struct IndexResolver {
-    pub(crate) index: GroupIndex,
-}
-
-impl GroupHandleResolver for IndexResolver {
-    fn resolve(&self, group_id: Uuid) -> Option<RepoHandle> {
-        // The engine currently calls `resolve` from a sync
-        // context. A short-lived blocking call into the async
-        // RwLock is acceptable because the index is updated
-        // rarely and contention is minimal in practice. If this
-        // becomes a hot path we can switch the trait method to
-        // an async signature.
-        tokio::runtime::Handle::try_current()
-            .ok()
-            .and_then(|handle| {
-                handle.block_on(async {
-                    self.index
-                        .get(&mmcp_core::id::GroupId::from_uuid(group_id))
-                        .await
-                })
-            })
-            .map(|entry| entry.handle)
-    }
 }
 
 fn to_anyhow(err: SyncError) -> anyhow::Error {

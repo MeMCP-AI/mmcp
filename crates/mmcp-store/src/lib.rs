@@ -45,6 +45,7 @@ pub mod error;
 pub mod groups;
 pub mod home;
 pub mod memory;
+pub mod sync;
 
 pub use error::StoreError;
 pub use groups::{GroupEntry, GroupIndex};
@@ -54,3 +55,4 @@ pub use memory::{
     import_memory, memory_exists, parse_kind, resolve_group, slugify_filename, update_memory_file,
     validate_slug,
 };
+pub use sync::{IndexResolver, build_engine};
