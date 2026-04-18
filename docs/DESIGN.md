@@ -59,23 +59,25 @@ crates/
   mmcp-sync/      Push/pull/diff/merge engine layered over mmcp-git
   mmcp-server/    Binary: HTTP/SSE, WebUI backend, git smart HTTP, auth, Postgres
   mmcp-client/    Binary: MCP stdio server + sync engine + CLI + hook subcommands
-  mmcp-gui/       Binary: desktop visual client (eframe/egui) on top of mmcp-store
 webui/            Leptos frontend (separate cargo project, not in main workspace)
+gui/              Tauri 2 + SvelteKit + Tailwind desktop client; Rust backend
+                  under gui/src-tauri/ (excluded from the workspace; path deps
+                  into crates/mmcp-*)
 ```
 
 ### Crate responsibilities
 
 - **mmcp-core**: pure data model + logic. No I/O, no network, no async. Owns `MemoryKind`, `MemoryFrontmatter` (with UUID primary key and fluent `::new(...).with_*(...)` builder), `FeatureMetadata`, the CommonMark body parser powering FR-026 (`Section`, `parse_sections`, `render_sections`), and path conventions (`memory_path(slug, id)` + `legacy_memory_path(slug)`).
 - **mmcp-git**: `GitBackend` trait and its implementations. Default `NativeBackend` uses `gix` on bare repos and persists the per-group `.mmcp.toml` manifest as a real commit on `main`. Exposes `list_tree` (blobs under a prefix) and `list_subtrees` (directories under a prefix) so consumers can walk the two-level memory layout without recursion. Alternative backends for Forgejo, Gitea, GitHub, GitLab talk to external forges over REST.
-- **mmcp-store**: local-first programmatic store. One `resolve_memory(slug?, id?)` primitive for every addressing path; path-based write/delete helpers; semantic body-op applier (FR-026); feature CRUD and `rename_feature` (FR-027); group index + manifest lifecycle; diagnostics; session store. Zero dependency on `rmcp`, `clap`, `inquire`, or `egui` — shared by `mmcp-client`, `mmcp-gui`, and any third-party Rust consumer.
+- **mmcp-store**: local-first programmatic store. One `resolve_memory(slug?, id?)` primitive for every addressing path; path-based write/delete helpers; semantic body-op applier (FR-026); feature CRUD and `rename_feature` (FR-027); group index + manifest lifecycle; diagnostics; session store. Zero dependency on `rmcp`, `clap`, or `inquire` — shared by `mmcp-client`, the Tauri backend under `gui/src-tauri/`, and any third-party Rust consumer.
 - **mmcp-db**: SeaORM entity definitions and migrations. **Server-only**: the server uses it for users, orgs, ACLs, and memory version metadata. The client intentionally does not depend on it — its state lives in git repos and flat per-session files under `~/.mmcp/`.
 - **mmcp-auth**: password hashing, PASETO token issuance/validation, `axum-login` traits, OAuth + passkey wiring.
 - **mmcp-proto**: typed MCP tool request/response shapes and a structured `ProtoError` surface (including `NotImplemented` for gaps). Shared so client and server never drift on schemas.
 - **mmcp-session**: pure compaction-detection primitives (`TranscriptSignature`, `compute_signature`, `detect_compaction`). Persistence of per-session state lives next to the consumer that owns it — the client keeps it in flat files, a future server-side representation will keep it in the database.
 - **mmcp-sync**: push/pull/diff/merge engine. Uses `mmcp-git` for repo ops and `mmcp-db` for pending-push state on the server side.
 - **mmcp-server** *(binary)*: `axum`-based HTTP/SSE daemon. Hosts MCP-over-HTTP, WebUI REST API, git smart HTTP, auth endpoints. Owns the Postgres database and the bare git repos on disk (when using `NativeBackend`). `#![forbid(unsafe_code)]`.
-- **mmcp-gui** *(binary)*: desktop visual client on `eframe`/`egui`. Reads, writes, and browses local memories directly through `mmcp-store` with no MCP round-trip. Intended as a second consumer alongside the CLI/MCP surface so the store's UUID-first addressing and resolver error shapes are exercised by more than one front end.
-- **mmcp-client** *(binary + library)*: runs on the user's machine. Delegates every memory operation to `mmcp-store`, which keeps the CLI, the MCP tool bodies, and `mmcp-gui` aligned on one programmatic surface. Keeps per-session state in flat TOML files under `~/.mmcp/sessions/`. Ships one-shot migration example binaries under `examples/` (`migrate_uuidify` for FR-028's two-level layout, `migrate_fr_slugs` for FR-027's prefix stripping). Does **not** depend on `mmcp-db`. One binary, multiple entry points via `clap` subcommands:
+- **gui** *(separate app, not in main workspace)*: Tauri 2 desktop client. Rust backend at `gui/src-tauri/` consumes `mmcp-core`, `mmcp-git`, `mmcp-store`, `mmcp-sync` via path deps and exposes them as IPC commands (`list_groups`, `list_memory_slugs`, `load_memory`, `create_memory` / `update_memory` / `delete_memory`, `sync_pull`, `sync_push`, `run_diagnose`, `load_settings` / `save_settings`) plus a 15 s reachability probe emitting `reachability:changed` events. Frontend is SvelteKit 2 + Svelte 5 runes + Tailwind v4 + Lucide icons, compiled as a pure SPA via `@sveltejs/adapter-static` and served in-process by the Tauri webview. Talks to `mmcp-store` directly — no HTTP, no MCP round-trip.
+- **mmcp-client** *(binary + library)*: runs on the user's machine. Delegates every memory operation to `mmcp-store`, which keeps the CLI, the MCP tool bodies, and the Tauri-backed desktop client aligned on one programmatic surface. Keeps per-session state in flat TOML files under `~/.mmcp/sessions/`. Ships one-shot migration example binaries under `examples/` (`migrate_uuidify` for FR-028's two-level layout, `migrate_fr_slugs` for FR-027's prefix stripping). Does **not** depend on `mmcp-db`. One binary, multiple entry points via `clap` subcommands:
   - `mmcp serve` — the MCP stdio server that Claude Code and other AI clients talk to
   - `mmcp init` / `status` / `sync` / `pull` / `push` — CLI workflow commands
   - `mmcp hook user-prompt` — the command invoked by the Claude Code `UserPromptSubmit` hook

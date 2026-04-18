@@ -4,7 +4,7 @@
 
 ## 1. Workspace Crates
 
-Rust workspace, edition 2024. All crates live under `crates/` except the web frontend.
+Rust workspace, edition 2024. All crates live under `crates/` except the web frontend (`webui/`) and the desktop client (`gui/`), both of which are excluded from the Rust workspace because their build systems are JS/Tauri-based rather than plain Cargo.
 
 ### 1.1 Libraries
 
@@ -12,7 +12,7 @@ Rust workspace, edition 2024. All crates live under `crates/` except the web fro
 | ---------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
 | `mmcp-core`      | Pure data model: `User`, `Org`, `Group`, `Memory`, `Version`, `Acl`, `MemoryKind` (including `Feature` with `fr` serde alias), `MemoryFrontmatter` with `id: Option<Uuid>` primary key and a fluent `MemoryFrontmatter::new(...).with_*(...)` builder, `FeatureMetadata` carrying `status` / `number` / UUID-typed `depends_on` / `blocks`, markdown body parser (`Section`, `parse_sections`, `render_sections`) backing FR-026's semantic editor, frontmatter schema, semver bump logic, ACL resolver, load-set resolver, `.mmcp.toml` group manifest, and path conventions (`memory_path(slug, id)` two-level layout + `legacy_memory_path(slug)` fallback). No I/O, no async. | (leaf)                                               |
 | `mmcp-git`       | `GitBackend` trait + `NativeBackend` (via `gix`) + external forge backends (Forgejo, Gitea, GitHub, GitLab). Abstracts all git storage, including read/write of the per-group `.mmcp.toml` manifest. Enumerates both files and directories under a prefix (`list_tree` + `list_subtrees`) so consumers can walk the two-level `memories/<slug>/<uuid>.md` layout without a recursive traversal. | `mmcp-core`                                          |
-| `mmcp-store`     | Local-first programmatic store layer. Single source of UUID-first addressing: `resolve_memory(slug?, id?) -> ResolvedMemory`, `write_memory_by_id`, path-based primitives `write_file_at_path` / `delete_file_at_path`, semantic body op applier (`MemoryEditOp`, `apply_ops`) backing FR-026's `edit_memory_body`, feature CRUD (`add_feature` / `read_feature` / `update_feature` / `delete_feature` / `list_features` / `rename_feature` / `parse_cross_refs`), group index and manifest lifecycle, diagnostics, session store. Consumed by `mmcp-client`, `mmcp-gui`, and any third-party Rust code driving the store. Zero dependency on `rmcp`, `clap`, `inquire`, or `egui`. | `mmcp-core`, `mmcp-git`, `mmcp-session`, `mmcp-sync` |
+| `mmcp-store`     | Local-first programmatic store layer. Single source of UUID-first addressing: `resolve_memory(slug?, id?) -> ResolvedMemory`, `write_memory_by_id`, path-based primitives `write_file_at_path` / `delete_file_at_path`, semantic body op applier (`MemoryEditOp`, `apply_ops`) backing FR-026's `edit_memory_body`, feature CRUD (`add_feature` / `read_feature` / `update_feature` / `delete_feature` / `list_features` / `rename_feature` / `parse_cross_refs`), group index and manifest lifecycle, diagnostics, session store. Consumed by `mmcp-client`, `gui/src-tauri`, and any third-party Rust code driving the store. Zero dependency on `rmcp`, `clap`, `inquire`, or `egui`. | `mmcp-core`, `mmcp-git`, `mmcp-session`, `mmcp-sync` |
 | `mmcp-db`        | **Server-only** SeaORM entity definitions, migrations, and repository helpers. Targets Postgres (production) and SQLite (single-user deployments). The client does not depend on this crate. | `mmcp-core`                                          |
 | `mmcp-auth`      | Password hashing, PASETO tokens, `axum-login` trait impls, OAuth and passkey wiring.          | `mmcp-core`, `mmcp-db`                               |
 | `mmcp-proto`     | MCP tool schemas (request + response types) and a `ProtoError` surface (including `NotImplemented`). Shared by client and server so they never drift. Every memory-addressed tool takes an optional `slug` + optional `id` pair; feature cross-refs are UUID strings on the wire. | `mmcp-core`                                          |
@@ -25,13 +25,13 @@ Rust workspace, edition 2024. All crates live under `crates/` except the web fro
 | ------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | `mmcp-server` | `axum`-based HTTP/SSE daemon. Hosts MCP-over-HTTP, WebUI REST API, git smart HTTP, auth endpoints. Owns the Postgres DB and the bare git repos on disk (when using `NativeBackend`). | `mmcp-core`, `mmcp-git`, `mmcp-db`, `mmcp-auth`, `mmcp-proto`, `mmcp-session`, `mmcp-sync`     |
 | `mmcp-client` | Binary plus library target. Runs as the MCP stdio server, the sync engine, the hook command, and the user-facing CLI. Delegates every memory operation to `mmcp-store` so the CLI, the MCP tool bodies, and any third-party consumer converge on one programmatic surface. Ships one-shot migration example binaries (`migrate_uuidify`, `migrate_fr_slugs`). **Does not depend on `mmcp-db`.** | `mmcp-core`, `mmcp-git`, `mmcp-auth`, `mmcp-proto`, `mmcp-session`, `mmcp-store`, `mmcp-sync`  |
-| `mmcp-gui`    | Desktop visual client built on `eframe`/`egui`. Reads, writes, and browses local memories directly through `mmcp-store` — no MCP round-trip. Handles the FR-028 two-level layout transparently via `resolve_memory`. | `mmcp-core`, `mmcp-git`, `mmcp-store`, `mmcp-sync`                                             |
 
-### 1.3 Frontend
+### 1.3 Frontends
 
 | Directory | Role                                                                                                                   | Depends on      |
 | --------- | ---------------------------------------------------------------------------------------------------------------------- | --------------- |
 | `webui/`  | Leptos fullstack frontend (SSR + hydration). GitHub-style UI for end users and administrators. Talks to `mmcp-server` via REST. Not in the main Cargo workspace; built and deployed separately. | `mmcp-core` (type sharing) |
+| `gui/`    | Desktop visual client. Tauri 2 shell (Rust backend under `gui/src-tauri/`) + SvelteKit + Tailwind v4 + Svelte 5 runes frontend. Talks to `mmcp-store` directly over Tauri IPC — no HTTP, no MCP round-trip. The Rust backend uses path deps into `crates/mmcp-*` and is excluded from the workspace. Node toolchain: `bun`. | `mmcp-core`, `mmcp-git`, `mmcp-store`, `mmcp-sync` (path deps from `gui/src-tauri/`) |
 
 ## 2. External Crates
 
@@ -77,9 +77,9 @@ Grouped by concern. "Consumers" lists which mmcp crates use the dependency direc
 | --------------------------------- | --------------------------------------------------------------------------------------------- | -------------------------- |
 | `tokio`                           | Async runtime. Required by `axum`, `sqlx`/`sea-orm`, `rmcp`.                                  | all async crates           |
 | `thiserror`                       | Typed error enums for library crates.                                                         | all libraries              |
-| `anyhow`                          | Top-level error propagation in binary crates and the programmatic store layer.                | `mmcp-store`, `mmcp-server`, `mmcp-client`, `mmcp-gui` |
-| `tracing`                         | Structured logging. Replaces `println!` entirely per Rust coding rules.                      | `mmcp-store`, `mmcp-server`, `mmcp-client`, `mmcp-gui` |
-| `tracing-subscriber`              | `tracing` output formatting and filtering.                                                    | `mmcp-server`, `mmcp-client`, `mmcp-gui` |
+| `anyhow`                          | Top-level error propagation in binary crates and the programmatic store layer.                | `mmcp-store`, `mmcp-server`, `mmcp-client`, `gui/src-tauri` |
+| `tracing`                         | Structured logging. Replaces `println!` entirely per Rust coding rules.                      | `mmcp-store`, `mmcp-server`, `mmcp-client`, `gui/src-tauri` |
+| `tracing-subscriber`              | `tracing` output formatting and filtering.                                                    | `mmcp-server`, `mmcp-client`, `gui/src-tauri` |
 | `clap` v4 (derive feature)        | CLI parsing for `mmcp-client` subcommands.                                                    | `mmcp-client`              |
 | `semver`                          | Semantic version parsing and bumping. Drives the version-assignment logic in `mmcp-sync`.    | `mmcp-core`, `mmcp-sync`   |
 | `jiff`                            | Modern date/time library. Chosen over `chrono` and `time` for better API and correctness.    | `mmcp-core`, `mmcp-store`, `mmcp-auth`, `mmcp-sync`, `mmcp-server`, `mmcp-client` |
