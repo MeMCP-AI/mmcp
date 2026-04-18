@@ -1,0 +1,14 @@
+node_modules/
+.svelte-kit/
+build/
+dist/
+
+# Tauri Rust backend build artefacts and generated capability files.
+src-tauri/target/
+src-tauri/gen/
+
+# Editor / OS cruft.
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

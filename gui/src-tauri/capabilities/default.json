@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core capability set for mmcp-gui. Commands defined in src-tauri/src/commands/* are automatically invokable; every additional plugin permission must be declared here explicitly.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

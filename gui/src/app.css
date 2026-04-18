@@ -1,0 +1,25 @@
+@import 'tailwindcss';
+
+/* Theme tokens consumed as CSS variables. Kept in sync with the
+   Tailwind preset's `theme.extend.colors.kind` so utility classes
+   and raw var(--kind-*) calls agree. */
+@theme {
+  --color-kind-rule: #60a0f0;
+  --color-kind-snapshot: #aa82e6;
+  --color-kind-log: #e6b45a;
+  --color-kind-reference: #5ac8be;
+  --color-kind-scratch: #96a0aa;
+  --color-kind-feature: #f0965a;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+/* Select cleanly in webview: avoids the default-text-select
+   flicker when clicking between panes. */
+button,
+[role='button'] {
+  user-select: none;
+}
