@@ -1,4 +1,11 @@
 import { loadSettings, saveSettings, type SettingsBlob } from '$lib/api/settings';
+import { emit, listen } from '@tauri-apps/api/event';
+
+// Cross-window change notification. Settings live in a dedicated
+// child window, so when the user edits them there the main window
+// has to be told. `emit` broadcasts to every webview (including the
+// emitter); the receiving listener just re-applies the payload.
+const SETTINGS_CHANGED_EVENT = 'settings:changed';
 
 export type KindDisplay = 'off' | 'icon' | 'text' | 'icon_and_text';
 
@@ -27,11 +34,15 @@ class SettingsStore {
     } finally {
       this.loaded = true;
     }
+    void listen<UiSettings>(SETTINGS_CHANGED_EVENT, (e) => {
+      if (e.payload) this.values = { ...DEFAULT_SETTINGS, ...e.payload };
+    });
   }
 
   async save() {
     try {
       await saveSettings<UiSettings>(this.values as unknown as SettingsBlob<UiSettings>);
+      await emit(SETTINGS_CHANGED_EVENT, this.values);
     } catch (err) {
       console.warn('save settings failed', err);
     }

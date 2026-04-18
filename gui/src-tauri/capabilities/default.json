@@ -1,7 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core capability set for mmcp-gui. Commands defined in src-tauri/src/commands/* are automatically invokable; every additional plugin permission must be declared here explicitly.",
-  "windows": ["main"],
-  "permissions": ["core:default"]
+  "description": "Core capability set for mmcp-gui. Commands defined in src-tauri/src/commands/* are automatically invokable; plugin permissions that aren't part of `core:default` have to be named explicitly. `create-webview-window` is required to spawn the Settings/Diagnostics singleton child windows from JS.",
+  "windows": ["main", "settings", "diagnostics"],
+  "permissions": [
+    "core:default",
+    "core:webview:allow-create-webview-window"
+  ]
 }

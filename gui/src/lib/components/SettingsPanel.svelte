@@ -1,7 +1,6 @@
 <script lang="ts">
-  import Modal from './Modal.svelte';
   import KindBadge from './KindBadge.svelte';
-  import { Database, Info, Palette } from 'lucide-svelte';
+  import { Database, Info, Palette, X } from 'lucide-svelte';
   import type { KindStr } from '$lib/types';
   import type { KindDisplay } from '$lib/stores/settings.svelte';
 
@@ -47,11 +46,25 @@
   let resetConfirm = $state(false);
 </script>
 
-<Modal title="Settings" onClose={onClose} widthClass="max-w-3xl">
-  <div class="flex min-h-[420px] flex-col sm:flex-row">
-    <!-- Vertical tab rail -->
+<section class="flex h-full min-h-0 flex-col overflow-hidden bg-zinc-950 text-zinc-100">
+  <header
+    class="flex shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900/40 px-4 py-2 sm:px-6"
+  >
+    <h1 class="text-sm font-semibold text-zinc-100">Settings</h1>
+    <button
+      type="button"
+      class="ml-auto rounded-md p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+      aria-label="Close"
+      title="Close"
+      onclick={onClose}
+    >
+      <X size={14} />
+    </button>
+  </header>
+
+  <div class="flex min-h-0 flex-1 flex-col overflow-hidden sm:flex-row">
     <nav
-      class="flex shrink-0 gap-1 overflow-x-auto border-b border-zinc-800 bg-zinc-950/40 p-2 sm:w-44 sm:flex-col sm:gap-0 sm:overflow-x-visible sm:border-b-0 sm:border-r"
+      class="flex shrink-0 gap-1 overflow-x-auto border-b border-zinc-800 bg-zinc-950/40 p-2 sm:w-48 sm:flex-col sm:gap-0 sm:overflow-x-visible sm:border-b-0 sm:border-r"
     >
       {#each TABS as t (t.id)}
         {@const active = tab === t.id}
@@ -69,8 +82,7 @@
       {/each}
     </nav>
 
-    <!-- Tab content -->
-    <div class="min-h-0 flex-1 overflow-y-auto p-5">
+    <div class="min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
       {#if tab === 'appearance'}
         <section class="flex flex-col gap-5">
           <div>
@@ -117,7 +129,9 @@
             <p class="mt-0.5 text-xs text-zinc-500">
               Persists across restarts. Written by the Tauri backend on every change.
             </p>
-            <div class="mt-3 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 font-mono text-xs text-zinc-300">
+            <div
+              class="mt-3 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 font-mono text-xs text-zinc-300"
+            >
               {settingsPathHint}
             </div>
           </div>
@@ -191,4 +205,4 @@
       {/if}
     </div>
   </div>
-</Modal>
+</section>

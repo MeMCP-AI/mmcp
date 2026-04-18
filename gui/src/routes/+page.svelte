@@ -1,30 +1,26 @@
 <script lang="ts">
   import DeleteConfirmation from '$lib/components/DeleteConfirmation.svelte';
-  import DiagnosticsPanel from '$lib/components/DiagnosticsPanel.svelte';
   import GroupList from '$lib/components/GroupList.svelte';
   import MemoryEditor from '$lib/components/MemoryEditor.svelte';
   import MemoryList from '$lib/components/MemoryList.svelte';
   import MemoryViewer from '$lib/components/MemoryViewer.svelte';
-  import SettingsPanel from '$lib/components/SettingsPanel.svelte';
   import StatusBar from '$lib/components/StatusBar.svelte';
   import Toolbar from '$lib/components/Toolbar.svelte';
 
   import { createMemory, deleteMemory, updateMemory } from '$lib/api/memory';
-  import { diagnosticsStore, type SeverityFilter } from '$lib/stores/diagnostics.svelte';
   import { groupsStore } from '$lib/stores/groups.svelte';
   import { memoriesStore } from '$lib/stores/memories.svelte';
   import { reachabilityStore } from '$lib/stores/reachability.svelte';
   import { selectionStore } from '$lib/stores/selection.svelte';
-  import { settingsStore, type KindDisplay } from '$lib/stores/settings.svelte';
+  import { settingsStore } from '$lib/stores/settings.svelte';
   import { syncStore } from '$lib/stores/sync.svelte';
+  import { openDiagnosticsWindow, openSettingsWindow } from '$lib/windows';
 
   import type { MemoryFile } from '$lib/types';
 
   type EditorState = { mode: 'new' | 'edit'; initial: MemoryFile | null } | null;
   let editor = $state<EditorState>(null);
   let pendingDelete = $state<{ groupId: string; slug: string } | null>(null);
-  let settingsOpen = $state(false);
-  let diagnosticsOpen = $state(false);
 
   // Mobile single-pane state. Auto-advances as the selection deepens
   // so a tap on a group jumps to the memories pane, a tap on a
@@ -167,11 +163,6 @@
     editor = null;
   }
 
-  function openDiagnostics() {
-    diagnosticsOpen = true;
-    void diagnosticsStore.run();
-  }
-
   function formatErr(err: unknown): string {
     if (err && typeof err === 'object' && 'message' in err) {
       return String((err as { message: unknown }).message);
@@ -196,8 +187,8 @@
     onDelete={handleDeleteRequest}
     onPull={() => syncStore.pull()}
     onPush={() => syncStore.push()}
-    onDiagnose={openDiagnostics}
-    onSettings={() => (settingsOpen = true)}
+    onDiagnose={() => void openDiagnosticsWindow()}
+    onSettings={() => void openSettingsWindow()}
   />
 
   <!-- Mobile-only pane tabs. Hidden at md+ where all three panes are
@@ -294,28 +285,6 @@
       slug={pendingDelete.slug}
       onConfirm={confirmDelete}
       onCancel={() => (pendingDelete = null)}
-    />
-  {/if}
-
-  {#if settingsOpen}
-    <SettingsPanel
-      value={settingsStore.values.kind_display}
-      onChange={(mode: KindDisplay) => settingsStore.setKindDisplay(mode)}
-      onReset={() => settingsStore.reset()}
-      onClose={() => (settingsOpen = false)}
-    />
-  {/if}
-
-  {#if diagnosticsOpen}
-    <DiagnosticsPanel
-      report={diagnosticsStore.report}
-      loading={diagnosticsStore.loading}
-      error={diagnosticsStore.error}
-      filter={diagnosticsStore.filter}
-      collapsed={diagnosticsStore.collapsed}
-      onClose={() => (diagnosticsOpen = false)}
-      onFilterChange={(f: SeverityFilter) => diagnosticsStore.setFilter(f)}
-      onToggleGroup={(slug: string) => diagnosticsStore.toggle(slug)}
     />
   {/if}
 </div>
