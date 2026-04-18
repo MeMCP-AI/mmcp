@@ -4,10 +4,12 @@ export type KindDisplay = 'off' | 'icon' | 'text' | 'icon_and_text';
 
 export interface UiSettings {
   kind_display: KindDisplay;
+  reference_point: string | null;
 }
 
 const DEFAULT_SETTINGS: UiSettings = {
-  kind_display: 'icon_and_text'
+  kind_display: 'icon_and_text',
+  reference_point: null
 };
 
 class SettingsStore {
@@ -37,6 +39,11 @@ class SettingsStore {
 
   setKindDisplay(mode: KindDisplay) {
     this.values.kind_display = mode;
+    void this.save();
+  }
+
+  setReferencePoint(path: string | null) {
+    this.values.reference_point = path && path.trim().length > 0 ? path : null;
     void this.save();
   }
 

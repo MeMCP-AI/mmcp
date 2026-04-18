@@ -59,8 +59,9 @@ pub fn run() {
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+            let discover_handle = handle.clone();
             tauri::async_runtime::spawn(async move {
-                match AppState::discover().await {
+                match AppState::discover(&discover_handle).await {
                     Ok(state) => {
                         let server_url = state.sync.as_ref().map(|s| s.server_url.clone());
                         handle.manage(state);
