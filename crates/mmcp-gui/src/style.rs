@@ -4,20 +4,40 @@
 //! fonts — fine for a demo but not for a desktop app users live in.
 //! This module owns the single-source-of-truth for the app's
 //! visual identity: dark background, generous padding, balanced
-//! text-style sizing, and softer widget corners. Everything else in
-//! `ui/*` composes on top of this baseline.
+//! text-style sizing, softer widget corners, and a Phosphor icon
+//! font merged alongside the default font stack so every surface
+//! can paint real iconography without random Unicode tofu.
 //!
 //! Kept in its own module so a future `preferences -> theme` slot
 //! can swap the preset without touching the panel code.
 
 use eframe::egui;
 
+/// Body text size. Public so consumers (preview blocks, monospace
+/// cards) can reference the same baseline instead of hardcoding.
+pub const BODY_SIZE: f32 = 14.0;
+/// Card-subheading size. Larger than body, smaller than the main
+/// heading.
+pub const SUBHEADING_SIZE: f32 = 17.0;
+
 /// Configure the egui context with the mmcp-gui visual preset.
 /// Call once from the eframe creator closure before the first
-/// frame paints.
+/// frame paints. Must run before the first draw so the fonts are
+/// registered before any icon glyph is rendered.
 pub fn configure(ctx: &egui::Context) {
+    register_fonts(ctx);
     ctx.set_visuals(build_visuals());
     ctx.set_global_style(build_style(&ctx.global_style()));
+}
+
+/// Merge the Phosphor regular icon font into egui's default stack.
+/// Icon glyphs then resolve through the normal proportional font
+/// family — any site can paint `egui_phosphor::regular::PENCIL` and
+/// the character renders without extra setup.
+fn register_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    ctx.set_fonts(fonts);
 }
 
 fn build_visuals() -> egui::Visuals {
@@ -42,7 +62,10 @@ fn build_style(current: &egui::Style) -> egui::Style {
             TextStyle::Heading,
             FontId::new(22.0, FontFamily::Proportional),
         ),
-        (TextStyle::Body, FontId::new(14.0, FontFamily::Proportional)),
+        (
+            TextStyle::Body,
+            FontId::new(BODY_SIZE, FontFamily::Proportional),
+        ),
         (
             TextStyle::Monospace,
             FontId::new(13.0, FontFamily::Monospace),

@@ -88,12 +88,9 @@ impl EditorBuffer {
     /// Edit mode, non-form fields (`version`, `bump_intent`,
     /// `feature`) are copied verbatim from the original.
     pub fn to_memory_file(&self) -> MemoryFile {
-        let mut fm = self
-            .original_frontmatter
-            .clone()
-            .unwrap_or_else(|| {
-                MemoryFrontmatter::new(String::new(), String::new(), MemoryKind::Scratch)
-            });
+        let mut fm = self.original_frontmatter.clone().unwrap_or_else(|| {
+            MemoryFrontmatter::new(String::new(), String::new(), MemoryKind::Scratch)
+        });
         fm.name = self.name.clone();
         fm.description = self.description.clone();
         fm.kind = self.kind;

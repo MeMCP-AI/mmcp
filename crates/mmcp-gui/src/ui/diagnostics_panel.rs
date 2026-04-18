@@ -14,6 +14,7 @@
 use std::collections::HashSet;
 
 use eframe::egui;
+use egui_phosphor::regular as icons;
 use mmcp_store::{DiagReport, GroupReport, Issue};
 
 use crate::state::AppState;
@@ -302,7 +303,11 @@ fn group_card<R>(ui: &mut egui::Ui, accent: egui::Color32, body: impl FnOnce(&mu
 }
 
 fn disclosure_button(ui: &mut egui::Ui, open: bool) -> egui::Response {
-    let glyph = if open { "▾" } else { "▸" };
+    let glyph = if open {
+        icons::CARET_DOWN
+    } else {
+        icons::CARET_RIGHT
+    };
     ui.add(egui::Button::new(glyph).frame(false))
 }
 
@@ -334,7 +339,7 @@ fn severity_mini_pills(ui: &mut egui::Ui, errors: usize, warnings: usize, infos:
     if errors > 0 {
         crate::ui::tag_pill::show(
             ui,
-            &format!("{errors}✕"),
+            &format!("{errors} {}", icons::X_CIRCLE),
             egui::Color32::from_rgba_unmultiplied(220, 100, 100, 40),
             severity_color("error"),
         );
@@ -342,7 +347,7 @@ fn severity_mini_pills(ui: &mut egui::Ui, errors: usize, warnings: usize, infos:
     if warnings > 0 {
         crate::ui::tag_pill::show(
             ui,
-            &format!("{warnings}⚠"),
+            &format!("{warnings} {}", icons::WARNING),
             egui::Color32::from_rgba_unmultiplied(220, 180, 80, 40),
             severity_color("warn"),
         );
@@ -350,7 +355,7 @@ fn severity_mini_pills(ui: &mut egui::Ui, errors: usize, warnings: usize, infos:
     if infos > 0 {
         crate::ui::tag_pill::show(
             ui,
-            &format!("{infos}ℹ"),
+            &format!("{infos} {}", icons::INFO),
             egui::Color32::from_rgba_unmultiplied(140, 180, 220, 40),
             severity_color("info"),
         );
@@ -378,9 +383,9 @@ fn render_issue_row(ui: &mut egui::Ui, issue: &Issue) {
 
 fn severity_icon(severity: &str) -> &'static str {
     match severity {
-        "error" => "✕",
-        "warn" => "⚠",
-        _ => "ℹ",
+        "error" => icons::X_CIRCLE,
+        "warn" => icons::WARNING,
+        _ => icons::INFO,
     }
 }
 

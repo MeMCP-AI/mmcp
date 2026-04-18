@@ -8,6 +8,7 @@
 //! the edge without pre-computing widths.
 
 use eframe::egui;
+use egui_phosphor::regular as icons;
 
 use crate::state::AppState;
 use crate::state::sync_reachability::SyncReachability;
@@ -39,14 +40,23 @@ fn render_reachability(ui: &mut egui::Ui, reach: &SyncReachability, sync: &SyncS
     }
     match reach {
         SyncReachability::Unknown => {
-            ui.colored_label(egui::Color32::GRAY, "● probing…");
+            ui.colored_label(
+                egui::Color32::GRAY,
+                format!("{}  probing…", icons::CIRCLE_NOTCH),
+            );
         }
         SyncReachability::Online => {
-            ui.colored_label(egui::Color32::from_rgb(120, 200, 120), "● online");
+            ui.colored_label(
+                egui::Color32::from_rgb(120, 200, 120),
+                format!("{}  online", icons::WIFI_HIGH),
+            );
         }
         SyncReachability::Offline { reason } => {
-            ui.colored_label(egui::Color32::from_rgb(220, 120, 120), "● offline")
-                .on_hover_text(reason);
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 120, 120),
+                format!("{}  offline", icons::WIFI_SLASH),
+            )
+            .on_hover_text(reason);
         }
     }
 }

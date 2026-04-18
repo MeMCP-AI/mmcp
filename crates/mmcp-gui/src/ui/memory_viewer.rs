@@ -18,6 +18,7 @@
 
 use eframe::egui;
 use egui_commonmark::CommonMarkCache;
+use egui_phosphor::regular as icons;
 use mmcp_core::memory::{FrontmatterFormat, MemoryFile};
 
 use crate::state::AppState;
@@ -107,9 +108,9 @@ impl ViewerWidget {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let label = if *show_raw {
-                        "▾  Hide full metadata"
+                        format!("{}  Hide full metadata", icons::CARET_DOWN)
                     } else {
-                        "▸  Show full metadata"
+                        format!("{}  Show full metadata", icons::CARET_RIGHT)
                     };
                     if ui.small_button(label).clicked() {
                         *show_raw = !*show_raw;

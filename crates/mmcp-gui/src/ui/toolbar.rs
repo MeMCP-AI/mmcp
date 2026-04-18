@@ -1,14 +1,19 @@
 //! Top toolbar: global actions that are not tied to a specific
-//! memory selection (sync / diagnose) plus the CRUD triggers that
-//! are (New / Edit / Delete).
+//! memory selection (sync / diagnose / settings) plus the CRUD
+//! triggers that are (New / Edit / Delete).
 //!
-//! Sync buttons are disabled when `state.sync.is_ready()` is false
-//! (sync not configured or a sync op is in flight). Edit / Delete
-//! require a memory to be selected AND already loaded into the
-//! viewer cache — we never start an edit session against a memory
-//! whose body hasn't been fetched yet.
+//! Buttons carry Phosphor icons prepended to their text labels —
+//! the icon font merged in [`crate::style`] is globally available
+//! so `egui_phosphor::regular::*` glyphs resolve through the
+//! normal proportional family. Sync buttons stay disabled when
+//! `state.sync.is_ready()` is false (sync not configured or a sync
+//! op is in flight) OR when the reachability probe flipped to
+//! offline. Edit / Delete require a memory to be selected AND
+//! already loaded into the viewer cache — we never start an edit
+//! session against a memory whose body hasn't been fetched yet.
 
 use eframe::egui;
+use egui_phosphor::regular as icons;
 
 use crate::runtime::BackgroundHandle;
 use crate::runtime::task::BackgroundTask;
@@ -16,6 +21,13 @@ use crate::state::AppState;
 use crate::state::editor_buffer::EditorBuffer;
 use crate::state::sync_reachability::SyncReachability;
 use crate::state::sync_status::{SyncOp, SyncStatus};
+
+/// Compose a Phosphor icon with a plain label. Two spaces separate
+/// them so the icon doesn't crowd the text at any sensible button
+/// padding.
+fn icon_button(icon: &str, label: &str) -> egui::Button<'static> {
+    egui::Button::new(format!("{icon}  {label}"))
+}
 
 pub fn show(ui: &mut egui::Ui, state: &mut AppState, background: &BackgroundHandle) {
     egui::Panel::top("mmcp_gui_toolbar").show_inside(ui, |ui| {
@@ -51,7 +63,7 @@ fn render_crud_buttons(ui: &mut egui::Ui, state: &mut AppState) {
 
     let new_enabled = selected_group.is_some() && not_editing;
     if ui
-        .add_enabled(new_enabled, egui::Button::new("＋  New"))
+        .add_enabled(new_enabled, icon_button(icons::PLUS, "New"))
         .on_disabled_hover_text("select a group first")
         .clicked()
     {
@@ -62,7 +74,7 @@ fn render_crud_buttons(ui: &mut egui::Ui, state: &mut AppState) {
 
     let edit_enabled = has_loaded_memory && not_editing;
     if ui
-        .add_enabled(edit_enabled, egui::Button::new("✎  Edit"))
+        .add_enabled(edit_enabled, icon_button(icons::PENCIL_SIMPLE, "Edit"))
         .on_disabled_hover_text("select a loaded memory to edit")
         .clicked()
     {
@@ -75,7 +87,7 @@ fn render_crud_buttons(ui: &mut egui::Ui, state: &mut AppState) {
 
     let delete_enabled = has_loaded_memory && not_editing && state.pending_delete.is_none();
     if ui
-        .add_enabled(delete_enabled, egui::Button::new("✕  Delete"))
+        .add_enabled(delete_enabled, icon_button(icons::TRASH, "Delete"))
         .on_disabled_hover_text("select a memory to delete")
         .clicked()
     {
@@ -92,7 +104,7 @@ fn render_sync_buttons(ui: &mut egui::Ui, state: &mut AppState, background: &Bac
     let pull_hint = disabled_hint(&state.sync, &state.reachability, SyncOp::Pull);
     let push_hint = disabled_hint(&state.sync, &state.reachability, SyncOp::Push);
     if ui
-        .add_enabled(enabled, egui::Button::new("↓  Pull"))
+        .add_enabled(enabled, icon_button(icons::CLOUD_ARROW_DOWN, "Pull"))
         .on_disabled_hover_text(pull_hint)
         .clicked()
     {
@@ -100,7 +112,7 @@ fn render_sync_buttons(ui: &mut egui::Ui, state: &mut AppState, background: &Bac
         background.send(BackgroundTask::SyncPull);
     }
     if ui
-        .add_enabled(enabled, egui::Button::new("↑  Push"))
+        .add_enabled(enabled, icon_button(icons::CLOUD_ARROW_UP, "Push"))
         .on_disabled_hover_text(push_hint)
         .clicked()
     {
@@ -110,7 +122,10 @@ fn render_sync_buttons(ui: &mut egui::Ui, state: &mut AppState, background: &Bac
 }
 
 fn render_diagnose_button(ui: &mut egui::Ui, state: &mut AppState, background: &BackgroundHandle) {
-    if ui.button("◈  Diagnose").clicked() {
+    if ui
+        .add(icon_button(icons::STETHOSCOPE, "Diagnose"))
+        .clicked()
+    {
         state.diag_panel_open = true;
         state.diag_report = None;
         background.send(BackgroundTask::RunDiagnose);
@@ -118,7 +133,7 @@ fn render_diagnose_button(ui: &mut egui::Ui, state: &mut AppState, background: &
 }
 
 fn render_settings_button(ui: &mut egui::Ui, state: &mut AppState) {
-    if ui.button("⚙  Settings").clicked() {
+    if ui.add(icon_button(icons::GEAR_SIX, "Settings")).clicked() {
         state.settings_panel_open = !state.settings_panel_open;
     }
 }

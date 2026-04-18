@@ -14,6 +14,12 @@ mmcp-sync = { workspace = true }
 
 eframe = { version = "0.34", features = ["persistence"] }
 egui_commonmark = { version = "0.23", features = ["better_syntax_highlighting"] }
+# Phosphor icon font: provides real iconography across buttons,
+# disclosures, severity markers, and status indicators so we don't
+# depend on miscellaneous Unicode glyphs that render inconsistently
+# across platforms. `default-features = false` + `regular` keeps the
+# font payload to the single weight we use.
+egui-phosphor = { version = "0.12", default-features = false, features = ["regular"] }
 
 anyhow = { workspace = true }
 thiserror = { workspace = true }
