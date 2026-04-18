@@ -82,3 +82,67 @@ export interface GuiErrorPayload {
     | 'other';
   message?: string;
 }
+
+// --- mmcp-core config DTOs ---------------------------------------
+// Mirror the Rust types in `crates/mmcp-core/src/config/*`. Fields
+// are optional / nullable to match serde(default) + Option<T>.
+
+export interface UserSyncConfig {
+  server_url: string;
+}
+
+export interface UserAuthorConfig {
+  name: string | null;
+  email: string | null;
+  /** Tri-state: null = unset (warn), true = enable, false = opt-out. */
+  git_fallback: boolean | null;
+}
+
+export interface UserDefaultsConfig {
+  group: string | null;
+}
+
+export interface UserConfig {
+  sync: UserSyncConfig | null;
+  author: UserAuthorConfig | null;
+  defaults: UserDefaultsConfig | null;
+}
+
+export interface ResolvedAuthor {
+  name: string;
+  email: string;
+}
+
+export interface LoadedUserConfig {
+  path: string;
+  config: UserConfig;
+  resolved_author: ResolvedAuthor;
+}
+
+export interface ProjectSyncConfig {
+  server_url: string;
+}
+
+export interface ProjectGroupsConfig {
+  no_default: boolean;
+  additional: string[];
+}
+
+export interface ProjectLanguagesConfig {
+  /** Serde renames `use_` to `use` — the field name on the wire. */
+  use: string[];
+  auto_detect: boolean;
+}
+
+export interface ProjectConfig {
+  project_uuid: string;
+  project_slug: string | null;
+  sync: ProjectSyncConfig | null;
+  groups: ProjectGroupsConfig;
+  languages: ProjectLanguagesConfig;
+}
+
+export interface LoadedProjectConfig {
+  root: string | null;
+  config: ProjectConfig | null;
+}

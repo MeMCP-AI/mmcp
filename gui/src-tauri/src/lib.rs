@@ -57,6 +57,10 @@ pub fn run() {
             commands::settings::load_settings,
             commands::settings::save_settings,
             commands::workspace::set_reference_point,
+            commands::config::load_user_config,
+            commands::config::save_user_config,
+            commands::config::load_project_config,
+            commands::config::save_project_config,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

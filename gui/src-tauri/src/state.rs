@@ -36,7 +36,11 @@ pub struct AppState {
     pub backend: Arc<NativeBackend>,
     pub index: GroupIndex,
     pub sync: RwLock<Option<SyncBundle>>,
-    pub author: ResolvedAuthor,
+    /// Resolved commit author. Behind an RwLock so a
+    /// `save_user_config` call can refresh the identity in place
+    /// without restarting the app — commits issued after the edit
+    /// carry the new name/email.
+    pub author: RwLock<ResolvedAuthor>,
     /// Current reachability-probe task. `set_reference_point`
     /// aborts the old handle and spawns a fresh one against the new
     /// URL so probes never outlive the config they were started
@@ -61,9 +65,19 @@ impl AppState {
             backend,
             index,
             sync: RwLock::new(sync),
-            author,
+            author: RwLock::new(author),
             probe: Mutex::new(None),
         })
+    }
+
+    /// Refresh the cached commit author from disk. Called after
+    /// `save_user_config` so edits to `~/.mmcp/config.toml`
+    /// propagate without an app restart.
+    pub async fn reload_author(&self) -> GuiResult<ResolvedAuthor> {
+        let home = MmcpHome::discover().map_err(GuiError::from)?;
+        let fresh = home.resolve_author();
+        *self.author.write().await = fresh.clone();
+        Ok(fresh)
     }
 
     /// Rebuild the sync bundle against a new reference point. Takes

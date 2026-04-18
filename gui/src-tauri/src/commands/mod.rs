@@ -1,3 +1,4 @@
+pub mod config;
 pub mod diagnose;
 pub mod groups;
 pub mod memory;

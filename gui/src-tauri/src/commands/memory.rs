@@ -164,7 +164,7 @@ pub async fn create_memory(
         &slug,
         id,
         &rendered,
-        &state.author,
+        &*state.author.read().await,
         false,
         None,
     )
@@ -199,7 +199,7 @@ pub async fn update_memory(
         &entry.handle,
         &resolved.path,
         &rendered,
-        &state.author,
+        &*state.author.read().await,
         None,
     )
     .await
@@ -226,7 +226,7 @@ pub async fn delete_memory(
         &state.backend,
         &entry.handle,
         &resolved.path,
-        &state.author,
+        &*state.author.read().await,
         None,
     )
     .await
