@@ -21,7 +21,7 @@ Two cleanly separated layers:
 ### 2.1 Content layer — git
 
 - **One group = one git repository.**
-- Memories are Markdown files with TOML frontmatter (`+++` delimited) living inside the group repo under `memories/`.
+- Memories are Markdown files with TOML frontmatter (`+++` delimited) living inside the group repo under `memories/<slug>/<uuid>.md`. Each memory carries a stable UUIDv7 primary key in frontmatter; the slug is a human-readable directory label that may repeat across memories in the same group. A legacy flat `memories/<slug>.md` layout is still reachable for mirrors that have not yet run the UUID migration.
 - Each group repo also carries a single self-describing `.mmcp.toml` manifest at its root (schema version, group id, slug, display name, owner hint, creation timestamp). The manifest is the only data file in the repo that is not a user-authored memory, and it exists so each repo stays self-describing for disaster recovery, forks, exports, and the client's local group enumeration walk.
 - No other manifest files, no submodules, no other server metadata is stuffed into repo files.
 - Full edit history lives in git commits.
@@ -49,8 +49,9 @@ Rust workspace, edition 2024.
 
 ```
 crates/
-  mmcp-core/      Shared types: data model, frontmatter schema, semver logic, ACL rules
+  mmcp-core/      Shared types: data model, frontmatter schema, body parser, semver logic, ACL rules
   mmcp-git/       Git storage abstraction: GitBackend trait + native gix implementation
+  mmcp-store/     Local-first store layer: resolve_memory, feature CRUD, body op applier, group index
   mmcp-db/        SeaORM entities, migrations, shared queries (Postgres + SQLite)
   mmcp-auth/      Argon2 + PASETO + axum-login glue
   mmcp-proto/     MCP tool schemas shared by client and server (built on rmcp)
@@ -58,20 +59,23 @@ crates/
   mmcp-sync/      Push/pull/diff/merge engine layered over mmcp-git
   mmcp-server/    Binary: HTTP/SSE, WebUI backend, git smart HTTP, auth, Postgres
   mmcp-client/    Binary: MCP stdio server + sync engine + CLI + hook subcommands
+  mmcp-gui/       Binary: desktop visual client (eframe/egui) on top of mmcp-store
 webui/            Leptos frontend (separate cargo project, not in main workspace)
 ```
 
 ### Crate responsibilities
 
-- **mmcp-core**: pure data model + logic. No I/O, no network, no async. Used by every other crate.
-- **mmcp-git**: `GitBackend` trait and its implementations. Default `NativeBackend` uses `gix` on bare repos and persists the per-group `.mmcp.toml` manifest as a real commit on `main`. Alternative backends for Forgejo, Gitea, GitHub, GitLab talk to external forges over REST.
+- **mmcp-core**: pure data model + logic. No I/O, no network, no async. Owns `MemoryKind`, `MemoryFrontmatter` (with UUID primary key and fluent `::new(...).with_*(...)` builder), `FeatureMetadata`, the CommonMark body parser powering FR-026 (`Section`, `parse_sections`, `render_sections`), and path conventions (`memory_path(slug, id)` + `legacy_memory_path(slug)`).
+- **mmcp-git**: `GitBackend` trait and its implementations. Default `NativeBackend` uses `gix` on bare repos and persists the per-group `.mmcp.toml` manifest as a real commit on `main`. Exposes `list_tree` (blobs under a prefix) and `list_subtrees` (directories under a prefix) so consumers can walk the two-level memory layout without recursion. Alternative backends for Forgejo, Gitea, GitHub, GitLab talk to external forges over REST.
+- **mmcp-store**: local-first programmatic store. One `resolve_memory(slug?, id?)` primitive for every addressing path; path-based write/delete helpers; semantic body-op applier (FR-026); feature CRUD and `rename_feature` (FR-027); group index + manifest lifecycle; diagnostics; session store. Zero dependency on `rmcp`, `clap`, `inquire`, or `egui` — shared by `mmcp-client`, `mmcp-gui`, and any third-party Rust consumer.
 - **mmcp-db**: SeaORM entity definitions and migrations. **Server-only**: the server uses it for users, orgs, ACLs, and memory version metadata. The client intentionally does not depend on it — its state lives in git repos and flat per-session files under `~/.mmcp/`.
 - **mmcp-auth**: password hashing, PASETO token issuance/validation, `axum-login` traits, OAuth + passkey wiring.
 - **mmcp-proto**: typed MCP tool request/response shapes and a structured `ProtoError` surface (including `NotImplemented` for gaps). Shared so client and server never drift on schemas.
 - **mmcp-session**: pure compaction-detection primitives (`TranscriptSignature`, `compute_signature`, `detect_compaction`). Persistence of per-session state lives next to the consumer that owns it — the client keeps it in flat files, a future server-side representation will keep it in the database.
 - **mmcp-sync**: push/pull/diff/merge engine. Uses `mmcp-git` for repo ops and `mmcp-db` for pending-push state on the server side.
 - **mmcp-server** *(binary)*: `axum`-based HTTP/SSE daemon. Hosts MCP-over-HTTP, WebUI REST API, git smart HTTP, auth endpoints. Owns the Postgres database and the bare git repos on disk (when using `NativeBackend`). `#![forbid(unsafe_code)]`.
-- **mmcp-client** *(binary + library)*: runs on the user's machine. Reads memories directly from git repositories via `mmcp-git` and keeps per-session state in flat TOML files under `~/.mmcp/sessions/`. Does **not** depend on `mmcp-db`. One binary, multiple entry points via `clap` subcommands:
+- **mmcp-gui** *(binary)*: desktop visual client on `eframe`/`egui`. Reads, writes, and browses local memories directly through `mmcp-store` with no MCP round-trip. Intended as a second consumer alongside the CLI/MCP surface so the store's UUID-first addressing and resolver error shapes are exercised by more than one front end.
+- **mmcp-client** *(binary + library)*: runs on the user's machine. Delegates every memory operation to `mmcp-store`, which keeps the CLI, the MCP tool bodies, and `mmcp-gui` aligned on one programmatic surface. Keeps per-session state in flat TOML files under `~/.mmcp/sessions/`. Ships one-shot migration example binaries under `examples/` (`migrate_uuidify` for FR-028's two-level layout, `migrate_fr_slugs` for FR-027's prefix stripping). Does **not** depend on `mmcp-db`. One binary, multiple entry points via `clap` subcommands:
   - `mmcp serve` — the MCP stdio server that Claude Code and other AI clients talk to
   - `mmcp init` / `status` / `sync` / `pull` / `push` — CLI workflow commands
   - `mmcp hook user-prompt` — the command invoked by the Claude Code `UserPromptSubmit` hook
@@ -104,10 +108,11 @@ The unit of storage and permissioning. Each memory group is backed by exactly on
 
 ### 4.3 Memory file format
 
-A memory is a single `.md` file inside its group's repo, with TOML frontmatter delimited by `+++` fences.
+A memory is a Markdown file at `memories/<slug>/<uuid>.md` in its group's repo, with TOML frontmatter delimited by `+++` fences. The UUID in the path matches the `id` field in frontmatter and is the canonical primary key; the slug directory is the human-readable grouping and may contain more than one memory (duplicate slugs are legal and distinguished by their UUID).
 
 ```markdown
 +++
+id = "0196e5bb-a000-7000-8000-000000000001"   # UUIDv7 primary key
 name = "Rust Coding Rules"
 description = "Strict Rust coding conventions for this project"
 kind = "rule"                  # see §4.4
@@ -126,6 +131,7 @@ Frontmatter fields:
 
 | Field         | Type       | Required | Purpose                                                       |
 | ------------- | ---------- | -------- | ------------------------------------------------------------- |
+| `id`          | uuid       | managed  | UUIDv7 primary key. Minted on first write; stable across renames and edits. Absent only on pre-migration legacy files. |
 | `name`        | string     | yes      | Human-readable title                                          |
 | `description` | string     | yes      | One-line summary for relevance inference                      |
 | `kind`        | enum       | yes      | See §4.4                                                      |
@@ -133,8 +139,11 @@ Frontmatter fields:
 | `version`     | semver     | managed  | Assigned by server on push; clients do not hand-edit          |
 | `tags`        | `[string]` | no       | Free-form classification                                      |
 | `bump_intent` | enum       | no       | `patch` / `minor` / `major` — AI hint for next version bump   |
+| `feature`     | table      | no       | Structured FR lifecycle metadata; present only when `kind = "feature"`. See §4.4. |
 
 Only frontmatter fields defined by the schema are honored. Unknown fields are preserved verbatim on edit (future compat), but ignored by logic.
+
+**Addressing.** Every memory-addressed tool routes through a single `resolve_memory(slug?, id?)` primitive: slug-only walks `memories/<slug>/` and returns the single entry (or `memory_ambiguous` when duplicates exist), id-only scans every slug subdirectory for `<id>.md`, slug+id verifies the frontmatter id matches. Missing both yields `resolve_args_missing`. The same primitive handles the legacy flat-layout fallback transparently.
 
 ### 4.4 Memory kinds
 
@@ -147,6 +156,7 @@ Default kinds (extensible by users):
 | `log`      | Append-only record (decisions, incidents). Edits only add entries.       |
 | `reference`| Pointer to external resource (Linear project, Grafana dashboard, spec).  |
 | `scratch`  | Short-lived working notes. Not versioned, no warnings.                   |
+| `feature`  | Feature request. Carries a structured `[feature]` frontmatter block with `status` (open / resolved / blocked / deferred / duplicate), `number` (auto-assigned per group as `max(existing) + 1`), and UUID cross-references in `depends_on` / `blocks`. Read-compat serde alias: legacy `kind = "fr"` still parses. |
 
 Users can define custom kinds with their own behavior metadata:
 
@@ -394,20 +404,64 @@ Auto-detection heuristics (shipped with the client, extensible via server-side r
 
 ## 11. MCP Tool Surface
 
-Tools exposed by `mmcp-client` to the AI:
+Tools exposed by `mmcp-client` to the AI. Every memory-addressed tool accepts an optional `slug` + optional `id` pair and resolves through the shared `resolve_memory` primitive (§4.3).
+
+**Session and discovery**
+
+| Tool                 | Purpose                                                                 |
+| -------------------- | ----------------------------------------------------------------------- |
+| `bootstrap_context`  | Single round-trip that returns mandatory and project-scoped memories with bodies inline. Called at session start, after compaction, and at every task boundary (per `CLAUDE.md`). |
+| `list_memories`      | List memories in a group, with kind, mandatory flag, and resolved UUID. |
+| `list_versions`      | Walk the commit history for a memory.                                   |
+| `group_info`         | Group metadata (owner, ACL summary, memory count).                      |
+| `search_memories`    | Case-insensitive substring search across slug and `name` across every mirrored group. |
+| `status`             | Local project state: project config + mirrored groups + sync target.    |
+
+**Memory CRUD**
+
+| Tool                         | Purpose                                                                 |
+| ---------------------------- | ----------------------------------------------------------------------- |
+| `read_memory`                | Read a memory's frontmatter + body. Addressing: `slug`, `id`, or both. `version` selects a branch, tag, or commit hex. |
+| `write_memory`               | Strict CREATE. Mints a UUIDv7 when `id` is absent; `override: true` opts into replace-whole-file. |
+| `edit_memory`                | Partial update: body / name / description / kind / tags_add / tags_remove / mandatory. Every mutator is optional. |
+| `delete_memory`              | Commit a deletion on `main`. Refuses silently-on-no-op — missing slug surfaces `memory_not_found`. |
+| `read_memory_body_sections`  | Return the parsed section tree of the body (heading path ids, levels, line ranges). FR-026. |
+| `edit_memory_body`           | Apply an ordered list of semantic body ops: UpsertSection / DeleteSection / InsertSectionBefore / InsertSectionAfter / MoveSectionBefore / MoveSectionAfter / ReplaceSectionBody, plus line-level escape hatches. Transactional. FR-026. |
+
+**Feature-request surface** (`kind = "feature"`)
 
 | Tool              | Purpose                                                                 |
 | ----------------- | ----------------------------------------------------------------------- |
-| `list_memories`   | List memories in the effective group load set, with kind and mandatory flags |
-| `read_memory`     | Read a memory by name or id; server attaches warnings (§6.5)            |
-| `write_memory`    | Create or update a memory; AI specifies bump intent                     |
-| `verify_memory`   | Mark a memory as "verified against reality" for this session/turn       |
-| `list_versions`   | Show version history for a memory                                       |
-| `diff_memory`     | Show diff between two versions                                          |
-| `search_memories` | Full-text search over the effective load set                            |
-| `group_info`      | Get metadata about a group (owner, ACL summary, memory count)           |
+| `add_feature`     | Create a feature. `number` auto-assigns per group; `depends_on` / `blocks` accept UUID strings. |
+| `read_feature`    | Typed FR record (slug, title, status, number, depends_on, blocks, body). |
+| `update_feature`  | Partial mutator. `depends_on` / `blocks` are full-list replacements; `number` re-numbers. |
+| `delete_feature`  | Guarded delete — refuses `not_a_feature` for non-FR memories.           |
+| `list_features`   | List features sorted by `number` ascending. Default hides closed-like statuses; `all: true` includes every status. |
+| `rename_feature`  | Atomic rename of every memory under `memories/<old_slug>/` to `memories/<new_slug>/`. UUIDs stay stable so cross-refs keep resolving. FR-027. |
 
-Tool descriptions will include explicit instructions about session-specific expectations (e.g. "after compaction, re-read mandatory memories before using this tool"), since MCP descriptions are the primary channel for nudging model behavior.
+**Sync and project lifecycle**
+
+| Tool            | Purpose                                                                  |
+| --------------- | ------------------------------------------------------------------------ |
+| `sync_pull`     | Pull every configured group from the sync server.                        |
+| `sync_push`     | Push every local change back.                                            |
+| `sync`          | Pull-then-push convenience.                                              |
+| `init_project`  | Create or adopt `.mmcp.toml` + bare repo for the project's group.        |
+| `init_claude`   | Manage the fenced mmcp block in `CLAUDE.md`.                             |
+| `check_health`  | Surface-level validation (manifest readable, memories parse).            |
+| `diagnose`      | Deep structural analysis (empty bodies, cross-group slug collisions, config gaps). |
+
+**Debug tools** (gated behind `debug_toggle(enabled=true)`, off in normal use)
+
+| Tool                | Purpose                                                          |
+| ------------------- | ---------------------------------------------------------------- |
+| `debug_toggle`      | Turn the raw-access tools on/off.                                |
+| `debug_read_file`   | Read any path at any rev inside a group repo.                    |
+| `debug_write_file`  | Write raw bytes to a group repo.                                 |
+| `debug_list_tree`   | List a tree prefix at a rev.                                     |
+| `debug_git_log`     | Walk commit history for an arbitrary path.                       |
+
+Tool descriptions include explicit instructions about session-specific expectations (e.g. "after compaction, re-read mandatory memories before using this tool"), since MCP descriptions are the primary channel for nudging model behavior.
 
 ## 12. Auth
 
@@ -455,8 +509,12 @@ pub trait GitBackend: Send + Sync {
     async fn write_commit(&self, repo: &RepoHandle, commit: CommitSpec) -> Result<CommitId>;
     async fn tag(&self, repo: &RepoHandle, name: &str, target: &CommitId) -> Result<()>;
     async fn walk_history(&self, repo: &RepoHandle, path: &str) -> Result<Vec<CommitMeta>>;
+    async fn list_tree(&self, repo: &RepoHandle, prefix: &str, rev: &Rev) -> Result<Vec<String>>;
+    async fn list_subtrees(&self, repo: &RepoHandle, prefix: &str, rev: &Rev) -> Result<Vec<String>>;
 }
 ```
+
+`list_tree` and `list_subtrees` are mirror primitives — the first returns blob (file) entries directly under a prefix, the second returns subtree (directory) entries. Together they enable enumerating the two-level `memories/<slug>/<uuid>.md` layout from §4.3 without recursing into the whole tree.
 
 ### 13.2 Default backend: native in-process git
 

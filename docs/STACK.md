@@ -10,11 +10,12 @@ Rust workspace, edition 2024. All crates live under `crates/` except the web fro
 
 | Crate            | Role                                                                                          | Depends on                                           |
 | ---------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `mmcp-core`      | Pure data model: `User`, `Org`, `Group`, `Memory`, `Version`, `Acl`, `MemoryKind`, frontmatter schema, semver bump logic, ACL resolver, load-set resolver, `.mmcp.toml` group manifest. No I/O, no async. | (leaf)                                               |
-| `mmcp-git`       | `GitBackend` trait + `NativeBackend` (via `gix`) + external forge backends (Forgejo, Gitea, GitHub, GitLab). Abstracts all git storage, including read/write of the per-group `.mmcp.toml` manifest. | `mmcp-core`                                          |
+| `mmcp-core`      | Pure data model: `User`, `Org`, `Group`, `Memory`, `Version`, `Acl`, `MemoryKind` (including `Feature` with `fr` serde alias), `MemoryFrontmatter` with `id: Option<Uuid>` primary key and a fluent `MemoryFrontmatter::new(...).with_*(...)` builder, `FeatureMetadata` carrying `status` / `number` / UUID-typed `depends_on` / `blocks`, markdown body parser (`Section`, `parse_sections`, `render_sections`) backing FR-026's semantic editor, frontmatter schema, semver bump logic, ACL resolver, load-set resolver, `.mmcp.toml` group manifest, and path conventions (`memory_path(slug, id)` two-level layout + `legacy_memory_path(slug)` fallback). No I/O, no async. | (leaf)                                               |
+| `mmcp-git`       | `GitBackend` trait + `NativeBackend` (via `gix`) + external forge backends (Forgejo, Gitea, GitHub, GitLab). Abstracts all git storage, including read/write of the per-group `.mmcp.toml` manifest. Enumerates both files and directories under a prefix (`list_tree` + `list_subtrees`) so consumers can walk the two-level `memories/<slug>/<uuid>.md` layout without a recursive traversal. | `mmcp-core`                                          |
+| `mmcp-store`     | Local-first programmatic store layer. Single source of UUID-first addressing: `resolve_memory(slug?, id?) -> ResolvedMemory`, `write_memory_by_id`, path-based primitives `write_file_at_path` / `delete_file_at_path`, semantic body op applier (`MemoryEditOp`, `apply_ops`) backing FR-026's `edit_memory_body`, feature CRUD (`add_feature` / `read_feature` / `update_feature` / `delete_feature` / `list_features` / `rename_feature` / `parse_cross_refs`), group index and manifest lifecycle, diagnostics, session store. Consumed by `mmcp-client`, `mmcp-gui`, and any third-party Rust code driving the store. Zero dependency on `rmcp`, `clap`, `inquire`, or `egui`. | `mmcp-core`, `mmcp-git`, `mmcp-sync`                 |
 | `mmcp-db`        | **Server-only** SeaORM entity definitions, migrations, and repository helpers. Targets Postgres (production) and SQLite (single-user deployments). The client does not depend on this crate. | `mmcp-core`                                          |
 | `mmcp-auth`      | Password hashing, PASETO tokens, `axum-login` trait impls, OAuth and passkey wiring.          | `mmcp-core`, `mmcp-db`                               |
-| `mmcp-proto`     | MCP tool schemas (request + response types) and a `ProtoError` surface (including `NotImplemented`). Shared by client and server so they never drift. | `mmcp-core`                                          |
+| `mmcp-proto`     | MCP tool schemas (request + response types) and a `ProtoError` surface (including `NotImplemented`). Shared by client and server so they never drift. Every memory-addressed tool takes an optional `slug` + optional `id` pair; feature cross-refs are UUID strings on the wire. | `mmcp-core`                                          |
 | `mmcp-session`   | Compaction detection primitives: `TranscriptSignature`, `compute_signature`, `detect_compaction`. Pure, dependency-light, consumed by whichever storage layer wants them. | (leaf — no mmcp deps)                                |
 | `mmcp-sync`      | Push/pull/diff/merge engine. Drives `mmcp-git` for repo ops and `mmcp-db` for pending-push state on the server side. | `mmcp-core`, `mmcp-git`, `mmcp-db`                   |
 
@@ -23,7 +24,8 @@ Rust workspace, edition 2024. All crates live under `crates/` except the web fro
 | Crate         | Role                                                                                                                    | Depends on                                                                                     |
 | ------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | `mmcp-server` | `axum`-based HTTP/SSE daemon. Hosts MCP-over-HTTP, WebUI REST API, git smart HTTP, auth endpoints. Owns the Postgres DB and the bare git repos on disk (when using `NativeBackend`). | `mmcp-core`, `mmcp-git`, `mmcp-db`, `mmcp-auth`, `mmcp-proto`, `mmcp-session`, `mmcp-sync`     |
-| `mmcp-client` | Binary plus library target. Runs as the MCP stdio server, the sync engine, the hook command, and the user-facing CLI. Reads memories directly from git repositories and keeps per-session state in flat TOML files under `~/.mmcp/`. **Does not depend on `mmcp-db`.** | `mmcp-core`, `mmcp-git`, `mmcp-auth`, `mmcp-proto`, `mmcp-session`, `mmcp-sync`                 |
+| `mmcp-client` | Binary plus library target. Runs as the MCP stdio server, the sync engine, the hook command, and the user-facing CLI. Delegates every memory operation to `mmcp-store` so the CLI, the MCP tool bodies, and any third-party consumer converge on one programmatic surface. Ships one-shot migration example binaries (`migrate_uuidify`, `migrate_fr_slugs`). **Does not depend on `mmcp-db`.** | `mmcp-core`, `mmcp-git`, `mmcp-auth`, `mmcp-proto`, `mmcp-session`, `mmcp-store`, `mmcp-sync`  |
+| `mmcp-gui`    | Desktop visual client built on `eframe`/`egui`. Reads, writes, and browses local memories directly through `mmcp-store` — no MCP round-trip. Handles the FR-028 two-level layout transparently via `resolve_memory`. | `mmcp-core`, `mmcp-git`, `mmcp-store`, `mmcp-sync`                                             |
 
 ### 1.3 Frontend
 
@@ -55,6 +57,7 @@ Grouped by concern. "Consumers" lists which mmcp crates use the dependency direc
 | `sea-orm-migration`      | Programmatic migrations, paired with `sea-orm`.                         | `mmcp-db`                  |
 | `sqlx`                   | Transitive (via `sea-orm`). Connection pooling, compile-time checked raw queries where we need them. | transitive                 |
 | `gray_matter`            | Markdown + frontmatter parser. Used in TOML mode for `+++`-delimited memories. | `mmcp-core`                |
+| `pulldown-cmark`         | CommonMark parser. Drives `mmcp-core::memory::body::parse_sections` so FR-026's semantic editor targets headings by path rather than substrings. | `mmcp-core`                |
 | `toml`                   | TOML parsing for `.mmcp/config.toml`, `~/.mmcp/config.toml`, and server configuration. | `mmcp-core`, `mmcp-client`, `mmcp-server` |
 | `serde`, `serde_json`    | Serialization baseline. JSON for MCP tool payloads and REST responses.  | everywhere                 |
 
@@ -68,7 +71,7 @@ Grouped by concern. "Consumers" lists which mmcp crates use the dependency direc
 | `argon2`              | Password hashing using the current best-practice KDF.                             | `mmcp-auth`        |
 | `secrecy`             | Prevents accidental logging or debug output of tokens and passwords.              | `mmcp-auth`, `mmcp-client` |
 | `keyring`             | Cross-platform OS keychain access for storing client credentials (Windows Credential Manager, macOS Keychain, Linux Secret Service). | `mmcp-client`      |
-| `uuid` v7             | Time-ordered UUIDs for project and memory identifiers. Chronologically sortable, database-friendly. | `mmcp-core`        |
+| `uuid` v7             | Time-ordered UUIDs used as the primary key for groups, projects, and memories (FR-028). Chronologically sortable, database-friendly. | `mmcp-core`, `mmcp-store`, `mmcp-client`, `mmcp-gui` |
 
 ### 2.4 Plumbing
 
