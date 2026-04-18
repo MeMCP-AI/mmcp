@@ -11,7 +11,8 @@
 
   interface Props {
     canCreate: boolean;
-    canEditOrDelete: boolean;
+    canEdit: boolean;
+    canDelete: boolean;
     syncReady: boolean;
     onNew: () => void;
     onEdit: () => void;
@@ -24,7 +25,8 @@
 
   let {
     canCreate,
-    canEditOrDelete,
+    canEdit,
+    canDelete,
     syncReady,
     onNew,
     onEdit,
@@ -53,11 +55,11 @@
     <Plus size={14} />
     <span class="hidden sm:inline">New</span>
   </button>
-  <button class={btn} disabled={!canEditOrDelete} onclick={onEdit} aria-label="Edit" title="Edit">
+  <button class={btn} disabled={!canEdit} onclick={onEdit} aria-label="Edit" title="Edit">
     <Pencil size={14} />
     <span class="hidden sm:inline">Edit</span>
   </button>
-  <button class={btn} disabled={!canEditOrDelete} onclick={onDelete} aria-label="Delete" title="Delete">
+  <button class={btn} disabled={!canDelete} onclick={onDelete} aria-label="Delete" title="Delete">
     <Trash2 size={14} />
     <span class="hidden sm:inline">Delete</span>
   </button>

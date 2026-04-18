@@ -20,7 +20,9 @@
 
   type EditorState = { mode: 'new' | 'edit'; initial: MemoryFile | null } | null;
   let editor = $state<EditorState>(null);
-  let pendingDelete = $state<{ groupId: string; slug: string } | null>(null);
+  // `pendingDelete.slugs` is always a non-empty list — a single
+  // selection becomes `[slug]`, a multi-select pulls the set.
+  let pendingDelete = $state<{ groupId: string; slugs: string[] } | null>(null);
 
   // Mobile single-pane state. Auto-advances as the selection deepens
   // so a tap on a group jumps to the memories pane, a tap on a
@@ -100,8 +102,11 @@
   );
 
   const canCreate = $derived(!!selectionStore.groupId && editor === null);
-  const canEditOrDelete = $derived(
-    !!currentBody && editor === null && pendingDelete === null
+  const canEdit = $derived(!!currentBody && editor === null && pendingDelete === null);
+  const canDelete = $derived(
+    (!!currentBody || selectionStore.multi.size > 0) &&
+      editor === null &&
+      pendingDelete === null
   );
   const syncReady = $derived(
     syncStore.configured && reachabilityStore.online && !syncStore.inFlight
@@ -120,23 +125,32 @@
 
   function handleDeleteRequest() {
     const gid = selectionStore.groupId;
-    const slug = selectionStore.slug;
-    if (!gid || !slug) return;
-    pendingDelete = { groupId: gid, slug };
+    if (!gid) return;
+    // Batch intent wins when a multi-select exists; otherwise fall
+    // back to the current single-viewer selection.
+    const batch = Array.from(selectionStore.multi);
+    const slugs = batch.length > 0 ? batch : selectionStore.slug ? [selectionStore.slug] : [];
+    if (slugs.length === 0) return;
+    pendingDelete = { groupId: gid, slugs };
   }
 
   async function confirmDelete() {
     if (!pendingDelete) return;
-    const { groupId, slug } = pendingDelete;
+    const { groupId, slugs } = pendingDelete;
     pendingDelete = null;
-    try {
-      await deleteMemory(groupId, slug);
-      memoriesStore.invalidate(groupId, slug);
-      selectionStore.clearMemory();
-      await memoriesStore.loadSlugs(groupId);
-    } catch (err) {
-      alert(formatErr(err));
+    const errors: string[] = [];
+    for (const s of slugs) {
+      try {
+        await deleteMemory(groupId, s);
+        memoriesStore.invalidate(groupId, s);
+      } catch (err) {
+        errors.push(`${s}: ${formatErr(err)}`);
+      }
     }
+    if (slugs.includes(selectionStore.slug ?? '')) selectionStore.clearMemory();
+    selectionStore.clearMulti();
+    await memoriesStore.loadSlugs(groupId);
+    if (errors.length > 0) alert(errors.join('\n'));
   }
 
   async function handleSave(memory: MemoryFile, newSlug: string) {
@@ -180,7 +194,8 @@
 <div class="flex h-full w-full flex-col overflow-hidden bg-zinc-950 text-zinc-100">
   <Toolbar
     {canCreate}
-    {canEditOrDelete}
+    {canEdit}
+    {canDelete}
     {syncReady}
     onNew={handleNew}
     onEdit={handleEdit}
@@ -246,11 +261,17 @@
         loading={slugsLoading}
         selectedSlug={selectionStore.slug}
         kindDisplay={settingsStore.values.kind_display}
+        filter={selectionStore.filter}
+        multi={selectionStore.multi}
         bodyFor={(slug: string) =>
           selectionStore.groupId
             ? memoriesStore.bodyFor(selectionStore.groupId, slug)
             : undefined}
         onSelect={(slug: string) => selectionStore.selectMemory(slug)}
+        onFilterChange={(q: string) => selectionStore.setFilter(q)}
+        onToggleMulti={(slug: string) => selectionStore.toggleMulti(slug)}
+        onSelectAll={(visible: string[]) => selectionStore.selectMultiAll(visible)}
+        onClearMulti={() => selectionStore.clearMulti()}
       />
     </div>
 
@@ -282,7 +303,7 @@
 
   {#if pendingDelete}
     <DeleteConfirmation
-      slug={pendingDelete.slug}
+      slugs={pendingDelete.slugs}
       onConfirm={confirmDelete}
       onCancel={() => (pendingDelete = null)}
     />
