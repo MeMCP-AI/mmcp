@@ -39,6 +39,11 @@ class SettingsStore {
     this.values.kind_display = mode;
     void this.save();
   }
+
+  reset() {
+    this.values = { ...DEFAULT_SETTINGS };
+    void this.save();
+  }
 }
 
 export const settingsStore = new SettingsStore();

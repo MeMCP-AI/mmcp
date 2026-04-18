@@ -24,3 +24,38 @@ button,
 [role='button'] {
   user-select: none;
 }
+
+/* Custom scrollbars. WebView2 + Chromium honour `::-webkit-scrollbar`,
+   Firefox honours `scrollbar-width` / `scrollbar-color`. Both are
+   covered so the look is consistent across every target runtime.
+   Thin, dark-theme track, subtle thumb that lifts on hover. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-zinc-700) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--color-zinc-800);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-zinc-600);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}

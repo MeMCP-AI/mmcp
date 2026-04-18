@@ -301,6 +301,7 @@
     <SettingsPanel
       value={settingsStore.values.kind_display}
       onChange={(mode: KindDisplay) => settingsStore.setKindDisplay(mode)}
+      onReset={() => settingsStore.reset()}
       onClose={() => (settingsOpen = false)}
     />
   {/if}
