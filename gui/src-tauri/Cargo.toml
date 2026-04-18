@@ -29,7 +29,7 @@ mmcp-git = { path = "../../crates/mmcp-git" }
 mmcp-store = { path = "../../crates/mmcp-store" }
 mmcp-sync = { path = "../../crates/mmcp-sync" }
 
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["devtools"] }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
