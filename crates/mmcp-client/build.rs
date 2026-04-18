@@ -1,5 +1,11 @@
 fn main() {
-    println!("cargo:rerun-if-changed=build.rs");
+    // Force this build script to run before every compile. The
+    // default behaviour ("re-run only when build.rs changes")
+    // skipped the exe-stash pass on source edits of the
+    // binary, which let the linker fire against a still-locked
+    // `mmcp.exe` and fail with ERROR_ACCESS_DENIED. Depending
+    // on a nonexistent sentinel forces a re-run every build.
+    println!("cargo:rerun-if-changed=.mmcp-stash-sentinel-never-exists");
     if !cfg!(windows) { return; }
     #[cfg(windows)] win::stash();
 }
