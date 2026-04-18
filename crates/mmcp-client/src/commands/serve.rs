@@ -3142,20 +3142,41 @@ const SESSION_INSTRUCTIONS: &str = concat!(
     "repair scenarios."
 );
 
-/// List every `memories/<slug>.md` blob in the group's repo at the
-/// current `HEAD` and return the slugs without the `.md` extension.
+/// List every memory slug present in the group's repo at the
+/// current `HEAD`. Post-FR-028 each slug is a subdirectory under
+/// `memories/` holding one or more `<uuid>.md` files, so the
+/// enumeration unions `list_subtrees(memories/)` with the legacy
+/// `list_tree(memories/)` flat-layout fallback. Each slug appears
+/// exactly once in the returned `Vec` regardless of how many
+/// UUIDs share it; the result is sorted for a stable listing.
 async fn list_memory_files(
     backend: &NativeBackend,
     entry: &GroupEntry,
 ) -> Result<Vec<String>, McpError> {
-    let files = backend
+    let mut slugs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // FR-028 two-level layout: every subdir directly under
+    // `memories/` is a slug, regardless of how many UUID-named
+    // files live inside it.
+    for subtree in backend
+        .list_subtrees(&entry.handle, MEMORIES_DIR, &Rev::head())
+        .await
+        .map_err(git_error)?
+    {
+        slugs.insert(subtree);
+    }
+    // Legacy flat layout: pre-migration mirrors still keep their
+    // memories as `memories/<slug>.md` blobs. They resolve fine
+    // through `resolve_memory`, so surface them here too.
+    for flat in backend
         .list_tree(&entry.handle, MEMORIES_DIR, &Rev::head())
         .await
-        .map_err(git_error)?;
-    Ok(files
-        .into_iter()
-        .filter_map(|name| name.strip_suffix(MEMORY_EXTENSION).map(str::to_string))
-        .collect())
+        .map_err(git_error)?
+    {
+        if let Some(stem) = flat.strip_suffix(MEMORY_EXTENSION) {
+            slugs.insert(stem.to_string());
+        }
+    }
+    Ok(slugs.into_iter().collect())
 }
 
 /// Read one memory and return a compact descriptor including the

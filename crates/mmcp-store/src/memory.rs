@@ -117,6 +117,70 @@ pub enum ImportError {
     ResolveArgsMissing,
 }
 
+/// Per-file reference to a memory on disk. Returned by
+/// [`list_all_memory_files`] so callers get a direct path plus
+/// the slug/id pair the two-level `memories/<slug>/<uuid>.md`
+/// layout encodes; `id` is `None` only for pre-FR-028 legacy
+/// flat-layout files.
+#[derive(Debug, Clone)]
+pub struct MemoryFileRef {
+    pub slug: String,
+    pub id: Option<Uuid>,
+    pub path: String,
+}
+
+/// Walk every memory file in the group at `rev`, unioning the
+/// FR-028 two-level layout (`memories/<slug>/<uuid>.md`) with the
+/// legacy flat fallback (`memories/<slug>.md`). Duplicate slugs
+/// under the two-level layout surface as multiple entries with
+/// distinct UUIDs — callers that want unique slugs dedupe on
+/// `slug` themselves.
+///
+/// Used by diagnostics and any other consumer that needs to read
+/// *every* memory exactly once, regardless of on-disk layout.
+pub async fn list_all_memory_files(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    rev: &Rev,
+) -> Result<Vec<MemoryFileRef>, GitError> {
+    let dir = mmcp_core::conventions::MEMORIES_DIR;
+    let ext = mmcp_core::conventions::MEMORY_EXTENSION;
+    let mut out = Vec::new();
+
+    // Two-level: every subdir is a slug; every `<uuid>.md` inside
+    // is one memory under that slug.
+    for slug in backend.list_subtrees(handle, dir, rev).await? {
+        let subdir = format!("{dir}/{slug}");
+        for filename in backend.list_tree(handle, &subdir, rev).await? {
+            let Some(stem) = filename.strip_suffix(ext) else {
+                continue;
+            };
+            let id = Uuid::parse_str(stem).ok();
+            out.push(MemoryFileRef {
+                slug: slug.clone(),
+                id,
+                path: format!("{subdir}/{filename}"),
+            });
+        }
+    }
+
+    // Legacy flat: any `.md` directly under `memories/` is a
+    // pre-migration memory. These have no UUID in the filename;
+    // `id` is `None` unless the frontmatter carries one.
+    for flat in backend.list_tree(handle, dir, rev).await? {
+        let Some(stem) = flat.strip_suffix(ext) else {
+            continue;
+        };
+        out.push(MemoryFileRef {
+            slug: stem.to_string(),
+            id: None,
+            path: format!("{dir}/{flat}"),
+        });
+    }
+
+    Ok(out)
+}
+
 /// Probe whether `memories/<slug>.md` exists at the group's
 /// current `main` head.
 ///

@@ -17,7 +17,6 @@
 //! client crate because they carry exit-code + stdout shaping that
 //! belong in the binary.
 
-use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION};
 use mmcp_core::manifest::MANIFEST_SCHEMA_VERSION;
 use mmcp_core::memory::MemoryFile;
 use mmcp_git::{GitBackend, NativeBackend, Rev};
@@ -101,7 +100,7 @@ pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> 
 
     // Memories
     let rev = Rev::head();
-    let files = match backend.list_tree(&entry.handle, MEMORIES_DIR, &rev).await {
+    let files = match crate::memory::list_all_memory_files(backend, &entry.handle, &rev).await {
         Ok(f) => f,
         Err(err) => {
             issues.push(Issue {
@@ -121,20 +120,11 @@ pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> 
     };
 
     let mut memory_count = 0;
-    for filename in &files {
-        let Some(mem_slug) = filename.strip_suffix(MEMORY_EXTENSION) else {
-            issues.push(Issue {
-                group: gid.clone(),
-                slug: Some(filename.clone()),
-                severity: "warning",
-                message: format!("non-{MEMORY_EXTENSION} file in {MEMORIES_DIR}/"),
-            });
-            continue;
-        };
+    for file in &files {
+        let mem_slug = file.slug.as_str();
         memory_count += 1;
 
-        let path = format!("{MEMORIES_DIR}/{filename}");
-        match backend.read_file(&entry.handle, &path, &rev).await {
+        match backend.read_file(&entry.handle, &file.path, &rev).await {
             Ok(bytes) => {
                 let Ok(text) = std::str::from_utf8(&bytes) else {
                     issues.push(Issue {
@@ -250,17 +240,13 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
     }
 
     // Deep per-memory checks
-    let files = backend
-        .list_tree(&entry.handle, MEMORIES_DIR, &rev)
+    let files = crate::memory::list_all_memory_files(backend, &entry.handle, &rev)
         .await
         .unwrap_or_default();
 
-    for filename in &files {
-        let Some(mem_slug) = filename.strip_suffix(MEMORY_EXTENSION) else {
-            continue;
-        };
-        let path = format!("{MEMORIES_DIR}/{filename}");
-        let Ok(bytes) = backend.read_file(&entry.handle, &path, &rev).await else {
+    for file_ref in &files {
+        let mem_slug = file_ref.slug.as_str();
+        let Ok(bytes) = backend.read_file(&entry.handle, &file_ref.path, &rev).await else {
             continue;
         };
         let Ok(text) = std::str::from_utf8(&bytes) else {
@@ -361,11 +347,17 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
         let report = diagnose_group(backend, entry).await;
         let gid = report.group_id.clone();
         let rev = Rev::head();
-        if let Ok(files) = backend.list_tree(&entry.handle, MEMORIES_DIR, &rev).await {
-            for f in files {
-                if let Some(s) = f.strip_suffix(MEMORY_EXTENSION) {
+        if let Ok(files) = crate::memory::list_all_memory_files(backend, &entry.handle, &rev).await
+        {
+            // Dedupe per-group: under the two-level layout a slug
+            // with multiple UUIDs is still one slug from the
+            // cross-group-duplicate perspective.
+            let mut seen: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for file in files {
+                if seen.insert(file.slug.clone()) {
                     slug_groups
-                        .entry(s.to_string())
+                        .entry(file.slug)
                         .or_default()
                         .push(gid.clone());
                 }
