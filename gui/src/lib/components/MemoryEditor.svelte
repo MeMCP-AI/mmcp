@@ -138,14 +138,29 @@
             class="justify-self-start"
           />
 
-          <label for="tags" class="text-zinc-400">tags</label>
-          <input
-            id="tags"
-            type="text"
-            class="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-zinc-100"
-            bind:value={tags}
-            placeholder="comma-separated"
-          />
+          <label for="tags" class="self-start pt-1.5 text-zinc-400">tags</label>
+          <div class="flex flex-col gap-2">
+            <input
+              id="tags"
+              type="text"
+              class="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-zinc-100"
+              bind:value={tags}
+              placeholder="comma-separated"
+            />
+            {#if tagsList.length > 0}
+              <div class="flex flex-wrap gap-1.5">
+                {#each tagsList as tag (tag)}
+                  <span
+                    class="inline-flex items-center rounded-md bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300"
+                  >
+                    {tag}
+                  </span>
+                {/each}
+              </div>
+            {:else}
+              <span class="text-[10px] text-zinc-600">No tags yet — comma-separate to add.</span>
+            {/if}
+          </div>
         </div>
       </div>
 
