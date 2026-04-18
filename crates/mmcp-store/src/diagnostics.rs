@@ -17,10 +17,11 @@
 //! client crate because they carry exit-code + stdout shaping that
 //! belong in the binary.
 
-use mmcp_core::manifest::MANIFEST_SCHEMA_VERSION;
-use mmcp_core::memory::MemoryFile;
+use mmcp_core::manifest::{GroupScope, MANIFEST_SCHEMA_VERSION};
+use mmcp_core::memory::{MemoryFile, MemoryKind, parse_sections};
 use mmcp_git::{GitBackend, NativeBackend, Rev};
 use serde::Serialize;
+use uuid::Uuid;
 
 use crate::groups::{GroupEntry, GroupIndex};
 use crate::home::{MmcpHome, read_git_global};
@@ -188,6 +189,14 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
     let mut report = health_check_group(backend, entry).await;
     let gid = report.group_id.clone();
     let rev = Rev::head();
+    let group_scope = entry.manifest.scope;
+
+    // Track feature numbers seen within this group so we can flag
+    // duplicates after the per-memory loop. Post-FR-027 `add_feature`
+    // enforces monotonic uniqueness on writes, but a manual edit
+    // could reintroduce a collision.
+    let mut feature_numbers: std::collections::HashMap<u32, Vec<String>> =
+        std::collections::HashMap::new();
 
     // Deep manifest checks
     if let Ok(m) = backend.read_manifest(&entry.handle).await {
@@ -325,9 +334,216 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                 ),
             });
         }
+
+        // FR-028: frontmatter `id` must match the filename UUID.
+        match fm.id {
+            None => report.issues.push(Issue {
+                group: gid.clone(),
+                slug: Some(mem_slug.to_string()),
+                severity: "error",
+                message: format!(
+                    "frontmatter has no `id`; expected {} (FR-028 requires every memory to carry its UUID)",
+                    file_ref.id
+                ),
+            }),
+            Some(fid) if fid != file_ref.id => report.issues.push(Issue {
+                group: gid.clone(),
+                slug: Some(mem_slug.to_string()),
+                severity: "error",
+                message: format!(
+                    "frontmatter id {fid} does not match filename id {} at {}",
+                    file_ref.id, file_ref.path
+                ),
+            }),
+            _ => {}
+        }
+
+        // FR-027: every `kind = "feature"` memory should carry a
+        // sequential `number`.
+        if fm.kind == MemoryKind::Feature
+            && fm.feature.as_ref().and_then(|f| f.number).is_none()
+        {
+            report.issues.push(Issue {
+                group: gid.clone(),
+                slug: Some(mem_slug.to_string()),
+                severity: "info",
+                message: "feature has no `number` metadata (FR-027 auto-assigns on create)"
+                    .to_string(),
+            });
+        }
+
+        // Kind vs `[feature]` subtable consistency. A `feature`
+        // kind must carry a `[feature]` block; no other kind may.
+        match (fm.kind, fm.feature.as_ref()) {
+            (MemoryKind::Feature, None) => report.issues.push(Issue {
+                group: gid.clone(),
+                slug: Some(mem_slug.to_string()),
+                severity: "error",
+                message: "kind = \"feature\" but frontmatter has no `[feature]` subtable"
+                    .to_string(),
+            }),
+            (other, Some(_)) if other != MemoryKind::Feature => {
+                report.issues.push(Issue {
+                    group: gid.clone(),
+                    slug: Some(mem_slug.to_string()),
+                    severity: "error",
+                    message: format!(
+                        "kind = \"{}\" carries a stray `[feature]` subtable; only `feature` should",
+                        other.as_str()
+                    ),
+                });
+            }
+            _ => {}
+        }
+
+        // Feature self-reference: a feature listing its own id in
+        // `depends_on` or `blocks` is almost certainly a copy-paste
+        // slip.
+        if let Some(feat) = fm.feature.as_ref() {
+            let self_id = file_ref.id;
+            for (field, refs) in [
+                ("depends_on", &feat.depends_on),
+                ("blocks", &feat.blocks),
+            ] {
+                if refs.iter().any(|u| *u == self_id) {
+                    report.issues.push(Issue {
+                        group: gid.clone(),
+                        slug: Some(mem_slug.to_string()),
+                        severity: "info",
+                        message: format!(
+                            "feature `{field}` references its own id {self_id} (self-reference)"
+                        ),
+                    });
+                }
+            }
+            if let Some(n) = feat.number {
+                feature_numbers
+                    .entry(n)
+                    .or_default()
+                    .push(mem_slug.to_string());
+            }
+        }
+
+        // FR-025 awareness: a `mandatory = true` memory living in a
+        // non-`global` group will only fan out to projects that
+        // explicitly adopt the group, which is rarely what authors
+        // intend for mandatory-read rules.
+        if fm.mandatory && group_scope != GroupScope::Global {
+            report.issues.push(Issue {
+                group: gid.clone(),
+                slug: Some(mem_slug.to_string()),
+                severity: "info",
+                message: format!(
+                    "mandatory memory in `scope = \"{}\"` group — FR-025 only fans it out to matching projects; set group scope to `global` for cross-project propagation",
+                    scope_str(group_scope)
+                ),
+            });
+        }
+
+        // FR-026 section parser: surface malformed CommonMark so a
+        // body that `edit_memory_body` would choke on is visible in
+        // diagnostics.
+        if let Err(err) = parse_sections(&file.body) {
+            report.issues.push(Issue {
+                group: gid.clone(),
+                slug: Some(mem_slug.to_string()),
+                severity: "warning",
+                message: format!("body failed FR-026 section parse: {err}"),
+            });
+        }
+    }
+
+    // Duplicate feature numbers within this group.
+    for (number, slugs) in feature_numbers {
+        if slugs.len() > 1 {
+            for slug in &slugs {
+                report.issues.push(Issue {
+                    group: gid.clone(),
+                    slug: Some(slug.clone()),
+                    severity: "warning",
+                    message: format!(
+                        "feature number {number} is shared with {} other feature(s): {}",
+                        slugs.len() - 1,
+                        slugs
+                            .iter()
+                            .filter(|s| *s != slug)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                });
+            }
+        }
+    }
+
+    // Walk every slug dir directly so stray non-UUID filenames
+    // and empty slug directories are surfaced.
+    // `list_all_memory_files` silently skips non-UUID files, so
+    // without this pass a `memories/rules/scratch.md` or a
+    // `memories/leftover/` (empty after a rename) would never show
+    // up in diagnostics.
+    if let Ok(slug_dirs) = backend
+        .list_subtrees(&entry.handle, mmcp_core::conventions::MEMORIES_DIR, &rev)
+        .await
+    {
+        for slug in slug_dirs {
+            let dir = format!("{}/{slug}", mmcp_core::conventions::MEMORIES_DIR);
+            let Ok(filenames) = backend.list_tree(&entry.handle, &dir, &rev).await else {
+                continue;
+            };
+            let mut valid_memory_files = 0usize;
+            for filename in &filenames {
+                let Some(stem) =
+                    filename.strip_suffix(mmcp_core::conventions::MEMORY_EXTENSION)
+                else {
+                    report.issues.push(Issue {
+                        group: gid.clone(),
+                        slug: Some(slug.clone()),
+                        severity: "warning",
+                        message: format!(
+                            "non-memory file '{filename}' under {dir}/ (expected `<uuid>.md`)"
+                        ),
+                    });
+                    continue;
+                };
+                if Uuid::parse_str(stem).is_err() {
+                    report.issues.push(Issue {
+                        group: gid.clone(),
+                        slug: Some(slug.clone()),
+                        severity: "error",
+                        message: format!(
+                            "memory filename '{filename}' under {dir}/ is not a valid UUID"
+                        ),
+                    });
+                    continue;
+                }
+                valid_memory_files += 1;
+            }
+            if valid_memory_files == 0 {
+                report.issues.push(Issue {
+                    group: gid.clone(),
+                    slug: Some(slug.clone()),
+                    severity: "info",
+                    message: format!(
+                        "slug directory {dir}/ has no memory files (leftover from a rename or delete?)"
+                    ),
+                });
+            }
+        }
     }
 
     report
+}
+
+/// Human-readable name of a [`GroupScope`] for diagnostic
+/// messages. The serde rename_all derives the same lowercase
+/// tokens we want to quote back at operators.
+fn scope_str(scope: GroupScope) -> &'static str {
+    match scope {
+        GroupScope::Global => "global",
+        GroupScope::Shared => "shared",
+        GroupScope::Project => "project",
+    }
 }
 
 pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagReport {
@@ -380,6 +596,144 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
                             group_ids.len() - 1
                         ),
                     });
+                }
+            }
+        }
+    }
+
+    // Build a single registry of every memory across the mirror so
+    // downstream cross-ref validation and duplicate-UUID detection
+    // share one pass over the repos. Each entry is keyed by UUID;
+    // the value carries enough context to point operators at the
+    // offending file when a collision fires.
+    #[derive(Clone)]
+    struct MemoryRecord {
+        group_id: String,
+        slug: String,
+        kind: MemoryKind,
+    }
+    let mut by_id: std::collections::HashMap<Uuid, Vec<MemoryRecord>> =
+        std::collections::HashMap::new();
+    for entry in &entries {
+        let gid = entry.handle.group_id.to_string();
+        let rev = Rev::head();
+        let Ok(files) =
+            crate::memory::list_all_memory_files(backend, &entry.handle, &rev).await
+        else {
+            continue;
+        };
+        for file_ref in files {
+            let Ok(bytes) = backend.read_file(&entry.handle, &file_ref.path, &rev).await else {
+                continue;
+            };
+            let Ok(text) = std::str::from_utf8(&bytes) else {
+                continue;
+            };
+            let Ok(mf) = MemoryFile::parse(text) else {
+                continue;
+            };
+            by_id.entry(file_ref.id).or_default().push(MemoryRecord {
+                group_id: gid.clone(),
+                slug: file_ref.slug.clone(),
+                kind: mf.frontmatter.kind,
+            });
+        }
+    }
+
+    // Duplicate UUIDs across memories. Post-FR-028 every memory's
+    // UUID is its primary key; two memories sharing one breaks
+    // `resolve_by_id` and makes cross-refs ambiguous.
+    for (uuid, records) in &by_id {
+        if records.len() > 1 {
+            let locations: Vec<String> = records
+                .iter()
+                .map(|r| format!("{}/{}", r.group_id, r.slug))
+                .collect();
+            for record in records {
+                if let Some(report) =
+                    reports.iter_mut().find(|r| r.group_id == record.group_id)
+                {
+                    report.issues.push(Issue {
+                        group: record.group_id.clone(),
+                        slug: Some(record.slug.clone()),
+                        severity: "error",
+                        message: format!(
+                            "duplicate memory id {uuid} also exists at {}",
+                            locations
+                                .iter()
+                                .filter(|loc| *loc != &format!("{}/{}", record.group_id, record.slug))
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    // Cross-ref validation for features: `depends_on` / `blocks`
+    // must resolve to an existing memory, and that memory must
+    // itself be a feature.
+    for entry in &entries {
+        let rev = Rev::head();
+        let gid = entry.handle.group_id.to_string();
+        let Ok(files) =
+            crate::memory::list_all_memory_files(backend, &entry.handle, &rev).await
+        else {
+            continue;
+        };
+        for file_ref in files {
+            let Ok(bytes) = backend.read_file(&entry.handle, &file_ref.path, &rev).await else {
+                continue;
+            };
+            let Ok(text) = std::str::from_utf8(&bytes) else {
+                continue;
+            };
+            let Ok(mf) = MemoryFile::parse(text) else {
+                continue;
+            };
+            if mf.frontmatter.kind != MemoryKind::Feature {
+                continue;
+            }
+            let Some(feat) = mf.frontmatter.feature else {
+                continue;
+            };
+            let Some(report) = reports.iter_mut().find(|r| r.group_id == gid) else {
+                continue;
+            };
+            for (field, refs) in [
+                ("depends_on", &feat.depends_on),
+                ("blocks", &feat.blocks),
+            ] {
+                for uuid in refs {
+                    match by_id.get(uuid) {
+                        None => report.issues.push(Issue {
+                            group: gid.clone(),
+                            slug: Some(file_ref.slug.clone()),
+                            severity: "warning",
+                            message: format!(
+                                "feature `{field}` references unknown memory {uuid} — dangling cross-reference"
+                            ),
+                        }),
+                        Some(records) => {
+                            // Pick the first record; duplicates
+                            // get flagged separately above.
+                            if let Some(record) = records.first()
+                                && record.kind != MemoryKind::Feature
+                            {
+                                report.issues.push(Issue {
+                                    group: gid.clone(),
+                                    slug: Some(file_ref.slug.clone()),
+                                    severity: "warning",
+                                    message: format!(
+                                        "feature `{field}` points at {uuid} which is kind = \"{}\", not `feature`",
+                                        record.kind.as_str()
+                                    ),
+                                });
+                            }
+                        }
+                    }
                 }
             }
         }
