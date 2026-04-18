@@ -12,12 +12,12 @@ Rust workspace, edition 2024. All crates live under `crates/` except the web fro
 | ---------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
 | `mmcp-core`      | Pure data model: `User`, `Org`, `Group`, `Memory`, `Version`, `Acl`, `MemoryKind` (including `Feature` with `fr` serde alias), `MemoryFrontmatter` with `id: Option<Uuid>` primary key and a fluent `MemoryFrontmatter::new(...).with_*(...)` builder, `FeatureMetadata` carrying `status` / `number` / UUID-typed `depends_on` / `blocks`, markdown body parser (`Section`, `parse_sections`, `render_sections`) backing FR-026's semantic editor, frontmatter schema, semver bump logic, ACL resolver, load-set resolver, `.mmcp.toml` group manifest, and path conventions (`memory_path(slug, id)` two-level layout + `legacy_memory_path(slug)` fallback). No I/O, no async. | (leaf)                                               |
 | `mmcp-git`       | `GitBackend` trait + `NativeBackend` (via `gix`) + external forge backends (Forgejo, Gitea, GitHub, GitLab). Abstracts all git storage, including read/write of the per-group `.mmcp.toml` manifest. Enumerates both files and directories under a prefix (`list_tree` + `list_subtrees`) so consumers can walk the two-level `memories/<slug>/<uuid>.md` layout without a recursive traversal. | `mmcp-core`                                          |
-| `mmcp-store`     | Local-first programmatic store layer. Single source of UUID-first addressing: `resolve_memory(slug?, id?) -> ResolvedMemory`, `write_memory_by_id`, path-based primitives `write_file_at_path` / `delete_file_at_path`, semantic body op applier (`MemoryEditOp`, `apply_ops`) backing FR-026's `edit_memory_body`, feature CRUD (`add_feature` / `read_feature` / `update_feature` / `delete_feature` / `list_features` / `rename_feature` / `parse_cross_refs`), group index and manifest lifecycle, diagnostics, session store. Consumed by `mmcp-client`, `mmcp-gui`, and any third-party Rust code driving the store. Zero dependency on `rmcp`, `clap`, `inquire`, or `egui`. | `mmcp-core`, `mmcp-git`, `mmcp-sync`                 |
+| `mmcp-store`     | Local-first programmatic store layer. Single source of UUID-first addressing: `resolve_memory(slug?, id?) -> ResolvedMemory`, `write_memory_by_id`, path-based primitives `write_file_at_path` / `delete_file_at_path`, semantic body op applier (`MemoryEditOp`, `apply_ops`) backing FR-026's `edit_memory_body`, feature CRUD (`add_feature` / `read_feature` / `update_feature` / `delete_feature` / `list_features` / `rename_feature` / `parse_cross_refs`), group index and manifest lifecycle, diagnostics, session store. Consumed by `mmcp-client`, `mmcp-gui`, and any third-party Rust code driving the store. Zero dependency on `rmcp`, `clap`, `inquire`, or `egui`. | `mmcp-core`, `mmcp-git`, `mmcp-session`, `mmcp-sync` |
 | `mmcp-db`        | **Server-only** SeaORM entity definitions, migrations, and repository helpers. Targets Postgres (production) and SQLite (single-user deployments). The client does not depend on this crate. | `mmcp-core`                                          |
 | `mmcp-auth`      | Password hashing, PASETO tokens, `axum-login` trait impls, OAuth and passkey wiring.          | `mmcp-core`, `mmcp-db`                               |
 | `mmcp-proto`     | MCP tool schemas (request + response types) and a `ProtoError` surface (including `NotImplemented`). Shared by client and server so they never drift. Every memory-addressed tool takes an optional `slug` + optional `id` pair; feature cross-refs are UUID strings on the wire. | `mmcp-core`                                          |
 | `mmcp-session`   | Compaction detection primitives: `TranscriptSignature`, `compute_signature`, `detect_compaction`. Pure, dependency-light, consumed by whichever storage layer wants them. | (leaf — no mmcp deps)                                |
-| `mmcp-sync`      | Push/pull/diff/merge engine. Drives `mmcp-git` for repo ops and `mmcp-db` for pending-push state on the server side. | `mmcp-core`, `mmcp-git`, `mmcp-db`                   |
+| `mmcp-sync`      | Push/pull/diff/merge engine. Drives `mmcp-git` for repo ops; pending-push state is currently an in-process `PendingQueue` (server-side persistence via `mmcp-db` is reserved for §5 but not yet wired). | `mmcp-core`, `mmcp-git`, `mmcp-proto`                |
 
 ### 1.2 Binaries
 
@@ -41,11 +41,11 @@ Grouped by concern. "Consumers" lists which mmcp crates use the dependency direc
 
 | Crate                 | Purpose                                                                 | Consumers                         |
 | --------------------- | ----------------------------------------------------------------------- | --------------------------------- |
-| `rmcp`                | Official Rust MCP SDK. `#[tool]`, `#[tool_router]`, `#[tool_handler]` macros. `ServerHandler` trait. stdio transport confirmed; HTTP/SSE transport to verify during prototyping. | `mmcp-proto`, `mmcp-server`, `mmcp-client` |
+| `rmcp`                | Official Rust MCP SDK. `#[tool]`, `#[tool_router]`, `#[tool_handler]` macros. `ServerHandler` trait. stdio transport confirmed; HTTP/SSE transport to verify during prototyping. `mmcp-proto` describes the shared tool-schema intent in its docs but does not depend on the SDK directly today — the actual `#[tool]`-annotated handlers live in `mmcp-client::commands::serve`. | `mmcp-client`                     |
 | `axum`                | HTTP server framework. SSE and WebSocket support, tower middleware ecosystem. | `mmcp-server`                     |
-| `reqwest`             | HTTP client. Used by `mmcp-client` to talk to `mmcp-server`, and by external git backends to reach Forgejo/Gitea/GitHub/GitLab REST APIs. | `mmcp-client`, `mmcp-git`         |
+| `reqwest`             | HTTP client. Used by the sync engine to talk to `mmcp-server`, and planned for the external git backends (Forgejo/Gitea/GitHub/GitLab REST APIs) once those land. | `mmcp-sync`, `mmcp-server`        |
 | `tower`, `tower-http` | Middleware layer: tracing, timeouts, CORS, compression, rate limiting. | `mmcp-server`                     |
-| `tower-sessions`      | Session storage backend for `axum-login`.                               | `mmcp-auth`, `mmcp-server`        |
+| `tower-sessions`      | Session storage backend for `axum-login`.                               | `mmcp-server`                     |
 | `rustls`              | Pure-Rust TLS. Used by `reqwest` and `axum` via feature flags.          | transitive                        |
 
 ### 2.2 Storage
@@ -67,11 +67,9 @@ Grouped by concern. "Consumers" lists which mmcp crates use the dependency direc
 | --------------------- | --------------------------------------------------------------------------------- | ------------------ |
 | `rusty_paseto`        | PASETO v4 token implementation. Used for session tokens and API bearer tokens. Chosen over JWT because PASETO's secure defaults eliminate the algorithm confusion class of vulnerabilities and mmcp controls both issuer and verifier. | `mmcp-auth`        |
 | `axum-login`          | User identification, authentication, and authorization middleware for `axum`. Provides `AuthUser` and `AuthnBackend` traits, session-backed login, `login_required!` and `permission_required!` route guards. | `mmcp-auth`, `mmcp-server` |
-| `oauth2-passkey-axum` | OAuth2 login and WebAuthn passkey support, integrated with `axum-login` sessions. | `mmcp-auth`        |
+| `webauthn-rs`         | WebAuthn / passkey primitives used by the auth layer. Paired with the OAuth flow described in DESIGN §12; the OAuth adapter crate is still TBD. | `mmcp-auth`        |
 | `argon2`              | Password hashing using the current best-practice KDF.                             | `mmcp-auth`        |
-| `secrecy`             | Prevents accidental logging or debug output of tokens and passwords.              | `mmcp-auth`, `mmcp-client` |
-| `keyring`             | Cross-platform OS keychain access for storing client credentials (Windows Credential Manager, macOS Keychain, Linux Secret Service). | `mmcp-client`      |
-| `uuid` v7             | Time-ordered UUIDs used as the primary key for groups, projects, and memories (FR-028). Chronologically sortable, database-friendly. | `mmcp-core`, `mmcp-store`, `mmcp-client`, `mmcp-gui` |
+| `uuid` v7             | Time-ordered UUIDs used as the primary key for groups, projects, and memories (FR-028). Chronologically sortable, database-friendly. | every library + binary crate except `mmcp-session` |
 
 ### 2.4 Plumbing
 
@@ -79,14 +77,14 @@ Grouped by concern. "Consumers" lists which mmcp crates use the dependency direc
 | --------------------------------- | --------------------------------------------------------------------------------------------- | -------------------------- |
 | `tokio`                           | Async runtime. Required by `axum`, `sqlx`/`sea-orm`, `rmcp`.                                  | all async crates           |
 | `thiserror`                       | Typed error enums for library crates.                                                         | all libraries              |
-| `anyhow`                          | Top-level error propagation in binary crates.                                                 | `mmcp-server`, `mmcp-client` |
-| `tracing`                         | Structured logging. Replaces `println!` entirely per Rust coding rules.                      | everywhere                 |
-| `tracing-subscriber`              | `tracing` output formatting and filtering.                                                    | `mmcp-server`, `mmcp-client` |
+| `anyhow`                          | Top-level error propagation in binary crates and the programmatic store layer.                | `mmcp-store`, `mmcp-server`, `mmcp-client`, `mmcp-gui` |
+| `tracing`                         | Structured logging. Replaces `println!` entirely per Rust coding rules.                      | `mmcp-store`, `mmcp-server`, `mmcp-client`, `mmcp-gui` |
+| `tracing-subscriber`              | `tracing` output formatting and filtering.                                                    | `mmcp-server`, `mmcp-client`, `mmcp-gui` |
 | `clap` v4 (derive feature)        | CLI parsing for `mmcp-client` subcommands.                                                    | `mmcp-client`              |
 | `semver`                          | Semantic version parsing and bumping. Drives the version-assignment logic in `mmcp-sync`.    | `mmcp-core`, `mmcp-sync`   |
-| `jiff`                            | Modern date/time library. Chosen over `chrono` and `time` for better API and correctness.    | `mmcp-core`, `mmcp-client`, `mmcp-sync` |
-| `bytes`                           | Efficient byte buffers for git object reads and HTTP payloads.                                | `mmcp-git`, `mmcp-server`  |
-| `async-trait`                     | Async trait methods until Rust's native support covers all our cases.                        | `mmcp-git`, `mmcp-auth`    |
+| `jiff`                            | Modern date/time library. Chosen over `chrono` and `time` for better API and correctness.    | `mmcp-core`, `mmcp-store`, `mmcp-auth`, `mmcp-sync`, `mmcp-server`, `mmcp-client` |
+| `bytes`                           | Efficient byte buffers for git object reads.                                                  | `mmcp-git`                 |
+| `async-trait`                     | Async trait methods until Rust's native support covers all our cases.                        | `mmcp-git`, `mmcp-db`      |
 | `notify`                          | Cross-platform filesystem watcher. The client uses it to rebuild its in-memory group index when `~/.mmcp/repos/` or the project `.mmcp/config.toml` changes. | `mmcp-client`              |
 | `sha2`                            | SHA-256 digest used by `mmcp-session::compute_signature` for transcript fingerprints.        | `mmcp-session`             |
 
@@ -104,11 +102,10 @@ Grouped by concern. "Consumers" lists which mmcp crates use the dependency direc
 
 | Crate        | Purpose                                                                 | Consumers       |
 | ------------ | ----------------------------------------------------------------------- | --------------- |
-| `proptest`   | Property-based testing. Used for ACL resolution, merge logic, and frontmatter round-trip. | `mmcp-core`, `mmcp-git`, `mmcp-sync` |
-| `criterion`  | Statistical benchmarking. Used for sync performance and git read/write throughput. | `mmcp-git`, `mmcp-sync` |
-| `wiremock`   | HTTP mocking for client-server integration tests.                       | `mmcp-client`, `mmcp-git` |
-| `insta`      | Snapshot testing. Useful for MCP tool response shapes and rendered frontmatter. | `mmcp-proto`, `mmcp-core` |
-| `tempfile`   | Temporary directories for git repo tests.                               | `mmcp-git`, `mmcp-sync` |
+| `proptest`   | Property-based testing. Used for frontmatter / manifest round-trip proofs. | `mmcp-core`     |
+| `wiremock`   | HTTP mocking for the sync client against a fake `mmcp-server`.          | `mmcp-sync`     |
+| `tempfile`   | Temporary directories for git repo and store-layer tests.               | `mmcp-git`, `mmcp-store`, `mmcp-session`, `mmcp-sync`, `mmcp-server`, `mmcp-client` |
+| `assert_cmd`, `predicates` | End-to-end CLI smoke tests that drive the built `mmcp` binary. | `mmcp-client`   |
 
 ## 3. External Services and Tools
 
@@ -177,7 +174,7 @@ Not Rust crates, but required by the project.
 
 ## 5. Version Policy
 
-- **Rust**: latest stable, no pinned MSRV. Toolchain upgrades happen on the next stable release, verified in CI.
+- **Rust**: latest stable, MSRV pinned in the workspace `Cargo.toml` (`rust-version = "1.85"` today). Toolchain upgrades happen on the next stable release; the pin moves with them and is verified in CI.
 - **Crate versions**: use latest stable for all dependencies. Bump on `cargo update` cycles, not piecemeal.
 - **PASETO version**: v4 only. v1/v2/v3 are not supported.
 - **MCP spec version**: track whatever `rmcp` supports. Currently `2025-06-18`.

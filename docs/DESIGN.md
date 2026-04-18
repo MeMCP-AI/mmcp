@@ -411,9 +411,10 @@ Tools exposed by `mmcp-client` to the AI. Every memory-addressed tool accepts an
 | Tool                 | Purpose                                                                 |
 | -------------------- | ----------------------------------------------------------------------- |
 | `bootstrap_context`  | Single round-trip that returns mandatory and project-scoped memories with bodies inline. Called at session start, after compaction, and at every task boundary (per `CLAUDE.md`). |
+| `list_groups`        | Enumerate every group present in the local mirror with its manifest metadata (slug, display name, owner hint, protected flag, memory count). |
 | `list_memories`      | List memories in a group, with kind, mandatory flag, and resolved UUID. |
 | `list_versions`      | Walk the commit history for a memory.                                   |
-| `group_info`         | Group metadata (owner, ACL summary, memory count).                      |
+| `group_info`         | Manifest metadata for a single group (id, slug, display name, owner, schema version, created_at, memory count). |
 | `search_memories`    | Case-insensitive substring search across slug and `name` across every mirrored group. |
 | `status`             | Local project state: project config + mirrored groups + sync target.    |
 
@@ -423,7 +424,7 @@ Tools exposed by `mmcp-client` to the AI. Every memory-addressed tool accepts an
 | ---------------------------- | ----------------------------------------------------------------------- |
 | `read_memory`                | Read a memory's frontmatter + body. Addressing: `slug`, `id`, or both. `version` selects a branch, tag, or commit hex. |
 | `write_memory`               | Strict CREATE. Mints a UUIDv7 when `id` is absent; `override: true` opts into replace-whole-file. |
-| `edit_memory`                | Partial update: body / name / description / kind / tags_add / tags_remove / mandatory. Every mutator is optional. |
+| `edit_memory`                | Partial update: body / name / description / kind / tags_add / tags_remove / mandatory / message (commit message override). Every mutator is optional. |
 | `delete_memory`              | Commit a deletion on `main`. Refuses silently-on-no-op — missing slug surfaces `memory_not_found`. |
 | `read_memory_body_sections`  | Return the parsed section tree of the body (heading path ids, levels, line ranges). FR-026. |
 | `edit_memory_body`           | Apply an ordered list of semantic body ops: UpsertSection / DeleteSection / InsertSectionBefore / InsertSectionAfter / MoveSectionBefore / MoveSectionAfter / ReplaceSectionBody, plus line-level escape hatches. Transactional. FR-026. |
@@ -436,7 +437,7 @@ Tools exposed by `mmcp-client` to the AI. Every memory-addressed tool accepts an
 | `read_feature`    | Typed FR record (slug, title, status, number, depends_on, blocks, body). |
 | `update_feature`  | Partial mutator. `depends_on` / `blocks` are full-list replacements; `number` re-numbers. |
 | `delete_feature`  | Guarded delete — refuses `not_a_feature` for non-FR memories.           |
-| `list_features`   | List features sorted by `number` ascending. Default hides closed-like statuses; `all: true` includes every status. |
+| `list_features`   | List features sorted by `number` ascending. Default returns only `open` features; `all: true` includes every status, and `status: "<variant>"` pins a single lifecycle state (explicit selector wins over the default hide). |
 | `rename_feature`  | Atomic rename of every memory under `memories/<old_slug>/` to `memories/<new_slug>/`. UUIDs stay stable so cross-refs keep resolving. FR-027. |
 
 **Sync and project lifecycle**
@@ -501,20 +502,55 @@ Git storage is abstracted behind a `GitBackend` trait defined in `mmcp-git`. The
 ```rust
 #[async_trait]
 pub trait GitBackend: Send + Sync {
-    async fn create_group_repo(&self, group: &GroupRef) -> Result<RepoHandle>;
-    async fn clone_to(&self, repo: &RepoHandle, dst: &Path) -> Result<()>;
-    async fn fetch(&self, repo: &RepoHandle, refs: &[RefSpec]) -> Result<()>;
-    async fn push(&self, repo: &RepoHandle, refs: &[RefSpec]) -> Result<PushReport>;
-    async fn read_file(&self, repo: &RepoHandle, path: &str, rev: &Rev) -> Result<Bytes>;
-    async fn write_commit(&self, repo: &RepoHandle, commit: CommitSpec) -> Result<CommitId>;
-    async fn tag(&self, repo: &RepoHandle, name: &str, target: &CommitId) -> Result<()>;
-    async fn walk_history(&self, repo: &RepoHandle, path: &str) -> Result<Vec<CommitMeta>>;
-    async fn list_tree(&self, repo: &RepoHandle, prefix: &str, rev: &Rev) -> Result<Vec<String>>;
-    async fn list_subtrees(&self, repo: &RepoHandle, prefix: &str, rev: &Rev) -> Result<Vec<String>>;
+    async fn create_group_repo(
+        &self,
+        manifest: &GroupManifest,
+    ) -> Result<RepoHandle, GitError>;
+
+    async fn read_manifest(
+        &self,
+        repo: &RepoHandle,
+    ) -> Result<GroupManifest, GitError>;
+
+    async fn write_manifest(
+        &self,
+        repo: &RepoHandle,
+        manifest: &GroupManifest,
+    ) -> Result<String, GitError>;
+
+    async fn clone_to(
+        &self,
+        remote_url: &str,
+        dst: &Path,
+        creds: &Credentials,
+    ) -> Result<(), GitError>;
+
+    async fn fetch(
+        &self,
+        repo: &RepoHandle,
+        remote_url: &str,
+        refs: &[RefSpec],
+        creds: &Credentials,
+    ) -> Result<(), GitError>;
+
+    async fn push(
+        &self,
+        repo: &RepoHandle,
+        remote_url: &str,
+        refs: &[RefSpec],
+        creds: &Credentials,
+    ) -> Result<PushReport, GitError>;
+
+    async fn read_file(&self, repo: &RepoHandle, path: &str, rev: &Rev) -> Result<Bytes, GitError>;
+    async fn write_commit(&self, repo: &RepoHandle, spec: CommitSpec) -> Result<String, GitError>;
+    async fn tag(&self, repo: &RepoHandle, name: &str, target: &str) -> Result<(), GitError>;
+    async fn walk_history(&self, repo: &RepoHandle, path: &str) -> Result<Vec<CommitMeta>, GitError>;
+    async fn list_tree(&self, repo: &RepoHandle, path_prefix: &str, rev: &Rev) -> Result<Vec<String>, GitError>;
+    async fn list_subtrees(&self, repo: &RepoHandle, path_prefix: &str, rev: &Rev) -> Result<Vec<String>, GitError>;
 }
 ```
 
-`list_tree` and `list_subtrees` are mirror primitives — the first returns blob (file) entries directly under a prefix, the second returns subtree (directory) entries. Together they enable enumerating the two-level `memories/<slug>/<uuid>.md` layout from §4.3 without recursing into the whole tree.
+The manifest methods (`create_group_repo`, `read_manifest`, `write_manifest`) keep the per-group `.mmcp.toml` inside the backend so every consumer reads and writes it through the same primitive. `list_tree` returns blob entries directly under a prefix; `list_subtrees` is its mirror for directory entries. Together the two enumeration calls let the store walk the two-level `memories/<slug>/<uuid>.md` layout from §4.3 without recursing into the whole tree. The transport primitives (`clone_to`, `fetch`, `push`) take a `remote_url: &str` plus a `Credentials` argument so the caller picks SSH agent, personal access token, or ambient-environment auth per invocation.
 
 ### 13.2 Default backend: native in-process git
 
