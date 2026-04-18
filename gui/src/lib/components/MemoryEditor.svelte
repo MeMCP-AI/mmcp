@@ -232,10 +232,24 @@
     </div>
   </div>
 
-  <!-- Footer: always visible regardless of scroll position. -->
+  <!-- Footer: always visible regardless of scroll position.
+       Validation message (when present) stays flush-left; the
+       action buttons are pushed to the right edge so the primary
+       actions sit where the mouse expects them in modal-style
+       editors. -->
   <footer
     class="flex shrink-0 flex-wrap items-center gap-3 border-t border-zinc-800 bg-zinc-900/40 px-4 py-3 sm:px-6"
   >
+    {#if validation}
+      <span class="text-xs text-rose-400">{validation}</span>
+    {/if}
+    <button
+      type="button"
+      class="ml-auto inline-flex items-center rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800"
+      onclick={onCancel}
+    >
+      Cancel
+    </button>
     <button
       type="button"
       class="inline-flex items-center rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
@@ -244,15 +258,5 @@
     >
       {mode === 'new' ? 'Create' : 'Save'}
     </button>
-    <button
-      type="button"
-      class="inline-flex items-center rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800"
-      onclick={onCancel}
-    >
-      Cancel
-    </button>
-    {#if validation}
-      <span class="text-xs text-rose-400">{validation}</span>
-    {/if}
   </footer>
 </section>
