@@ -25,23 +25,14 @@
   // `pendingDelete.slugs` is always a non-empty list — a single
   // selection becomes `[slug]`, a multi-select pulls the set.
   let pendingDelete = $state<{ groupId: string; slugs: string[] } | null>(null);
-  // History overlay — when non-null the viewer pane renders the
-  // HistoryPanel against this (groupId, slug) pair instead of the
-  // live MemoryViewer. Closing clears the overlay back to null.
-  let historyFor = $state<{ groupId: string; slug: string } | null>(null);
-
-  // Auto-close the history overlay when the user moves to a
-  // different memory so we don't show a stale commit list against
-  // the wrong slug.
-  $effect(() => {
-    if (!historyFor) return;
-    if (
-      selectionStore.groupId !== historyFor.groupId ||
-      selectionStore.slug !== historyFor.slug
-    ) {
-      historyFor = null;
-    }
-  });
+  // History view toggle. Sticky across group/memory changes — once
+  // the user opts into browsing history they probably want to do
+  // the same for the next memory they click, so we follow the
+  // current selection instead of pinning to a single slug. The
+  // MemoryViewer empty state still shows when there's no slug
+  // selected, which keeps the pane useful at the between-memory
+  // boundary.
+  let historyMode = $state(false);
 
   // Mobile single-pane state. Auto-advances as the selection deepens
   // so a tap on a group jumps to the memories pane, a tap on a
@@ -146,10 +137,8 @@
   }
 
   function handleHistory() {
-    const gid = selectionStore.groupId;
-    const s = selectionStore.slug;
-    if (!gid || !s) return;
-    historyFor = { groupId: gid, slug: s };
+    if (!selectionStore.groupId || !selectionStore.slug) return;
+    historyMode = true;
     mobilePane = 'viewer';
   }
 
@@ -340,11 +329,11 @@
           onSave={handleSave}
           onCancel={handleCancel}
         />
-      {:else if historyFor}
+      {:else if historyMode && selectionStore.groupId && selectionStore.slug}
         <HistoryPanel
-          groupId={historyFor.groupId}
-          slug={historyFor.slug}
-          onClose={() => (historyFor = null)}
+          groupId={selectionStore.groupId}
+          slug={selectionStore.slug}
+          onClose={() => (historyMode = false)}
         />
       {:else}
         <MemoryViewer
@@ -423,11 +412,11 @@
               onSave={handleSave}
               onCancel={handleCancel}
             />
-          {:else if historyFor}
+          {:else if historyMode && selectionStore.groupId && selectionStore.slug}
             <HistoryPanel
-              groupId={historyFor.groupId}
-              slug={historyFor.slug}
-              onClose={() => (historyFor = null)}
+              groupId={selectionStore.groupId}
+              slug={selectionStore.slug}
+              onClose={() => (historyMode = false)}
             />
           {:else}
             <MemoryViewer
@@ -506,11 +495,11 @@
               onSave={handleSave}
               onCancel={handleCancel}
             />
-          {:else if historyFor}
+          {:else if historyMode && selectionStore.groupId && selectionStore.slug}
             <HistoryPanel
-              groupId={historyFor.groupId}
-              slug={historyFor.slug}
-              onClose={() => (historyFor = null)}
+              groupId={selectionStore.groupId}
+              slug={selectionStore.slug}
+              onClose={() => (historyMode = false)}
             />
           {:else}
             <MemoryViewer
