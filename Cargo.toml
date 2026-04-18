@@ -102,14 +102,6 @@ gix = { version = "0.81", default-features = false, features = [
     "blob-diff",
     "index",
     "worktree-mutation",
-    # `parallel` switches gix-features to Arc-backed threading primitives.
-    # `serve-upload-pack` drives `gix_pack::data::output::entry::iter_from_counts`,
-    # which internally spawns worker threads over crossbeam and thus
-    # requires its input types to be `Send`. Without `parallel`,
-    # `gix_odb::Store` is `Rc`-backed and the serve path fails to compile.
-    # (Fork DX note: the serve-upload-pack feature should ideally imply
-    # parallel on its own; pending fork-side fix.)
-    "parallel",
     "blocking-http-transport-reqwest-rust-tls",
     "serve-upload-pack",
     "serve-receive-pack",

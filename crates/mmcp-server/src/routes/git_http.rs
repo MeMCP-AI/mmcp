@@ -71,18 +71,16 @@ async fn ensure_group(state: &ServerState, group_id: Uuid) -> Result<PathBuf, Gi
     Ok(state.group_repo_path(group_id))
 }
 
-/// Protocol version to drive serve with. The v2 serve path in the
-/// gitoxide fork at `C:/Programming/Rust/gitoxide` currently emits raw
-/// pack bytes after the `packfile\n` section header without pkt-line /
-/// sideband-all wrapping, which stock git rejects with
-/// `bad line length character: PACK`. Until that fix lands in the fork,
-/// we advertise and drive v1 regardless of the client's `Git-Protocol`
-/// header, because the v1 serve path is wire-correct. Stock git
-/// downgrades transparently when the server's `info/refs` response is
-/// v1-shaped.
+/// Protocol version to drive serve with. v1 only for now: the fork's
+/// v2 serve path emits the `acknowledgments` section unconditionally
+/// (even for a clone with no haves), which stock git rejects when the
+/// client sent `no-done`. v1 fetch plus the fork's new band-1 sideband
+/// wrapping is wire-correct end-to-end. Stock git downgrades
+/// transparently when the server's `info/refs` response is v1-shaped.
 ///
-/// TODO: switch back to header-driven selection once the fork wraps v2
-/// pack bytes in pkt-lines.
+/// TODO: switch back to header-driven selection once the fork makes
+/// the v2 acknowledgments section conditional on the request's
+/// negotiation state.
 fn negotiated_protocol_version(_headers: &HeaderMap) -> u8 {
     1
 }
@@ -133,27 +131,12 @@ fn advertise_refs(
                 .map_err(GitHttpError::internal)?;
         }
         ("git-upload-pack", _) => {
-            // The gitoxide fork's `serve_v1` writes raw pack bytes after
-            // the `NAK\n` line without sideband framing. v1 protocol
-            // allows that only when the client did NOT negotiate
-            // `side-band` / `side-band-64k`, and the client negotiates
-            // only capabilities the server advertised. Stripping both
-            // sideband capabilities here keeps the advertisement in
-            // sync with what `serve_v1` actually emits on the wire.
-            let opts = gix::protocol::upload_pack::Options {
-                side_band_64k: false,
-                side_band: false,
-                ..Default::default()
-            };
+            let opts = gix::protocol::upload_pack::Options::default();
             repo.serve_upload_pack_info_refs(&mut out, &opts)
                 .map_err(GitHttpError::internal)?;
         }
         ("git-receive-pack", _) => {
-            let opts = gix::protocol::receive_pack::advertisement::Options {
-                side_band_64k: false,
-                side_band: false,
-                ..Default::default()
-            };
+            let opts = gix::protocol::receive_pack::advertisement::Options::default();
             repo.serve_receive_pack_info_refs(&mut out, &opts)
                 .map_err(GitHttpError::internal)?;
         }
