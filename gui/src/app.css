@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@plugin '@tailwindcss/typography';
 
 /* Theme tokens consumed as CSS variables. Kept in sync with the
    Tailwind preset's `theme.extend.colors.kind` so utility classes
