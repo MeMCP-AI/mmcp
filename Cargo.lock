@@ -685,6 +685,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-channel"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-queue"
 version = "0.3.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1582,11 +1591,13 @@ version = "0.46.2"
 dependencies = [
  "bytes",
  "crc32fast",
+ "crossbeam-channel",
  "gix-path",
  "gix-trace",
  "gix-utils",
  "libc",
  "once_cell",
+ "parking_lot",
  "prodash",
  "thiserror 2.0.18",
  "walkdir",
@@ -1857,6 +1868,7 @@ dependencies = [
  "gix-lock",
  "gix-negotiate",
  "gix-object",
+ "gix-packetline",
  "gix-ref",
  "gix-refspec",
  "gix-revwalk",
@@ -3069,6 +3081,7 @@ dependencies = [
  "clap",
  "futures-util",
  "getrandom 0.3.4",
+ "gix",
  "hex",
  "jiff",
  "mmcp-auth",

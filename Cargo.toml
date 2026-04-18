@@ -92,15 +92,27 @@ sea-orm-migration = { version = "1.1", default-features = false, features = ["sq
 libsqlite3-sys = { version = "0.30", features = ["bundled"] }
 
 # Git backend (gitoxide). Transport features enable clone/fetch/push
-# over HTTP via reqwest+rustls — required so every git operation stays
-# inside gix without shelling out to the `git` binary.
+# over HTTP via reqwest+rustls, and the `serve-*` features light up the
+# server-side upload-pack / receive-pack state machines so mmcp-server
+# never has to shell out to the `git` binary. Every git operation in
+# the workspace — client and server — stays inside gix.
 gix = { version = "0.81", default-features = false, features = [
     "sha1",
     "revision",
     "blob-diff",
     "index",
     "worktree-mutation",
+    # `parallel` switches gix-features to Arc-backed threading primitives.
+    # `serve-upload-pack` drives `gix_pack::data::output::entry::iter_from_counts`,
+    # which internally spawns worker threads over crossbeam and thus
+    # requires its input types to be `Send`. Without `parallel`,
+    # `gix_odb::Store` is `Rc`-backed and the serve path fails to compile.
+    # (Fork DX note: the serve-upload-pack feature should ideally imply
+    # parallel on its own; pending fork-side fix.)
+    "parallel",
     "blocking-http-transport-reqwest-rust-tls",
+    "serve-upload-pack",
+    "serve-receive-pack",
 ] }
 
 # Bytes container
@@ -119,7 +131,7 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 
 # Async stream <-> AsyncRead bridging (used by git smart-HTTP streaming)
-tokio-util = { version = "0.7", features = ["io"] }
+tokio-util = { version = "0.7", features = ["io", "io-util"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 # MCP SDK (official Rust implementation)
@@ -139,8 +151,8 @@ unsafe_code = "forbid"
 # implementation of client push and server-side Smart HTTP. Covers
 # direct and transitive gix-* resolution so nothing slips back to
 # crates.io. Remove this block once the push + serve work lands in
-# a released gix on crates.io (tracked in
-# docs/GITOXIDE_UPSTREAM_HANDOFF.md).
+# a released gix on crates.io (handoff plan lives in the fork's
+# own GITOXIDE_UPSTREAM_HANDOFF.md).
 [patch.crates-io]
 gix = { path = "C:/Programming/Rust/gitoxide/gix" }
 gix-actor = { path = "C:/Programming/Rust/gitoxide/gix-actor" }

@@ -42,6 +42,10 @@ webauthn-rs = { workspace = true }
 reqwest = { workspace = true }
 urlencoding = "2"
 
+# Direct gix dep so the smart-HTTP routes can drive
+# `Repository::serve_*` in-process, without a `git` binary on the server.
+gix = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true }
 reqwest = { workspace = true }

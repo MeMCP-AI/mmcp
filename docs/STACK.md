@@ -156,7 +156,7 @@ Not Rust crates, but required by the project.
 - Pure Rust. No libgit2 C dependency, no build-time system library requirement, cross-compiles cleanly.
 - Memory safety and better error handling idioms than a C wrapper.
 - Active development by a dedicated team. API is stabilizing.
-- Tradeoff: server-side smart HTTP responder may not yet be complete in the released version. If missing, we implement it ourselves on top of `gix`'s object database - a bounded scope task documented by the git smart-http-protocol spec.
+- Server-side smart HTTP responder runs in-process via `gix::Repository::serve_upload_pack_info_refs` / `serve_pack_upload_v1_auto` / `serve_pack_receive`, without a `git` binary on the server host. The workspace currently redirects every `gix-*` crate to a local fork at `C:/Programming/Rust/gitoxide` that carries the pre-upstream implementation of these serve endpoints; the handoff plan is tracked in that fork's `GITOXIDE_UPSTREAM_HANDOFF.md`.
 
 ### 4.6 Why TOML frontmatter over YAML
 
