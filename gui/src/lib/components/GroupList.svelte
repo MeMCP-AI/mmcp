@@ -28,6 +28,11 @@
       <ul class="flex flex-col">
         {#each groups as group (group.group_id)}
           {@const selected = selectedId === group.group_id}
+          {@const label = group.display_name ?? group.slug}
+          {@const hint =
+            group.display_name && group.display_name !== group.slug
+              ? `${group.display_name} (${group.slug})`
+              : label}
           <li>
             <button
               type="button"
@@ -36,12 +41,15 @@
                 ? 'bg-sky-500/15 text-sky-100'
                 : 'text-zinc-200 hover:bg-zinc-800/70'}"
               onclick={() => onSelect(group.group_id)}
+              title={hint}
             >
-              <span class="truncate">
-                {group.display_name ?? group.slug}
+              <span class="truncate" title={label}>
+                {label}
               </span>
               {#if group.display_name && group.display_name !== group.slug}
-                <span class="truncate text-[11px] text-zinc-500">{group.slug}</span>
+                <span class="truncate text-[11px] text-zinc-500" title={group.slug}>
+                  {group.slug}
+                </span>
               {/if}
             </button>
           </li>

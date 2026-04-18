@@ -33,14 +33,15 @@
       <div class="mx-auto max-w-3xl px-4 py-5 sm:px-6 sm:py-6">
         <!-- frontmatter card -->
         <div class="rounded-lg border border-zinc-800 bg-zinc-900 p-4 sm:p-5">
-          <h1 class="text-lg font-semibold text-zinc-50">{fm.name}</h1>
-          <div class="mt-0.5 text-xs text-zinc-500">{slug}</div>
-          <p class="mt-3 text-sm text-zinc-300">{fm.description}</p>
+          <h1 class="text-lg font-semibold text-zinc-50" title={fm.name}>{fm.name}</h1>
+          <div class="mt-0.5 text-xs text-zinc-500" title={slug}>{slug}</div>
+          <p class="mt-3 text-sm text-zinc-300" title={fm.description}>{fm.description}</p>
           <div class="mt-3 flex flex-wrap items-center gap-1.5">
             <KindBadge kind={fm.kind as KindStr} mode="icon_and_text" />
             {#if fm.mandatory}
               <span
                 class="inline-flex items-center rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-300 ring-1 ring-inset ring-amber-500/30"
+                title="Mandatory memory — always read at session start"
               >
                 mandatory
               </span>
@@ -48,6 +49,7 @@
             {#if fm.version}
               <span
                 class="inline-flex items-center rounded-md bg-zinc-800 px-1.5 py-0.5 text-[10px] font-semibold text-zinc-300"
+                title="Schema version"
               >
                 v{fm.version}
               </span>
@@ -55,6 +57,7 @@
             {#each fm.tags as tag (tag)}
               <span
                 class="inline-flex items-center rounded-md bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300"
+                title={tag}
               >
                 {tag}
               </span>

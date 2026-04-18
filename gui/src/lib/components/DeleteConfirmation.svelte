@@ -24,7 +24,7 @@
       </p>
       <ul class="max-h-48 overflow-y-auto rounded-md border border-zinc-800 bg-zinc-950 p-2 text-xs">
         {#each slugs as slug (slug)}
-          <li class="truncate px-1 py-0.5 font-mono text-zinc-300">{slug}</li>
+          <li class="truncate px-1 py-0.5 font-mono text-zinc-300" title={slug}>{slug}</li>
         {/each}
       </ul>
     {:else}

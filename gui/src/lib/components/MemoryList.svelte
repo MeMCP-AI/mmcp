@@ -313,7 +313,14 @@
                   {/if}
                 </span>
               {/if}
-              <span class="min-w-0 flex-1 truncate">{slug}</span>
+              <span
+                class="min-w-0 flex-1 truncate"
+                title={body?.frontmatter.name
+                  ? `${slug} — ${body.frontmatter.name}`
+                  : slug}
+              >
+                {slug}
+              </span>
               <span class="flex w-4 shrink-0 items-center justify-center">
                 {#if mandatory}
                   <Pin size={10} class="text-amber-400" aria-label="Mandatory memory" />
