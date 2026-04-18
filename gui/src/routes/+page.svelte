@@ -17,7 +17,7 @@
   import { syncStore } from '$lib/stores/sync.svelte';
   import { openDiagnosticsWindow, openSettingsWindow } from '$lib/windows';
 
-  import type { MemoryFile } from '$lib/types';
+  import type { KindStr, MemoryFile } from '$lib/types';
 
   type EditorState = { mode: 'new' | 'edit'; initial: MemoryFile | null } | null;
   let editor = $state<EditorState>(null);
@@ -281,6 +281,8 @@
         selectedSlug={selectionStore.slug}
         kindDisplay={settingsStore.values.kind_display}
         filter={selectionStore.filter}
+        kindFilter={selectionStore.kindFilter}
+        mandatoryOnly={selectionStore.mandatoryOnly}
         multi={selectionStore.multi}
         bodyFor={(slug: string) =>
           selectionStore.groupId
@@ -289,6 +291,12 @@
         onSelect={(slug: string) => selectionStore.selectMemory(slug)}
         onFilterChange={(q: string) => selectionStore.setFilter(q)}
         onToggleMulti={(slug: string) => selectionStore.toggleMulti(slug)}
+        onExtendMulti={(slug: string, visible: string[]) =>
+          selectionStore.extendMulti(slug, visible)}
+        onToggleKind={(kind: KindStr) => selectionStore.toggleKindFilter(kind)}
+        onToggleMandatoryOnly={() =>
+          selectionStore.setMandatoryOnly(!selectionStore.mandatoryOnly)}
+        onClearFilters={() => selectionStore.clearAllFilters()}
         onSelectAll={(visible: string[]) => selectionStore.selectMultiAll(visible)}
         onClearMulti={() => selectionStore.clearMulti()}
       />
@@ -343,6 +351,8 @@
             selectedSlug={selectionStore.slug}
             kindDisplay={settingsStore.values.kind_display}
             filter={selectionStore.filter}
+            kindFilter={selectionStore.kindFilter}
+            mandatoryOnly={selectionStore.mandatoryOnly}
             multi={selectionStore.multi}
             bodyFor={(slug: string) =>
               selectionStore.groupId
@@ -351,6 +361,12 @@
             onSelect={(slug: string) => selectionStore.selectMemory(slug)}
             onFilterChange={(q: string) => selectionStore.setFilter(q)}
             onToggleMulti={(slug: string) => selectionStore.toggleMulti(slug)}
+            onExtendMulti={(slug: string, visible: string[]) =>
+              selectionStore.extendMulti(slug, visible)}
+            onToggleKind={(kind: KindStr) => selectionStore.toggleKindFilter(kind)}
+            onToggleMandatoryOnly={() =>
+              selectionStore.setMandatoryOnly(!selectionStore.mandatoryOnly)}
+            onClearFilters={() => selectionStore.clearAllFilters()}
             onSelectAll={(visible: string[]) => selectionStore.selectMultiAll(visible)}
             onClearMulti={() => selectionStore.clearMulti()}
           />
@@ -411,6 +427,8 @@
               selectedSlug={selectionStore.slug}
               kindDisplay={settingsStore.values.kind_display}
               filter={selectionStore.filter}
+              kindFilter={selectionStore.kindFilter}
+              mandatoryOnly={selectionStore.mandatoryOnly}
               multi={selectionStore.multi}
               bodyFor={(slug: string) =>
                 selectionStore.groupId
@@ -419,6 +437,12 @@
               onSelect={(slug: string) => selectionStore.selectMemory(slug)}
               onFilterChange={(q: string) => selectionStore.setFilter(q)}
               onToggleMulti={(slug: string) => selectionStore.toggleMulti(slug)}
+              onExtendMulti={(slug: string, visible: string[]) =>
+                selectionStore.extendMulti(slug, visible)}
+              onToggleKind={(kind: KindStr) => selectionStore.toggleKindFilter(kind)}
+              onToggleMandatoryOnly={() =>
+                selectionStore.setMandatoryOnly(!selectionStore.mandatoryOnly)}
+              onClearFilters={() => selectionStore.clearAllFilters()}
               onSelectAll={(visible: string[]) => selectionStore.selectMultiAll(visible)}
               onClearMulti={() => selectionStore.clearMulti()}
             />
