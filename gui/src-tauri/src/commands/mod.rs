@@ -1,6 +1,7 @@
 pub mod config;
 pub mod diagnose;
 pub mod groups;
+pub mod history;
 pub mod memory;
 pub mod settings;
 pub mod sync;

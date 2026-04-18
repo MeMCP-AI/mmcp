@@ -3,6 +3,7 @@
     CloudDownload,
     CloudUpload,
     Columns2,
+    History as HistoryIcon,
     Pencil,
     Plus,
     Rows2,
@@ -17,11 +18,13 @@
     canCreate: boolean;
     canEdit: boolean;
     canDelete: boolean;
+    canViewHistory: boolean;
     syncReady: boolean;
     layout: LayoutMode;
     onNew: () => void;
     onEdit: () => void;
     onDelete: () => void;
+    onHistory: () => void;
     onPull: () => void;
     onPush: () => void;
     onDiagnose: () => void;
@@ -33,11 +36,13 @@
     canCreate,
     canEdit,
     canDelete,
+    canViewHistory,
     syncReady,
     layout,
     onNew,
     onEdit,
     onDelete,
+    onHistory,
     onPull,
     onPush,
     onDiagnose,
@@ -70,6 +75,16 @@
   <button class={btn} disabled={!canDelete} onclick={onDelete} aria-label="Delete" title="Delete">
     <Trash2 size={14} />
     <span class="hidden sm:inline">Delete</span>
+  </button>
+  <button
+    class={btn}
+    disabled={!canViewHistory}
+    onclick={onHistory}
+    aria-label="History"
+    title="Show memory history"
+  >
+    <HistoryIcon size={14} />
+    <span class="hidden sm:inline">History</span>
   </button>
 
   <span class={sep}></span>

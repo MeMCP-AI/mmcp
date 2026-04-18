@@ -73,6 +73,17 @@ export interface ReachabilityEvent {
   reason: string | null;
 }
 
+export interface CommitMeta {
+  id: string;
+  short_id: string;
+  subject: string;
+  message: string;
+  author_name: string;
+  author_email: string;
+  /** Seconds since the Unix epoch. */
+  timestamp: number;
+}
+
 export interface GuiErrorPayload {
   kind:
     | 'store'

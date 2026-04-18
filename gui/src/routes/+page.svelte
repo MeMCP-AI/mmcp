@@ -1,6 +1,7 @@
 <script lang="ts">
   import DeleteConfirmation from '$lib/components/DeleteConfirmation.svelte';
   import GroupList from '$lib/components/GroupList.svelte';
+  import HistoryPanel from '$lib/components/HistoryPanel.svelte';
   import MemoryEditor from '$lib/components/MemoryEditor.svelte';
   import MemoryList from '$lib/components/MemoryList.svelte';
   import MemoryViewer from '$lib/components/MemoryViewer.svelte';
@@ -24,6 +25,23 @@
   // `pendingDelete.slugs` is always a non-empty list — a single
   // selection becomes `[slug]`, a multi-select pulls the set.
   let pendingDelete = $state<{ groupId: string; slugs: string[] } | null>(null);
+  // History overlay — when non-null the viewer pane renders the
+  // HistoryPanel against this (groupId, slug) pair instead of the
+  // live MemoryViewer. Closing clears the overlay back to null.
+  let historyFor = $state<{ groupId: string; slug: string } | null>(null);
+
+  // Auto-close the history overlay when the user moves to a
+  // different memory so we don't show a stale commit list against
+  // the wrong slug.
+  $effect(() => {
+    if (!historyFor) return;
+    if (
+      selectionStore.groupId !== historyFor.groupId ||
+      selectionStore.slug !== historyFor.slug
+    ) {
+      historyFor = null;
+    }
+  });
 
   // Mobile single-pane state. Auto-advances as the selection deepens
   // so a tap on a group jumps to the memories pane, a tap on a
@@ -109,6 +127,9 @@
       editor === null &&
       pendingDelete === null
   );
+  const canViewHistory = $derived(
+    !!selectionStore.groupId && !!selectionStore.slug && editor === null
+  );
   const syncReady = $derived(
     syncStore.configured && reachabilityStore.online && !syncStore.inFlight
   );
@@ -121,6 +142,14 @@
   function handleEdit() {
     if (!currentBody) return;
     editor = { mode: 'edit', initial: currentBody };
+    mobilePane = 'viewer';
+  }
+
+  function handleHistory() {
+    const gid = selectionStore.groupId;
+    const s = selectionStore.slug;
+    if (!gid || !s) return;
+    historyFor = { groupId: gid, slug: s };
     mobilePane = 'viewer';
   }
 
@@ -207,11 +236,13 @@
     {canCreate}
     {canEdit}
     {canDelete}
+    {canViewHistory}
     {syncReady}
     layout={settingsStore.values.layout_mode}
     onNew={handleNew}
     onEdit={handleEdit}
     onDelete={handleDeleteRequest}
+    onHistory={handleHistory}
     onPull={() => syncStore.pull()}
     onPush={() => syncStore.push()}
     onDiagnose={() => void openDiagnosticsWindow()}
@@ -309,6 +340,12 @@
           onSave={handleSave}
           onCancel={handleCancel}
         />
+      {:else if historyFor}
+        <HistoryPanel
+          groupId={historyFor.groupId}
+          slug={historyFor.slug}
+          onClose={() => (historyFor = null)}
+        />
       {:else}
         <MemoryViewer
           memory={currentBody}
@@ -386,6 +423,12 @@
               onSave={handleSave}
               onCancel={handleCancel}
             />
+          {:else if historyFor}
+            <HistoryPanel
+              groupId={historyFor.groupId}
+              slug={historyFor.slug}
+              onClose={() => (historyFor = null)}
+            />
           {:else}
             <MemoryViewer
               memory={currentBody}
@@ -462,6 +505,12 @@
               mode={editor.mode}
               onSave={handleSave}
               onCancel={handleCancel}
+            />
+          {:else if historyFor}
+            <HistoryPanel
+              groupId={historyFor.groupId}
+              slug={historyFor.slug}
+              onClose={() => (historyFor = null)}
             />
           {:else}
             <MemoryViewer
