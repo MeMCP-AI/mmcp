@@ -2,18 +2,23 @@
   import {
     CloudDownload,
     CloudUpload,
+    Columns2,
     Pencil,
     Plus,
+    Rows2,
     Settings as SettingsIcon,
     Stethoscope,
     Trash2
   } from 'lucide-svelte';
+
+  export type LayoutMode = 'columns' | 'stacked';
 
   interface Props {
     canCreate: boolean;
     canEdit: boolean;
     canDelete: boolean;
     syncReady: boolean;
+    layout: LayoutMode;
     onNew: () => void;
     onEdit: () => void;
     onDelete: () => void;
@@ -21,6 +26,7 @@
     onPush: () => void;
     onDiagnose: () => void;
     onSettings: () => void;
+    onToggleLayout: () => void;
   }
 
   let {
@@ -28,13 +34,15 @@
     canEdit,
     canDelete,
     syncReady,
+    layout,
     onNew,
     onEdit,
     onDelete,
     onPull,
     onPush,
     onDiagnose,
-    onSettings
+    onSettings,
+    onToggleLayout
   }: Props = $props();
 
   // Label is hidden below sm (< 640 px) — only the icon stays visible
@@ -83,6 +91,22 @@
   </button>
 
   <span class="ml-auto"></span>
+
+  <button
+    class={btn}
+    onclick={onToggleLayout}
+    aria-label={layout === 'columns' ? 'Stack groups and memories' : 'Side-by-side layout'}
+    title={layout === 'columns'
+      ? 'Stack groups and memories vertically'
+      : 'Split groups and memories side-by-side'}
+  >
+    {#if layout === 'columns'}
+      <Rows2 size={14} />
+    {:else}
+      <Columns2 size={14} />
+    {/if}
+    <span class="hidden sm:inline">Layout</span>
+  </button>
 
   <button class={btn} onclick={onSettings} aria-label="Settings" title="Settings">
     <SettingsIcon size={14} />

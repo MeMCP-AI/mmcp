@@ -4,6 +4,7 @@
   import MemoryEditor from '$lib/components/MemoryEditor.svelte';
   import MemoryList from '$lib/components/MemoryList.svelte';
   import MemoryViewer from '$lib/components/MemoryViewer.svelte';
+  import Splitter from '$lib/components/Splitter.svelte';
   import StatusBar from '$lib/components/StatusBar.svelte';
   import Toolbar from '$lib/components/Toolbar.svelte';
 
@@ -189,6 +190,16 @@
   // the `hidden` vs `block` half per-pane based on mobilePane.
   const paneVisibility = (pane: MobilePane) =>
     mobilePane === pane ? 'flex md:flex' : 'hidden md:flex';
+
+  // User-resizable sidebar dimensions. Kept in-memory only — the
+  // layout mode itself persists through `settingsStore` but the
+  // pane sizes reset per session. Reasonable defaults chosen to
+  // match the pre-splitter grid columns so the first frame looks
+  // identical to the old `grid-cols-[220px_280px_1fr]` layout.
+  let groupsWidth = $state(220);
+  let memoriesWidth = $state(280);
+  let sidebarWidth = $state(300);
+  let groupsHeight = $state(220);
 </script>
 
 <div class="flex h-full w-full flex-col overflow-hidden bg-zinc-950 text-zinc-100">
@@ -197,6 +208,7 @@
     {canEdit}
     {canDelete}
     {syncReady}
+    layout={settingsStore.values.layout_mode}
     onNew={handleNew}
     onEdit={handleEdit}
     onDelete={handleDeleteRequest}
@@ -204,6 +216,7 @@
     onPush={() => syncStore.push()}
     onDiagnose={() => void openDiagnosticsWindow()}
     onSettings={() => void openSettingsWindow()}
+    onToggleLayout={() => settingsStore.toggleLayoutMode()}
   />
 
   <!-- Mobile-only pane tabs. Hidden at md+ where all three panes are
@@ -240,21 +253,27 @@
     {/each}
   </nav>
 
-  <!-- Main body: stacked below md, three-pane grid above. Each pane
-       root pins `h-full min-h-0 overflow-hidden` so scroll lives
-       inside the pane instead of bubbling to the page. -->
-  <div
-    class="min-h-0 flex-1 md:grid md:grid-cols-[180px_240px_1fr] lg:grid-cols-[220px_280px_1fr]"
-  >
-    <div class="{paneVisibility('groups')} h-full min-h-0 flex-col overflow-hidden">
+  <!-- Main body. Below md the three panes stack and the tab bar
+       above governs which is visible (paneVisibility). At md+ the
+       layout forks on `layout_mode`:
+         * columns  — groups | memories | viewer, two horizontal
+                      resize handles.
+         * stacked  — sidebar (groups on top / memories on bottom
+                      with a vertical splitter) | viewer, one
+                      horizontal splitter between sidebar + viewer.
+       Each pane root keeps `h-full min-h-0 overflow-hidden` so
+       scroll stays contained. -->
+  <div class="flex min-h-0 flex-1 flex-col md:flex-row">
+    <!-- Below md: linear stack, tab-gated. Above md: hidden so the
+         branched layouts below take over. -->
+    <div class="{paneVisibility('groups')} h-full min-h-0 flex-col overflow-hidden md:hidden">
       <GroupList
         groups={groupsStore.groups}
         selectedId={selectionStore.groupId}
         onSelect={(id: string) => selectionStore.selectGroup(id)}
       />
     </div>
-
-    <div class="{paneVisibility('memories')} h-full min-h-0 flex-col overflow-hidden">
+    <div class="{paneVisibility('memories')} h-full min-h-0 flex-col overflow-hidden md:hidden">
       <MemoryList
         {slugs}
         groupSelected={!!selectionStore.groupId}
@@ -274,8 +293,7 @@
         onClearMulti={() => selectionStore.clearMulti()}
       />
     </div>
-
-    <div class="{paneVisibility('viewer')} h-full min-h-0 flex-col overflow-hidden">
+    <div class="{paneVisibility('viewer')} h-full min-h-0 flex-col overflow-hidden md:hidden">
       {#if editor}
         <MemoryEditor
           initial={editor.initial}
@@ -292,6 +310,146 @@
         />
       {/if}
     </div>
+
+    <!-- Desktop layouts (md+). Only one branch ever mounts so the
+         splitters tracked in each are deterministic. -->
+    {#if settingsStore.values.layout_mode === 'columns'}
+      <div class="hidden h-full min-h-0 w-full flex-row md:flex">
+        <div
+          class="h-full min-h-0 shrink-0 overflow-hidden"
+          style="width: {groupsWidth}px"
+        >
+          <GroupList
+            groups={groupsStore.groups}
+            selectedId={selectionStore.groupId}
+            onSelect={(id: string) => selectionStore.selectGroup(id)}
+          />
+        </div>
+        <Splitter
+          orientation="horizontal"
+          size={groupsWidth}
+          min={140}
+          max={500}
+          onResize={(v) => (groupsWidth = v)}
+        />
+        <div
+          class="h-full min-h-0 shrink-0 overflow-hidden"
+          style="width: {memoriesWidth}px"
+        >
+          <MemoryList
+            {slugs}
+            groupSelected={!!selectionStore.groupId}
+            loading={slugsLoading}
+            selectedSlug={selectionStore.slug}
+            kindDisplay={settingsStore.values.kind_display}
+            filter={selectionStore.filter}
+            multi={selectionStore.multi}
+            bodyFor={(slug: string) =>
+              selectionStore.groupId
+                ? memoriesStore.bodyFor(selectionStore.groupId, slug)
+                : undefined}
+            onSelect={(slug: string) => selectionStore.selectMemory(slug)}
+            onFilterChange={(q: string) => selectionStore.setFilter(q)}
+            onToggleMulti={(slug: string) => selectionStore.toggleMulti(slug)}
+            onSelectAll={(visible: string[]) => selectionStore.selectMultiAll(visible)}
+            onClearMulti={() => selectionStore.clearMulti()}
+          />
+        </div>
+        <Splitter
+          orientation="horizontal"
+          size={memoriesWidth}
+          min={180}
+          max={600}
+          onResize={(v) => (memoriesWidth = v)}
+        />
+        <div class="h-full min-h-0 flex-1 overflow-hidden">
+          {#if editor}
+            <MemoryEditor
+              initial={editor.initial}
+              mode={editor.mode}
+              onSave={handleSave}
+              onCancel={handleCancel}
+            />
+          {:else}
+            <MemoryViewer
+              memory={currentBody}
+              slug={selectionStore.slug}
+              loading={currentBodyLoading}
+              kindDisplay={settingsStore.values.kind_display}
+            />
+          {/if}
+        </div>
+      </div>
+    {:else}
+      <div class="hidden h-full min-h-0 w-full flex-row md:flex">
+        <div
+          class="flex h-full min-h-0 shrink-0 flex-col overflow-hidden"
+          style="width: {sidebarWidth}px"
+        >
+          <div
+            class="shrink-0 overflow-hidden"
+            style="height: {groupsHeight}px"
+          >
+            <GroupList
+              groups={groupsStore.groups}
+              selectedId={selectionStore.groupId}
+              onSelect={(id: string) => selectionStore.selectGroup(id)}
+            />
+          </div>
+          <Splitter
+            orientation="vertical"
+            size={groupsHeight}
+            min={100}
+            max={600}
+            onResize={(v) => (groupsHeight = v)}
+          />
+          <div class="min-h-0 flex-1 overflow-hidden">
+            <MemoryList
+              {slugs}
+              groupSelected={!!selectionStore.groupId}
+              loading={slugsLoading}
+              selectedSlug={selectionStore.slug}
+              kindDisplay={settingsStore.values.kind_display}
+              filter={selectionStore.filter}
+              multi={selectionStore.multi}
+              bodyFor={(slug: string) =>
+                selectionStore.groupId
+                  ? memoriesStore.bodyFor(selectionStore.groupId, slug)
+                  : undefined}
+              onSelect={(slug: string) => selectionStore.selectMemory(slug)}
+              onFilterChange={(q: string) => selectionStore.setFilter(q)}
+              onToggleMulti={(slug: string) => selectionStore.toggleMulti(slug)}
+              onSelectAll={(visible: string[]) => selectionStore.selectMultiAll(visible)}
+              onClearMulti={() => selectionStore.clearMulti()}
+            />
+          </div>
+        </div>
+        <Splitter
+          orientation="horizontal"
+          size={sidebarWidth}
+          min={200}
+          max={700}
+          onResize={(v) => (sidebarWidth = v)}
+        />
+        <div class="h-full min-h-0 flex-1 overflow-hidden">
+          {#if editor}
+            <MemoryEditor
+              initial={editor.initial}
+              mode={editor.mode}
+              onSave={handleSave}
+              onCancel={handleCancel}
+            />
+          {:else}
+            <MemoryViewer
+              memory={currentBody}
+              slug={selectionStore.slug}
+              loading={currentBodyLoading}
+              kindDisplay={settingsStore.values.kind_display}
+            />
+          {/if}
+        </div>
+      </div>
+    {/if}
   </div>
 
   <StatusBar

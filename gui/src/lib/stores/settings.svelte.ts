@@ -8,15 +8,18 @@ import { emit, listen } from '@tauri-apps/api/event';
 const SETTINGS_CHANGED_EVENT = 'settings:changed';
 
 export type KindDisplay = 'off' | 'icon' | 'text' | 'icon_and_text';
+export type LayoutMode = 'columns' | 'stacked';
 
 export interface UiSettings {
   kind_display: KindDisplay;
   reference_point: string | null;
+  layout_mode: LayoutMode;
 }
 
 const DEFAULT_SETTINGS: UiSettings = {
   kind_display: 'icon_and_text',
-  reference_point: null
+  reference_point: null,
+  layout_mode: 'columns'
 };
 
 class SettingsStore {
@@ -56,6 +59,15 @@ class SettingsStore {
   setReferencePoint(path: string | null) {
     this.values.reference_point = path && path.trim().length > 0 ? path : null;
     void this.save();
+  }
+
+  setLayoutMode(mode: LayoutMode) {
+    this.values.layout_mode = mode;
+    void this.save();
+  }
+
+  toggleLayoutMode() {
+    this.setLayoutMode(this.values.layout_mode === 'columns' ? 'stacked' : 'columns');
   }
 
   reset() {
