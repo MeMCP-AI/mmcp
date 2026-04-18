@@ -10,10 +10,11 @@
 
 use std::path::PathBuf;
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 
 use crate::commands::sync::SyncStatusDto;
-use crate::error::GuiResult;
+use crate::error::{GuiError, GuiResult};
 use crate::probe_loop;
 use crate::state::AppState;
 
@@ -25,6 +26,44 @@ fn normalise(path: Option<String>) -> Option<PathBuf> {
     }
     let candidate = PathBuf::from(trimmed);
     candidate.is_dir().then_some(candidate)
+}
+
+/// Open a native folder picker parented to the main window,
+/// regardless of which webview dispatched the command. Keeps the
+/// dialog visually anchored to the primary app surface so the
+/// Settings child window doesn't end up with a dialog that looks
+/// disconnected from the work the user is doing.
+#[tauri::command]
+pub async fn pick_directory(
+    app: AppHandle,
+    default_path: Option<String>,
+    title: Option<String>,
+) -> GuiResult<Option<String>> {
+    let main = app
+        .get_webview_window("main")
+        .ok_or_else(|| GuiError::Other("main window is not available".into()))?;
+
+    let mut builder = app.dialog().file();
+    if let Some(t) = title {
+        builder = builder.set_title(t);
+    }
+    if let Some(p) = default_path {
+        let candidate = PathBuf::from(&p);
+        if candidate.exists() {
+            builder = builder.set_directory(candidate);
+        }
+    }
+    builder = builder.set_parent(&main);
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    builder.pick_folder(move |picked| {
+        let _ = tx.send(picked);
+    });
+    let picked = rx
+        .await
+        .map_err(|e| GuiError::Other(format!("dialog channel: {e}")))?;
+
+    Ok(picked.and_then(|p| p.into_path().ok().map(|pb| pb.to_string_lossy().into_owned())))
 }
 
 #[tauri::command]

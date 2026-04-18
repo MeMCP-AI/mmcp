@@ -5,7 +5,6 @@
   "windows": ["main", "settings", "diagnostics"],
   "permissions": [
     "core:default",
-    "core:webview:allow-create-webview-window",
-    "dialog:allow-open"
+    "core:webview:allow-create-webview-window"
   ]
 }

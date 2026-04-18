@@ -6,11 +6,10 @@
     saveProjectConfig,
     saveUserConfig
   } from '$lib/api/config';
-  import { setReferencePoint } from '$lib/api/workspace';
+  import { pickDirectory, setReferencePoint } from '$lib/api/workspace';
   import { settingsStore, type KindDisplay } from '$lib/stores/settings.svelte';
   import type { LoadedProjectConfig, ProjectConfig, UserConfig } from '$lib/types';
   import { emit } from '@tauri-apps/api/event';
-  import { open } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
 
   // Each Tauri webview runs its own JS context — settings loaded in
@@ -45,13 +44,11 @@
 
   async function pickReferencePoint() {
     lastError = null;
-    const chosen = await open({
-      directory: true,
-      multiple: false,
-      title: 'Choose reference point',
-      defaultPath: settingsStore.values.reference_point ?? undefined
-    });
-    if (typeof chosen !== 'string') return;
+    const chosen = await pickDirectory(
+      settingsStore.values.reference_point,
+      'Choose reference point'
+    );
+    if (!chosen) return;
     await applyReferencePoint(chosen);
   }
 

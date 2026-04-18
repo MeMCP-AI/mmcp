@@ -13,3 +13,19 @@ import type { SyncStatus } from '$lib/types';
 export function setReferencePoint(path: string | null): Promise<SyncStatus> {
   return invoke<SyncStatus>('set_reference_point', { path });
 }
+
+/// Open a native folder picker parented to the main window. Runs
+/// through a Rust command rather than `@tauri-apps/plugin-dialog`
+/// on the JS side so the dialog's parent is always the main
+/// window, not whichever webview happened to call — a Settings
+/// window dialog that floats over Settings instead of the app
+/// feels orphaned.
+export function pickDirectory(
+  defaultPath: string | null,
+  title: string | null
+): Promise<string | null> {
+  return invoke<string | null>('pick_directory', {
+    defaultPath,
+    title
+  });
+}
