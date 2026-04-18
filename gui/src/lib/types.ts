@@ -84,20 +84,26 @@ export interface CommitMeta {
   timestamp: number;
 }
 
-export type DiffLineKind = 'equal' | 'insert' | 'delete';
-
-export interface DiffLine {
-  kind: DiffLineKind;
-  old_lineno: number | null;
-  new_lineno: number | null;
+export interface DiffSpan {
   text: string;
+  /**
+   * True for the fragment of an insert/delete line that actually
+   * diverged from its counterpart (inline word-level highlight).
+   * False for the equal/context fragments surrounding it.
+   */
+  emphasized: boolean;
 }
+
+export type DiffRow =
+  | { kind: 'equal'; old_lineno: number; new_lineno: number; text: string }
+  | { kind: 'insert'; new_lineno: number; text: string; spans: DiffSpan[] }
+  | { kind: 'delete'; old_lineno: number; text: string; spans: DiffSpan[] };
 
 export interface DiffResult {
   /** `null` when the memory didn't exist at the base (pure insert). */
   from: string | null;
   to: string;
-  lines: DiffLine[];
+  rows: DiffRow[];
   inserted: number;
   deleted: number;
 }

@@ -8,7 +8,7 @@ use mmcp_core::memory::MemoryFile;
 use mmcp_git::{GitBackend, Rev};
 use mmcp_store::resolve_memory;
 use serde::Serialize;
-use similar::{ChangeTag, TextDiff};
+use similar::{ChangeTag, InlineChange, TextDiff};
 use tauri::State;
 use uuid::Uuid;
 
@@ -99,20 +99,40 @@ pub async fn load_memory_at(
     Ok(MemoryFileDto::from(&mf))
 }
 
+/// One contiguous fragment within a line in the diff. `emphasized`
+/// marks the chunk as the portion of an inserted/deleted line that
+/// actually changed versus its counterpart — the frontend paints
+/// those segments darker so word-level edits read at a glance
+/// without re-running a diff client-side.
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DiffLineKind {
-    Equal,
-    Insert,
-    Delete,
+pub struct DiffSpan {
+    pub text: String,
+    pub emphasized: bool,
 }
 
 #[derive(Debug, Serialize)]
-pub struct DiffLine {
-    pub kind: DiffLineKind,
-    pub old_lineno: Option<u32>,
-    pub new_lineno: Option<u32>,
-    pub text: String,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DiffRow {
+    /// Context — byte-identical on both sides.
+    Equal {
+        old_lineno: u32,
+        new_lineno: u32,
+        text: String,
+    },
+    /// Present only on the new side. `spans` decomposes the line
+    /// into equal / emphasised segments so inline-word view can
+    /// colour only the words that genuinely changed.
+    Insert {
+        new_lineno: u32,
+        text: String,
+        spans: Vec<DiffSpan>,
+    },
+    /// Present only on the old side.
+    Delete {
+        old_lineno: u32,
+        text: String,
+        spans: Vec<DiffSpan>,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -121,8 +141,10 @@ pub struct DiffResult {
     /// `Some(hex)` otherwise.
     pub from: Option<String>,
     pub to: String,
-    /// Empty when the two sides are byte-identical.
-    pub lines: Vec<DiffLine>,
+    /// Empty when the two sides are byte-identical. Otherwise a
+    /// newest-first sequence of rows: the frontend pairs adjacent
+    /// Delete/Insert rows when rendering side-by-side.
+    pub rows: Vec<DiffRow>,
     pub inserted: u32,
     pub deleted: u32,
 }
@@ -170,43 +192,79 @@ pub async fn diff_memory(
     };
 
     let diff = TextDiff::from_lines(&text_from, &text_to);
-    let mut lines = Vec::new();
+    let mut rows = Vec::new();
     let mut inserted = 0u32;
     let mut deleted = 0u32;
-    for change in diff.iter_all_changes() {
-        let (kind, old_idx, new_idx) = match change.tag() {
-            ChangeTag::Equal => (
-                DiffLineKind::Equal,
-                change.old_index(),
-                change.new_index(),
-            ),
-            ChangeTag::Insert => {
-                inserted += 1;
-                (DiffLineKind::Insert, None, change.new_index())
+
+    // `similar`'s `iter_inline_changes` walks each hunk and emits
+    // inline-change records per line — equal lines carry no
+    // emphasis, while delete/insert lines come with `(emph, slice)`
+    // pairs that mark which character spans actually diverged from
+    // the paired line on the other side. That's exactly the word-
+    // level signal the frontend needs for its inline-word view,
+    // with no extra client-side diff pass required.
+    for op in diff.ops() {
+        for change in diff.iter_inline_changes(op) {
+            match change.tag() {
+                ChangeTag::Equal => {
+                    let old_idx = change.old_index();
+                    let new_idx = change.new_index();
+                    let (Some(o), Some(n)) = (old_idx, new_idx) else {
+                        continue;
+                    };
+                    rows.push(DiffRow::Equal {
+                        old_lineno: (o + 1) as u32,
+                        new_lineno: (n + 1) as u32,
+                        text: line_text(&change),
+                    });
+                }
+                ChangeTag::Delete => {
+                    let Some(o) = change.old_index() else { continue };
+                    deleted += 1;
+                    rows.push(DiffRow::Delete {
+                        old_lineno: (o + 1) as u32,
+                        text: line_text(&change),
+                        spans: collect_spans(&change),
+                    });
+                }
+                ChangeTag::Insert => {
+                    let Some(n) = change.new_index() else { continue };
+                    inserted += 1;
+                    rows.push(DiffRow::Insert {
+                        new_lineno: (n + 1) as u32,
+                        text: line_text(&change),
+                        spans: collect_spans(&change),
+                    });
+                }
             }
-            ChangeTag::Delete => {
-                deleted += 1;
-                (DiffLineKind::Delete, change.old_index(), None)
-            }
-        };
-        let raw = change.value();
-        // `similar` preserves trailing newlines per change. Strip a
-        // single one to keep the wire format compact; a completely
-        // empty string is a meaningful blank line and stays so.
-        let text = raw.strip_suffix('\n').unwrap_or(raw).to_string();
-        lines.push(DiffLine {
-            kind,
-            old_lineno: old_idx.map(|i| (i + 1) as u32),
-            new_lineno: new_idx.map(|i| (i + 1) as u32),
-            text,
-        });
+        }
     }
 
     Ok(DiffResult {
         from,
         to,
-        lines,
+        rows,
         inserted,
         deleted,
     })
+}
+
+fn line_text(change: &InlineChange<'_, str>) -> String {
+    let mut out = String::new();
+    for (_, s) in change.values() {
+        out.push_str(s);
+    }
+    out.strip_suffix('\n').unwrap_or(&out).to_string()
+}
+
+fn collect_spans(change: &InlineChange<'_, str>) -> Vec<DiffSpan> {
+    change
+        .values()
+        .iter()
+        .map(|(emph, s): &(bool, &str)| DiffSpan {
+            emphasized: *emph,
+            text: s.strip_suffix('\n').unwrap_or(s).to_string(),
+        })
+        .filter(|s| !s.text.is_empty())
+        .collect()
 }

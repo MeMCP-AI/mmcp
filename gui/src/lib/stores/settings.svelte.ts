@@ -9,17 +9,20 @@ const SETTINGS_CHANGED_EVENT = 'settings:changed';
 
 export type KindDisplay = 'off' | 'icon' | 'text' | 'icon_and_text';
 export type LayoutMode = 'columns' | 'stacked';
+export type DiffViewMode = 'unified' | 'side_by_side' | 'inline_word';
 
 export interface UiSettings {
   kind_display: KindDisplay;
   reference_point: string | null;
   layout_mode: LayoutMode;
+  diff_view: DiffViewMode;
 }
 
 const DEFAULT_SETTINGS: UiSettings = {
   kind_display: 'icon_and_text',
   reference_point: null,
-  layout_mode: 'columns'
+  layout_mode: 'columns',
+  diff_view: 'unified'
 };
 
 class SettingsStore {
@@ -68,6 +71,11 @@ class SettingsStore {
 
   toggleLayoutMode() {
     this.setLayoutMode(this.values.layout_mode === 'columns' ? 'stacked' : 'columns');
+  }
+
+  setDiffView(mode: DiffViewMode) {
+    this.values.diff_view = mode;
+    void this.save();
   }
 
   reset() {

@@ -1,9 +1,19 @@
 <script lang="ts">
   import KindBadge from './KindBadge.svelte';
   import { marked } from 'marked';
-  import { GitCommit, LoaderCircle, Mail, User, X } from 'lucide-svelte';
+  import {
+    AlignJustify,
+    Columns,
+    GitCommit,
+    LoaderCircle,
+    Mail,
+    Pilcrow,
+    User,
+    X
+  } from 'lucide-svelte';
   import { diffMemory, listMemoryHistory, loadMemoryAt } from '$lib/api/history';
-  import type { CommitMeta, DiffResult, KindStr, MemoryFile } from '$lib/types';
+  import { settingsStore, type DiffViewMode } from '$lib/stores/settings.svelte';
+  import type { CommitMeta, DiffResult, DiffRow, DiffSpan, KindStr, MemoryFile } from '$lib/types';
 
   interface Props {
     groupId: string;
@@ -26,6 +36,106 @@
   let diff = $state<DiffResult | null>(null);
   let loadingDiff = $state(false);
   let diffError = $state<string | null>(null);
+
+  const diffView = $derived(settingsStore.values.diff_view);
+
+  const DIFF_VIEW_BUTTONS: { mode: DiffViewMode; label: string; Icon: typeof Columns }[] = [
+    { mode: 'unified', label: 'Unified', Icon: AlignJustify },
+    { mode: 'inline_word', label: 'Word', Icon: Pilcrow },
+    { mode: 'side_by_side', label: 'Split', Icon: Columns }
+  ];
+
+  // Pair adjacent delete-run + insert-run into replace rows for
+  // side-by-side rendering. Leftovers (mismatched counts) stay as
+  // standalone delete/insert rows rendered with a blank counterpart
+  // column so line numbers stay aligned.
+  interface PairEqual {
+    kind: 'equal';
+    old_lineno: number;
+    new_lineno: number;
+    text: string;
+  }
+  interface PairDelete {
+    kind: 'delete';
+    old_lineno: number;
+    text: string;
+    spans: DiffSpan[];
+  }
+  interface PairInsert {
+    kind: 'insert';
+    new_lineno: number;
+    text: string;
+    spans: DiffSpan[];
+  }
+  interface PairReplace {
+    kind: 'replace';
+    old_lineno: number;
+    old_text: string;
+    old_spans: DiffSpan[];
+    new_lineno: number;
+    new_text: string;
+    new_spans: DiffSpan[];
+  }
+  type PairedRow = PairEqual | PairDelete | PairInsert | PairReplace;
+
+  function pairRows(rows: DiffRow[]): PairedRow[] {
+    const out: PairedRow[] = [];
+    let i = 0;
+    while (i < rows.length) {
+      const row = rows[i];
+      if (row.kind === 'equal') {
+        out.push({
+          kind: 'equal',
+          old_lineno: row.old_lineno,
+          new_lineno: row.new_lineno,
+          text: row.text
+        });
+        i++;
+        continue;
+      }
+      const deletes: Extract<DiffRow, { kind: 'delete' }>[] = [];
+      while (i < rows.length && rows[i].kind === 'delete') {
+        deletes.push(rows[i] as Extract<DiffRow, { kind: 'delete' }>);
+        i++;
+      }
+      const inserts: Extract<DiffRow, { kind: 'insert' }>[] = [];
+      while (i < rows.length && rows[i].kind === 'insert') {
+        inserts.push(rows[i] as Extract<DiffRow, { kind: 'insert' }>);
+        i++;
+      }
+      const pairs = Math.min(deletes.length, inserts.length);
+      for (let k = 0; k < pairs; k++) {
+        out.push({
+          kind: 'replace',
+          old_lineno: deletes[k].old_lineno,
+          old_text: deletes[k].text,
+          old_spans: deletes[k].spans,
+          new_lineno: inserts[k].new_lineno,
+          new_text: inserts[k].text,
+          new_spans: inserts[k].spans
+        });
+      }
+      for (let k = pairs; k < deletes.length; k++) {
+        out.push({
+          kind: 'delete',
+          old_lineno: deletes[k].old_lineno,
+          text: deletes[k].text,
+          spans: deletes[k].spans
+        });
+      }
+      for (let k = pairs; k < inserts.length; k++) {
+        out.push({
+          kind: 'insert',
+          new_lineno: inserts[k].new_lineno,
+          text: inserts[k].text,
+          spans: inserts[k].spans
+        });
+      }
+    }
+    return out;
+  }
+
+  const pairedRows = $derived(diff ? pairRows(diff.rows) : []);
 
   // Walking `git log` a second time for a brand-new memory is
   // cheap; we don't cache across tab swaps to keep the store
@@ -416,40 +526,219 @@
                     <span class="text-rose-300">-{diff.deleted}</span>
                   </span>
                 </div>
-                {#if diff.lines.length === 0}
+                <div class="flex flex-wrap items-center gap-1 border-b border-zinc-800 bg-zinc-900/20 px-2 py-1">
+                  {#each DIFF_VIEW_BUTTONS as btn (btn.mode)}
+                    {@const active = diffView === btn.mode}
+                    <button
+                      type="button"
+                      class="inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors
+                        {active
+                        ? 'bg-sky-500/15 text-sky-100'
+                        : 'text-zinc-400 hover:bg-zinc-800/70 hover:text-zinc-200'}"
+                      onclick={() => settingsStore.setDiffView(btn.mode)}
+                      title={btn.label + ' view'}
+                    >
+                      <btn.Icon size={11} />
+                      <span>{btn.label}</span>
+                    </button>
+                  {/each}
+                </div>
+                {#if diff.rows.length === 0}
                   <div class="p-4 text-xs text-zinc-500 italic">
                     Commits are byte-identical at this path.
                   </div>
-                {:else}
+                {:else if diffView === 'unified'}
                   <table class="w-full border-collapse font-mono text-[11px] leading-5">
                     <tbody>
-                      {#each diff.lines as line, idx (idx)}
+                      {#each diff.rows as row, idx (idx)}
                         {@const cls =
-                          line.kind === 'insert'
+                          row.kind === 'insert'
                             ? 'bg-emerald-500/10 text-emerald-100'
-                            : line.kind === 'delete'
+                            : row.kind === 'delete'
                               ? 'bg-rose-500/10 text-rose-100'
                               : 'text-zinc-300'}
                         {@const sigil =
-                          line.kind === 'insert' ? '+' : line.kind === 'delete' ? '-' : ' '}
+                          row.kind === 'insert' ? '+' : row.kind === 'delete' ? '-' : ' '}
                         <tr class={cls}>
                           <td
                             class="w-10 shrink-0 select-none border-r border-zinc-800/70 px-2 text-right text-[10px] text-zinc-600"
                           >
-                            {line.old_lineno ?? ''}
+                            {row.kind === 'insert' ? '' : row.old_lineno}
                           </td>
                           <td
                             class="w-10 shrink-0 select-none border-r border-zinc-800/70 px-2 text-right text-[10px] text-zinc-600"
                           >
-                            {line.new_lineno ?? ''}
+                            {row.kind === 'delete' ? '' : row.new_lineno}
                           </td>
                           <td
                             class="w-4 shrink-0 select-none px-1 text-center text-zinc-500"
                           >
                             {sigil}
                           </td>
-                          <td class="whitespace-pre-wrap break-all px-2 py-0">{line.text}</td>
+                          <td class="whitespace-pre-wrap break-all px-2 py-0">{row.text}</td>
                         </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                {:else if diffView === 'inline_word'}
+                  <!-- Same row order as unified but inline word spans paint only the
+                       fragments that actually diverged, so the user can spot the exact
+                       words that changed inside a mostly-similar line. -->
+                  <table class="w-full border-collapse font-mono text-[11px] leading-5">
+                    <tbody>
+                      {#each diff.rows as row, idx (idx)}
+                        {@const cls =
+                          row.kind === 'insert'
+                            ? 'bg-emerald-500/5'
+                            : row.kind === 'delete'
+                              ? 'bg-rose-500/5'
+                              : ''}
+                        {@const sigil =
+                          row.kind === 'insert' ? '+' : row.kind === 'delete' ? '-' : ' '}
+                        <tr class={cls}>
+                          <td
+                            class="w-10 shrink-0 select-none border-r border-zinc-800/70 px-2 text-right text-[10px] text-zinc-600"
+                          >
+                            {row.kind === 'insert' ? '' : row.old_lineno}
+                          </td>
+                          <td
+                            class="w-10 shrink-0 select-none border-r border-zinc-800/70 px-2 text-right text-[10px] text-zinc-600"
+                          >
+                            {row.kind === 'delete' ? '' : row.new_lineno}
+                          </td>
+                          <td
+                            class="w-4 shrink-0 select-none px-1 text-center text-zinc-500"
+                          >
+                            {sigil}
+                          </td>
+                          <td class="whitespace-pre-wrap break-all px-2 py-0 text-zinc-300">
+                            {#if row.kind === 'equal'}
+                              {row.text}
+                            {:else}
+                              {#each row.spans as span, sidx (sidx)}
+                                {#if row.kind === 'insert'}
+                                  <span
+                                    class={span.emphasized
+                                      ? 'bg-emerald-500/40 text-emerald-50 rounded-sm px-0.5'
+                                      : 'text-emerald-200/80'}>{span.text}</span
+                                  >
+                                {:else}
+                                  <span
+                                    class={span.emphasized
+                                      ? 'bg-rose-500/40 text-rose-50 rounded-sm px-0.5 line-through decoration-rose-300/70'
+                                      : 'text-rose-200/80'}>{span.text}</span
+                                  >
+                                {/if}
+                              {/each}
+                              {#if row.spans.length === 0}{row.text}{/if}
+                            {/if}
+                          </td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                {:else}
+                  <!-- Side-by-side: two mirrored columns. Adjacent delete+insert runs
+                       pair up so a modified line shows on the same row; leftovers get
+                       an empty counterpart cell so line numbers stay honest. -->
+                  <table class="w-full border-collapse font-mono text-[11px] leading-5">
+                    <colgroup>
+                      <col class="w-10" />
+                      <col />
+                      <col class="w-10" />
+                      <col />
+                    </colgroup>
+                    <tbody>
+                      {#each pairedRows as row, idx (idx)}
+                        {#if row.kind === 'equal'}
+                          <tr class="text-zinc-300">
+                            <td
+                              class="select-none border-r border-zinc-800/70 px-2 text-right text-[10px] text-zinc-600"
+                            >
+                              {row.old_lineno}
+                            </td>
+                            <td class="whitespace-pre-wrap break-all border-r border-zinc-800 px-2 py-0">
+                              {row.text}
+                            </td>
+                            <td
+                              class="select-none border-r border-zinc-800/70 px-2 text-right text-[10px] text-zinc-600"
+                            >
+                              {row.new_lineno}
+                            </td>
+                            <td class="whitespace-pre-wrap break-all px-2 py-0">{row.text}</td>
+                          </tr>
+                        {:else if row.kind === 'replace'}
+                          <tr>
+                            <td
+                              class="select-none border-r border-zinc-800/70 bg-rose-500/5 px-2 text-right text-[10px] text-zinc-600"
+                            >
+                              {row.old_lineno}
+                            </td>
+                            <td
+                              class="whitespace-pre-wrap break-all border-r border-zinc-800 bg-rose-500/10 px-2 py-0 text-rose-100"
+                            >
+                              {#each row.old_spans as span, sidx (sidx)}
+                                <span
+                                  class={span.emphasized
+                                    ? 'bg-rose-500/40 text-rose-50 rounded-sm px-0.5'
+                                    : ''}>{span.text}</span
+                                >
+                              {/each}
+                              {#if row.old_spans.length === 0}{row.old_text}{/if}
+                            </td>
+                            <td
+                              class="select-none border-r border-zinc-800/70 bg-emerald-500/5 px-2 text-right text-[10px] text-zinc-600"
+                            >
+                              {row.new_lineno}
+                            </td>
+                            <td
+                              class="whitespace-pre-wrap break-all bg-emerald-500/10 px-2 py-0 text-emerald-100"
+                            >
+                              {#each row.new_spans as span, sidx (sidx)}
+                                <span
+                                  class={span.emphasized
+                                    ? 'bg-emerald-500/40 text-emerald-50 rounded-sm px-0.5'
+                                    : ''}>{span.text}</span
+                                >
+                              {/each}
+                              {#if row.new_spans.length === 0}{row.new_text}{/if}
+                            </td>
+                          </tr>
+                        {:else if row.kind === 'delete'}
+                          <tr>
+                            <td
+                              class="select-none border-r border-zinc-800/70 bg-rose-500/5 px-2 text-right text-[10px] text-zinc-600"
+                            >
+                              {row.old_lineno}
+                            </td>
+                            <td
+                              class="whitespace-pre-wrap break-all border-r border-zinc-800 bg-rose-500/10 px-2 py-0 text-rose-100"
+                            >
+                              {row.text}
+                            </td>
+                            <td
+                              class="select-none border-r border-zinc-800/70 px-2 text-right text-[10px] text-zinc-600"
+                            ></td>
+                            <td class="px-2 py-0"></td>
+                          </tr>
+                        {:else}
+                          <tr>
+                            <td
+                              class="select-none border-r border-zinc-800/70 px-2 text-right text-[10px] text-zinc-600"
+                            ></td>
+                            <td class="border-r border-zinc-800 px-2 py-0"></td>
+                            <td
+                              class="select-none border-r border-zinc-800/70 bg-emerald-500/5 px-2 text-right text-[10px] text-zinc-600"
+                            >
+                              {row.new_lineno}
+                            </td>
+                            <td
+                              class="whitespace-pre-wrap break-all bg-emerald-500/10 px-2 py-0 text-emerald-100"
+                            >
+                              {row.text}
+                            </td>
+                          </tr>
+                        {/if}
                       {/each}
                     </tbody>
                   </table>
