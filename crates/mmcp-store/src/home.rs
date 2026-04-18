@@ -109,6 +109,23 @@ impl MmcpHome {
         UserConfig::from_toml(&text).map_err(|e| anyhow::anyhow!("parsing {}: {e}", path.display()))
     }
 
+    /// Persist the user-level config. Creates the home directory
+    /// if it does not yet exist so callers can write the first
+    /// config without a separate `init` step.
+    pub fn save_user_config(&self, cfg: &UserConfig) -> Result<()> {
+        let path = self.user_config_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| anyhow::anyhow!("creating {}: {e}", parent.display()))?;
+        }
+        let text = cfg
+            .to_toml()
+            .map_err(|e| anyhow::anyhow!("serialising user config: {e}"))?;
+        std::fs::write(&path, text)
+            .map_err(|e| anyhow::anyhow!("writing {}: {e}", path.display()))?;
+        Ok(())
+    }
+
     /// Initialize a `NativeBackend` and `GroupIndex` from this home.
     ///
     /// Canonical way to get a ready-to-use git backend and group
