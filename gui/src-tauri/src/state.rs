@@ -15,8 +15,9 @@ use mmcp_store::{
     GroupIndex, IndexResolver, MmcpHome, ResolvedAuthor, build_engine, config as project_config,
 };
 use mmcp_sync::{PendingQueue, SyncEngine};
+use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Manager};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::error::{GuiError, GuiResult};
 
@@ -27,11 +28,20 @@ pub struct SyncBundle {
     pub server_url: String,
 }
 
+/// Mutable runtime wrapper. The bundle is rebuilt whenever the
+/// user changes the `reference_point` so pull/push/status all
+/// read the *current* configured server, not the one that happened
+/// to be set at startup.
 pub struct AppState {
     pub backend: Arc<NativeBackend>,
     pub index: GroupIndex,
-    pub sync: Option<SyncBundle>,
+    pub sync: RwLock<Option<SyncBundle>>,
     pub author: ResolvedAuthor,
+    /// Current reachability-probe task. `set_reference_point`
+    /// aborts the old handle and spawns a fresh one against the new
+    /// URL so probes never outlive the config they were started
+    /// with.
+    pub probe: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl AppState {
@@ -45,29 +55,49 @@ impl AppState {
         let author = home.resolve_author();
 
         let reference_point = resolve_reference_point(app);
-        let sync = match load_project_sync(reference_point.as_deref())? {
-            Some(cfg) => {
-                let server_url = cfg.server_url.clone();
-                let (engine, resolver, queue) =
-                    build_engine(Arc::clone(&backend), index.clone(), &server_url)
-                        .map_err(GuiError::from)?;
-                Some(SyncBundle {
-                    engine,
-                    resolver,
-                    queue: Mutex::new(queue),
-                    server_url,
-                })
-            }
-            None => None,
-        };
+        let sync = build_sync(&backend, &index, reference_point.as_deref())?;
 
         Ok(Self {
             backend,
             index,
-            sync,
+            sync: RwLock::new(sync),
             author,
+            probe: Mutex::new(None),
         })
     }
+
+    /// Rebuild the sync bundle against a new reference point. Takes
+    /// a write lock so in-flight pull/push finish first. Returns the
+    /// new server URL (if any) so the caller can restart the probe
+    /// loop.
+    pub async fn rebuild_sync(
+        &self,
+        reference_point: Option<&Path>,
+    ) -> GuiResult<Option<String>> {
+        let fresh = build_sync(&self.backend, &self.index, reference_point)?;
+        let url = fresh.as_ref().map(|b| b.server_url.clone());
+        *self.sync.write().await = fresh;
+        Ok(url)
+    }
+}
+
+fn build_sync(
+    backend: &Arc<NativeBackend>,
+    index: &GroupIndex,
+    reference_point: Option<&Path>,
+) -> GuiResult<Option<SyncBundle>> {
+    let Some(cfg) = load_project_sync(reference_point)? else {
+        return Ok(None);
+    };
+    let server_url = cfg.server_url.clone();
+    let (engine, resolver, queue) =
+        build_engine(Arc::clone(backend), index.clone(), &server_url).map_err(GuiError::from)?;
+    Ok(Some(SyncBundle {
+        engine,
+        resolver,
+        queue: Mutex::new(queue),
+        server_url,
+    }))
 }
 
 /// Resolve the directory we use as the anchor for `.mmcp.toml`

@@ -25,15 +25,17 @@ pub struct PushReportDto {
 
 #[tauri::command]
 pub async fn sync_status(state: State<'_, AppState>) -> GuiResult<SyncStatusDto> {
+    let guard = state.sync.read().await;
     Ok(SyncStatusDto {
-        configured: state.sync.is_some(),
-        server_url: state.sync.as_ref().map(|s| s.server_url.clone()),
+        configured: guard.is_some(),
+        server_url: guard.as_ref().map(|s| s.server_url.clone()),
     })
 }
 
 #[tauri::command]
 pub async fn sync_pull(state: State<'_, AppState>) -> GuiResult<PullReportDto> {
-    let bundle = state.sync.as_ref().ok_or(GuiError::SyncNotConfigured)?;
+    let guard = state.sync.read().await;
+    let bundle = guard.as_ref().ok_or(GuiError::SyncNotConfigured)?;
     let report = bundle
         .engine
         .pull(&bundle.resolver)
@@ -47,7 +49,8 @@ pub async fn sync_pull(state: State<'_, AppState>) -> GuiResult<PullReportDto> {
 
 #[tauri::command]
 pub async fn sync_push(state: State<'_, AppState>) -> GuiResult<PushReportDto> {
-    let bundle = state.sync.as_ref().ok_or(GuiError::SyncNotConfigured)?;
+    let guard = state.sync.read().await;
+    let bundle = guard.as_ref().ok_or(GuiError::SyncNotConfigured)?;
     let queue = bundle.queue.lock().await;
     let report = bundle
         .engine

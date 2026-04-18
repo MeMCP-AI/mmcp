@@ -56,6 +56,7 @@ pub fn run() {
             commands::diagnose::run_diagnose,
             commands::settings::load_settings,
             commands::settings::save_settings,
+            commands::workspace::set_reference_point,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -63,12 +64,18 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 match AppState::discover(&discover_handle).await {
                     Ok(state) => {
-                        let server_url = state.sync.as_ref().map(|s| s.server_url.clone());
+                        let server_url = state
+                            .sync
+                            .read()
+                            .await
+                            .as_ref()
+                            .map(|s| s.server_url.clone());
+                        if let Some(url) = server_url {
+                            let probe = tauri::async_runtime::spawn(probe_loop(handle.clone(), url));
+                            *state.probe.lock().await = Some(probe);
+                        }
                         handle.manage(state);
                         tracing::info!("AppState discovered, commands are live");
-                        if let Some(url) = server_url {
-                            tauri::async_runtime::spawn(probe_loop(handle.clone(), url));
-                        }
                     }
                     Err(err) => {
                         tracing::error!(error = %err, "AppState discovery failed");
@@ -88,8 +95,10 @@ pub fn run() {
 /// Periodic (15 s) probe against the sync server's manifest
 /// endpoint. Every flip from online → offline or back emits
 /// `reachability:changed` so the frontend can gate Pull / Push
-/// controls.
-async fn probe_loop(handle: AppHandle, server_url: String) {
+/// controls. Exposed `pub(crate)` so the workspace command can
+/// restart a fresh probe when the reference point — and therefore
+/// the active server URL — changes at runtime.
+pub(crate) async fn probe_loop(handle: AppHandle, server_url: String) {
     let client = match SyncClient::new(&server_url) {
         Ok(c) => c,
         Err(err) => {
