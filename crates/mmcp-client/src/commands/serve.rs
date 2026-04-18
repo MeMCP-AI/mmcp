@@ -42,7 +42,7 @@ use mmcp_store::home::{MmcpHome, ResolvedAuthor};
 use mmcp_store::memory::ImportError;
 use mmcp_store::sessions::SessionStore;
 
-use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION, legacy_memory_path};
+use mmcp_core::conventions::legacy_memory_path;
 
 /// Run the MCP stdio server loop until the client disconnects.
 pub async fn run(debug_mode: bool) -> Result<()> {
@@ -997,10 +997,16 @@ impl McpServer {
         };
         let files = list_memory_files(&self.state.backend, &entry).await?;
         let mut memories = Vec::with_capacity(files.len());
-        for slug in files {
-            let descriptor = read_memory_descriptor(&self.state.backend, &entry, &slug, None)
-                .await
-                .map_err(git_error)?;
+        for file in files {
+            let descriptor = read_memory_descriptor(
+                &self.state.backend,
+                &entry,
+                &file.path,
+                &file.slug,
+                None,
+            )
+            .await
+            .map_err(git_error)?;
             memories.push(descriptor);
         }
         Ok(ok_json(json!({
@@ -1143,23 +1149,24 @@ impl McpServer {
             if hits.len() >= limit {
                 break;
             }
-            let slugs = list_memory_files(&self.state.backend, &entry).await?;
-            for slug in slugs {
+            let files = list_memory_files(&self.state.backend, &entry).await?;
+            for file in files {
                 if hits.len() >= limit {
                     break;
                 }
-                let matches_slug = slug.to_lowercase().contains(&needle);
+                let matches_slug = file.slug.to_lowercase().contains(&needle);
                 let descriptor = match read_memory_descriptor(
                     &self.state.backend,
                     &entry,
-                    &slug,
+                    &file.path,
+                    &file.slug,
                     None,
                 )
                 .await
                 {
                     Ok(d) => d,
                     Err(err) => {
-                        tracing::warn!(slug = %slug, error = %err, "search: descriptor read failed, skipping");
+                        tracing::warn!(slug = %file.slug, error = %err, "search: descriptor read failed, skipping");
                         continue;
                     }
                 };
@@ -1830,21 +1837,20 @@ impl McpServer {
                 mmcp_core::manifest::GroupScope::Shared => adopted_shared.contains(&entry_uuid),
                 mmcp_core::manifest::GroupScope::Project => is_project,
             };
-            let slugs = list_memory_files(&self.state.backend, &entry)
+            let files = list_memory_files(&self.state.backend, &entry)
                 .await
                 .unwrap_or_default();
-            for slug in slugs {
-                let path = mmcp_core::conventions::legacy_memory_path(&slug);
+            for file_ref in files {
                 let bytes = match self
                     .state
                     .backend
-                    .read_file(&entry.handle, &path, &Rev::head())
+                    .read_file(&entry.handle, &file_ref.path, &Rev::head())
                     .await
                 {
                     Ok(b) => b,
                     Err(err) => {
                         tracing::warn!(
-                            slug = %slug,
+                            slug = %file_ref.slug,
                             group = %entry_uuid,
                             error = %err,
                             "bootstrap_context: skipping unreadable memory"
@@ -1874,7 +1880,7 @@ impl McpServer {
                 };
                 memories.push(json!({
                     "group": entry_uuid,
-                    "slug": slug,
+                    "slug": file_ref.slug,
                     "name": file.frontmatter.name,
                     "description": file.frontmatter.description,
                     "kind": file.frontmatter.kind.as_str(),
@@ -3142,54 +3148,39 @@ const SESSION_INSTRUCTIONS: &str = concat!(
     "repair scenarios."
 );
 
-/// List every memory slug present in the group's repo at the
-/// current `HEAD`. Post-FR-028 each slug is a subdirectory under
-/// `memories/` holding one or more `<uuid>.md` files, so the
-/// enumeration unions `list_subtrees(memories/)` with the legacy
-/// `list_tree(memories/)` flat-layout fallback. Each slug appears
-/// exactly once in the returned `Vec` regardless of how many
-/// UUIDs share it; the result is sorted for a stable listing.
+/// Enumerate every memory in the group at `HEAD`, returning one
+/// entry per on-disk file. Delegates to the shared
+/// `mmcp_store::list_all_memory_files` walker so this tool
+/// surface, the GUI, and the diagnostics layer all agree on how
+/// the two-level FR-028 layout + legacy flat fallback are
+/// enumerated. Duplicate slugs surface as multiple entries with
+/// distinct UUIDs — perfect for `list_memories` / search, where
+/// each memory is its own row.
 async fn list_memory_files(
     backend: &NativeBackend,
     entry: &GroupEntry,
-) -> Result<Vec<String>, McpError> {
-    let mut slugs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    // FR-028 two-level layout: every subdir directly under
-    // `memories/` is a slug, regardless of how many UUID-named
-    // files live inside it.
-    for subtree in backend
-        .list_subtrees(&entry.handle, MEMORIES_DIR, &Rev::head())
+) -> Result<Vec<mmcp_store::MemoryFileRef>, McpError> {
+    mmcp_store::list_all_memory_files(backend, &entry.handle, &Rev::head())
         .await
-        .map_err(git_error)?
-    {
-        slugs.insert(subtree);
-    }
-    // Legacy flat layout: pre-migration mirrors still keep their
-    // memories as `memories/<slug>.md` blobs. They resolve fine
-    // through `resolve_memory`, so surface them here too.
-    for flat in backend
-        .list_tree(&entry.handle, MEMORIES_DIR, &Rev::head())
-        .await
-        .map_err(git_error)?
-    {
-        if let Some(stem) = flat.strip_suffix(MEMORY_EXTENSION) {
-            slugs.insert(stem.to_string());
-        }
-    }
-    Ok(slugs.into_iter().collect())
+        .map_err(git_error)
 }
 
 /// Read one memory and return a compact descriptor including the
 /// slug, the parsed frontmatter fields, and a short summary.
+///
+/// `path` is the resolved on-disk path under the group repo —
+/// post-FR-028 that is `memories/<slug>/<uuid>.md`, but legacy
+/// mirrors still keep `memories/<slug>.md`; callers supply
+/// whichever the enumeration walker returned.
 async fn read_memory_descriptor(
     backend: &NativeBackend,
     entry: &GroupEntry,
+    path: &str,
     slug: &str,
     version: Option<&str>,
 ) -> Result<serde_json::Value, mmcp_git::GitError> {
     let rev = parse_rev(version);
-    let path = legacy_memory_path(slug);
-    let bytes = backend.read_file(&entry.handle, &path, &rev).await?;
+    let bytes = backend.read_file(&entry.handle, path, &rev).await?;
     let text = String::from_utf8_lossy(&bytes).into_owned();
     let (name, description, kind, mandatory, version_str, tags) = match MemoryFile::parse(&text) {
         Ok(file) => (
