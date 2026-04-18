@@ -30,6 +30,7 @@ mmcp-store = { path = "../../crates/mmcp-store" }
 mmcp-sync = { path = "../../crates/mmcp-sync" }
 
 tauri = { version = "2", features = ["devtools"] }
+tauri-plugin-dialog = "2"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

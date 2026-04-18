@@ -41,6 +41,7 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(SettingsLock(Mutex::new(())))
         .invoke_handler(tauri::generate_handler![
             commands::groups::list_groups,

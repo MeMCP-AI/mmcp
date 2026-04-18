@@ -1,4 +1,10 @@
 import { syncPull, syncPush, syncStatus } from '$lib/api/sync';
+import { listen } from '@tauri-apps/api/event';
+
+// Broadcast by the Settings window after a successful
+// `set_reference_point` so the main window refreshes the sync
+// status (and hence the Pull/Push controls) without a restart.
+const WORKSPACE_CHANGED_EVENT = 'workspace:changed';
 
 type Phase =
   | { t: 'unknown' }
@@ -10,16 +16,25 @@ type Phase =
 
 class SyncStore {
   phase = $state<Phase>({ t: 'unknown' });
+  private listenerAttached = false;
 
   async refreshStatus() {
+    this.attachListener();
     try {
       const status = await syncStatus();
       if (status.configured && status.server_url) {
-        // Preserve transient phases (syncing / ok / err) if we're
-        // mid-op; only reset to idle when we were in unknown /
-        // not_configured.
-        if (this.phase.t === 'unknown' || this.phase.t === 'not_configured') {
-          this.phase = { t: 'idle', serverUrl: status.server_url };
+        const url = status.server_url;
+        const prev = this.serverUrl();
+        // Reset to idle when we were pristine, or when the
+        // workspace switch pointed at a different server — leaving
+        // the old `ok`/`err`/`syncing` phase up after a switch
+        // would stamp the wrong server URL on the status bar.
+        if (
+          this.phase.t === 'unknown' ||
+          this.phase.t === 'not_configured' ||
+          prev !== url
+        ) {
+          this.phase = { t: 'idle', serverUrl: url };
         }
       } else {
         this.phase = { t: 'not_configured' };
@@ -27,6 +42,14 @@ class SyncStore {
     } catch {
       this.phase = { t: 'unknown' };
     }
+  }
+
+  private attachListener() {
+    if (this.listenerAttached) return;
+    this.listenerAttached = true;
+    void listen(WORKSPACE_CHANGED_EVENT, () => {
+      void this.refreshStatus();
+    });
   }
 
   async pull() {
