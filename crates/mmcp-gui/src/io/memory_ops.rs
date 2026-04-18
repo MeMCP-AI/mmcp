@@ -3,12 +3,9 @@
 //! Centralising these helpers in `io/` keeps the background worker
 //! free of git-path fiddling (memory suffix stripping, the memories
 //! directory constant, `Rev::head` boilerplate) and gives future
-//! consumers one place to extend the surface.
-//!
-//! Post-FR-028: every primitive routes through `resolve_memory` or
-//! `write_memory_by_id` so the GUI works identically against the
-//! two-level `memories/<slug>/<uuid>.md` layout and the legacy flat
-//! `memories/<slug>.md` fallback that pre-FR-028 groups still hold.
+//! consumers one place to extend the surface. Every primitive
+//! routes through `resolve_memory` or `write_memory_by_id` so the
+//! GUI works against the `memories/<slug>/<uuid>.md` layout.
 
 use mmcp_core::memory::MemoryFile;
 use mmcp_git::{GitBackend, NativeBackend, RepoHandle, Rev};
@@ -19,36 +16,19 @@ use uuid::Uuid;
 
 use crate::error::GuiError;
 
-const MEMORY_EXTENSION: &str = ".md";
-
 /// List every memory slug present on disk for the given group at
-/// current `HEAD`. Slugs come from two sources to cover both
-/// layouts simultaneously: the two-level `memories/<slug>/` subdirs
-/// (FR-028) and any remaining flat `memories/<slug>.md` files.
-/// Returns each slug once, sorted, regardless of how many memories
-/// share it.
+/// current `HEAD`. Each subdirectory directly under `memories/` is
+/// a slug. A slug with multiple UUID-named files surfaces once —
+/// duplicates exist at the file level, not the slug level.
 pub async fn list_memory_slugs(
     backend: &NativeBackend,
     handle: &RepoHandle,
 ) -> Result<Vec<String>, GuiError> {
-    let mut slugs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    // Two-level: every subdir under `memories/` is a slug.
-    for subtree in backend
+    let mut slugs = backend
         .list_subtrees(handle, mmcp_core::conventions::MEMORIES_DIR, &Rev::head())
-        .await?
-    {
-        slugs.insert(subtree);
-    }
-    // Legacy flat: any `.md` directly under `memories/` is a slug.
-    for flat in backend
-        .list_tree(handle, mmcp_core::conventions::MEMORIES_DIR, &Rev::head())
-        .await?
-    {
-        if let Some(stem) = flat.strip_suffix(MEMORY_EXTENSION) {
-            slugs.insert(stem.to_string());
-        }
-    }
-    Ok(slugs.into_iter().collect())
+        .await?;
+    slugs.sort();
+    Ok(slugs)
 }
 
 /// Read and parse the memory resolved by `slug`. Routes through the
@@ -103,9 +83,7 @@ pub async fn update_memory(
 ) -> Result<String, GuiError> {
     let resolved = resolve_memory(backend, handle, Some(slug), None).await?;
     let mut file = file.clone();
-    if let Some(id) = resolved.id {
-        file.frontmatter = file.frontmatter.clone().with_id(id);
-    }
+    file.frontmatter = file.frontmatter.clone().with_id(resolved.id);
     let rendered = file
         .to_string()
         .map_err(|e| GuiError::Other(format!("render: {e}")))?;

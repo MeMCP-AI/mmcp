@@ -316,7 +316,7 @@ pub async fn read_feature(
             mmcp_git::GitError::PathNotFound(_) => {
                 FeatureError::Memory(ImportError::MemoryNotFound {
                     slug: Some(slug.to_string()),
-                    id: resolved.id,
+                    id: Some(resolved.id),
                 })
             }
             other => FeatureError::Memory(ImportError::Git(other)),
@@ -362,9 +362,7 @@ pub async fn update_feature(
     let mut file = build_memory_file(title.clone(), description.clone(), body.clone(), metadata);
     // Preserve the id pinned on disk so the rewrite hits the same
     // canonical path and stays addressable by UUID across the edit.
-    if let Some(id) = resolved.id {
-        file.frontmatter = file.frontmatter.clone().with_id(id);
-    }
+    file.frontmatter = file.frontmatter.clone().with_id(resolved.id);
     let rendered = file
         .to_string()
         .map_err(|e| FeatureError::Memory(ImportError::Render(e.to_string())))?;
@@ -592,29 +590,12 @@ pub async fn list_features(
     status_filter: Option<FeatureStatus>,
     show_all: bool,
 ) -> Result<Vec<FeatureRecord>, FeatureError> {
-    // Post-FR-028 every memory lives at `memories/<slug>/<uuid>.md`,
-    // so the slug directories are the enumeration surface.
-    // Pre-FR-028 flat files also still resolve cleanly through
-    // the generic `read_feature` path, so fall back to listing
-    // `memories/*.md` blobs for any group that has not migrated
-    // yet.
-    let mut slugs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for subtree in backend
+    // Every memory lives at `memories/<slug>/<uuid>.md`, so slug
+    // directories are the enumeration surface.
+    let slugs = backend
         .list_subtrees(&entry.handle, MEMORIES_DIR, &Rev::head())
         .await
-        .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?
-    {
-        slugs.insert(subtree);
-    }
-    for flat in backend
-        .list_tree(&entry.handle, MEMORIES_DIR, &Rev::head())
-        .await
-        .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?
-    {
-        if let Some(stem) = flat.strip_suffix(MEMORY_EXTENSION) {
-            slugs.insert(stem.to_string());
-        }
-    }
+        .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?;
 
     let mut out = Vec::new();
     for slug in slugs {

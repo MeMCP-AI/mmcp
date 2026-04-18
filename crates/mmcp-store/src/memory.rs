@@ -119,25 +119,22 @@ pub enum ImportError {
 
 /// Per-file reference to a memory on disk. Returned by
 /// [`list_all_memory_files`] so callers get a direct path plus
-/// the slug/id pair the two-level `memories/<slug>/<uuid>.md`
-/// layout encodes; `id` is `None` only for pre-FR-028 legacy
-/// flat-layout files.
+/// the slug/id pair the `memories/<slug>/<uuid>.md` layout
+/// encodes.
 #[derive(Debug, Clone)]
 pub struct MemoryFileRef {
     pub slug: String,
-    pub id: Option<Uuid>,
+    pub id: Uuid,
     pub path: String,
 }
 
-/// Walk every memory file in the group at `rev`, unioning the
-/// FR-028 two-level layout (`memories/<slug>/<uuid>.md`) with the
-/// legacy flat fallback (`memories/<slug>.md`). Duplicate slugs
-/// under the two-level layout surface as multiple entries with
-/// distinct UUIDs — callers that want unique slugs dedupe on
-/// `slug` themselves.
+/// Walk every memory file in the group at `rev`. Each slug
+/// subdirectory under `memories/` is enumerated and every
+/// UUID-named `.md` file inside surfaces as one entry; duplicate
+/// slugs appear as multiple entries with distinct UUIDs.
 ///
 /// Used by diagnostics and any other consumer that needs to read
-/// *every* memory exactly once, regardless of on-disk layout.
+/// every memory exactly once.
 pub async fn list_all_memory_files(
     backend: &NativeBackend,
     handle: &RepoHandle,
@@ -146,16 +143,17 @@ pub async fn list_all_memory_files(
     let dir = mmcp_core::conventions::MEMORIES_DIR;
     let ext = mmcp_core::conventions::MEMORY_EXTENSION;
     let mut out = Vec::new();
-
-    // Two-level: every subdir is a slug; every `<uuid>.md` inside
-    // is one memory under that slug.
     for slug in backend.list_subtrees(handle, dir, rev).await? {
         let subdir = format!("{dir}/{slug}");
         for filename in backend.list_tree(handle, &subdir, rev).await? {
             let Some(stem) = filename.strip_suffix(ext) else {
                 continue;
             };
-            let id = Uuid::parse_str(stem).ok();
+            let Ok(id) = Uuid::parse_str(stem) else {
+                // Ignore stray non-UUID files; the layout contract
+                // says every memory filename is a UUIDv7.
+                continue;
+            };
             out.push(MemoryFileRef {
                 slug: slug.clone(),
                 id,
@@ -163,79 +161,36 @@ pub async fn list_all_memory_files(
             });
         }
     }
-
-    // Legacy flat: any `.md` directly under `memories/` is a
-    // pre-migration memory. These have no UUID in the filename;
-    // `id` is `None` unless the frontmatter carries one.
-    for flat in backend.list_tree(handle, dir, rev).await? {
-        let Some(stem) = flat.strip_suffix(ext) else {
-            continue;
-        };
-        out.push(MemoryFileRef {
-            slug: stem.to_string(),
-            id: None,
-            path: format!("{dir}/{flat}"),
-        });
-    }
-
     Ok(out)
 }
 
-/// Probe whether `memories/<slug>.md` exists at the group's
-/// current `main` head.
-///
-/// Returns `Ok(false)` on `PathNotFound` — the "does not exist"
-/// case is not an error condition. Any other git failure
-/// propagates as `ImportError::Git` so callers don't confuse
-/// transport / corruption errors with a missing file.
-pub async fn memory_exists(
-    backend: &NativeBackend,
-    handle: &RepoHandle,
-    slug: &str,
-) -> Result<bool, ImportError> {
-    let path = mmcp_core::conventions::legacy_memory_path(slug);
-    match backend.read_file(handle, &path, &Rev::head()).await {
-        Ok(_) => Ok(true),
-        Err(GitError::PathNotFound(_)) => Ok(false),
-        Err(err) => Err(ImportError::Git(err)),
-    }
-}
-
 /// Addressing result from [`resolve_memory`]. Carries the slug,
-/// the canonical UUID (minted for pre-FR-028 files that still
-/// lack one in frontmatter), and the in-repo path that a subsequent
-/// `read_file` can consume verbatim.
+/// the canonical UUID, and the in-repo path
+/// (`memories/<slug>/<uuid>.md`) that a subsequent `read_file` can
+/// consume verbatim.
 #[derive(Debug, Clone)]
 pub struct ResolvedMemory {
     pub slug: String,
-    /// May be `None` when the on-disk file is still in the legacy
-    /// `memories/<slug>.md` layout and its frontmatter has no `id`.
-    /// Resolvers never synthesize an id on the fly; the migration
-    /// binary is the only path that mints UUIDs for legacy files.
-    pub id: Option<Uuid>,
+    pub id: Uuid,
     pub path: String,
 }
 
 /// Locate a memory by slug, id, or both.
 ///
-/// Lookup rules (mirrors the FR-028 plan):
-/// - `slug + id`: address `memories/<slug>/<id>.md` first; if the
-///   file exists and its frontmatter id matches, return it. If the
-///   frontmatter id disagrees, surface [`ImportError::MemoryIdMismatch`].
-///   Fall back to `memories/<slug>.md` (legacy layout) when the
-///   two-level path is missing; require frontmatter id match there
-///   too, or return [`ImportError::MemoryNotFound`].
+/// - `slug + id`: address `memories/<slug>/<id>.md`; verify that
+///   the frontmatter id matches the caller-supplied id.
+///   Frontmatter disagreement surfaces [`ImportError::MemoryIdMismatch`];
+///   missing file surfaces [`ImportError::MemoryNotFound`].
 /// - `slug` only: walk `memories/<slug>/` and use the single entry
-///   found; ≥2 entries yields [`ImportError::MemoryAmbiguous`]; 0
-///   entries falls back to the flat `memories/<slug>.md` legacy
-///   path; missing both is [`ImportError::MemoryNotFound`].
-/// - `id` only: enumerate `memories/*/` and pick the single
+///   found; `0` yields [`ImportError::MemoryNotFound`], `≥2`
+///   yields [`ImportError::MemoryAmbiguous`].
+/// - `id` only: enumerate `memories/*/` and pick the slug
 ///   directory whose listing contains `<id>.md`.
 /// - neither: [`ImportError::ResolveArgsMissing`].
 ///
 /// The helper does not read the memory body; it only resolves the
-/// logical address to a filesystem path so callers can proceed with
-/// `read_file` / `write_commit` on a known key.
+/// logical address to a filesystem path so callers can proceed
+/// with `read_file` / `write_commit` on a known key.
 pub async fn resolve_memory(
     backend: &NativeBackend,
     handle: &RepoHandle,
@@ -256,38 +211,20 @@ async fn resolve_slug_and_id(
     slug: &str,
     expected: Uuid,
 ) -> Result<ResolvedMemory, ImportError> {
-    let two_level = mmcp_core::conventions::memory_path(slug, expected);
-    match backend.read_file(handle, &two_level, &Rev::head()).await {
+    let path = mmcp_core::conventions::memory_path(slug, expected);
+    match backend.read_file(handle, &path, &Rev::head()).await {
         Ok(bytes) => {
             verify_id_match(slug, &bytes, expected)?;
             Ok(ResolvedMemory {
                 slug: slug.to_string(),
-                id: Some(expected),
-                path: two_level,
+                id: expected,
+                path,
             })
         }
-        Err(GitError::PathNotFound(_)) => {
-            // Legacy fallback: the file predates FR-028 and still
-            // lives at `memories/<slug>.md`. We still require the
-            // frontmatter id to match when it's present so stale
-            // client caches never masquerade as fresh hits.
-            let legacy = mmcp_core::conventions::legacy_memory_path(slug);
-            match backend.read_file(handle, &legacy, &Rev::head()).await {
-                Ok(bytes) => {
-                    verify_id_match(slug, &bytes, expected)?;
-                    Ok(ResolvedMemory {
-                        slug: slug.to_string(),
-                        id: Some(expected),
-                        path: legacy,
-                    })
-                }
-                Err(GitError::PathNotFound(_)) => Err(ImportError::MemoryNotFound {
-                    slug: Some(slug.to_string()),
-                    id: Some(expected),
-                }),
-                Err(err) => Err(ImportError::Git(err)),
-            }
-        }
+        Err(GitError::PathNotFound(_)) => Err(ImportError::MemoryNotFound {
+            slug: Some(slug.to_string()),
+            id: Some(expected),
+        }),
         Err(err) => Err(ImportError::Git(err)),
     }
 }
@@ -297,17 +234,14 @@ async fn resolve_by_slug(
     handle: &RepoHandle,
     slug: &str,
 ) -> Result<ResolvedMemory, ImportError> {
-    // Two-level layout first. `list_tree` on `memories/<slug>`
-    // returns only the direct UUID-named blobs; subtrees would be
-    // a schema violation here.
-    let two_level_dir = format!(
+    // `list_tree` on `memories/<slug>` returns only the direct
+    // UUID-named blobs; subtrees would be a schema violation.
+    let dir = format!(
         "{}/{}",
         mmcp_core::conventions::MEMORIES_DIR,
         slug
     );
-    let entries = backend
-        .list_tree(handle, &two_level_dir, &Rev::head())
-        .await?;
+    let entries = backend.list_tree(handle, &dir, &Rev::head()).await?;
     let uuids: Vec<Uuid> = entries
         .iter()
         .filter_map(|name| {
@@ -320,7 +254,7 @@ async fn resolve_by_slug(
             let only = uuids[0];
             Ok(ResolvedMemory {
                 slug: slug.to_string(),
-                id: Some(only),
+                id: only,
                 path: mmcp_core::conventions::memory_path(slug, only),
             })
         }
@@ -328,25 +262,10 @@ async fn resolve_by_slug(
             slug: slug.to_string(),
             candidates: uuids,
         }),
-        _ => {
-            // Fall back to the flat legacy layout.
-            let legacy = mmcp_core::conventions::legacy_memory_path(slug);
-            match backend.read_file(handle, &legacy, &Rev::head()).await {
-                Ok(bytes) => {
-                    let id_from_file = parse_frontmatter_id(&bytes);
-                    Ok(ResolvedMemory {
-                        slug: slug.to_string(),
-                        id: id_from_file,
-                        path: legacy,
-                    })
-                }
-                Err(GitError::PathNotFound(_)) => Err(ImportError::MemoryNotFound {
-                    slug: Some(slug.to_string()),
-                    id: None,
-                }),
-                Err(err) => Err(ImportError::Git(err)),
-            }
-        }
+        _ => Err(ImportError::MemoryNotFound {
+            slug: Some(slug.to_string()),
+            id: None,
+        }),
     }
 }
 
@@ -369,7 +288,7 @@ async fn resolve_by_id(
         if entries.iter().any(|name| name == &filename) {
             return Ok(ResolvedMemory {
                 slug: slug.clone(),
-                id: Some(expected),
+                id: expected,
                 path: mmcp_core::conventions::memory_path(&slug, expected),
             });
         }
@@ -382,10 +301,10 @@ async fn resolve_by_id(
 
 fn verify_id_match(slug: &str, bytes: &[u8], expected: Uuid) -> Result<(), ImportError> {
     let Some(actual) = parse_frontmatter_id(bytes) else {
-        // Pre-FR-028 file with no frontmatter id. Treat as a match
-        // so migration flows can address by expected id without
-        // erroring; the migration binary is what stamps the id.
-        return Ok(());
+        return Err(ImportError::MemoryNotFound {
+            slug: Some(slug.to_string()),
+            id: Some(expected),
+        });
     };
     if actual == expected {
         Ok(())
@@ -497,135 +416,19 @@ pub async fn write_memory_by_id(
 }
 
 /// Create a fresh memory file. Errors with
-/// [`ImportError::MemoryAlreadyExists`] when the slug is already
-/// on disk so callers never silently overwrite.
-pub async fn create_memory_file(
-    backend: &NativeBackend,
-    handle: &RepoHandle,
-    slug: &str,
-    rendered: &str,
-    author: &ResolvedAuthor,
-    message: Option<&str>,
-) -> Result<String, ImportError> {
-    validate_slug(slug)?;
-    if memory_exists(backend, handle, slug).await? {
-        return Err(ImportError::MemoryAlreadyExists {
-            slug: slug.to_string(),
-        });
-    }
-    let commit_message = message
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("create memory {slug}"));
-    write_memory_commit(backend, handle, slug, rendered, author, commit_message).await
-}
-
-/// Update an existing memory file. Errors with
-/// [`ImportError::MemoryNotFound`] when the slug has no file, so a
-/// caller that forgot a `create_memory_file` call never silently
-/// creates a new memory here.
-pub async fn update_memory_file(
-    backend: &NativeBackend,
-    handle: &RepoHandle,
-    slug: &str,
-    rendered: &str,
-    author: &ResolvedAuthor,
-    message: Option<&str>,
-) -> Result<String, ImportError> {
-    validate_slug(slug)?;
-    if !memory_exists(backend, handle, slug).await? {
-        return Err(ImportError::MemoryNotFound {
-            slug: Some(slug.to_string()),
-            id: None,
-        });
-    }
-    let commit_message = message
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("update memory {slug}"));
-    write_memory_commit(backend, handle, slug, rendered, author, commit_message).await
-}
-
-/// Commit a deletion of `memories/<slug>.md`. Errors with
-/// [`ImportError::MemoryNotFound`] when the slug has no file, to
-/// keep the wire contract symmetric with `update_memory_file`
-/// rather than silently no-op'ing.
-pub async fn delete_memory_file(
-    backend: &NativeBackend,
-    handle: &RepoHandle,
-    slug: &str,
-    author: &ResolvedAuthor,
-    message: Option<&str>,
-) -> Result<String, ImportError> {
-    validate_slug(slug)?;
-    if !memory_exists(backend, handle, slug).await? {
-        return Err(ImportError::MemoryNotFound {
-            slug: Some(slug.to_string()),
-            id: None,
-        });
-    }
-    let commit_message = message
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("delete memory {slug}"));
-    let commit_id = backend
-        .write_commit(
-            handle,
-            CommitSpec::mmcp_commit(
-                commit_message,
-                // `build_tree` interprets `(path, None)` as a
-                // delete, so we don't need a separate delete API.
-                vec![(mmcp_core::conventions::legacy_memory_path(slug), None)],
-                &author.name,
-                &author.email,
-            ),
-        )
-        .await?;
-    Ok(commit_id)
-}
-
-/// Internal: render-agnostic commit helper shared by
-/// `create_memory_file` / `update_memory_file`. Keeps the
-/// `CommitSpec` construction in one place so the `mmcp_commit`
-/// conventions and author plumbing don't drift between create and
-/// update.
-async fn write_memory_commit(
-    backend: &NativeBackend,
-    handle: &RepoHandle,
-    slug: &str,
-    rendered: &str,
-    author: &ResolvedAuthor,
-    commit_message: String,
-) -> Result<String, ImportError> {
-    let commit_id = backend
-        .write_commit(
-            handle,
-            CommitSpec::mmcp_commit(
-                commit_message,
-                vec![(
-                    mmcp_core::conventions::legacy_memory_path(slug),
-                    Some(rendered.as_bytes().to_vec()),
-                )],
-                &author.name,
-                &author.email,
-            ),
-        )
-        .await?;
-    Ok(commit_id)
-}
-
-/// Import a memory into a group repo, respecting a caller-chosen
-/// create-or-replace policy.
+/// Import a memory into a group repo.
 ///
-/// `override_existing` controls the collision branch:
-/// - `false` (strict create): error with
-///   [`ImportError::MemoryAlreadyExists`] when the slug is on disk.
-///   Used by the tightened MCP `write_memory` path and the CLI
-///   `mmcp import` default.
-/// - `true` (replace): silently update in place when the slug
-///   exists. Used by the MCP `write_memory` tool when the caller
-///   passes `override: true`, and by `mmcp import --override`.
+/// Parses `content` as a full memory file (frontmatter + body);
+/// when the content lacks a `+++` block, `synth_frontmatter` must
+/// supply name / description / kind and the rest of the body is
+/// treated as the payload. The memory lands at
+/// `memories/<slug>/<uuid>.md` — the id is taken from frontmatter
+/// when present, otherwise a fresh UUIDv7 is minted.
 ///
-/// `content` is the full markdown text. If it starts with `+++`
-/// fences the frontmatter is parsed from it. Otherwise
-/// `synth_frontmatter` must supply name/description/kind.
+/// `override_existing` only matters when an explicit id from
+/// frontmatter collides with an existing file. With a freshly
+/// minted id, the write always creates a new sibling under the
+/// slug directory (duplicate slugs are legal post-FR-028).
 pub async fn import_memory(
     backend: &NativeBackend,
     handle: &RepoHandle,
@@ -637,7 +440,7 @@ pub async fn import_memory(
 ) -> Result<ImportResult, ImportError> {
     validate_slug(slug)?;
 
-    let memory_file = if content.trim_start().starts_with("+++") {
+    let mut memory_file = if content.trim_start().starts_with("+++") {
         MemoryFile::parse(content)?
     } else if let Some(synth) = synth_frontmatter {
         MemoryFile {
@@ -649,21 +452,24 @@ pub async fn import_memory(
         return Err(ImportError::MissingFrontmatter);
     };
 
+    let id = memory_file.frontmatter.id.unwrap_or_else(Uuid::now_v7);
+    memory_file.frontmatter = memory_file.frontmatter.clone().with_id(id);
     let rendered = memory_file
         .to_string()
         .map_err(|e| ImportError::Render(e.to_string()))?;
 
-    let message = format!("import memory {slug}");
-    let commit_id = if memory_exists(backend, handle, slug).await? {
-        if !override_existing {
-            return Err(ImportError::MemoryAlreadyExists {
-                slug: slug.to_string(),
-            });
-        }
-        update_memory_file(backend, handle, slug, &rendered, author, Some(&message)).await?
-    } else {
-        create_memory_file(backend, handle, slug, &rendered, author, Some(&message)).await?
-    };
+    let message = format!("import memory {slug}/{id}");
+    let commit_id = write_memory_by_id(
+        backend,
+        handle,
+        slug,
+        id,
+        &rendered,
+        author,
+        override_existing,
+        Some(&message),
+    )
+    .await?;
 
     Ok(ImportResult {
         slug: slug.to_string(),
@@ -848,134 +654,45 @@ mod tests {
     const SAMPLE_RENDERED: &str = "+++\nname = \"sample\"\ndescription = \"s\"\nkind = \"rule\"\nmandatory = false\ntags = []\n+++\nBody text.\n";
 
     #[tokio::test]
-    async fn create_memory_file_writes_when_absent() {
+    async fn import_memory_mints_uuid_and_lands_under_slug() {
         let (backend, handle, _tmp) = test_backend().await;
         let author = test_author();
-        let commit_id =
-            create_memory_file(&backend, &handle, "new-mem", SAMPLE_RENDERED, &author, None)
-                .await
-                .expect("create");
-        assert!(!commit_id.is_empty());
-        assert!(memory_exists(&backend, &handle, "new-mem").await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn create_memory_file_errors_when_slug_already_exists() {
-        let (backend, handle, _tmp) = test_backend().await;
-        let author = test_author();
-        create_memory_file(&backend, &handle, "taken", SAMPLE_RENDERED, &author, None)
-            .await
-            .expect("seed");
-        let err = create_memory_file(&backend, &handle, "taken", SAMPLE_RENDERED, &author, None)
-            .await
-            .expect_err("second create must refuse");
-        assert!(matches!(err, ImportError::MemoryAlreadyExists { slug } if slug == "taken"));
-    }
-
-    #[tokio::test]
-    async fn update_memory_file_errors_when_slug_does_not_exist() {
-        let (backend, handle, _tmp) = test_backend().await;
-        let author = test_author();
-        let err = update_memory_file(&backend, &handle, "missing", SAMPLE_RENDERED, &author, None)
-            .await
-            .expect_err("update on absent slug");
-        assert!(matches!(err, ImportError::MemoryNotFound { slug: Some(s), .. } if s == "missing"));
-    }
-
-    #[tokio::test]
-    async fn update_memory_file_replaces_content_when_slug_exists() {
-        let (backend, handle, _tmp) = test_backend().await;
-        let author = test_author();
-        create_memory_file(
+        let result = import_memory(
             &backend,
             &handle,
-            "editable",
-            SAMPLE_RENDERED,
-            &author,
-            None,
-        )
-        .await
-        .expect("seed");
-        let updated = "+++\nname = \"updated\"\ndescription = \"s\"\nkind = \"rule\"\nmandatory = false\ntags = []\n+++\nNew body.\n";
-        update_memory_file(&backend, &handle, "editable", updated, &author, None)
-            .await
-            .expect("update");
-        let bytes = backend
-            .read_file(&handle, "memories/editable.md", &Rev::head())
-            .await
-            .expect("read back");
-        let text = std::str::from_utf8(&bytes).expect("utf8");
-        assert!(text.contains("name = \"updated\""));
-        assert!(text.contains("New body."));
-    }
-
-    #[tokio::test]
-    async fn delete_memory_file_removes_blob_and_advances_main() {
-        let (backend, handle, _tmp) = test_backend().await;
-        let author = test_author();
-        create_memory_file(&backend, &handle, "doomed", SAMPLE_RENDERED, &author, None)
-            .await
-            .expect("seed");
-        assert!(memory_exists(&backend, &handle, "doomed").await.unwrap());
-        let commit_id = delete_memory_file(&backend, &handle, "doomed", &author, None)
-            .await
-            .expect("delete");
-        assert!(!commit_id.is_empty());
-        assert!(!memory_exists(&backend, &handle, "doomed").await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn delete_memory_file_errors_when_slug_absent() {
-        let (backend, handle, _tmp) = test_backend().await;
-        let author = test_author();
-        let err = delete_memory_file(&backend, &handle, "ghost", &author, None)
-            .await
-            .expect_err("delete on absent slug");
-        assert!(matches!(err, ImportError::MemoryNotFound { slug: Some(s), .. } if s == "ghost"));
-    }
-
-    #[tokio::test]
-    async fn import_memory_rejects_collision_without_override() {
-        // Tightened CLI / MCP default: `override_existing = false`
-        // must surface the collision instead of silently replacing.
-        let (backend, handle, _tmp) = test_backend().await;
-        let author = test_author();
-        import_memory(
-            &backend,
-            &handle,
-            "taken",
+            "minted",
             SAMPLE_RENDERED,
             None,
             &author,
             false,
         )
         .await
-        .expect("seed");
-        let err = import_memory(
-            &backend,
-            &handle,
-            "taken",
-            SAMPLE_RENDERED,
-            None,
-            &author,
-            false,
-        )
-        .await
-        .expect_err("second create must refuse");
-        assert!(matches!(err, ImportError::MemoryAlreadyExists { slug } if slug == "taken"));
+        .expect("import");
+        assert_eq!(result.slug, "minted");
+        // Resolving the slug finds exactly one entry — the one
+        // we just minted — and its path sits under the slug dir.
+        let resolved = resolve_memory(&backend, &handle, Some("minted"), None)
+            .await
+            .expect("resolve");
+        assert_eq!(resolved.slug, "minted");
+        assert!(
+            resolved.path.starts_with("memories/minted/"),
+            "expected two-level path, got {}",
+            resolved.path
+        );
     }
 
     #[tokio::test]
-    async fn import_memory_replaces_when_override_is_true() {
-        // `override_existing = true` preserves the old upsert
-        // behavior so `mmcp import --override` + MCP `write_memory`
-        // with `override: true` keep working.
+    async fn import_memory_repeated_produces_sibling_uuids() {
+        // Duplicate slugs are legal post-FR-028: each import
+        // mints a fresh UUIDv7 and lands as a sibling of the
+        // prior file under the same slug directory.
         let (backend, handle, _tmp) = test_backend().await;
         let author = test_author();
         let first = import_memory(
             &backend,
             &handle,
-            "upsert",
+            "twin",
             SAMPLE_RENDERED,
             None,
             &author,
@@ -986,16 +703,43 @@ mod tests {
         let second = import_memory(
             &backend,
             &handle,
-            "upsert",
+            "twin",
             SAMPLE_RENDERED,
             None,
             &author,
-            true,
+            false,
         )
         .await
-        .expect("second with override");
-        assert_ne!(first.commit_id, second.commit_id);
+        .expect("second twin");
         assert_eq!(first.slug, second.slug);
+        assert_ne!(first.commit_id, second.commit_id);
+        let err = resolve_memory(&backend, &handle, Some("twin"), None)
+            .await
+            .expect_err("ambiguous");
+        assert!(matches!(
+            err,
+            ImportError::MemoryAmbiguous { slug, candidates } if slug == "twin" && candidates.len() == 2
+        ));
+    }
+
+    #[tokio::test]
+    async fn import_memory_rejects_pinned_id_collision_without_override() {
+        // When the frontmatter carries an explicit `id`, a second
+        // import with the same slug + id must refuse unless the
+        // caller opts into replace via `override_existing`.
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let id = Uuid::now_v7();
+        let pinned = format!(
+            "+++\nid = \"{id}\"\nname = \"pinned\"\ndescription = \"s\"\nkind = \"rule\"\n+++\nbody\n"
+        );
+        import_memory(&backend, &handle, "taken", &pinned, None, &author, false)
+            .await
+            .expect("seed");
+        let err = import_memory(&backend, &handle, "taken", &pinned, None, &author, false)
+            .await
+            .expect_err("second create must refuse");
+        assert!(matches!(err, ImportError::MemoryAlreadyExists { slug } if slug == "taken"));
     }
 
     async fn seed_two_level_memory(
@@ -1045,32 +789,8 @@ mod tests {
             .await
             .expect("resolve");
         assert_eq!(resolved.slug, "rt");
-        assert_eq!(resolved.id, Some(id));
+        assert_eq!(resolved.id, id);
         assert_eq!(resolved.path, format!("memories/rt/{id}.md"));
-    }
-
-    #[tokio::test]
-    async fn resolve_memory_by_slug_falls_back_to_legacy_path() {
-        let (backend, handle, _tmp) = test_backend().await;
-        let author = test_author();
-        import_memory(
-            &backend,
-            &handle,
-            "legacy",
-            SAMPLE_RENDERED,
-            None,
-            &author,
-            false,
-        )
-        .await
-        .expect("seed legacy");
-
-        let resolved = resolve_memory(&backend, &handle, Some("legacy"), None)
-            .await
-            .expect("resolve");
-        assert_eq!(resolved.slug, "legacy");
-        assert_eq!(resolved.id, None);
-        assert_eq!(resolved.path, "memories/legacy.md");
     }
 
     #[tokio::test]
@@ -1105,7 +825,7 @@ mod tests {
             .await
             .expect("resolve by id");
         assert_eq!(resolved.slug, "byid");
-        assert_eq!(resolved.id, Some(id));
+        assert_eq!(resolved.id, id);
     }
 
     #[tokio::test]
@@ -1150,10 +870,13 @@ mod tests {
             .await
             .expect("import");
 
+        let resolved = resolve_memory(&backend, &handle, Some("rt-test"), None)
+            .await
+            .expect("resolve imported slug");
         let bytes = backend
             .read_file(
                 &handle,
-                "memories/rt-test.md",
+                &resolved.path,
                 &mmcp_git::Rev::Branch("main".to_string()),
             )
             .await
@@ -1165,5 +888,6 @@ mod tests {
         assert_eq!(parsed.frontmatter.kind, MemoryKind::Rule);
         assert!(parsed.frontmatter.mandatory);
         assert!(parsed.body.contains("Round trip body"));
+        assert_eq!(parsed.frontmatter.id, Some(resolved.id));
     }
 }

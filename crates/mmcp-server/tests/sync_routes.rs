@@ -182,7 +182,7 @@ async fn sync_push_first_publish_assigns_0_1_0_and_records_tag() {
             CommitSpec::mmcp_commit(
                 "seed memory commit",
                 vec![(
-                    mmcp_core::conventions::legacy_memory_path("rules"),
+                    mmcp_core::conventions::memory_path("rules", uuid::Uuid::now_v7()),
                     Some(b"+++\nname = \"Rules\"\ndescription = \"A rule\"\nkind = \"rule\"\nmandatory = true\ntags = [\"test\"]\n+++\n\nBody.\n".to_vec()),
                 )],
                 "alice",

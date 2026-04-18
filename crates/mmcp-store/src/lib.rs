@@ -68,9 +68,8 @@ pub use groups::{GroupEntry, GroupIndex};
 pub use home::{MmcpHome, ResolvedAuthor, read_git_global};
 pub use memory::{
     ImportError, ImportResult, MemoryFileRef, ResolvedMemory, SynthFrontmatter,
-    create_memory_file, delete_file_at_path, delete_memory_file, import_memory,
-    list_all_memory_files, memory_exists, parse_kind, resolve_group, resolve_memory,
-    slugify_filename, update_memory_file, validate_slug, write_file_at_path, write_memory_by_id,
+    delete_file_at_path, import_memory, list_all_memory_files, parse_kind, resolve_group,
+    resolve_memory, slugify_filename, validate_slug, write_file_at_path, write_memory_by_id,
 };
 pub use memory_ops::{MemoryEditError, MemoryEditOp, apply_ops};
 pub use sessions::{MemoryRead, SessionState, SessionStore};

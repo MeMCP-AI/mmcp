@@ -42,7 +42,6 @@ use mmcp_store::home::{MmcpHome, ResolvedAuthor};
 use mmcp_store::memory::ImportError;
 use mmcp_store::sessions::SessionStore;
 
-use mmcp_core::conventions::legacy_memory_path;
 
 /// Run the MCP stdio server loop until the client disconnects.
 pub async fn run(debug_mode: bool) -> Result<()> {
@@ -1057,7 +1056,7 @@ impl McpServer {
         Ok(ok_json(json!({
             "group": entry.manifest.group_id,
             "slug": resolved.slug,
-            "id": resolved.id.map(|u| u.to_string()),
+            "id": resolved.id.to_string(),
             "version": rev_label(&rev),
             "frontmatter": frontmatter_to_json(&file.frontmatter),
             "body": file.body,
@@ -1071,18 +1070,19 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<ListVersionsArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let group_id = parse_group_id(&args.group)?;
-        let entry = self.state.groups.get(&group_id).await.ok_or_else(|| {
-            McpError::invalid_params(
-                "group not found in local mirror",
-                Some(json!({ "group": group_id.to_string() })),
-            )
-        })?;
-        let path = legacy_memory_path(&args.slug);
+        let entry = self.resolve_group_entry(&args.group).await?;
+        let resolved = mmcp_store::resolve_memory(
+            &self.state.backend,
+            &entry.handle,
+            Some(&args.slug),
+            None,
+        )
+        .await
+        .map_err(map_memory_error_to_mcp)?;
         let history = self
             .state
             .backend
-            .walk_history(&entry.handle, &path)
+            .walk_history(&entry.handle, &resolved.path)
             .await
             .map_err(git_error)?;
         let versions: Vec<serde_json::Value> = history
@@ -1100,7 +1100,8 @@ impl McpServer {
             .collect();
         Ok(ok_json(json!({
             "group": entry.manifest.group_id,
-            "slug": args.slug,
+            "slug": resolved.slug,
+            "id": resolved.id.to_string(),
             "versions": versions,
         })))
     }
@@ -1347,7 +1348,7 @@ impl McpServer {
         Ok(ok_json(json!({
             "group": args.group,
             "slug": resolved.slug,
-            "id": resolved.id.map(|u| u.to_string()),
+            "id": resolved.id.to_string(),
             "commit_id": commit_id,
         })))
     }
@@ -1391,7 +1392,7 @@ impl McpServer {
         Ok(ok_json(json!({
             "group": args.group,
             "slug": resolved.slug,
-            "id": resolved.id.map(|u| u.to_string()),
+            "id": resolved.id.to_string(),
             "commit_id": commit_id,
         })))
     }
@@ -1443,7 +1444,7 @@ impl McpServer {
         Ok(ok_json(json!({
             "group": args.group,
             "slug": resolved.slug,
-            "id": resolved.id.map(|u| u.to_string()),
+            "id": resolved.id.to_string(),
             "sections": as_json,
             "count": sections.len(),
         })))
@@ -1527,7 +1528,7 @@ impl McpServer {
         Ok(ok_json(json!({
             "group": args.group,
             "slug": resolved.slug,
-            "id": resolved.id.map(|u| u.to_string()),
+            "id": resolved.id.to_string(),
             "commit_id": commit_id,
             "sections": sections_json,
         })))
@@ -3458,7 +3459,7 @@ mod tests {
                     author_email: "test@example.com".into(),
                     message: format!("seed memory {memory_slug}"),
                     files: vec![(
-                        legacy_memory_path(memory_slug),
+                        mmcp_core::conventions::memory_path(memory_slug, Uuid::now_v7()),
                         Some(memory_body.as_bytes().to_vec()),
                     )],
                 },

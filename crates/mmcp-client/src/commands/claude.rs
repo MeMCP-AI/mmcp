@@ -634,7 +634,7 @@ async fn convert_and_write(
                 CommitSpec::mmcp_commit(
                     format!("convert CLAUDE.md section: {}", section.title),
                     vec![(
-                        mmcp_core::conventions::legacy_memory_path(&section.slug),
+                        mmcp_core::conventions::memory_path(&section.slug, uuid::Uuid::now_v7()),
                         Some(rendered.into_bytes()),
                     )],
                     &author.name,
