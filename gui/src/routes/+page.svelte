@@ -26,6 +26,18 @@
   let settingsOpen = $state(false);
   let diagnosticsOpen = $state(false);
 
+  // Mobile single-pane state. Auto-advances as the selection deepens
+  // so a tap on a group jumps to the memories pane, a tap on a
+  // memory jumps to the viewer. The dedicated tab bar (shown at
+  // <md only) lets the user walk back up.
+  type MobilePane = 'groups' | 'memories' | 'viewer';
+  let mobilePane = $state<MobilePane>('groups');
+
+  $effect(() => {
+    if (selectionStore.slug) mobilePane = 'viewer';
+    else if (selectionStore.groupId) mobilePane = 'memories';
+  });
+
   $effect(() => {
     (async () => {
       await Promise.all([
@@ -48,7 +60,12 @@
   $effect(() => {
     const gid = selectionStore.groupId;
     const slug = selectionStore.slug;
-    if (gid && slug && !memoriesStore.bodyFor(gid, slug) && !memoriesStore.isLoadingBody(gid, slug)) {
+    if (
+      gid &&
+      slug &&
+      !memoriesStore.bodyFor(gid, slug) &&
+      !memoriesStore.isLoadingBody(gid, slug)
+    ) {
       memoriesStore.loadBody(gid, slug);
     }
   });
@@ -87,16 +104,22 @@
   );
 
   const canCreate = $derived(!!selectionStore.groupId && editor === null);
-  const canEditOrDelete = $derived(!!currentBody && editor === null && pendingDelete === null);
-  const syncReady = $derived(syncStore.configured && reachabilityStore.online && !syncStore.inFlight);
+  const canEditOrDelete = $derived(
+    !!currentBody && editor === null && pendingDelete === null
+  );
+  const syncReady = $derived(
+    syncStore.configured && reachabilityStore.online && !syncStore.inFlight
+  );
 
   function handleNew() {
     editor = { mode: 'new', initial: null };
+    mobilePane = 'viewer';
   }
 
   function handleEdit() {
     if (!currentBody) return;
     editor = { mode: 'edit', initial: currentBody };
+    mobilePane = 'viewer';
   }
 
   function handleDeleteRequest() {
@@ -155,9 +178,15 @@
     }
     return String(err);
   }
+
+  // Tailwind-friendly visibility helpers for the three panes.
+  // `hidden md:block` means: hidden at <md, block at md+. We toggle
+  // the `hidden` vs `block` half per-pane based on mobilePane.
+  const paneVisibility = (pane: MobilePane) =>
+    mobilePane === pane ? 'flex md:flex' : 'hidden md:flex';
 </script>
 
-<div class="flex h-full w-full flex-col bg-zinc-950 text-zinc-100">
+<div class="flex h-full w-full flex-col overflow-hidden bg-zinc-950 text-zinc-100">
   <Toolbar
     {canCreate}
     {canEditOrDelete}
@@ -171,41 +200,86 @@
     onSettings={() => (settingsOpen = true)}
   />
 
-  <div class="grid min-h-0 flex-1 grid-cols-[220px_280px_1fr]">
-    <GroupList
-      groups={groupsStore.groups}
-      selectedId={selectionStore.groupId}
-      onSelect={(id: string) => selectionStore.selectGroup(id)}
-    />
+  <!-- Mobile-only pane tabs. Hidden at md+ where all three panes are
+       visible simultaneously in the grid. -->
+  <nav
+    class="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-zinc-800 bg-zinc-900/70 px-2 text-sm md:hidden"
+  >
+    {#each [
+      { id: 'groups' as const, label: 'Groups', disabled: false },
+      {
+        id: 'memories' as const,
+        label: 'Memories',
+        disabled: !selectionStore.groupId
+      },
+      {
+        id: 'viewer' as const,
+        label: editor ? (editor.mode === 'new' ? 'New' : 'Edit') : 'Viewer',
+        disabled: !selectionStore.slug && !editor
+      }
+    ] as tab (tab.id)}
+      {@const active = mobilePane === tab.id}
+      <button
+        type="button"
+        class="rounded-md px-3 py-1 text-xs font-medium transition-colors
+          {active
+          ? 'bg-sky-500/15 text-sky-100'
+          : 'text-zinc-400 hover:bg-zinc-800/70 hover:text-zinc-200'}
+          disabled:cursor-not-allowed disabled:opacity-40"
+        disabled={tab.disabled}
+        onclick={() => (mobilePane = tab.id)}
+      >
+        {tab.label}
+      </button>
+    {/each}
+  </nav>
 
-    <MemoryList
-      {slugs}
-      groupSelected={!!selectionStore.groupId}
-      loading={slugsLoading}
-      selectedSlug={selectionStore.slug}
-      kindDisplay={settingsStore.values.kind_display}
-      bodyFor={(slug: string) =>
-        selectionStore.groupId
-          ? memoriesStore.bodyFor(selectionStore.groupId, slug)
-          : undefined}
-      onSelect={(slug: string) => selectionStore.selectMemory(slug)}
-    />
-
-    {#if editor}
-      <MemoryEditor
-        initial={editor.initial}
-        mode={editor.mode}
-        onSave={handleSave}
-        onCancel={handleCancel}
+  <!-- Main body: stacked below md, three-pane grid above. Each pane
+       root pins `h-full min-h-0 overflow-hidden` so scroll lives
+       inside the pane instead of bubbling to the page. -->
+  <div
+    class="min-h-0 flex-1 md:grid md:grid-cols-[180px_240px_1fr] lg:grid-cols-[220px_280px_1fr]"
+  >
+    <div class="{paneVisibility('groups')} h-full min-h-0 flex-col overflow-hidden">
+      <GroupList
+        groups={groupsStore.groups}
+        selectedId={selectionStore.groupId}
+        onSelect={(id: string) => selectionStore.selectGroup(id)}
       />
-    {:else}
-      <MemoryViewer
-        memory={currentBody}
-        slug={selectionStore.slug}
-        loading={currentBodyLoading}
+    </div>
+
+    <div class="{paneVisibility('memories')} h-full min-h-0 flex-col overflow-hidden">
+      <MemoryList
+        {slugs}
+        groupSelected={!!selectionStore.groupId}
+        loading={slugsLoading}
+        selectedSlug={selectionStore.slug}
         kindDisplay={settingsStore.values.kind_display}
+        bodyFor={(slug: string) =>
+          selectionStore.groupId
+            ? memoriesStore.bodyFor(selectionStore.groupId, slug)
+            : undefined}
+        onSelect={(slug: string) => selectionStore.selectMemory(slug)}
       />
-    {/if}
+    </div>
+
+    <div class="{paneVisibility('viewer')} h-full min-h-0 flex-col overflow-hidden">
+      {#if editor}
+        <MemoryEditor
+          initial={editor.initial}
+          mode={editor.mode}
+          onSave={handleSave}
+          onCancel={handleCancel}
+        />
+      {:else}
+        <MemoryViewer
+          memory={currentBody}
+          slug={selectionStore.slug}
+          loading={currentBodyLoading}
+          kindDisplay={settingsStore.values.kind_display}
+        />
+      {/if}
+    </div>
   </div>
 
   <StatusBar

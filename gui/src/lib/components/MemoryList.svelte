@@ -25,11 +25,15 @@
   }: Props = $props();
 </script>
 
-<aside class="flex h-full flex-col border-r border-zinc-800 bg-zinc-900/40">
-  <div class="flex h-9 shrink-0 items-center px-3 text-xs font-semibold uppercase tracking-wide text-zinc-400">
+<aside
+  class="flex h-full min-h-0 flex-col overflow-hidden border-r border-zinc-800 bg-zinc-900/40"
+>
+  <div
+    class="flex h-9 shrink-0 items-center px-3 text-xs font-semibold uppercase tracking-wide text-zinc-400"
+  >
     Memories
   </div>
-  <div class="flex-1 overflow-y-auto">
+  <div class="min-h-0 flex-1 overflow-y-auto">
     {#if !groupSelected}
       <div class="px-3 py-2 text-xs text-zinc-500">Select a group on the left.</div>
     {:else if loading || slugs === undefined}

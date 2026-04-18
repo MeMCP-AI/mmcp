@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { marked } from 'marked';
   import type { MemoryFile } from '$lib/types';
 
@@ -11,13 +12,18 @@
 
   let { initial, mode, onSave, onCancel }: Props = $props();
 
-  let slug = $state(initial?.frontmatter && 'slug' in initial.frontmatter ? '' : '');
-  let name = $state(initial?.frontmatter.name ?? '');
-  let description = $state(initial?.frontmatter.description ?? '');
-  let kind = $state<string>(initial?.frontmatter.kind ?? 'scratch');
-  let mandatory = $state(initial?.frontmatter.mandatory ?? false);
-  let tags = $state((initial?.frontmatter.tags ?? []).join(', '));
-  let body = $state(initial?.body ?? '');
+  // One-shot capture from the `initial` prop — the parent remounts
+  // the editor by toggling `{#if editor}` so we never need these to
+  // react to later prop changes. `untrack` silences Svelte 5's
+  // `state_referenced_locally` warning and makes the intent
+  // explicit.
+  let slug = $state(untrack(() => ''));
+  let name = $state(untrack(() => initial?.frontmatter.name ?? ''));
+  let description = $state(untrack(() => initial?.frontmatter.description ?? ''));
+  let kind = $state<string>(untrack(() => initial?.frontmatter.kind ?? 'scratch'));
+  let mandatory = $state(untrack(() => initial?.frontmatter.mandatory ?? false));
+  let tags = $state(untrack(() => (initial?.frontmatter.tags ?? []).join(', ')));
+  let body = $state(untrack(() => initial?.body ?? ''));
 
   marked.setOptions({ breaks: false, gfm: true });
   const previewHtml = $derived(marked.parse(body) as string);
@@ -50,9 +56,9 @@
   }
 </script>
 
-<section class="flex h-full flex-col bg-zinc-950">
-  <div class="flex-1 overflow-y-auto">
-    <div class="mx-auto flex max-w-5xl flex-col gap-5 p-6">
+<section class="flex h-full min-h-0 flex-col overflow-hidden bg-zinc-950">
+  <div class="min-h-0 flex-1 overflow-y-auto">
+    <div class="mx-auto flex max-w-5xl flex-col gap-5 p-4 sm:p-6">
       <header>
         <h1 class="text-lg font-semibold text-zinc-50">
           {mode === 'new' ? 'New memory' : 'Edit memory'}
@@ -60,8 +66,8 @@
       </header>
 
       <!-- frontmatter form -->
-      <div class="rounded-lg border border-zinc-800 bg-zinc-900 p-5">
-        <div class="grid grid-cols-[120px_1fr] items-center gap-3 text-sm">
+      <div class="rounded-lg border border-zinc-800 bg-zinc-900 p-4 sm:p-5">
+        <div class="grid grid-cols-[100px_1fr] items-center gap-3 text-sm sm:grid-cols-[120px_1fr]">
           <label for="slug" class="text-zinc-400">slug</label>
           <input
             id="slug"
@@ -103,7 +109,12 @@
           </select>
 
           <label for="mandatory" class="text-zinc-400">mandatory</label>
-          <input id="mandatory" type="checkbox" bind:checked={mandatory} class="justify-self-start" />
+          <input
+            id="mandatory"
+            type="checkbox"
+            bind:checked={mandatory}
+            class="justify-self-start"
+          />
 
           <label for="tags" class="text-zinc-400">tags</label>
           <input
@@ -116,19 +127,19 @@
         </div>
       </div>
 
-      <!-- body split -->
+      <!-- body split: stacked on narrow, 50/50 on wide -->
       <div>
         <div class="mb-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
           Body (markdown)
         </div>
-        <div class="grid min-h-[420px] grid-cols-2 gap-3">
+        <div class="grid min-h-[320px] grid-cols-1 gap-3 md:grid-cols-2">
           <textarea
-            class="h-[420px] w-full resize-none rounded-md border border-zinc-800 bg-zinc-950 p-3 font-mono text-sm text-zinc-100 outline-none focus:border-zinc-600"
+            class="h-[320px] w-full resize-none rounded-md border border-zinc-800 bg-zinc-950 p-3 font-mono text-sm text-zinc-100 outline-none focus:border-zinc-600 md:h-[420px]"
             bind:value={body}
             spellcheck="false"
           ></textarea>
           <div
-            class="h-[420px] overflow-y-auto rounded-md border border-zinc-800 bg-zinc-900/40 p-3"
+            class="h-[240px] overflow-y-auto rounded-md border border-zinc-800 bg-zinc-900/40 p-3 md:h-[420px]"
           >
             <div class="prose prose-invert prose-zinc prose-sm max-w-none">
               {@html previewHtml}
@@ -138,7 +149,7 @@
       </div>
 
       <!-- actions -->
-      <div class="flex items-center gap-3">
+      <div class="flex flex-wrap items-center gap-3">
         <button
           type="button"
           class="inline-flex items-center rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
