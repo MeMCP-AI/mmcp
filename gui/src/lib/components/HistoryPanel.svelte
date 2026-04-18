@@ -2,8 +2,8 @@
   import KindBadge from './KindBadge.svelte';
   import { marked } from 'marked';
   import { GitCommit, LoaderCircle, Mail, User, X } from 'lucide-svelte';
-  import { listMemoryHistory, loadMemoryAt } from '$lib/api/history';
-  import type { CommitMeta, KindStr, MemoryFile } from '$lib/types';
+  import { diffMemory, listMemoryHistory, loadMemoryAt } from '$lib/api/history';
+  import type { CommitMeta, DiffResult, KindStr, MemoryFile } from '$lib/types';
 
   interface Props {
     groupId: string;
@@ -22,6 +22,15 @@
   let loadingMemory = $state(false);
   let memoryError = $state<string | null>(null);
 
+  let detailTab = $state<'memory' | 'diff'>('memory');
+  let diff = $state<DiffResult | null>(null);
+  let loadingDiff = $state(false);
+  let diffError = $state<string | null>(null);
+
+  // Walking `git log` a second time for a brand-new memory is
+  // cheap; we don't cache across tab swaps to keep the store
+  // simple. The commit list itself is cached in `commits`.
+
   // Refetch the commit list whenever the viewer points at a new
   // memory. Auto-select the newest commit on first load.
   $effect(() => {
@@ -32,6 +41,7 @@
     commits = null;
     selectedId = null;
     memoryAt = null;
+    diff = null;
     void (async () => {
       try {
         const list = await listMemoryHistory(g, s);
@@ -59,6 +69,31 @@
         memoryError = formatErr(err);
       } finally {
         loadingMemory = false;
+      }
+    })();
+  });
+
+  // Compute the diff against the previous commit (the next entry
+  // in the list since `commits` is newest-first). The initial
+  // commit has no parent — send `null` and render an all-insert
+  // diff labelled as "introduced".
+  $effect(() => {
+    const id = selectedId;
+    const list = commits;
+    if (!id || !list) return;
+    if (detailTab !== 'diff') return;
+    loadingDiff = true;
+    diffError = null;
+    diff = null;
+    const idx = list.findIndex((c) => c.id === id);
+    const parent = idx >= 0 && idx + 1 < list.length ? list[idx + 1].id : null;
+    void (async () => {
+      try {
+        diff = await diffMemory(groupId, slug, parent, id);
+      } catch (err) {
+        diffError = formatErr(err);
+      } finally {
+        loadingDiff = false;
       }
     })();
   });
@@ -190,23 +225,45 @@
       </div>
     </div>
 
-    <!-- Commit detail + memory at commit. -->
+    <!-- Commit detail + memory / diff. -->
     <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
       {#if !selectedId}
         <div class="flex flex-1 items-center justify-center p-6 text-sm text-zinc-500">
           Pick a commit on the left.
         </div>
-      {:else if loadingMemory}
-        <div class="flex flex-1 items-center justify-center gap-2 p-6 text-sm text-zinc-500">
-          <LoaderCircle size={14} class="animate-spin" />
-          Reading memory at commit…
-        </div>
-      {:else if memoryError}
-        <div class="m-4 rounded-md border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200">
-          {memoryError}
-        </div>
-      {:else if memoryAt}
+      {:else}
         {@const current = commits?.find((c) => c.id === selectedId)}
+        <!-- Tab bar. Sits above the scroll container so switching
+             views doesn't jump back to the top of the commit card. -->
+        <div
+          class="flex shrink-0 items-center gap-1 border-b border-zinc-800 bg-zinc-900/40 px-3 py-1.5"
+        >
+          <button
+            type="button"
+            class="rounded-md px-2.5 py-1 text-xs font-medium transition-colors
+              {detailTab === 'memory'
+              ? 'bg-sky-500/15 text-sky-100'
+              : 'text-zinc-400 hover:bg-zinc-800/70 hover:text-zinc-200'}"
+            onclick={() => (detailTab = 'memory')}
+          >
+            Memory
+          </button>
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors
+              {detailTab === 'diff'
+              ? 'bg-sky-500/15 text-sky-100'
+              : 'text-zinc-400 hover:bg-zinc-800/70 hover:text-zinc-200'}"
+            onclick={() => (detailTab = 'diff')}
+          >
+            Diff
+            {#if diff && (diff.inserted > 0 || diff.deleted > 0)}
+              <span class="text-[10px] text-emerald-300">+{diff.inserted}</span>
+              <span class="text-[10px] text-rose-300">-{diff.deleted}</span>
+            {/if}
+          </button>
+        </div>
+
         <div class="min-h-0 flex-1 overflow-y-auto">
           <div class="mx-auto max-w-4xl px-4 py-5 sm:px-6 sm:py-6">
             {#if current}
@@ -239,55 +296,166 @@
               </div>
             {/if}
 
-            <div class="mt-5 rounded-lg border border-zinc-800 bg-zinc-900 p-4 sm:p-5">
-              <h3 class="text-base font-semibold text-zinc-50" title={memoryAt.frontmatter.name}>
-                {memoryAt.frontmatter.name}
-              </h3>
-              <p
-                class="mt-0.5 text-sm text-zinc-400"
-                title={memoryAt.frontmatter.description}
-              >
-                {memoryAt.frontmatter.description}
-              </p>
-              <div class="mt-3 flex flex-wrap items-center gap-1.5">
-                <KindBadge kind={memoryAt.frontmatter.kind as KindStr} mode="icon_and_text" />
-                {#if memoryAt.frontmatter.mandatory}
-                  <span
-                    class="inline-flex items-center rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-300 ring-1 ring-inset ring-amber-500/30"
+            {#if detailTab === 'memory'}
+              {#if loadingMemory}
+                <div
+                  class="mt-5 flex items-center justify-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900 p-6 text-sm text-zinc-500"
+                >
+                  <LoaderCircle size={14} class="animate-spin" />
+                  Reading memory at commit…
+                </div>
+              {:else if memoryError}
+                <div
+                  class="mt-5 rounded-md border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
+                >
+                  {memoryError}
+                </div>
+              {:else if memoryAt}
+                <div class="mt-5 rounded-lg border border-zinc-800 bg-zinc-900 p-4 sm:p-5">
+                  <h3
+                    class="text-base font-semibold text-zinc-50"
+                    title={memoryAt.frontmatter.name}
                   >
-                    mandatory
-                  </span>
-                {/if}
-                {#if memoryAt.frontmatter.version}
-                  <span
-                    class="inline-flex items-center rounded-md bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300"
-                    title="version"
+                    {memoryAt.frontmatter.name}
+                  </h3>
+                  <p
+                    class="mt-0.5 text-sm text-zinc-400"
+                    title={memoryAt.frontmatter.description}
                   >
-                    v{memoryAt.frontmatter.version}
-                  </span>
-                {/if}
-                {#each memoryAt.frontmatter.tags as tag (tag)}
-                  <span
-                    class="inline-flex items-center rounded-md bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300"
-                    title={tag}
-                  >
-                    {tag}
-                  </span>
-                {/each}
-              </div>
-            </div>
+                    {memoryAt.frontmatter.description}
+                  </p>
+                  <div class="mt-3 flex flex-wrap items-center gap-1.5">
+                    <KindBadge
+                      kind={memoryAt.frontmatter.kind as KindStr}
+                      mode="icon_and_text"
+                    />
+                    {#if memoryAt.frontmatter.mandatory}
+                      <span
+                        class="inline-flex items-center rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-300 ring-1 ring-inset ring-amber-500/30"
+                      >
+                        mandatory
+                      </span>
+                    {/if}
+                    {#if memoryAt.frontmatter.version}
+                      <span
+                        class="inline-flex items-center rounded-md bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300"
+                        title="version"
+                      >
+                        v{memoryAt.frontmatter.version}
+                      </span>
+                    {/if}
+                    {#each memoryAt.frontmatter.tags as tag (tag)}
+                      <span
+                        class="inline-flex items-center rounded-md bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300"
+                        title={tag}
+                      >
+                        {tag}
+                      </span>
+                    {/each}
+                  </div>
+                </div>
 
-            <div class="mt-5 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 sm:p-5">
+                <div class="mt-5 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 sm:p-5">
+                  <div
+                    class="prose prose-invert prose-zinc prose-sm max-w-none prose-pre:bg-zinc-950 prose-pre:ring-1 prose-pre:ring-zinc-800 prose-headings:tracking-tight"
+                  >
+                    {#if memoryAt.body.trim()}
+                      {@html previewHtml}
+                    {:else}
+                      <p class="text-zinc-500 italic">(empty body)</p>
+                    {/if}
+                  </div>
+                </div>
+              {/if}
+            {:else if loadingDiff}
               <div
-                class="prose prose-invert prose-zinc prose-sm max-w-none prose-pre:bg-zinc-950 prose-pre:ring-1 prose-pre:ring-zinc-800 prose-headings:tracking-tight"
+                class="mt-5 flex items-center justify-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900 p-6 text-sm text-zinc-500"
               >
-                {#if memoryAt.body.trim()}
-                  {@html previewHtml}
+                <LoaderCircle size={14} class="animate-spin" />
+                Computing diff…
+              </div>
+            {:else if diffError}
+              <div
+                class="mt-5 rounded-md border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
+              >
+                {diffError}
+              </div>
+            {:else if diff}
+              <div
+                class="mt-5 overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950"
+              >
+                <div
+                  class="flex flex-wrap items-center gap-2 border-b border-zinc-800 bg-zinc-900/40 px-3 py-1.5 text-[11px] text-zinc-400"
+                >
+                  <span>
+                    {#if diff.from}
+                      <code
+                        class="rounded bg-zinc-800 px-1 py-0.5 text-[10px] text-zinc-300"
+                        title={diff.from}
+                      >
+                        {diff.from.slice(0, 7)}
+                      </code>
+                      →
+                    {:else}
+                      <span
+                        class="rounded-md bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-emerald-300 ring-1 ring-inset ring-emerald-500/30"
+                      >
+                        introduced
+                      </span>
+                      →
+                    {/if}
+                    <code
+                      class="rounded bg-zinc-800 px-1 py-0.5 text-[10px] text-zinc-300"
+                      title={diff.to}
+                    >
+                      {diff.to.slice(0, 7)}
+                    </code>
+                  </span>
+                  <span class="ml-auto text-[10px]">
+                    <span class="text-emerald-300">+{diff.inserted}</span>
+                    <span class="text-rose-300">-{diff.deleted}</span>
+                  </span>
+                </div>
+                {#if diff.lines.length === 0}
+                  <div class="p-4 text-xs text-zinc-500 italic">
+                    Commits are byte-identical at this path.
+                  </div>
                 {:else}
-                  <p class="text-zinc-500 italic">(empty body)</p>
+                  <table class="w-full border-collapse font-mono text-[11px] leading-5">
+                    <tbody>
+                      {#each diff.lines as line, idx (idx)}
+                        {@const cls =
+                          line.kind === 'insert'
+                            ? 'bg-emerald-500/10 text-emerald-100'
+                            : line.kind === 'delete'
+                              ? 'bg-rose-500/10 text-rose-100'
+                              : 'text-zinc-300'}
+                        {@const sigil =
+                          line.kind === 'insert' ? '+' : line.kind === 'delete' ? '-' : ' '}
+                        <tr class={cls}>
+                          <td
+                            class="w-10 shrink-0 select-none border-r border-zinc-800/70 px-2 text-right text-[10px] text-zinc-600"
+                          >
+                            {line.old_lineno ?? ''}
+                          </td>
+                          <td
+                            class="w-10 shrink-0 select-none border-r border-zinc-800/70 px-2 text-right text-[10px] text-zinc-600"
+                          >
+                            {line.new_lineno ?? ''}
+                          </td>
+                          <td
+                            class="w-4 shrink-0 select-none px-1 text-center text-zinc-500"
+                          >
+                            {sigil}
+                          </td>
+                          <td class="whitespace-pre-wrap break-all px-2 py-0">{line.text}</td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
                 {/if}
               </div>
-            </div>
+            {/if}
           </div>
         </div>
       {/if}

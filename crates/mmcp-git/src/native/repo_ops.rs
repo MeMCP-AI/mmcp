@@ -677,7 +677,15 @@ pub fn tag(repo_path: &Path, name: &str, target_hex: &str) -> Result<(), GitErro
     Ok(())
 }
 
-/// Walk the commit history that touches `path`, most recent first.
+/// Walk the commit history that modified `path`, most recent first.
+///
+/// Matches `git log -- <path>` semantics: a commit is included only
+/// when its blob at `path` differs from *every* parent's blob at
+/// the same path (or the path didn't exist in any parent). Commits
+/// that merely carry the file forward unchanged from a parent are
+/// filtered out — otherwise every commit since the file was
+/// introduced would appear, which is how GUIs get surprising
+/// "100 commits" counts on a memory that was only edited twice.
 ///
 /// Reads start from whatever `HEAD` points at, so the walker works
 /// against repos whose default branch is not `main` (cloned from
@@ -703,9 +711,33 @@ pub fn walk_history(repo_path: &Path, path: &str) -> Result<Vec<CommitMeta>, Git
             .into_owned()
             .map_err(gix_err)?;
 
-        // Only include commits that contain `path` in their tree.
-        let blob = find_blob_in_tree(&repo, decoded_commit.tree, path)?;
-        if blob.is_none() {
+        // No blob at `path` → this commit can't be a modification of it.
+        let Some(current_blob) = find_blob_in_tree(&repo, decoded_commit.tree, path)? else {
+            continue;
+        };
+
+        // If any parent already had the exact same blob at the same
+        // path, the file was carried forward unchanged and this
+        // commit is not a modification of it.
+        let mut matches_parent = false;
+        for parent_id in &decoded_commit.parents {
+            let parent_obj = repo.find_object(*parent_id).map_err(gix_err)?;
+            let parent_commit: gix::objs::Commit = parent_obj
+                .into_commit()
+                .decode()
+                .map_err(gix_err)?
+                .into_owned()
+                .map_err(gix_err)?;
+            if let Some(parent_blob) =
+                find_blob_in_tree(&repo, parent_commit.tree, path)?
+            {
+                if parent_blob == current_blob {
+                    matches_parent = true;
+                    break;
+                }
+            }
+        }
+        if matches_parent {
             continue;
         }
 

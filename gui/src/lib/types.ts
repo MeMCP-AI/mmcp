@@ -84,6 +84,24 @@ export interface CommitMeta {
   timestamp: number;
 }
 
+export type DiffLineKind = 'equal' | 'insert' | 'delete';
+
+export interface DiffLine {
+  kind: DiffLineKind;
+  old_lineno: number | null;
+  new_lineno: number | null;
+  text: string;
+}
+
+export interface DiffResult {
+  /** `null` when the memory didn't exist at the base (pure insert). */
+  from: string | null;
+  to: string;
+  lines: DiffLine[];
+  inserted: number;
+  deleted: number;
+}
+
 export interface GuiErrorPayload {
   kind:
     | 'store'

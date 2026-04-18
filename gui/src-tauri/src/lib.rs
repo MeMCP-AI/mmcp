@@ -53,6 +53,7 @@ pub fn run() {
             commands::memory::delete_memory,
             commands::history::list_memory_history,
             commands::history::load_memory_at,
+            commands::history::diff_memory,
             commands::sync::sync_status,
             commands::sync::sync_pull,
             commands::sync::sync_push,

@@ -41,6 +41,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v7", "serde"] }
 semver = { version = "1", features = ["serde"] }
 anyhow = "1"
+similar = "2"
 
 # Redirect every gitoxide crate to the local fork at
 # C:/Programming/Rust/gitoxide. mmcp-git declares `gix` features
