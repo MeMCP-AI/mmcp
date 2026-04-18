@@ -22,7 +22,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) {
     egui::Window::new("Settings")
         .collapsible(false)
         .resizable(false)
-        .default_size([420.0, 220.0])
+        .default_size([460.0, 280.0])
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .open(&mut open)
         .show(ctx, |ui| {
@@ -38,7 +38,7 @@ fn render_body(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Grid::new("mmcp_gui_settings_grid")
         .num_columns(2)
         .spacing([16.0, 12.0])
-        .min_col_width(160.0)
+        .min_col_width(170.0)
         .show(ui, |ui| {
             ui.label(egui::RichText::new("Memory list prefix").strong());
             render_kind_display_radio(ui, &mut state.settings.kind_display);
@@ -64,8 +64,9 @@ fn render_kind_display_radio(ui: &mut egui::Ui, value: &mut KindDisplay) {
 }
 
 /// One sample row per kind, rendered exactly as the memory list
-/// would. Makes the difference between `Icon` and `Icon + text`
-/// immediately obvious.
+/// would. Makes the difference between `Icon` / `Text` /
+/// `Icon + text` immediately obvious without having to toggle back
+/// and forth.
 fn render_prefix_preview(ui: &mut egui::Ui, mode: KindDisplay) {
     egui::Frame::group(ui.style())
         .inner_margin(egui::Margin::same(8))
@@ -73,14 +74,18 @@ fn render_prefix_preview(ui: &mut egui::Ui, mode: KindDisplay) {
             ui.vertical(|ui| {
                 for (kind, sample_slug) in [
                     (MemoryKind::Rule, "branch-policy"),
-                    (MemoryKind::Snapshot, "repo-state-2026-04-17"),
+                    (MemoryKind::Snapshot, "repo-state-2026-04-18"),
                     (MemoryKind::Log, "incident-2026-03-05"),
                     (MemoryKind::Reference, "gitoxide-upstream"),
                     (MemoryKind::Scratch, "draft-notes"),
                     (MemoryKind::Feature, "fr-020-extract-mmcp-store"),
                 ] {
-                    let prefix = kind_glyph::prefix_for(mode, kind);
-                    ui.monospace(format!("{prefix}{sample_slug}"));
+                    ui.horizontal(|ui| {
+                        if mode != KindDisplay::Off {
+                            kind_glyph::render_prefix(ui, mode, kind);
+                        }
+                        ui.label(sample_slug);
+                    });
                 }
             });
         });

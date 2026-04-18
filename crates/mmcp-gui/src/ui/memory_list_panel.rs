@@ -1,23 +1,24 @@
 //! Middle pane: scrollable list of memory slugs inside the selected
-//! group, each row prefixed with a kind indicator.
+//! group, each row prefixed with a coloured kind badge.
 //!
-//! The prefix format is user-configurable via
-//! `AppState.settings.kind_display` (Off / Icon / Text / Icon+Text)
-//! and falls back to a neutral placeholder while a memory's
-//! frontmatter is still loading. On group select the app triggers
-//! a sequential LoadMemory for every unknown slug so the prefixes
-//! converge to their real kind as outcomes land.
+//! Row shape: `[kind pill] slug` inside a single horizontal strip.
+//! The `selectable_label` captures the click (keeping keyboard
+//! navigation and egui's selection visuals intact); the pill sits
+//! next to it as a decorative badge. Until a memory's frontmatter
+//! has loaded, a neutral placeholder pill takes the same slot so
+//! the slug text doesn't jump when loads complete.
 
 use eframe::egui;
 
 use crate::runtime::BackgroundHandle;
 use crate::runtime::task::BackgroundTask;
 use crate::state::AppState;
+use crate::state::settings::KindDisplay;
 use crate::ui::kind_glyph;
 
 pub fn show(ui: &mut egui::Ui, state: &mut AppState, background: &BackgroundHandle) {
     egui::Panel::left("mmcp_gui_memory_list")
-        .default_size(260.0)
+        .default_size(280.0)
         .show_inside(ui, |ui| {
             ui.add_space(4.0);
             ui.heading("Memories");
@@ -51,11 +52,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, background: &BackgroundHand
                         .viewer
                         .get(&group_id, slug)
                         .map(|m| m.frontmatter.kind);
-                    let label = match kind {
-                        Some(k) => format!("{}{slug}", kind_glyph::prefix_for(mode, k)),
-                        None => format!("{}{slug}", kind_glyph::placeholder_prefix(mode)),
-                    };
-                    if ui.selectable_label(selected, label).clicked() && !selected {
+                    let clicked = render_row(ui, mode, kind, slug, selected);
+                    if clicked && !selected {
                         state.selection.memory = Some(slug.clone());
                         if state.viewer.get(&group_id, slug).is_none() {
                             background.send(BackgroundTask::LoadMemory {
@@ -67,4 +65,25 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, background: &BackgroundHand
                 }
             });
         });
+}
+
+/// Paint one list row: optional kind badge + selectable slug label.
+/// Returns `true` when the slug label was clicked this frame.
+fn render_row(
+    ui: &mut egui::Ui,
+    mode: KindDisplay,
+    kind: Option<mmcp_core::memory::MemoryKind>,
+    slug: &str,
+    selected: bool,
+) -> bool {
+    ui.horizontal(|ui| {
+        if mode != KindDisplay::Off {
+            match kind {
+                Some(k) => kind_glyph::render_prefix(ui, mode, k),
+                None => kind_glyph::render_placeholder(ui, mode),
+            }
+        }
+        ui.selectable_label(selected, slug).clicked()
+    })
+    .inner
 }

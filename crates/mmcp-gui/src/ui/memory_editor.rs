@@ -24,12 +24,10 @@ use crate::state::AppState;
 use crate::state::editor_buffer::{EditorBuffer, EditorMode};
 use crate::ui::markdown_render;
 
-/// Height reserved for the body split. Tuned so the editor is tall
-/// enough to show ~24 lines of monospace text at 13 pt without
-/// forcing a scroll on a 1200×800 window.
-const BODY_SPLIT_HEIGHT: f32 = 420.0;
-/// Gap between the source column and the preview column.
-const SPLIT_GAP: f32 = 12.0;
+/// Maximum height reserved for the body split. Inner scroll areas
+/// cap here so the split sits comfortably above the action row on
+/// a 1200×800 window while still expanding on taller displays.
+const BODY_SPLIT_HEIGHT: f32 = 440.0;
 
 #[derive(Default)]
 pub struct EditorWidget {
@@ -56,30 +54,24 @@ impl EditorWidget {
             });
     }
 
+    /// Source on the left, live preview on the right. `ui.columns`
+    /// handles the half-and-half width split for us — importantly
+    /// it deals with egui's layout-probe passes that can report
+    /// `available_width == f32::INFINITY`, which the previous
+    /// `allocate_ui_with_layout` recipe did not.
     fn render_body_split(&mut self, ui: &mut egui::Ui, buffer: &mut EditorBuffer) {
-        ui.label(egui::RichText::new("BODY (MARKDOWN)").small().strong());
+        ui.label(
+            egui::RichText::new("BODY (MARKDOWN)")
+                .small()
+                .strong()
+                .color(ui.visuals().weak_text_color()),
+        );
         ui.add_space(4.0);
 
-        let total_width = ui.available_width();
-        let col_width = ((total_width - SPLIT_GAP) / 2.0).max(220.0);
         let cache = &mut self.preview_cache;
-
-        ui.horizontal_top(|ui| {
-            ui.allocate_ui_with_layout(
-                egui::vec2(col_width, BODY_SPLIT_HEIGHT),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    render_source_column(ui, buffer);
-                },
-            );
-            ui.add_space(SPLIT_GAP);
-            ui.allocate_ui_with_layout(
-                egui::vec2(col_width, BODY_SPLIT_HEIGHT),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    render_preview_column(ui, &buffer.body, cache);
-                },
-            );
+        ui.columns(2, |cols| {
+            render_source_column(&mut cols[0], buffer);
+            render_preview_column(&mut cols[1], &buffer.body, cache);
         });
     }
 }

@@ -8,7 +8,15 @@
 
 use eframe::egui;
 
-pub fn show(ui: &mut egui::Ui, text: &str, fill: egui::Color32, text_color: egui::Color32) {
+/// Low-level pill painter. Returns the widget's `Response` so
+/// callers can wire click / hover behaviour when they want the pill
+/// to be interactive (e.g. the memory-list kind badge).
+pub fn show(
+    ui: &mut egui::Ui,
+    text: &str,
+    fill: egui::Color32,
+    text_color: egui::Color32,
+) -> egui::Response {
     egui::Frame::new()
         .fill(fill)
         .corner_radius(egui::CornerRadius::same(10))
@@ -20,7 +28,8 @@ pub fn show(ui: &mut egui::Ui, text: &str, fill: egui::Color32, text_color: egui
                     .size(11.0)
                     .strong(),
             );
-        });
+        })
+        .response
 }
 
 /// Neutral pill for generic tags.
@@ -34,14 +43,13 @@ pub fn tag(ui: &mut egui::Ui, text: &str) {
     );
 }
 
-/// Accent pill for the memory kind.
-pub fn kind(ui: &mut egui::Ui, text: &str) {
-    show(
-        ui,
-        text,
-        egui::Color32::from_rgb(50, 70, 100),
-        egui::Color32::from_rgb(190, 210, 240),
-    );
+/// Coloured pill used by kind badges: translucent fill keyed to
+/// `accent`, text painted in solid `accent`. Produces a chip that
+/// stands out against the dark panel without shouting over the
+/// surrounding text.
+pub fn kind_colored(ui: &mut egui::Ui, text: &str, accent: egui::Color32) -> egui::Response {
+    let fill = egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 48);
+    show(ui, text, fill, accent)
 }
 
 /// Warning pill for mandatory memories.

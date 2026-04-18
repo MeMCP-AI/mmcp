@@ -22,7 +22,8 @@ use egui_phosphor::regular as icons;
 use mmcp_core::memory::{FrontmatterFormat, MemoryFile};
 
 use crate::state::AppState;
-use crate::ui::{markdown_render, tag_pill};
+use crate::style::SUBHEADING_SIZE;
+use crate::ui::{kind_glyph, markdown_render, tag_pill};
 
 #[derive(Default)]
 pub struct ViewerWidget {
@@ -55,7 +56,7 @@ impl ViewerWidget {
             .show(ui, |ui| {
                 Self::render_frontmatter_card(ui, &memory, slug, &mut self.show_raw);
                 ui.add_space(12.0);
-                markdown_render::render(ui, &mut self.commonmark, &memory.body);
+                Self::render_body_card(ui, &memory, &mut self.commonmark);
             });
 
         if let Some(err) = &state.last_error {
@@ -71,6 +72,23 @@ impl ViewerWidget {
         });
     }
 
+    /// Wraps the rendered markdown body in a Frame matching the
+    /// editor preview's visual weight — same extreme_bg fill, same
+    /// inner padding — so the two surfaces read as peers and the
+    /// body never runs edge-to-edge in the read view.
+    fn render_body_card(
+        ui: &mut egui::Ui,
+        memory: &MemoryFile,
+        cache: &mut egui_commonmark::CommonMarkCache,
+    ) {
+        egui::Frame::group(ui.style())
+            .fill(ui.visuals().extreme_bg_color)
+            .inner_margin(egui::Margin::same(14))
+            .show(ui, |ui| {
+                markdown_render::render(ui, cache, &memory.body);
+            });
+    }
+
     fn render_frontmatter_card(
         ui: &mut egui::Ui,
         memory: &MemoryFile,
@@ -81,7 +99,7 @@ impl ViewerWidget {
         egui::Frame::group(ui.style())
             .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
-                ui.heading(&fm.name);
+                ui.label(egui::RichText::new(&fm.name).size(SUBHEADING_SIZE).strong());
                 ui.label(
                     egui::RichText::new(slug)
                         .small()
@@ -92,8 +110,16 @@ impl ViewerWidget {
                 ui.add_space(8.0);
 
                 // Pill row: kind + optional mandatory + version + tags.
+                // The kind pill routes through `kind_glyph` so it
+                // uses the same palette the memory list does —
+                // users get one consistent colour per kind across
+                // the entire UI.
                 ui.horizontal_wrapped(|ui| {
-                    tag_pill::kind(ui, fm.kind.as_str());
+                    tag_pill::kind_colored(
+                        ui,
+                        kind_glyph::kind_long(fm.kind),
+                        kind_glyph::kind_color(fm.kind),
+                    );
                     if fm.mandatory {
                         tag_pill::mandatory(ui);
                     }

@@ -13,11 +13,14 @@
 
 use eframe::egui;
 
-/// Body text size. Public so consumers (preview blocks, monospace
-/// cards) can reference the same baseline instead of hardcoding.
-pub const BODY_SIZE: f32 = 14.0;
-/// Card-subheading size. Larger than body, smaller than the main
-/// heading.
+/// Body text size. Bumped from egui's default 14 to 15 — closer to
+/// what the eye expects for long-form content on a dark background
+/// at typical desktop viewing distance. Also referenced by preview
+/// blocks and any site that wants to match the shared baseline.
+pub const BODY_SIZE: f32 = 15.0;
+/// Card-subheading size. Used for the frontmatter name and other
+/// card titles that want to stand out without reaching for the
+/// full 22 pt heading.
 pub const SUBHEADING_SIZE: f32 = 17.0;
 
 /// Configure the egui context with the mmcp-gui visual preset.
