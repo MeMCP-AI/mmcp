@@ -766,6 +766,81 @@ struct InitProjectArgs {
     pub project_uuid: Option<String>,
 }
 
+/// Wire-form mirror of [`mmcp_core::manifest::GroupScope`].
+///
+/// Kept as a separate enum so the JSON schema exported by `rmcp` is
+/// owned by this crate; the mmcp-core definition stays serde-only
+/// and unaware of schemars. `rename_all = "snake_case"` matches
+/// [`GroupScope`]'s own serde rename, so the wire strings are
+/// identical (`"global"`, `"shared"`, `"project"`).
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(rename_all = "snake_case")]
+enum ToolGroupScope {
+    Global,
+    Shared,
+    Project,
+}
+
+impl ToolGroupScope {
+    fn into_core(self) -> mmcp_core::manifest::GroupScope {
+        use mmcp_core::manifest::GroupScope;
+        match self {
+            ToolGroupScope::Global => GroupScope::Global,
+            ToolGroupScope::Shared => GroupScope::Shared,
+            ToolGroupScope::Project => GroupScope::Project,
+        }
+    }
+}
+
+/// Render a [`GroupScope`] as its wire string. Matches the enum's
+/// serde `rename_all = "snake_case"` so response and request
+/// vocabularies stay in lockstep.
+fn group_scope_wire(scope: mmcp_core::manifest::GroupScope) -> &'static str {
+    use mmcp_core::manifest::GroupScope;
+    match scope {
+        GroupScope::Global => "global",
+        GroupScope::Shared => "shared",
+        GroupScope::Project => "project",
+    }
+}
+
+/// Argument shape for `create_group`.
+///
+/// Bootstraps a standalone group repository under `~/.mmcp/repos/`
+/// without touching any `.mmcp.toml` on the filesystem. Use this for
+/// `global` rule sets or `shared` language/team bundles; use
+/// `init_project` when the group IS a specific project's memory
+/// store.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct CreateGroupArgs {
+    /// Group slug (kebab-case, 1-128 chars, no leading/trailing or
+    /// consecutive hyphens). Must be unique across the local mirror;
+    /// a collision errors with `slug_already_exists` carrying the
+    /// pre-existing `group_id`.
+    pub slug: String,
+
+    /// Optional human-readable name surfaced in listings.
+    #[serde(default)]
+    pub display_name: Option<String>,
+
+    /// Cross-project reach of the new group. Defaults to `shared`,
+    /// which is the right answer for groups consumed by multiple
+    /// projects that opt in. Pick `global` only for install-wide
+    /// rule sets that should surface in every session; `project` is
+    /// accepted for completeness but rarely useful outside
+    /// `init_project`.
+    #[serde(default)]
+    pub scope: Option<ToolGroupScope>,
+
+    /// When true, the manifest's `protected` flag is set so every
+    /// subsequent mutation goes through the FR-019 confirmation
+    /// guard.
+    #[serde(default)]
+    pub protected: bool,
+}
+
 // ── Feature-request tool arg shapes (FR-007) ─────────────────────
 //
 // Each FR tool auto-resolves the project group from the server
@@ -2255,6 +2330,40 @@ impl McpServer {
         })))
     }
 
+    #[tool(
+        description = "Create a standalone group under `~/.mmcp/repos/`. Does not touch `.mmcp.toml`; use `init_project` for project-backed groups. Scope defaults to `shared`. Errors: `invalid_slug`, `slug_already_exists` (with existing `group_id`)."
+    )]
+    async fn create_group(
+        &self,
+        Parameters(args): Parameters<CreateGroupArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let scope = args
+            .scope
+            .map(ToolGroupScope::into_core)
+            .unwrap_or(mmcp_core::manifest::GroupScope::Shared);
+        let opts = crate::commands::group::CreateGroupOptions {
+            slug: args.slug,
+            display_name: args.display_name,
+            scope,
+            protected: args.protected,
+        };
+        let report = crate::commands::group::create_standalone_group(
+            &self.state.backend,
+            &self.state.groups,
+            &opts,
+        )
+        .await
+        .map_err(map_create_group_error_to_mcp)?;
+        Ok(ok_json(json!({
+            "group_id":     report.group_id.to_string(),
+            "slug":         report.slug,
+            "scope":        group_scope_wire(report.scope),
+            "display_name": report.display_name,
+            "protected":    report.protected,
+            "repo_path":    report.repo_path.to_string_lossy(),
+        })))
+    }
+
     // ── Feature-request tools (FR-007) ───────────────────────────
     //
     // All five auto-resolve the project group from the server's
@@ -2806,6 +2915,37 @@ fn map_init_project_error_to_mcp(err: crate::commands::init::InitProjectError) -
             "detail": detail,
         }),
         InitProjectError::IndexRefreshFailed(detail) => json!({
+            "code": "index_refresh_failed",
+            "detail": detail,
+        }),
+    };
+    McpError::invalid_params(message, Some(payload))
+}
+
+/// Map a [`commands::group::CreateGroupError`] to an [`McpError`]
+/// with a structured `code` payload so AI callers can branch on
+/// state instead of parsing the error string.
+fn map_create_group_error_to_mcp(err: crate::commands::group::CreateGroupError) -> McpError {
+    use crate::commands::group::CreateGroupError;
+    let message = err.to_string();
+    let payload = match &err {
+        CreateGroupError::InvalidSlug { slug } => json!({
+            "code": "invalid_slug",
+            "slug": slug,
+        }),
+        CreateGroupError::SlugAlreadyExists {
+            slug,
+            existing_group_id,
+        } => json!({
+            "code": "slug_already_exists",
+            "slug": slug,
+            "existing_group_id": existing_group_id.to_string(),
+        }),
+        CreateGroupError::GitBackend(detail) => json!({
+            "code": "git_backend",
+            "detail": detail,
+        }),
+        CreateGroupError::IndexRefreshFailed(detail) => json!({
             "code": "index_refresh_failed",
             "detail": detail,
         }),
@@ -4379,6 +4519,87 @@ mod tests {
             Some("stored")
         );
         assert_eq!(payload.get("got").and_then(|v| v.as_str()), Some("passed"));
+    }
+
+    // ── create_group tool ────────────────────────────────────────────
+
+    #[test]
+    fn map_create_group_error_surfaces_invalid_slug_with_slug_echo() {
+        let err = map_create_group_error_to_mcp(
+            crate::commands::group::CreateGroupError::InvalidSlug {
+                slug: "Bad Slug".to_string(),
+            },
+        );
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("invalid_slug")
+        );
+        assert_eq!(
+            payload.get("slug").and_then(|v| v.as_str()),
+            Some("Bad Slug"),
+            "caller's original slug must be echoed so UIs can highlight it",
+        );
+    }
+
+    #[test]
+    fn map_create_group_error_surfaces_slug_already_exists_with_existing_group_id() {
+        let existing = Uuid::now_v7();
+        let err = map_create_group_error_to_mcp(
+            crate::commands::group::CreateGroupError::SlugAlreadyExists {
+                slug: "team-rust".to_string(),
+                existing_group_id: existing,
+            },
+        );
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("slug_already_exists")
+        );
+        assert_eq!(
+            payload.get("slug").and_then(|v| v.as_str()),
+            Some("team-rust")
+        );
+        assert_eq!(
+            payload.get("existing_group_id").and_then(|v| v.as_str()),
+            Some(existing.to_string().as_str()),
+            "existing group id must be echoed so the caller can address it",
+        );
+    }
+
+    #[tokio::test]
+    async fn create_group_tool_writes_group_and_returns_wire_payload() {
+        let (state, _tmp) = test_state().await;
+        let server = McpServer::new(state.clone());
+        let res = server
+            .create_group(Parameters(CreateGroupArgs {
+                slug: "shared-rules".to_string(),
+                display_name: Some("Shared Rules".to_string()),
+                scope: Some(ToolGroupScope::Shared),
+                protected: false,
+            }))
+            .await
+            .expect("create_group");
+        let parsed = parse_ok_json(res);
+        assert_eq!(
+            parsed.get("slug").and_then(|v| v.as_str()),
+            Some("shared-rules")
+        );
+        assert_eq!(parsed.get("scope").and_then(|v| v.as_str()), Some("shared"));
+        assert_eq!(
+            parsed.get("display_name").and_then(|v| v.as_str()),
+            Some("Shared Rules")
+        );
+        assert_eq!(parsed.get("protected").and_then(|v| v.as_bool()), Some(false));
+        let group_id = parsed
+            .get("group_id")
+            .and_then(|v| v.as_str())
+            .expect("group_id");
+        let uuid = Uuid::parse_str(group_id).expect("valid uuid");
+        assert!(
+            state.groups.get(&GroupId::from_uuid(uuid)).await.is_some(),
+            "new group must be visible in the index after the tool returns",
+        );
     }
 
     /// End-to-end exercise of `create_project_group_from_state` with
