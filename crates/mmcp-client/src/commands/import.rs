@@ -7,12 +7,13 @@
 //! confirm prompt and the clap `run` dispatch.
 
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use inquire::Confirm;
 use mmcp_store::groups::GroupEntry;
 use mmcp_store::home::MmcpHome;
+use mmcp_store::import_adoc::{convert_adoc_to_markdown, is_adoc_filename};
 use mmcp_store::memory::{
     ImportError, SynthFrontmatter, import_memory, parse_kind, resolve_group, slugify_filename,
 };
@@ -100,8 +101,7 @@ pub async fn run(
     };
 
     if let Some(path) = file {
-        let content = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let content = load_import_source(&path)?;
         let slug = slug_override.unwrap_or_else(|| {
             slugify_filename(
                 path.file_name()
@@ -135,7 +135,7 @@ pub async fn run(
         let mut entries: Vec<_> = std::fs::read_dir(&dir_path)
             .with_context(|| format!("reading directory {}", dir_path.display()))?
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+            .filter(|e| is_supported_import_extension(&e.path()))
             .collect();
         entries.sort_by_key(|e| e.file_name());
 
@@ -146,8 +146,13 @@ pub async fn run(
                     .and_then(|n| n.to_str())
                     .unwrap_or("unnamed"),
             );
-            let content = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading {}", path.display()))?;
+            let content = match load_import_source(&path) {
+                Ok(c) => c,
+                Err(err) => {
+                    eprintln!("skipped {}: {err}", path.display());
+                    continue;
+                }
+            };
             match import_memory(
                 &backend,
                 &entry.handle,
@@ -174,4 +179,33 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+/// Read an import source file and return markdown-ready content.
+///
+/// Markdown sources pass through verbatim; `.adoc` / `.asciidoc`
+/// sources get rendered to CommonMark via `acdc` so the on-disk
+/// memory can land at `memories/<slug>/<uuid>.md` with the same
+/// frontmatter semantics as a native markdown import.
+fn load_import_source(path: &Path) -> Result<String> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if is_adoc_filename(filename) {
+        convert_adoc_to_markdown(&raw)
+            .with_context(|| format!("converting AsciiDoc {}", path.display()))
+    } else {
+        Ok(raw)
+    }
+}
+
+/// True when the path's extension matches one of the import formats
+/// the pipeline knows how to normalise to markdown. Used by the
+/// `--dir` filter so `.adoc` and `.asciidoc` files get picked up
+/// alongside `.md` without the caller spelling them out.
+fn is_supported_import_extension(path: &Path) -> bool {
+    let Some(filename) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    path.extension().is_some_and(|ext| ext == "md") || is_adoc_filename(filename)
 }

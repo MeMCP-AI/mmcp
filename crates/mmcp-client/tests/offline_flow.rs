@@ -14,9 +14,10 @@ use mmcp_core::config::{GroupsConfig, LanguagesConfig, ProjectConfig};
 use mmcp_core::id::{GroupId, ProjectUuid};
 use mmcp_core::manifest::GroupManifest;
 use mmcp_core::memory::MemoryKind;
-use mmcp_git::{GitBackend, NativeBackend};
+use mmcp_git::{GitBackend, NativeBackend, Rev};
 use mmcp_store::diagnostics as health;
-use mmcp_store::memory::{self as import, SynthFrontmatter};
+use mmcp_store::import_adoc::convert_adoc_to_markdown;
+use mmcp_store::memory::{self as import, SynthFrontmatter, resolve_memory};
 use mmcp_store::testing::ScratchHome;
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -98,6 +99,73 @@ async fn import_list_read_health_and_diagnose_run_without_any_remote() {
         !has_error,
         "offline diagnose should produce warnings at most, not errors. project={:?}, group={:?}",
         diag.project_issues, diag.groups[0].issues
+    );
+}
+
+#[tokio::test]
+async fn adoc_source_round_trips_through_import_as_markdown_memory() {
+    // Bridges the adoc source side with the markdown storage side:
+    // an operator drops an `.adoc` file into the import path, the
+    // pipeline renders it to CommonMark via `acdc`, and `import_memory`
+    // lands a regular `.md` memory we can read back and inspect. The
+    // stored content is the converted markdown - downstream tooling
+    // (search, section editing, diagnostics) never has to know the
+    // source was AsciiDoc.
+    let scratch = ScratchHome::new().await.expect("scratch home");
+    let seeded = scratch.seed_group("team-rust").await.expect("seed group");
+    let entry = scratch
+        .groups()
+        .get(&seeded.group_id)
+        .await
+        .expect("seeded group resolvable");
+
+    let adoc_source = "= Coding Rules\n\nKeep commits atomic.\n";
+    let markdown = convert_adoc_to_markdown(adoc_source).expect("convert adoc");
+    assert!(
+        markdown.contains("Coding Rules"),
+        "heading text must survive the conversion; got:\n{markdown}"
+    );
+
+    let result = import::import_memory(
+        scratch.backend(),
+        &entry.handle,
+        "coding-rules",
+        &markdown,
+        Some(SynthFrontmatter {
+            name: "Coding Rules".into(),
+            description: "From an adoc source".into(),
+            kind: MemoryKind::Rule,
+        }),
+        scratch.author(),
+        false,
+    )
+    .await
+    .expect("import succeeds against adoc-derived markdown");
+    assert_eq!(result.slug, "coding-rules");
+
+    // The stored memory must round trip through the native backend,
+    // carrying the converted markdown body verbatim plus the synthetic
+    // frontmatter fence the importer stamps on.
+    let resolved = resolve_memory(scratch.backend(), &entry.handle, Some(&result.slug), None)
+        .await
+        .expect("resolve imported memory");
+    let raw = scratch
+        .backend()
+        .read_file(&entry.handle, &resolved.path, &Rev::head())
+        .await
+        .expect("read back stored memory");
+    let text = std::str::from_utf8(&raw).expect("utf8 memory");
+    assert!(
+        text.contains("kind = \"rule\""),
+        "frontmatter kind must land in the committed file; got:\n{text}"
+    );
+    assert!(
+        text.contains("Coding Rules"),
+        "converted adoc heading must survive into storage; got:\n{text}"
+    );
+    assert!(
+        text.contains("Keep commits atomic."),
+        "converted adoc paragraph must survive into storage; got:\n{text}"
     );
 }
 
