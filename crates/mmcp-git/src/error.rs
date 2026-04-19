@@ -66,14 +66,6 @@ pub enum GitError {
         stderr: String,
     },
 
-    /// The `git` binary required for transport operations (clone,
-    /// fetch, push) could not be found or invoked. Surfaced from the
-    /// native backend's startup probe so misconfigured hosts fail
-    /// fast with an actionable message instead of obscurely failing
-    /// each fetch/push later.
-    #[error("git binary not usable: {0}")]
-    GitBinaryMissing(String),
-
     /// UTF-8 decoding error when reading a text file.
     #[error("invalid UTF-8 in file: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),

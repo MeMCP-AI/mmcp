@@ -61,25 +61,6 @@ fn apply_credentials(cmd: &mut Command, creds: &Credentials) {
     }
 }
 
-/// Probe `git --version` to verify the configured binary is present
-/// and executable. Returns `GitError::GitBinaryMissing` with an
-/// actionable message on any failure.
-pub fn probe_git_binary() -> Result<(), GitError> {
-    let bin = git_binary();
-    match Command::new(&bin).arg("--version").output() {
-        Ok(out) if out.status.success() => Ok(()),
-        Ok(out) => Err(GitError::GitBinaryMissing(format!(
-            "`{} --version` exited with status {}",
-            bin.to_string_lossy(),
-            out.status
-        ))),
-        Err(e) => Err(GitError::GitBinaryMissing(format!(
-            "cannot invoke `{}`: {e} (set `{GIT_BIN_ENV}` to point at your git install)",
-            bin.to_string_lossy()
-        ))),
-    }
-}
-
 /// Initialize a bare repository at `path`, idempotent.
 pub fn init_bare(path: &Path) -> Result<(), GitError> {
     if path.exists() {
