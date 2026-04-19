@@ -209,3 +209,49 @@ fn is_supported_import_extension(path: &Path) -> bool {
     };
     path.extension().is_some_and(|ext| ext == "md") || is_adoc_filename(filename)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn load_import_source_passes_markdown_through_unchanged() {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("note.md");
+        std::fs::write(&path, "# Title\n\nBody paragraph.\n").unwrap();
+        let out = load_import_source(&path).expect("load md");
+        assert_eq!(out, "# Title\n\nBody paragraph.\n");
+    }
+
+    #[test]
+    fn load_import_source_converts_adoc_to_markdown() {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("rules.adoc");
+        std::fs::write(&path, "= Heading\n\nParagraph text.\n").unwrap();
+        let out = load_import_source(&path).expect("load adoc");
+        assert!(
+            out.contains("Heading"),
+            "adoc heading must survive conversion; got: {out}"
+        );
+        assert!(
+            out.contains("Paragraph text."),
+            "adoc paragraph must survive conversion; got: {out}"
+        );
+        assert!(
+            !out.starts_with("= "),
+            "adoc-native heading syntax must be rewritten; got: {out}"
+        );
+    }
+
+    #[test]
+    fn is_supported_import_extension_accepts_md_and_adoc_variants() {
+        assert!(is_supported_import_extension(Path::new("a.md")));
+        assert!(is_supported_import_extension(Path::new("a.adoc")));
+        assert!(is_supported_import_extension(Path::new("a.asciidoc")));
+        assert!(is_supported_import_extension(Path::new("A.ADOC")));
+        assert!(!is_supported_import_extension(Path::new("a.txt")));
+        assert!(!is_supported_import_extension(Path::new("a")));
+        assert!(!is_supported_import_extension(Path::new(".md")));
+    }
+}
