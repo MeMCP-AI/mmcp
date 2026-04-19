@@ -71,17 +71,26 @@ async fn ensure_group(state: &ServerState, group_id: Uuid) -> Result<PathBuf, Gi
     Ok(state.group_repo_path(group_id))
 }
 
-/// Protocol version to drive serve with. v1 only for now: a stock git
-/// clone over the fork's v2 path fails during the pack phase with
-/// `bad band #119`, meaning the client is already in sideband mode when
-/// a section header (starting with `w`, so `wanted-refs\n`) arrives.
-/// v1 serve plus the fork's band-1 sideband wrapping is wire-correct
-/// end-to-end; stock git downgrades transparently when the server's
-/// `info/refs` response is v1-shaped.
+/// Protocol version the client negotiated via the `Git-Protocol` HTTP
+/// header. `version=2` selects the v2 stateful command dispatch; anything
+/// else (missing header, `version=1`, `version=0`) falls back to v0/v1.
 ///
-/// TODO: re-enable v2 once the fork's auto-fetch response shape works
-/// with a stock git 2.x clone.
-fn negotiated_protocol_version(_headers: &HeaderMap) -> u8 {
+/// The header format is a semicolon-delimited list of `key=value` pairs.
+/// Matching ignores case on `version` and trims whitespace, mirroring
+/// upstream git's own parser.
+fn negotiated_protocol_version(headers: &HeaderMap) -> u8 {
+    let Some(raw) = headers.get("git-protocol").and_then(|v| v.to_str().ok()) else {
+        return 1;
+    };
+    for entry in raw.split([';', ':']) {
+        let entry = entry.trim();
+        let Some((key, value)) = entry.split_once('=') else {
+            continue;
+        };
+        if key.eq_ignore_ascii_case("version") && value.trim() == "2" {
+            return 2;
+        }
+    }
     1
 }
 
