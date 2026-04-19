@@ -2,6 +2,7 @@
 
 pub mod claude;
 pub mod feature;
+pub mod group;
 pub mod health;
 pub mod hook;
 pub mod import;
