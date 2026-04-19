@@ -250,6 +250,75 @@ struct WriteMemoryArgs {
     pub override_: bool,
 }
 
+/// Wire-form source format accepted by the `import_memory` tool.
+///
+/// `asciidoc` is accepted as an alias for `adoc` so callers can use
+/// either common spelling; both route through the `acdc` bridge that
+/// already backs the CLI `mmcp import` path.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(rename_all = "snake_case")]
+enum ToolImportSourceFormat {
+    Markdown,
+    #[serde(alias = "asciidoc")]
+    Adoc,
+}
+
+impl ToolImportSourceFormat {
+    fn is_adoc(self) -> bool {
+        matches!(self, ToolImportSourceFormat::Adoc)
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ImportMemoryArgs {
+    /// Target group UUID or slug.
+    pub group: String,
+
+    /// Memory slug the imported file will land under. Duplicate
+    /// slugs are legal post-FR-028; each import mints a fresh
+    /// UUIDv7 when the source carries no `id` in its frontmatter.
+    pub slug: String,
+
+    /// Raw source document. May already carry a `+++` / `---` /
+    /// `---json` frontmatter fence (in which case the `name` /
+    /// `description` / `kind` args are ignored), or be a bare body
+    /// that gets frontmatter stamped from those args. Mixing a
+    /// fence with synth args is harmless - the fence wins.
+    pub source: String,
+
+    /// Source format. Defaults to `markdown` when absent;
+    /// `adoc` / `asciidoc` routes through the AsciiDoc bridge before
+    /// the normal import pipeline runs. The converted markdown is
+    /// what lands on disk, so downstream tooling never sees the
+    /// original format.
+    #[serde(default)]
+    pub format: Option<ToolImportSourceFormat>,
+
+    /// Human-readable title. Required alongside `description` and
+    /// `kind` when the source has no embedded frontmatter; ignored
+    /// when the source already carries a fence.
+    #[serde(default)]
+    pub name: Option<String>,
+
+    /// One-line summary. See `name` for the together-or-not-at-all
+    /// rule against embedded frontmatter.
+    #[serde(default)]
+    pub description: Option<String>,
+
+    /// Memory kind. See `name` for the together-or-not-at-all rule.
+    #[serde(default)]
+    pub kind: Option<ToolMemoryKind>,
+
+    /// Replace an existing memory whose id collides with the one
+    /// embedded in the source's frontmatter. Fresh imports (no
+    /// pinned id) always create a new sibling, so this only
+    /// matters for pinned-id flows.
+    #[serde(default, rename = "override")]
+    pub override_: bool,
+}
+
 /// Argument shape for `edit_memory`.
 ///
 /// Every mutator field is optional; the server reads the existing
@@ -1334,6 +1403,78 @@ impl McpServer {
             "commit_id": commit_id,
             "group": args.group,
             "replaced": args.override_,
+        })))
+    }
+
+    #[tool(
+        description = "Import a memory from a source document (markdown with a `+++` / `---` / `---json` frontmatter fence, or a raw body plus `name` + `description` + `kind` synth fields). Set `format` to `adoc` / `asciidoc` to route through the AsciiDoc bridge before import; the stored memory always lands as markdown at `memories/<slug>/<uuid>.md`. For typed-args creation with no source parsing use `write_memory`; for partial edits use `edit_memory`. Errors include `invalid_slug`, `synth_frontmatter_partial`, `missing_frontmatter`, `memory_already_exists`, and `adoc_parse_failed` / `adoc_render_failed`."
+    )]
+    async fn import_memory(
+        &self,
+        Parameters(args): Parameters<ImportMemoryArgs>,
+        peer: Peer<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let entry = self.resolve_group_entry(&args.group).await?;
+        confirm_protected_write(&peer, &entry, &args.slug, "import").await?;
+        self.import_memory_unguarded(args).await
+    }
+
+    /// Peer-less test entry point matching `write_memory_unguarded`.
+    /// The public `import_memory` tool delegates here after the
+    /// protected-group guard returns `Ok`; tests call it directly
+    /// to cover the conversion + synth paths without constructing
+    /// a mock `Peer`.
+    async fn import_memory_unguarded(
+        &self,
+        args: ImportMemoryArgs,
+    ) -> Result<CallToolResult, McpError> {
+        let entry = self.resolve_group_entry(&args.group).await?;
+
+        // Synth fields are together-or-not-at-all. Partial sets
+        // surface as `synth_frontmatter_partial` so AI callers can
+        // repair the arg shape instead of getting a cryptic import
+        // failure deeper in the pipeline.
+        let synth = match (args.name, args.description, args.kind) {
+            (Some(name), Some(description), Some(kind)) => Some(mmcp_store::SynthFrontmatter {
+                name,
+                description,
+                kind: kind.into_core(),
+            }),
+            (None, None, None) => None,
+            _ => {
+                return Err(McpError::invalid_params(
+                    Cow::Borrowed(
+                        "name, description, and kind must all be provided together or all omitted",
+                    ),
+                    Some(json!({ "code": "synth_frontmatter_partial" })),
+                ));
+            }
+        };
+
+        let body = if args.format.is_some_and(ToolImportSourceFormat::is_adoc) {
+            mmcp_store::convert_adoc_to_markdown(&args.source)
+                .map_err(map_adoc_convert_error_to_mcp)?
+        } else {
+            args.source
+        };
+
+        let result = mmcp_store::import_memory(
+            &self.state.backend,
+            &entry.handle,
+            &args.slug,
+            &body,
+            synth,
+            &self.state.author,
+            args.override_,
+        )
+        .await
+        .map_err(map_memory_error_to_mcp)?;
+
+        Ok(ok_json(json!({
+            "slug":      result.slug,
+            "id":        result.id.to_string(),
+            "commit_id": result.commit_id,
+            "group":     args.group,
         })))
     }
 
@@ -2920,6 +3061,21 @@ fn map_init_project_error_to_mcp(err: crate::commands::init::InitProjectError) -
         }),
     };
     McpError::invalid_params(message, Some(payload))
+}
+
+/// Map an [`mmcp_store::AdocConvertError`] to an [`McpError`] with
+/// a structured `code` payload. Used by the `import_memory` tool
+/// when the caller requested adoc source handling and the `acdc`
+/// bridge refused to produce markdown.
+fn map_adoc_convert_error_to_mcp(err: mmcp_store::AdocConvertError) -> McpError {
+    use mmcp_store::AdocConvertError;
+    let message = err.to_string();
+    let code = match &err {
+        AdocConvertError::Parse(_) => "adoc_parse_failed",
+        AdocConvertError::Render(_) => "adoc_render_failed",
+        AdocConvertError::Utf8(_) => "adoc_output_not_utf8",
+    };
+    McpError::invalid_params(message, Some(json!({ "code": code })))
 }
 
 /// Map a [`commands::group::CreateGroupError`] to an [`McpError`]
@@ -4821,6 +4977,172 @@ mod tests {
         let parsed = parse_ok_json(res);
         assert_eq!(parsed.get("replaced").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(parsed.get("id").and_then(|v| v.as_str()), Some(pinned_id.as_str()));
+    }
+
+    // ── import_memory tool ───────────────────────────────────────
+
+    fn import_memory_args(
+        group: &GroupId,
+        slug: &str,
+        source: &str,
+        format: Option<ToolImportSourceFormat>,
+    ) -> ImportMemoryArgs {
+        ImportMemoryArgs {
+            group: group.to_string(),
+            slug: slug.to_string(),
+            source: source.to_string(),
+            format,
+            name: Some("Imported".into()),
+            description: Some("From MCP import".into()),
+            kind: Some(ToolMemoryKind::Rule),
+            override_: false,
+        }
+    }
+
+    #[test]
+    fn map_adoc_convert_error_surfaces_parse_failed_code() {
+        let err = map_adoc_convert_error_to_mcp(mmcp_store::AdocConvertError::Parse(
+            "unterminated block at line 7".into(),
+        ));
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("adoc_parse_failed")
+        );
+    }
+
+    #[test]
+    fn map_adoc_convert_error_surfaces_render_failed_code() {
+        let err = map_adoc_convert_error_to_mcp(mmcp_store::AdocConvertError::Render(
+            "unsupported node".into(),
+        ));
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("adoc_render_failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn import_memory_markdown_body_with_synth_fields_round_trips() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "seed", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+
+        let res = server
+            .import_memory_unguarded(import_memory_args(
+                &group,
+                "imported-md",
+                "Body content for the imported memory.\n",
+                None,
+            ))
+            .await
+            .expect("import markdown");
+        let parsed = parse_ok_json(res);
+        assert_eq!(
+            parsed.get("slug").and_then(|v| v.as_str()),
+            Some("imported-md")
+        );
+        assert!(
+            parsed.get("id").and_then(|v| v.as_str()).is_some(),
+            "minted UUID must be echoed so the caller can address the memory",
+        );
+        assert!(
+            parsed
+                .get("commit_id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|id| id.len() == 40),
+            "commit id must be a full-length git SHA",
+        );
+    }
+
+    #[tokio::test]
+    async fn import_memory_adoc_body_is_converted_before_storage() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "seed", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state.clone());
+
+        let adoc = "= Imported Heading\n\nParagraph from an adoc source.\n";
+        let res = server
+            .import_memory_unguarded(import_memory_args(
+                &group,
+                "imported-adoc",
+                adoc,
+                Some(ToolImportSourceFormat::Adoc),
+            ))
+            .await
+            .expect("import adoc");
+        let parsed = parse_ok_json(res);
+        let id = parsed
+            .get("id")
+            .and_then(|v| v.as_str())
+            .expect("id echoed");
+
+        // The stored memory must carry the CONVERTED markdown, not
+        // the raw adoc source. Re-read it through the store to prove
+        // the bridge fired before the commit.
+        let entry = state
+            .groups
+            .get(&group)
+            .await
+            .expect("group indexed");
+        let resolved = mmcp_store::resolve_memory(
+            &state.backend,
+            &entry.handle,
+            Some("imported-adoc"),
+            Some(Uuid::parse_str(id).expect("id parses")),
+        )
+        .await
+        .expect("resolve imported memory");
+        let raw = state
+            .backend
+            .read_file(&entry.handle, &resolved.path, &mmcp_git::Rev::head())
+            .await
+            .expect("read stored memory");
+        let text = std::str::from_utf8(&raw).expect("utf8");
+        assert!(
+            text.contains("Imported Heading"),
+            "converted heading must survive into storage; got:\n{text}"
+        );
+        assert!(
+            !text.contains("= Imported Heading"),
+            "stored memory must not carry the raw adoc fence; got:\n{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn import_memory_asciidoc_alias_routes_through_adoc_bridge() {
+        // Wire-alias smoke test: deserialising `"asciidoc"` must
+        // land on the `Adoc` variant so both spellings reach the
+        // same conversion path.
+        let parsed: ToolImportSourceFormat =
+            serde_json::from_value(json!("asciidoc")).expect("asciidoc alias");
+        assert!(parsed.is_adoc());
+        let direct: ToolImportSourceFormat =
+            serde_json::from_value(json!("adoc")).expect("adoc primary");
+        assert!(direct.is_adoc());
+        let md: ToolImportSourceFormat =
+            serde_json::from_value(json!("markdown")).expect("markdown");
+        assert!(!md.is_adoc());
+    }
+
+    #[tokio::test]
+    async fn import_memory_rejects_partial_synth_frontmatter() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "seed", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+
+        let mut args = import_memory_args(&group, "partial", "Body\n", None);
+        args.description = None;
+        let err = server
+            .import_memory_unguarded(args)
+            .await
+            .expect_err("partial synth must error");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("synth_frontmatter_partial")
+        );
     }
 
     // ── edit_memory (FR-016) ──────────────────────────────────────
