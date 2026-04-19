@@ -71,16 +71,16 @@ async fn ensure_group(state: &ServerState, group_id: Uuid) -> Result<PathBuf, Gi
     Ok(state.group_repo_path(group_id))
 }
 
-/// Protocol version to drive serve with. v1 only for now: the fork's
-/// v2 serve path emits the `acknowledgments` section unconditionally
-/// (even for a clone with no haves), which stock git rejects when the
-/// client sent `no-done`. v1 fetch plus the fork's new band-1 sideband
-/// wrapping is wire-correct end-to-end. Stock git downgrades
-/// transparently when the server's `info/refs` response is v1-shaped.
+/// Protocol version to drive serve with. v1 only for now: a stock git
+/// clone over the fork's v2 path fails during the pack phase with
+/// `bad band #119`, meaning the client is already in sideband mode when
+/// a section header (starting with `w`, so `wanted-refs\n`) arrives.
+/// v1 serve plus the fork's band-1 sideband wrapping is wire-correct
+/// end-to-end; stock git downgrades transparently when the server's
+/// `info/refs` response is v1-shaped.
 ///
-/// TODO: switch back to header-driven selection once the fork makes
-/// the v2 acknowledgments section conditional on the request's
-/// negotiation state.
+/// TODO: re-enable v2 once the fork's auto-fetch response shape works
+/// with a stock git 2.x clone.
 fn negotiated_protocol_version(_headers: &HeaderMap) -> u8 {
     1
 }
