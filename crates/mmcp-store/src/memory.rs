@@ -32,6 +32,12 @@ use crate::home::ResolvedAuthor;
 #[derive(Debug, Clone)]
 pub struct ImportResult {
     pub slug: String,
+    /// Canonical UUID minted for this memory (or taken from the
+    /// source's frontmatter when it carried one). Callers use this
+    /// to address the memory across the two-level
+    /// `memories/<slug>/<uuid>.md` layout without re-resolving by
+    /// slug, which is ambiguous once siblings exist.
+    pub id: Uuid,
     pub commit_id: String,
 }
 
@@ -473,6 +479,7 @@ pub async fn import_memory(
 
     Ok(ImportResult {
         slug: slug.to_string(),
+        id,
         commit_id,
     })
 }
