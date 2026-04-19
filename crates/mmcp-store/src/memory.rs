@@ -498,14 +498,46 @@ pub fn validate_slug(slug: &str) -> Result<(), ImportError> {
 
 /// Derive a slug from a filename.
 ///
-/// Strips the memory extension (`.md`) before delegating to the
-/// `slug` crate, which handles Unicode normalization (NFD + diacritic
-/// stripping) and hyphen collapsing for us.
+/// Strips the known import extensions (`.md`, plus each entry in
+/// [`crate::import_adoc::ADOC_EXTENSIONS`]) case-insensitively before
+/// delegating to the `slug` crate, which handles Unicode
+/// normalization (NFD + diacritic stripping) and hyphen collapsing.
+/// The extra adoc / asciidoc cases exist so an operator importing
+/// `coding-rules.adoc` gets the `coding-rules` slug rather than
+/// `coding-rules-adoc`; the on-disk memory still lands as `.md`.
 pub fn slugify_filename(filename: &str) -> String {
-    let stem = filename
-        .strip_suffix(mmcp_core::conventions::MEMORY_EXTENSION)
-        .unwrap_or(filename);
+    let stem = strip_known_import_extension(filename);
     slug::slugify(stem)
+}
+
+/// Return `filename` with its trailing `.md` / `.adoc` / `.asciidoc`
+/// extension stripped, if any. Case-insensitive on the extension so
+/// `README.MD` and `Notes.ADOC` slim down the same as their lower-case
+/// siblings. Returns the input unchanged when no known extension
+/// matches.
+fn strip_known_import_extension(filename: &str) -> &str {
+    let Some((stem, ext)) = filename.rsplit_once('.') else {
+        return filename;
+    };
+    if stem.is_empty() || ext.is_empty() {
+        return filename;
+    }
+    let ext_lower = ext.to_ascii_lowercase();
+    // `.md` is the canonical on-disk extension; the adoc variants
+    // come from the import-side bridge in `crate::import_adoc`.
+    let md_ext = mmcp_core::conventions::MEMORY_EXTENSION
+        .trim_start_matches('.')
+        .to_ascii_lowercase();
+    if ext_lower == md_ext {
+        return stem;
+    }
+    if crate::import_adoc::ADOC_EXTENSIONS
+        .iter()
+        .any(|e| *e == ext_lower)
+    {
+        return stem;
+    }
+    filename
 }
 
 /// Parse a kind string into `MemoryKind`.
@@ -594,6 +626,20 @@ mod tests {
         );
         assert_eq!(slugify_filename("already-good"), "already-good");
         assert_eq!(slugify_filename("  spaces  .md"), "spaces");
+    }
+
+    #[test]
+    fn slugify_filename_strips_adoc_and_asciidoc_extensions() {
+        // The import bridge converts adoc sources to markdown before
+        // storage, but the slug is still derived from the original
+        // file name. Without this strip, an operator importing
+        // `coding-rules.adoc` would end up with the `coding-rules-adoc`
+        // slug, which carries the source format into a field that
+        // should only reflect the memory's identity.
+        assert_eq!(slugify_filename("coding-rules.adoc"), "coding-rules");
+        assert_eq!(slugify_filename("CODING-RULES.ADOC"), "coding-rules");
+        assert_eq!(slugify_filename("team/guide.asciidoc"), "team-guide");
+        assert_eq!(slugify_filename("Team Guide.AsciiDoc"), "team-guide");
     }
 
     #[test]

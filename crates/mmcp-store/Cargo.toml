@@ -29,6 +29,15 @@ uuid = { workspace = true }
 jiff = { workspace = true }
 slug = { workspace = true }
 
+# AsciiDoc -> Markdown conversion used by the `mmcp import` path.
+# Operators get to drop `.adoc` / `.asciidoc` files into imports and
+# the pipeline normalises them to the stored markdown format before
+# `import_memory` runs; `acdc-parser` parses, `acdc-converters-markdown`
+# emits CommonMark against the `Converter` trait in `acdc-converters-core`.
+acdc-parser = { workspace = true }
+acdc-converters-core = { workspace = true }
+acdc-converters-markdown = { workspace = true }
+
 # Optional — pulled in only when the `testing` feature is enabled
 # so downstream consumers can activate the fixture module without
 # paying the tempfile compile cost at release time.

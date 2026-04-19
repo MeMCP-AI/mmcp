@@ -46,6 +46,7 @@ pub mod error;
 pub mod features;
 pub mod groups;
 pub mod home;
+pub mod import_adoc;
 pub mod memory;
 pub mod memory_ops;
 pub mod sessions;
@@ -66,6 +67,7 @@ pub use features::{
 };
 pub use groups::{GroupEntry, GroupIndex};
 pub use home::{MmcpHome, ResolvedAuthor, read_git_global};
+pub use import_adoc::{ADOC_EXTENSIONS, AdocConvertError, convert_adoc_to_markdown, is_adoc_filename};
 pub use memory::{
     ImportError, ImportResult, MemoryFileRef, ResolvedMemory, SynthFrontmatter,
     delete_file_at_path, import_memory, list_all_memory_files, parse_kind, resolve_group,
