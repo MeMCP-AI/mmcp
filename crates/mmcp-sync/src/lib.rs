@@ -24,6 +24,7 @@
 pub mod client;
 pub mod engine;
 pub mod error;
+pub mod filter;
 pub mod pending;
 pub mod version;
 
@@ -35,5 +36,6 @@ pub use engine::{
     DrainedPush, GroupHandleResolver, PullReport, PushReport, SyncEngine, SyncReport,
 };
 pub use error::SyncError;
+pub use filter::{ScopeIndex, SyncFilter};
 pub use pending::{PendingEdit, PendingQueue};
 pub use version::negotiate_next_version;
