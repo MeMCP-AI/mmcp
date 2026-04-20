@@ -66,8 +66,8 @@ async fn push_drains_the_queue_and_records_versions() {
 
     // Two pending edits queued up.
     let queue = PendingQueue::new();
-    let edit_a = PendingEdit::new(group_uuid, "aaa", BumpIntent::Patch, "a");
-    let edit_b = PendingEdit::new(group_uuid, "bbb", BumpIntent::Minor, "b");
+    let edit_a = PendingEdit::new(group_uuid, group_uuid, "aaa", BumpIntent::Patch, "a");
+    let edit_b = PendingEdit::new(group_uuid, group_uuid, "bbb", BumpIntent::Minor, "b");
     queue.enqueue(edit_a.clone());
     queue.enqueue(edit_b.clone());
 
@@ -112,8 +112,8 @@ async fn push_re_enqueues_the_failing_edit_on_transport_error() {
     let (backend, resolver, group_uuid, _tmp) = seeded_backend().await;
 
     let queue = PendingQueue::new();
-    let edit_a = PendingEdit::new(group_uuid, "aaa", BumpIntent::Patch, "a");
-    let edit_b = PendingEdit::new(group_uuid, "bbb", BumpIntent::Patch, "b");
+    let edit_a = PendingEdit::new(group_uuid, group_uuid, "aaa", BumpIntent::Patch, "a");
+    let edit_b = PendingEdit::new(group_uuid, group_uuid, "bbb", BumpIntent::Patch, "b");
     queue.enqueue(edit_a.clone());
     queue.enqueue(edit_b.clone());
 
@@ -156,7 +156,7 @@ async fn push_conflict_surfaces_structured_error() {
     let (backend, resolver, group_uuid, _tmp) = seeded_backend().await;
 
     let queue = PendingQueue::new();
-    let edit = PendingEdit::new(group_uuid, "local-sha", BumpIntent::Minor, "ship it");
+    let edit = PendingEdit::new(group_uuid, group_uuid, "local-sha", BumpIntent::Minor, "ship it");
     queue.enqueue(edit.clone());
 
     Mock::given(method("POST"))
@@ -256,6 +256,7 @@ async fn sync_runs_pull_then_push() {
     let queue = PendingQueue::new();
     queue.enqueue(PendingEdit::new(
         group_uuid,
+        group_uuid,
         "local-sha",
         BumpIntent::Patch,
         "ship it",
@@ -278,7 +279,7 @@ async fn push_request_shape_is_recognisable_on_the_wire() {
     let (backend, resolver, group_uuid, _tmp) = seeded_backend().await;
 
     let queue = PendingQueue::new();
-    let edit = PendingEdit::new(group_uuid, "local-sha", BumpIntent::Major, "big change");
+    let edit = PendingEdit::new(group_uuid, group_uuid, "local-sha", BumpIntent::Major, "big change");
     queue.enqueue(edit.clone());
 
     Mock::given(method("POST"))

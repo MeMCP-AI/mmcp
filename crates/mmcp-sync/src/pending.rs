@@ -22,6 +22,13 @@ pub struct PendingEdit {
     /// Stable identifier for the queue entry.
     pub id: Uuid,
 
+    /// Group the edit belongs to. Needed so the sync engine can
+    /// filter the drain queue by `GroupScope` or by a caller-supplied
+    /// group UUID without a round-trip to the group index. Without
+    /// this, per-group push scoping would need an extra lookup per
+    /// edit; with it, drain is a linear filter.
+    pub group_id: Uuid,
+
     /// Memory the edit applies to.
     pub memory: Uuid,
 
@@ -41,6 +48,7 @@ pub struct PendingEdit {
 impl PendingEdit {
     #[must_use]
     pub fn new(
+        group_id: Uuid,
         memory: Uuid,
         commit: impl Into<String>,
         bump: BumpIntent,
@@ -48,6 +56,7 @@ impl PendingEdit {
     ) -> Self {
         Self {
             id: Uuid::now_v7(),
+            group_id,
             memory,
             commit: commit.into(),
             bump,
@@ -123,8 +132,8 @@ mod tests {
     #[test]
     fn enqueue_dequeue_is_fifo() {
         let q = PendingQueue::new();
-        let a = PendingEdit::new(Uuid::now_v7(), "aaa", BumpIntent::Patch, "a");
-        let b = PendingEdit::new(Uuid::now_v7(), "bbb", BumpIntent::Minor, "b");
+        let a = PendingEdit::new(Uuid::now_v7(), Uuid::now_v7(), "aaa", BumpIntent::Patch, "a");
+        let b = PendingEdit::new(Uuid::now_v7(), Uuid::now_v7(), "bbb", BumpIntent::Minor, "b");
         q.enqueue(a.clone());
         q.enqueue(b.clone());
         assert_eq!(q.len(), 2);
@@ -137,11 +146,12 @@ mod tests {
     fn is_empty_flips_with_queue_state() {
         // Pin both polarities of `is_empty` so a mutation replacing
         // the body with `true` (which cargo-mutants flagged as a
-        // surviving mutant in an earlier pass) no longer escapes —
+        // surviving mutant in an earlier pass) no longer escapes -
         // the non-empty branch immediately produces a disagreement.
         let q = PendingQueue::new();
         assert!(q.is_empty(), "fresh queue must be empty");
         q.enqueue(PendingEdit::new(
+            Uuid::now_v7(),
             Uuid::now_v7(),
             "x",
             BumpIntent::Patch,
@@ -153,10 +163,22 @@ mod tests {
     #[test]
     fn snapshot_is_independent_of_queue() {
         let q = PendingQueue::new();
-        q.enqueue(PendingEdit::new(Uuid::now_v7(), "a", BumpIntent::Patch, "a"));
+        q.enqueue(PendingEdit::new(
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            "a",
+            BumpIntent::Patch,
+            "a",
+        ));
         let snap = q.snapshot();
         assert_eq!(snap.len(), 1);
-        q.enqueue(PendingEdit::new(Uuid::now_v7(), "b", BumpIntent::Patch, "b"));
+        q.enqueue(PendingEdit::new(
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            "b",
+            BumpIntent::Patch,
+            "b",
+        ));
         assert_eq!(snap.len(), 1);
         assert_eq!(q.len(), 2);
     }
@@ -164,9 +186,9 @@ mod tests {
     #[test]
     fn remove_by_id_works() {
         let q = PendingQueue::new();
-        let a = PendingEdit::new(Uuid::now_v7(), "aaa", BumpIntent::Patch, "a");
-        let b = PendingEdit::new(Uuid::now_v7(), "bbb", BumpIntent::Minor, "b");
-        let c = PendingEdit::new(Uuid::now_v7(), "ccc", BumpIntent::Major, "c");
+        let a = PendingEdit::new(Uuid::now_v7(), Uuid::now_v7(), "aaa", BumpIntent::Patch, "a");
+        let b = PendingEdit::new(Uuid::now_v7(), Uuid::now_v7(), "bbb", BumpIntent::Minor, "b");
+        let c = PendingEdit::new(Uuid::now_v7(), Uuid::now_v7(), "ccc", BumpIntent::Major, "c");
         q.enqueue(a.clone());
         q.enqueue(b.clone());
         q.enqueue(c.clone());
