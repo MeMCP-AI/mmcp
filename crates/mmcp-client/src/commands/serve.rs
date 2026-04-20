@@ -779,18 +779,38 @@ elicit_safe!(ProtectedWriteConfirm);
 
 /// Shared argument shape for `sync_pull`, `sync_push`, and `sync`.
 ///
-/// The `group` field is a forward-compatibility slot: today the
-/// sync engine operates across the whole local mirror and the arg
-/// is recorded as an advisory warning on the response instead of
-/// scoping the operation. Kept as a struct so future flags can land
-/// without breaking the tool schema.
+/// Exactly one selector governs which groups the operation touches:
+///
+/// - `group` - a UUID or slug identifying a single group.
+/// - `scope` - every locally-known group whose manifest carries
+///   the given `GroupScope`.
+/// - `all` - explicit fanout across the whole mirror.
+///
+/// Empty selector still falls back to whole-mirror behaviour in
+/// this commit to keep the chain behaviour-preserving; the
+/// follow-up commit replaces the fallback with a structured
+/// `selector_required` error so CLI and MCP flip in lockstep.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
 struct SyncToolArgs {
-    /// Reserved. Today the engine pulls/pushes the whole mirror;
-    /// any value passed here surfaces as a warning on the response.
+    /// Target a single group by UUID or slug. Mutually exclusive
+    /// with `scope` and `all`.
     #[serde(default)]
     pub group: Option<String>,
+
+    /// Target every locally-known group whose manifest carries the
+    /// chosen `GroupScope`. Mutually exclusive with `group` and
+    /// `all`. Wire-form mirrors the serde rename: `"global"`,
+    /// `"shared"`, `"project"`.
+    #[serde(default)]
+    pub scope: Option<ToolGroupScope>,
+
+    /// Explicit opt-in to fan out across the whole local mirror.
+    /// This is the only way to reproduce pre-scoping behaviour
+    /// once the breaking flip lands. Mutually exclusive with
+    /// `group` and `scope`.
+    #[serde(default)]
+    pub all: Option<bool>,
 }
 
 /// Argument shape for `init_project`.
@@ -2306,6 +2326,7 @@ impl McpServer {
         Parameters(args): Parameters<SyncToolArgs>,
     ) -> Result<CallToolResult, McpError> {
         let (cfg, server_url) = self.require_sync_configured()?;
+        let filter = resolve_sync_filter(&args, &self.state.groups).await?;
         let (engine, resolver, _queue) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
             self.state.groups.clone(),
@@ -2313,7 +2334,7 @@ impl McpServer {
         )
         .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
         let report = engine
-            .pull(mmcp_sync::SyncFilter::All, &resolver, &resolver)
+            .pull(filter, &resolver, &resolver)
             .await
             .map_err(map_sync_error_to_mcp)?;
         Ok(ok_json(json!({
@@ -2321,7 +2342,6 @@ impl McpServer {
             "new_groups": report.new_groups,
             "project_uuid": cfg.project_uuid.to_string(),
             "server_url": server_url,
-            "warnings": group_scope_warnings(args.group.as_deref()),
         })))
     }
 
@@ -2333,6 +2353,7 @@ impl McpServer {
         Parameters(args): Parameters<SyncToolArgs>,
     ) -> Result<CallToolResult, McpError> {
         let (cfg, server_url) = self.require_sync_configured()?;
+        let filter = resolve_sync_filter(&args, &self.state.groups).await?;
         let (engine, resolver, queue) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
             self.state.groups.clone(),
@@ -2340,7 +2361,7 @@ impl McpServer {
         )
         .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
         let report = engine
-            .push(&queue, mmcp_sync::SyncFilter::All, &resolver, &resolver)
+            .push(&queue, filter, &resolver, &resolver)
             .await
             .map_err(map_sync_error_to_mcp)?;
         Ok(ok_json(json!({
@@ -2354,7 +2375,6 @@ impl McpServer {
             })).collect::<Vec<_>>(),
             "project_uuid": cfg.project_uuid.to_string(),
             "server_url": server_url,
-            "warnings": group_scope_warnings(args.group.as_deref()),
         })))
     }
 
@@ -2366,6 +2386,7 @@ impl McpServer {
         Parameters(args): Parameters<SyncToolArgs>,
     ) -> Result<CallToolResult, McpError> {
         let (cfg, server_url) = self.require_sync_configured()?;
+        let filter = resolve_sync_filter(&args, &self.state.groups).await?;
         let (engine, resolver, queue) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
             self.state.groups.clone(),
@@ -2373,7 +2394,7 @@ impl McpServer {
         )
         .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
         let report = engine
-            .sync(&queue, mmcp_sync::SyncFilter::All, &resolver, &resolver)
+            .sync(&queue, filter, &resolver, &resolver)
             .await
             .map_err(map_sync_error_to_mcp)?;
         Ok(ok_json(json!({
@@ -2393,7 +2414,6 @@ impl McpServer {
             },
             "project_uuid": cfg.project_uuid.to_string(),
             "server_url": server_url,
-            "warnings": group_scope_warnings(args.group.as_deref()),
         })))
     }
 
@@ -2891,6 +2911,63 @@ fn map_sync_error_to_mcp(err: mmcp_sync::SyncError) -> McpError {
         }),
     };
     McpError::invalid_params(message, Some(payload))
+}
+
+/// Resolve a [`SyncToolArgs`] into a [`mmcp_sync::SyncFilter`].
+///
+/// Structured error payloads follow the same code convention as
+/// the other tool error mappers so AI clients branch on state
+/// instead of parsing prose. Empty selector falls back to
+/// `SyncFilter::All` for this commit; the follow-up commit turns
+/// that fallback into a `selector_required` error so CLI and MCP
+/// reject bare calls simultaneously.
+async fn resolve_sync_filter(
+    args: &SyncToolArgs,
+    groups: &mmcp_store::GroupIndex,
+) -> Result<mmcp_sync::SyncFilter, McpError> {
+    let all_flag = args.all.unwrap_or(false);
+    let provided: Vec<&str> = [
+        args.group.is_some().then_some("group"),
+        args.scope.is_some().then_some("scope"),
+        all_flag.then_some("all"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if provided.len() > 1 {
+        return Err(McpError::invalid_params(
+            "sync selectors are mutually exclusive; pass exactly one of `group`, `scope`, `all`",
+            Some(json!({
+                "code": "selector_conflict",
+                "provided": provided,
+            })),
+        ));
+    }
+    if all_flag {
+        return Ok(mmcp_sync::SyncFilter::All);
+    }
+    if let Some(scope) = args.scope {
+        return Ok(mmcp_sync::SyncFilter::Scope(scope.into_core()));
+    }
+    if let Some(query) = args.group.as_deref() {
+        let entry = mmcp_store::resolve_group(groups, query).await.map_err(|e| {
+            McpError::invalid_params(
+                e.to_string(),
+                Some(json!({
+                    "code": "unknown_group",
+                    "query": query,
+                })),
+            )
+        })?;
+        return Ok(mmcp_sync::SyncFilter::Group(
+            *entry.manifest.group_id.as_uuid(),
+        ));
+    }
+    // Behaviour-preserving fallback until the breaking flip. The
+    // follow-up commit replaces this with a `selector_required`
+    // error so bare calls never quietly operate on the whole
+    // mirror.
+    Ok(mmcp_sync::SyncFilter::All)
 }
 
 /// Read the server process's current working directory, mapping
