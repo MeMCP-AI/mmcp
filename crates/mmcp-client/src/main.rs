@@ -46,13 +46,22 @@ enum Command {
     Status,
 
     /// Pull then push against the configured remote server.
-    Sync,
+    Sync {
+        #[command(flatten)]
+        selector: commands::sync::SyncSelector,
+    },
 
     /// Pull updates from the remote server.
-    Pull,
+    Pull {
+        #[command(flatten)]
+        selector: commands::sync::SyncSelector,
+    },
 
     /// Push pending local edits to the remote server.
-    Push,
+    Push {
+        #[command(flatten)]
+        selector: commands::sync::SyncSelector,
+    },
 
     /// Quick health check: manifests parse, memories parse, no errors.
     Check {
@@ -183,9 +192,9 @@ async fn main() -> Result<()> {
             Some(InitCommand::Project(args)) => commands::init::run_project(args).await?,
         },
         Command::Status => commands::status::run().await?,
-        Command::Sync => commands::sync::run(true, true).await?,
-        Command::Pull => commands::sync::run(true, false).await?,
-        Command::Push => commands::sync::run(false, true).await?,
+        Command::Sync { selector } => commands::sync::run(true, true, selector).await?,
+        Command::Pull { selector } => commands::sync::run(true, false, selector).await?,
+        Command::Push { selector } => commands::sync::run(false, true, selector).await?,
         Command::Import {
             group,
             file,
