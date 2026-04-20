@@ -564,6 +564,19 @@ struct SearchMemoriesArgs {
     /// Optional maximum number of hits. Defaults to 50.
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Optional group filter (UUID or slug). When set, only
+    /// memories inside the matching group are considered. Absent
+    /// preserves whole-mirror search; the read-only surface is
+    /// lower risk than write ops so this stays opt-in rather than
+    /// required.
+    #[serde(default)]
+    pub group: Option<String>,
+    /// Optional scope filter. When set, only memories whose owning
+    /// group carries the matching `GroupScope` are considered.
+    /// Composes with `group`: if both are provided, the group must
+    /// also satisfy the scope.
+    #[serde(default)]
+    pub scope: Option<ToolGroupScope>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1298,7 +1311,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Case-insensitive substring search across every group in the local mirror. Matches against the memory slug and the frontmatter `name` field. Returns up to `limit` hits (default 50)."
+        description = "Case-insensitive substring search across the local mirror. Matches against the memory slug and the frontmatter `name` field. Optional `group` (UUID or slug) and `scope` (`global`/`shared`/`project`) filter the search set; absent means whole-mirror search, which stays the default because the tool is read-only. Returns up to `limit` hits (default 50)."
     )]
     async fn search_memories(
         &self,
@@ -1309,10 +1322,42 @@ impl McpServer {
             return Err(McpError::invalid_params("query must not be empty", None));
         }
         let limit = args.limit.unwrap_or(50).max(1) as usize;
+        // Resolve the optional group filter once up front so the
+        // per-entry loop is a straight UUID compare, mirroring how
+        // sync's resolve_sync_filter collapses slug lookups.
+        let group_filter = match args.group.as_deref() {
+            Some(query) => Some(
+                mmcp_store::resolve_group(&self.state.groups, query)
+                    .await
+                    .map_err(|e| {
+                        McpError::invalid_params(
+                            e.to_string(),
+                            Some(json!({
+                                "code": "unknown_group",
+                                "query": query,
+                            })),
+                        )
+                    })?
+                    .manifest
+                    .group_id,
+            ),
+            None => None,
+        };
+        let scope_filter = args.scope.map(ToolGroupScope::into_core);
         let mut hits: Vec<serde_json::Value> = Vec::new();
         for entry in self.state.groups.list().await {
             if hits.len() >= limit {
                 break;
+            }
+            if let Some(target) = group_filter {
+                if entry.manifest.group_id != target {
+                    continue;
+                }
+            }
+            if let Some(target) = scope_filter {
+                if entry.manifest.scope != target {
+                    continue;
+                }
             }
             let files = list_memory_files(&self.state.backend, &entry).await?;
             for file in files {
@@ -4062,6 +4107,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn search_memories_group_filter_restricts_to_matching_group() {
+        // Pins the per-group filter: both groups hold a slug
+        // matching the query, but only one is listed after
+        // `group` narrows the search set.
+        let (state, _tmp) = test_state().await;
+        seed_group_with_memory(&state, "team-rust", "coding-rules", SAMPLE_MEMORY).await;
+        seed_group_with_memory(&state, "team-python", "coding-habits", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+
+        let res = server
+            .search_memories(Parameters(SearchMemoriesArgs {
+                query: "coding".into(),
+                limit: None,
+                group: Some("team-rust".into()),
+                scope: None,
+            }))
+            .await
+            .expect("search_memories");
+        let parsed = parse_ok_json(res);
+        let hits = parsed
+            .get("hits")
+            .and_then(|v| v.as_array())
+            .expect("hits array");
+        assert_eq!(
+            hits.len(),
+            1,
+            "group filter must restrict search to the matching group; got: {hits:?}"
+        );
+        assert_eq!(
+            hits[0].get("slug").and_then(|v| v.as_str()),
+            Some("coding-rules")
+        );
+    }
+
+    #[tokio::test]
+    async fn search_memories_scope_filter_restricts_to_matching_scope() {
+        let (state, _tmp) = test_state().await;
+        seed_scoped_group_with_memory(
+            &state,
+            "global",
+            "coding-rules",
+            SAMPLE_MEMORY,
+            mmcp_core::manifest::GroupScope::Global,
+        )
+        .await;
+        seed_scoped_group_with_memory(
+            &state,
+            "team-project",
+            "coding-habits",
+            SAMPLE_MEMORY,
+            mmcp_core::manifest::GroupScope::Project,
+        )
+        .await;
+        let server = McpServer::new(state);
+
+        let res = server
+            .search_memories(Parameters(SearchMemoriesArgs {
+                query: "coding".into(),
+                limit: None,
+                group: None,
+                scope: Some(ToolGroupScope::Global),
+            }))
+            .await
+            .expect("search_memories");
+        let parsed = parse_ok_json(res);
+        let hits = parsed
+            .get("hits")
+            .and_then(|v| v.as_array())
+            .expect("hits array");
+        assert_eq!(
+            hits.len(),
+            1,
+            "scope filter must restrict to matching GroupScope; got: {hits:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn search_memories_matches_slug_substring() {
         let (state, _tmp) = test_state().await;
         seed_group_with_memory(&state, "team-rust", "coding-rules", SAMPLE_MEMORY).await;
@@ -4072,6 +4194,8 @@ mod tests {
             .search_memories(Parameters(SearchMemoriesArgs {
                 query: "coding".into(),
                 limit: None,
+                group: None,
+                scope: None,
             }))
             .await
             .expect("search_memories");
