@@ -1,0 +1,54 @@
+@import 'tailwindcss';
+@plugin '@tailwindcss/typography';
+
+/* Kept in sync with `gui/src/app.css`. Per-kind accents power
+   `KindBadge` and any utility that references `text-kind-*`. */
+@theme {
+  --color-kind-rule: #60a0f0;
+  --color-kind-snapshot: #aa82e6;
+  --color-kind-log: #e6b45a;
+  --color-kind-reference: #5ac8be;
+  --color-kind-scratch: #96a0aa;
+  --color-kind-feature: #f0965a;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+button,
+[role='button'] {
+  user-select: none;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-zinc-700) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--color-zinc-800);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-zinc-600);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}

@@ -1,17 +1,36 @@
-# Keep the build context small. Without this, `target/` alone ships
-# hundreds of MB into every `docker build` invocation.
+# Keep the build context small. Docker's .dockerignore matches `target/`
+# only at the context root, so nested Cargo target dirs (e.g. under
+# gui/src-tauri/) need the **/ prefix explicitly.
 
-target/
-webui/target/
+# Rust build artefacts (root workspace, webui, and any nested project)
+**/target/
 
+# Node toolchains. The webui image runs bun in a builder stage and
+# installs from the checked-in package.json, so the root-level mask
+# matches every `node_modules/` anywhere in the tree.
+**/node_modules/
+
+# SvelteKit build output — the webui image rebuilds inside its
+# builder stage; shipping stale `build/` or `.svelte-kit/` dirs wastes
+# context and risks overwriting a hashed bundle.
+webui/build/
+webui/.svelte-kit/
+
+# Tauri desktop GUI — not part of the server/webui Docker stack.
+gui/
+
+# VCS and editor state
 .git/
 .github/
 .vscode/
 .idea/
+.serena/
 
+# Docs and out-of-tree helpers
 docs/
 mcp/
 
+# Secrets and local-only files
 *.log
 .env
 .env.*

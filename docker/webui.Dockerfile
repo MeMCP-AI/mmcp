@@ -1,39 +1,34 @@
 # syntax=docker/dockerfile:1.7
 
-# Build the mmcp-webui Leptos SSR binary via cargo-leptos, which also
-# compiles the WASM hydrate bundle and the SCSS stylesheet. Both the
-# binary and the generated site/ directory are copied into the runtime
-# image; Leptos reads LEPTOS_SITE_ROOT at startup to locate static
-# assets. The build context is the webui/ directory because webui is a
-# separate Cargo project (excluded from the root workspace).
+# Build the mmcp webui as a SvelteKit + Tailwind static SPA. Output is
+# a plain `build/` directory of hashed assets served by `nginx:alpine`
+# at runtime. No Node process lives in the runtime image — Tailwind v4
+# + adapter-static emit pure HTML/CSS/JS.
+#
+# Build arg `VITE_MMCP_SERVER_URL` bakes the upstream server URL into
+# the bundle at compile time; leave unset to let the client fall back
+# to http://127.0.0.1:8787, handy for dev.
 
-FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
+FROM oven/bun:1 AS builder
 WORKDIR /build
-# Install cargo-leptos from crates.io with the lockfile pinned. This
-# takes a cold compile on the first image build but drops the
-# curl-pipe-to-bash installer, gives reproducible output, and lets
-# buildx cache the resulting layer across CI runs.
-RUN cargo install cargo-leptos --locked \
- && rustup target add wasm32-unknown-unknown
+COPY webui/package.json webui/bun.lock* ./
+RUN bun install --frozen-lockfile || bun install
+COPY webui/ ./
+ARG VITE_MMCP_SERVER_URL
+ENV VITE_MMCP_SERVER_URL=${VITE_MMCP_SERVER_URL}
+RUN bun run build
 
-FROM chef AS planner
-COPY webui/ .
-RUN cargo chef prepare --recipe-path recipe.json
-
-FROM chef AS builder
-COPY --from=planner /build/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
-COPY webui/ .
-RUN cargo leptos build --release
-
-FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
-WORKDIR /app
-COPY --from=builder /build/target/release/mmcp-webui /app/mmcp-webui
-COPY --from=builder /build/target/site /app/site
-ENV LEPTOS_SITE_ROOT=/app/site \
-    LEPTOS_SITE_ADDR=0.0.0.0:3000 \
-    LEPTOS_ENV=PROD \
-    LEPTOS_OUTPUT_NAME=mmcp-webui
-USER nonroot
+FROM nginx:alpine AS runtime
+# SPA fallback: every unknown path serves `index.html` so the
+# SvelteKit client router can pick it up on hydrate.
+RUN printf 'server {\n\
+  listen 3000;\n\
+  root /usr/share/nginx/html;\n\
+  index index.html;\n\
+  location / {\n\
+    try_files $uri $uri/ /index.html;\n\
+  }\n\
+}\n' > /etc/nginx/conf.d/default.conf
+COPY --from=builder /build/build /usr/share/nginx/html
 EXPOSE 3000
-ENTRYPOINT ["/app/mmcp-webui"]
+CMD ["nginx", "-g", "daemon off;"]

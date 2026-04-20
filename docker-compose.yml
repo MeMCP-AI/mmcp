@@ -61,9 +61,12 @@ services:
     build:
       context: .
       dockerfile: docker/webui.Dockerfile
+      args:
+        # Baked into the static bundle at build time; leave blank to
+        # let the browser talk to the server on its configured origin
+        # (http://127.0.0.1:8787 by default).
+        VITE_MMCP_SERVER_URL: ${MMCP_ORIGIN:-}
     restart: unless-stopped
-    environment:
-      LEPTOS_SITE_ADDR: 0.0.0.0:3000
     ports:
       - "3000:3000"
     depends_on:

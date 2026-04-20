@@ -1,11 +1,13 @@
 [workspace]
 resolver = "3"
-# `webui` is a separate Cargo project (Leptos SSR) with its own
-# workspace. The `crates/*/fuzz` directories each hold a
-# cargo-fuzz harness whose `libfuzzer-sys` dep only compiles under
-# libFuzzer on Linux/macOS; excluding them keeps workspace-wide
-# `cargo check` / `cargo test` cross-platform.
-exclude = ["webui", "gui/src-tauri", "crates/mmcp-core/fuzz"]
+# The `crates/*/fuzz` directories each hold a cargo-fuzz harness
+# whose `libfuzzer-sys` dep only compiles under libFuzzer on
+# Linux/macOS; excluding them keeps workspace-wide `cargo check` /
+# `cargo test` cross-platform. `gui/src-tauri` is its own Cargo
+# project with Tauri-specific deps. `webui/` is now a pure SvelteKit
+# + Tailwind frontend, so it no longer intersects the Rust workspace
+# at all.
+exclude = ["gui/src-tauri", "crates/mmcp-core/fuzz"]
 members = [
     "crates/mmcp-core",
     "crates/mmcp-git",
