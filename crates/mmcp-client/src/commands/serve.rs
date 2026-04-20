@@ -779,17 +779,17 @@ elicit_safe!(ProtectedWriteConfirm);
 
 /// Shared argument shape for `sync_pull`, `sync_push`, and `sync`.
 ///
-/// Exactly one selector governs which groups the operation touches:
+/// Exactly one selector governs which groups the operation touches
+/// and is required on every call:
 ///
 /// - `group` - a UUID or slug identifying a single group.
 /// - `scope` - every locally-known group whose manifest carries
 ///   the given `GroupScope`.
 /// - `all` - explicit fanout across the whole mirror.
 ///
-/// Empty selector still falls back to whole-mirror behaviour in
-/// this commit to keep the chain behaviour-preserving; the
-/// follow-up commit replaces the fallback with a structured
-/// `selector_required` error so CLI and MCP flip in lockstep.
+/// Empty or multi-selector calls surface as `selector_required` /
+/// `selector_conflict` errors so AI clients cannot silently trigger
+/// a whole-mirror write.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
 struct SyncToolArgs {
@@ -2963,11 +2963,13 @@ async fn resolve_sync_filter(
             *entry.manifest.group_id.as_uuid(),
         ));
     }
-    // Behaviour-preserving fallback until the breaking flip. The
-    // follow-up commit replaces this with a `selector_required`
-    // error so bare calls never quietly operate on the whole
-    // mirror.
-    Ok(mmcp_sync::SyncFilter::All)
+    Err(McpError::invalid_params(
+        "sync selector required: pass exactly one of `group`, `scope`, or `all`",
+        Some(json!({
+            "code": "selector_required",
+            "accepted": ["group", "scope", "all"],
+        })),
+    ))
 }
 
 /// Read the server process's current working directory, mapping
@@ -4562,6 +4564,106 @@ mod tests {
         let warnings = group_scope_warnings(Some("team-rust"));
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("group scoping not yet implemented"));
+    }
+
+    #[tokio::test]
+    async fn resolve_sync_filter_rejects_empty_selector_with_selector_required() {
+        let (state, _tmp) = test_state().await;
+        let args = SyncToolArgs::default();
+        let err = resolve_sync_filter(&args, &state.groups)
+            .await
+            .expect_err("empty selector must error");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("selector_required"),
+            "empty selector must map to selector_required"
+        );
+        let accepted = payload
+            .get("accepted")
+            .and_then(|v| v.as_array())
+            .expect("accepted array");
+        assert_eq!(accepted.len(), 3, "three accepted selectors listed");
+    }
+
+    #[tokio::test]
+    async fn resolve_sync_filter_rejects_multiple_selectors_with_selector_conflict() {
+        let (state, _tmp) = test_state().await;
+        let args = SyncToolArgs {
+            group: Some("team-rust".into()),
+            scope: None,
+            all: Some(true),
+        };
+        let err = resolve_sync_filter(&args, &state.groups)
+            .await
+            .expect_err("group+all must conflict");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("selector_conflict")
+        );
+        let provided = payload
+            .get("provided")
+            .and_then(|v| v.as_array())
+            .expect("provided array");
+        let provided_strs: Vec<&str> = provided.iter().filter_map(|v| v.as_str()).collect();
+        assert!(
+            provided_strs.contains(&"group") && provided_strs.contains(&"all"),
+            "conflict payload should list both offenders; got {provided_strs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_sync_filter_all_flag_returns_all_variant() {
+        let (state, _tmp) = test_state().await;
+        let args = SyncToolArgs {
+            group: None,
+            scope: None,
+            all: Some(true),
+        };
+        let filter = resolve_sync_filter(&args, &state.groups)
+            .await
+            .expect("all should resolve");
+        assert!(matches!(filter, mmcp_sync::SyncFilter::All));
+    }
+
+    #[tokio::test]
+    async fn resolve_sync_filter_scope_arg_resolves_to_scope_variant() {
+        let (state, _tmp) = test_state().await;
+        let args = SyncToolArgs {
+            group: None,
+            scope: Some(ToolGroupScope::Shared),
+            all: None,
+        };
+        let filter = resolve_sync_filter(&args, &state.groups)
+            .await
+            .expect("scope should resolve");
+        assert!(matches!(
+            filter,
+            mmcp_sync::SyncFilter::Scope(mmcp_core::manifest::GroupScope::Shared)
+        ));
+    }
+
+    #[tokio::test]
+    async fn resolve_sync_filter_unknown_group_returns_unknown_group_code() {
+        let (state, _tmp) = test_state().await;
+        let args = SyncToolArgs {
+            group: Some("no-such-group".into()),
+            scope: None,
+            all: None,
+        };
+        let err = resolve_sync_filter(&args, &state.groups)
+            .await
+            .expect_err("unknown group must error");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("unknown_group")
+        );
+        assert_eq!(
+            payload.get("query").and_then(|v| v.as_str()),
+            Some("no-such-group")
+        );
     }
 
     #[test]

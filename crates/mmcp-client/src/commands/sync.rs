@@ -37,13 +37,13 @@ impl From<ScopeArg> for GroupScope {
 
 /// Selector shared by `mmcp sync` / `pull` / `push`.
 ///
-/// The three variants are mutually exclusive (`clap::ArgGroup`
-/// enforces it on parse). Empty selector is still accepted for now
-/// and falls back to `SyncFilter::All` inside [`resolve_sync_filter`];
-/// the breaking flip that rejects empty lands in a follow-up commit
-/// so the CLI and MCP sides switch in lockstep.
+/// Exactly one of `--group` / `--scope` / `--all` is required;
+/// clap's `ArgGroup(required = true, multiple = false)` enforces
+/// both at parse time so bare `mmcp sync` fails with a
+/// user-visible error message instead of silently operating on
+/// the whole mirror.
 #[derive(Debug, Clone, clap::Args)]
-#[group(id = "sync_selector", multiple = false, required = false)]
+#[group(id = "sync_selector", multiple = false, required = true)]
 pub struct SyncSelector {
     /// Target a single group by UUID or slug.
     #[arg(long, group = "sync_selector")]
@@ -64,10 +64,10 @@ pub struct SyncSelector {
 /// Resolve a [`SyncSelector`] into a [`SyncFilter`] against the
 /// live group index.
 ///
-/// Empty-selector -> `SyncFilter::All` is a soft default for this
-/// commit; the follow-up commit replaces it with a structured
-/// `selector_required` error so scripts cannot drift back into the
-/// whole-mirror path by accident.
+/// Reaches the empty-selector fallback only if clap's required
+/// ArgGroup were bypassed (for example, an internal caller that
+/// constructs a `SyncSelector` by hand). That path bails with a
+/// user-visible error so the fallback never silently fans out.
 pub async fn resolve_sync_filter(
     selector: &SyncSelector,
     groups: &mmcp_store::GroupIndex,
@@ -84,7 +84,9 @@ pub async fn resolve_sync_filter(
             .with_context(|| format!("resolving group `{query}` for sync selector"))?;
         return Ok(SyncFilter::Group(*entry.manifest.group_id.as_uuid()));
     }
-    Ok(SyncFilter::All)
+    bail!(
+        "sync selector required: pass exactly one of `--group <uuid|slug>`, `--scope <global|shared|project>`, or `--all`"
+    );
 }
 
 /// Run the sync engine.

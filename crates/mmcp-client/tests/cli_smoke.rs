@@ -125,9 +125,12 @@ fn init_project_second_call_is_idempotent() {
 #[test]
 fn sync_fails_when_project_has_no_sync_block() {
     // A freshly initialized project has `sync = None`, so running
-    // `mmcp sync` against it must fail with a message naming the
-    // missing block. Use `--config-only` to keep the tempdir free
-    // of the bare repo — sync never gets that far anyway.
+    // `mmcp sync --all` against it must fail with a message naming
+    // the missing block. Use `--config-only` to keep the tempdir
+    // free of the bare repo - sync never gets that far anyway.
+    // `--all` is the explicit whole-mirror selector; bare `mmcp
+    // sync` is its own failure mode covered by
+    // `sync_rejects_bare_call_without_selector` below.
     let tmp = tempfile::tempdir().unwrap();
     let mmcp_home = tmp.path().join("mmcp-home");
     mmcp()
@@ -137,7 +140,7 @@ fn sync_fails_when_project_has_no_sync_block() {
         .assert()
         .success();
     mmcp()
-        .arg("sync")
+        .args(["sync", "--all"])
         .current_dir(tmp.path())
         .env("MMCP_HOME", &mmcp_home)
         .assert()
@@ -150,12 +153,33 @@ fn sync_outside_project_fails_with_a_useful_message() {
     let tmp = tempfile::tempdir().unwrap();
     let mmcp_home = tmp.path().join("mmcp-home");
     mmcp()
-        .arg("sync")
+        .args(["sync", "--all"])
         .current_dir(tmp.path())
         .env("MMCP_HOME", &mmcp_home)
         .assert()
         .failure()
         .stderr(predicate::str::contains("no mmcp project"));
+}
+
+#[test]
+fn sync_rejects_bare_call_without_selector() {
+    // Per the no-global-default invariant: `mmcp sync` without a
+    // selector exits non-zero at the clap parse boundary with a
+    // message naming the three accepted selectors so the operator
+    // knows which one to pick.
+    let tmp = tempfile::tempdir().unwrap();
+    let mmcp_home = tmp.path().join("mmcp-home");
+    mmcp()
+        .arg("sync")
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("--group").and(
+                predicate::str::contains("--scope").and(predicate::str::contains("--all")),
+            ),
+        );
 }
 
 #[test]
