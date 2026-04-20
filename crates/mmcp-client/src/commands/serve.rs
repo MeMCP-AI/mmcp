@@ -3495,17 +3495,6 @@ fn map_memory_edit_error_to_mcp(err: mmcp_store::MemoryEditError) -> McpError {
     McpError::invalid_params(message, Some(payload))
 }
 
-/// Emit a one-element advisory warning list when the caller passed a
-/// `group` argument that the engine cannot honor yet. Empty list
-/// when nothing was passed so the field stays stable (`[]`) on every
-/// successful response.
-fn group_scope_warnings(group: Option<&str>) -> Vec<String> {
-    match group {
-        Some(_) => vec!["group scoping not yet implemented; operated on the whole mirror".into()],
-        None => Vec::new(),
-    }
-}
-
 #[tool_handler]
 impl ServerHandler for McpServer {
     fn get_info(&self) -> ServerInfo {
@@ -4699,18 +4688,6 @@ mod tests {
             cfg.project_uuid.to_string(),
             "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
         );
-    }
-
-    #[test]
-    fn group_scope_warnings_is_empty_when_no_group_requested() {
-        assert!(group_scope_warnings(None).is_empty());
-    }
-
-    #[test]
-    fn group_scope_warnings_emits_note_when_group_is_passed() {
-        let warnings = group_scope_warnings(Some("team-rust"));
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("group scoping not yet implemented"));
     }
 
     #[tokio::test]
