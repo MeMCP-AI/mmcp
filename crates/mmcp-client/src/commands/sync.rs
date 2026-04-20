@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use mmcp_store::config::{find_project_root, load};
 use mmcp_store::home::MmcpHome;
 use mmcp_store::sync::build_engine;
-use mmcp_sync::SyncError;
+use mmcp_sync::{SyncError, SyncFilter};
 
 /// Run the sync engine.
 ///
@@ -42,7 +42,10 @@ pub async fn run(pull: bool, push: bool) -> Result<()> {
 
     let report = match (pull, push) {
         (true, true) => {
-            let report = engine.sync(&queue, &resolver).await.map_err(to_anyhow)?;
+            let report = engine
+                .sync(&queue, SyncFilter::All, &resolver, &resolver)
+                .await
+                .map_err(to_anyhow)?;
             tracing::info!(
                 server = %sync_cfg.server_url,
                 updated = report.pulled.updated.len(),
@@ -59,7 +62,10 @@ pub async fn run(pull: bool, push: bool) -> Result<()> {
             )
         }
         (true, false) => {
-            let report = engine.pull(&resolver).await.map_err(to_anyhow)?;
+            let report = engine
+                .pull(SyncFilter::All, &resolver, &resolver)
+                .await
+                .map_err(to_anyhow)?;
             tracing::info!(
                 server = %sync_cfg.server_url,
                 updated = report.updated.len(),
@@ -74,7 +80,10 @@ pub async fn run(pull: bool, push: bool) -> Result<()> {
             )
         }
         (false, true) => {
-            let report = engine.push(&queue, &resolver).await.map_err(to_anyhow)?;
+            let report = engine
+                .push(&queue, SyncFilter::All, &resolver, &resolver)
+                .await
+                .map_err(to_anyhow)?;
             tracing::info!(
                 server = %sync_cfg.server_url,
                 drained = report.drained.len(),

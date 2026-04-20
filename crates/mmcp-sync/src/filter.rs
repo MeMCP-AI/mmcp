@@ -56,7 +56,12 @@ pub enum SyncFilter {
 /// Narrow-by-design: the only reason the engine talks to the
 /// scope index is to filter by `GroupScope`, so the trait has one
 /// method.
-pub trait ScopeIndex {
+///
+/// `Send + Sync` supertraits mirror [`crate::GroupHandleResolver`]
+/// so the engine's async methods can spawn onto a multi-threaded
+/// runtime (the MCP tool router boxes returned futures with a
+/// `Send` bound).
+pub trait ScopeIndex: Send + Sync {
     /// Return the scope recorded for `group_id` if the index knows
     /// about it, or `None` when the group is absent. The engine
     /// treats absence as "does not match any scope" - a

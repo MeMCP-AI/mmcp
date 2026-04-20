@@ -44,6 +44,16 @@ impl GroupHandleResolver for MapResolver {
     }
 }
 
+impl mmcp_sync::ScopeIndex for MapResolver {
+    fn scope_of(&self, _group_id: Uuid) -> Option<mmcp_core::manifest::GroupScope> {
+        // The engine's filter dispatch only consults the scope
+        // index for `SyncFilter::Scope`; the existing tests drive
+        // the engine with `SyncFilter::All`, where `scope_of` is
+        // never called, so a trivial None impl suffices.
+        None
+    }
+}
+
 /// Build a real native backend rooted in a tempdir plus one seeded
 /// group so the tests can exercise the content plane alongside
 /// the control plane.
@@ -97,7 +107,7 @@ async fn push_drains_the_queue_and_records_versions() {
 
     let client = SyncClient::new(server.uri()).expect("client");
     let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, client);
-    let report = engine.push(&queue, &resolver).await.expect("push ok");
+    let report = engine.push(&queue, mmcp_sync::SyncFilter::All, &resolver, &resolver).await.expect("push ok");
 
     assert_eq!(report.drained.len(), 2);
     assert_eq!(report.drained[0].response.assigned_version, "0.1.1");
@@ -138,7 +148,7 @@ async fn push_re_enqueues_the_failing_edit_on_transport_error() {
 
     let client = SyncClient::new(server.uri()).expect("client");
     let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, client);
-    let err = engine.push(&queue, &resolver).await.unwrap_err();
+    let err = engine.push(&queue, mmcp_sync::SyncFilter::All, &resolver, &resolver).await.unwrap_err();
     match err {
         SyncError::Remote { status, .. } => assert_eq!(status, 500),
         other => panic!("expected Remote, got {other:?}"),
@@ -171,7 +181,7 @@ async fn push_conflict_surfaces_structured_error() {
 
     let client = SyncClient::new(server.uri()).expect("client");
     let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, client);
-    let err = engine.push(&queue, &resolver).await.unwrap_err();
+    let err = engine.push(&queue, mmcp_sync::SyncFilter::All, &resolver, &resolver).await.unwrap_err();
     match err {
         SyncError::Conflict {
             memory,
@@ -218,7 +228,7 @@ async fn pull_reports_updated_and_new_groups() {
 
     let client = SyncClient::new(server.uri()).expect("client");
     let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, client);
-    let report = engine.pull(&resolver).await.expect("pull ok");
+    let report = engine.pull(mmcp_sync::SyncFilter::All, &resolver, &resolver).await.expect("pull ok");
     assert_eq!(report.updated.len(), 1);
     assert_eq!(report.updated[0].slug, "team-rust");
     assert_eq!(report.new_groups.len(), 1);
@@ -264,7 +274,7 @@ async fn sync_runs_pull_then_push() {
 
     let client = SyncClient::new(server.uri()).expect("client");
     let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, client);
-    let report = engine.sync(&queue, &resolver).await.expect("sync ok");
+    let report = engine.sync(&queue, mmcp_sync::SyncFilter::All, &resolver, &resolver).await.expect("sync ok");
     assert_eq!(report.pulled.updated.len(), 1);
     assert_eq!(report.pushed.drained.len(), 1);
     assert!(queue.is_empty());
@@ -302,6 +312,6 @@ async fn push_request_shape_is_recognisable_on_the_wire() {
 
     let client = SyncClient::new(server.uri()).expect("client");
     let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, client);
-    let report = engine.push(&queue, &resolver).await.expect("push ok");
+    let report = engine.push(&queue, mmcp_sync::SyncFilter::All, &resolver, &resolver).await.expect("push ok");
     assert_eq!(report.drained[0].response.assigned_version, "1.0.0");
 }

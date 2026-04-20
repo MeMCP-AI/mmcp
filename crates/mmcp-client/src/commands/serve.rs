@@ -2313,7 +2313,7 @@ impl McpServer {
         )
         .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
         let report = engine
-            .pull(&resolver)
+            .pull(mmcp_sync::SyncFilter::All, &resolver, &resolver)
             .await
             .map_err(map_sync_error_to_mcp)?;
         Ok(ok_json(json!({
@@ -2340,7 +2340,7 @@ impl McpServer {
         )
         .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
         let report = engine
-            .push(&queue, &resolver)
+            .push(&queue, mmcp_sync::SyncFilter::All, &resolver, &resolver)
             .await
             .map_err(map_sync_error_to_mcp)?;
         Ok(ok_json(json!({
@@ -2373,7 +2373,7 @@ impl McpServer {
         )
         .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
         let report = engine
-            .sync(&queue, &resolver)
+            .sync(&queue, mmcp_sync::SyncFilter::All, &resolver, &resolver)
             .await
             .map_err(map_sync_error_to_mcp)?;
         Ok(ok_json(json!({
