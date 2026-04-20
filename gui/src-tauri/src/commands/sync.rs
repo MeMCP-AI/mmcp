@@ -1,10 +1,16 @@
 //! Sync commands (pull / push / status snapshot).
 
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::error::{GuiError, GuiResult};
 use crate::state::AppState;
+
+/// Broadcast name used whenever the on-disk mirror may have
+/// changed. Frontend stores listen and silently re-sync. Payload
+/// is always `{ group_id: string | null }` — null means "something
+/// at the repos_root level changed, refresh globally".
+pub const MIRROR_CHANGED_EVENT: &str = "mirror:changed";
 
 #[derive(Debug, Serialize)]
 pub struct SyncStatusDto {
@@ -33,7 +39,10 @@ pub async fn sync_status(state: State<'_, AppState>) -> GuiResult<SyncStatusDto>
 }
 
 #[tauri::command]
-pub async fn sync_pull(state: State<'_, AppState>) -> GuiResult<PullReportDto> {
+pub async fn sync_pull(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> GuiResult<PullReportDto> {
     let guard = state.sync.read().await;
     let bundle = guard.as_ref().ok_or(GuiError::SyncNotConfigured)?;
     let report = bundle
@@ -41,6 +50,14 @@ pub async fn sync_pull(state: State<'_, AppState>) -> GuiResult<PullReportDto> {
         .pull(&bundle.resolver)
         .await
         .map_err(|e| GuiError::Sync(e.to_string()))?;
+    // A pull touched one or more groups' refs — tell every frontend
+    // listener so views refresh silently. We don't itemise which
+    // groups changed because the pull report isn't per-group here;
+    // null payload means "refresh what you've cached".
+    let _ = app.emit(
+        MIRROR_CHANGED_EVENT,
+        serde_json::json!({ "group_id": null }),
+    );
     Ok(PullReportDto {
         updated: report.updated.len(),
         new_groups: report.new_groups.len(),

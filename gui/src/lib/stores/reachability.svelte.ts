@@ -9,13 +9,20 @@ type State =
 class ReachabilityStore {
   state = $state<State>({ t: 'unknown' });
   private unlisten: UnlistenFn | null = null;
+  /// Optional callback invoked the moment the probe flips from
+  /// offline → online. Used by the main window to auto-trigger a
+  /// silent sync pull once the server comes back.
+  onRestore: (() => void) | null = null;
 
   async mount() {
     if (this.unlisten) return;
     this.unlisten = await onReachabilityChanged((event) => {
-      this.state = event.online
+      const wasOffline = this.state.t === 'offline';
+      const next: State = event.online
         ? { t: 'online' }
         : { t: 'offline', reason: event.reason ?? 'unreachable' };
+      this.state = next;
+      if (wasOffline && next.t === 'online') this.onRestore?.();
     });
   }
 

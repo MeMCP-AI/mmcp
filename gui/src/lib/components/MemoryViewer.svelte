@@ -1,6 +1,7 @@
 <script lang="ts">
   import KindBadge from './KindBadge.svelte';
   import { marked } from 'marked';
+  import { RefreshCw, X } from 'lucide-svelte';
   import type { KindStr, MemoryFile } from '$lib/types';
   import type { KindDisplay } from '$lib/stores/settings.svelte';
 
@@ -9,9 +10,24 @@
     slug: string | null;
     loading: boolean;
     kindDisplay: KindDisplay;
+    /** Fresh version of the same memory sitting in the wings — a
+     * background refresh detected it differs from the on-screen
+     * copy and stashed it rather than clobbering the user's read.
+     * The viewer shows a banner and lets the user opt in. */
+    pending?: MemoryFile | null;
+    onAcceptPending?: () => void;
+    onDismissPending?: () => void;
   }
 
-  let { memory, slug, loading, kindDisplay }: Props = $props();
+  let {
+    memory,
+    slug,
+    loading,
+    kindDisplay,
+    pending = null,
+    onAcceptPending,
+    onDismissPending
+  }: Props = $props();
 
   marked.setOptions({ breaks: false, gfm: true });
   const html = $derived.by(() => {
@@ -29,6 +45,33 @@
     <div class="m-auto flex items-center gap-2 text-sm text-zinc-500">Loading memory…</div>
   {:else}
     {@const fm = memory.frontmatter}
+    {#if pending}
+      <!-- Pending-version banner. Pins above the article so the
+           reader's scroll isn't disturbed; click to adopt the fresh
+           copy, X to keep reading the current one. -->
+      <div
+        class="flex shrink-0 items-center gap-2 border-b border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-xs text-sky-100"
+      >
+        <RefreshCw size={12} class="text-sky-300" />
+        <span>A newer version of this memory is available.</span>
+        <button
+          type="button"
+          class="ml-auto inline-flex items-center gap-1 rounded-md bg-sky-500/30 px-2 py-0.5 font-medium text-sky-50 hover:bg-sky-500/50"
+          onclick={() => onAcceptPending?.()}
+        >
+          View new version
+        </button>
+        <button
+          type="button"
+          class="rounded-md p-1 text-sky-300 hover:bg-sky-500/20 hover:text-sky-100"
+          aria-label="Dismiss"
+          title="Keep current version"
+          onclick={() => onDismissPending?.()}
+        >
+          <X size={11} />
+        </button>
+      </div>
+    {/if}
     <article class="min-h-0 flex-1 overflow-y-auto">
       <div class="mx-auto max-w-3xl px-4 py-5 sm:px-6 sm:py-6">
         <!-- frontmatter card -->

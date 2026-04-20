@@ -17,8 +17,13 @@
   import { settingsStore } from '$lib/stores/settings.svelte';
   import { syncStore } from '$lib/stores/sync.svelte';
   import { openDiagnosticsWindow, openSettingsWindow } from '$lib/windows';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
   import type { KindStr, MemoryFile } from '$lib/types';
+
+  interface MirrorChangedPayload {
+    group_id: string | null;
+  }
 
   type EditorState = { mode: 'new' | 'edit'; initial: MemoryFile | null } | null;
   let editor = $state<EditorState>(null);
@@ -47,6 +52,15 @@
   });
 
   $effect(() => {
+    // Auto-pull the moment the probe reports the server is back.
+    // Only fires after a real offline→online transition — not on
+    // the first unknown→online resolution at startup. Silent: we
+    // don't surface the pull in the toolbar, just let stores
+    // refresh via the mirror:changed broadcast it triggers.
+    reachabilityStore.onRestore = () => {
+      if (!syncStore.configured || syncStore.inFlight) return;
+      void syncStore.pull();
+    };
     (async () => {
       await Promise.all([
         groupsStore.load(),
@@ -55,8 +69,45 @@
         settingsStore.mount()
       ]);
     })();
-    return () => reachabilityStore.unmount();
+    return () => {
+      reachabilityStore.onRestore = null;
+      reachabilityStore.unmount();
+    };
   });
+
+  // Any time the on-disk mirror changes — local writes via Edit
+  // commit, sync pulls, the fs watcher noticing a CLI write — the
+  // backend fires `mirror:changed`. Refresh groups + the active
+  // group's memories silently; the currently-viewed body lands in
+  // `pendingBodies` if it differs, so the viewer's banner can
+  // offer the swap without pulling the reader off their page.
+  $effect(() => {
+    let unlisten: UnlistenFn | null = null;
+    let cancelled = false;
+    void (async () => {
+      const off = await listen<MirrorChangedPayload>('mirror:changed', (e) => {
+        handleMirrorChanged(e.payload?.group_id ?? null);
+      });
+      if (cancelled) off();
+      else unlisten = off;
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  });
+
+  function handleMirrorChanged(groupId: string | null) {
+    void groupsStore.refreshQuiet();
+    const active = selectionStore.groupId;
+    const currentlyViewed =
+      selectionStore.groupId && selectionStore.slug
+        ? { groupId: selectionStore.groupId, slug: selectionStore.slug }
+        : null;
+    if (active && (groupId === null || groupId === active)) {
+      void memoriesStore.refreshGroup(active, currentlyViewed);
+    }
+  }
 
   $effect(() => {
     const gid = selectionStore.groupId;
@@ -110,6 +161,11 @@
       ? memoriesStore.isLoadingBody(selectionStore.groupId, selectionStore.slug)
       : false
   );
+  const currentPending = $derived(
+    selectionStore.groupId && selectionStore.slug
+      ? memoriesStore.pendingFor(selectionStore.groupId, selectionStore.slug)
+      : undefined
+  );
 
   const canCreate = $derived(!!selectionStore.groupId && editor === null);
   const canEdit = $derived(!!currentBody && editor === null && pendingDelete === null);
@@ -134,6 +190,20 @@
     if (!currentBody) return;
     editor = { mode: 'edit', initial: currentBody };
     mobilePane = 'viewer';
+  }
+
+  function acceptPendingBody() {
+    const gid = selectionStore.groupId;
+    const slug = selectionStore.slug;
+    if (!gid || !slug) return;
+    memoriesStore.promotePending(gid, slug);
+  }
+
+  function dismissPendingBody() {
+    const gid = selectionStore.groupId;
+    const slug = selectionStore.slug;
+    if (!gid || !slug) return;
+    memoriesStore.dismissPending(gid, slug);
   }
 
   function handleHistory() {
@@ -341,6 +411,9 @@
           slug={selectionStore.slug}
           loading={currentBodyLoading}
           kindDisplay={settingsStore.values.kind_display}
+          pending={currentPending}
+          onAcceptPending={acceptPendingBody}
+          onDismissPending={dismissPendingBody}
         />
       {/if}
     </div>
@@ -424,6 +497,9 @@
               slug={selectionStore.slug}
               loading={currentBodyLoading}
               kindDisplay={settingsStore.values.kind_display}
+              pending={currentPending}
+              onAcceptPending={acceptPendingBody}
+              onDismissPending={dismissPendingBody}
             />
           {/if}
         </div>
@@ -507,6 +583,9 @@
               slug={selectionStore.slug}
               loading={currentBodyLoading}
               kindDisplay={settingsStore.values.kind_display}
+              pending={currentPending}
+              onAcceptPending={acceptPendingBody}
+              onDismissPending={dismissPendingBody}
             />
           {/if}
         </div>

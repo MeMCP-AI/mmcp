@@ -29,6 +29,18 @@ class GroupsStore {
       this.loading = false;
     }
   }
+
+  /// Refresh without flipping the loading flag — used by
+  /// `mirror:changed` listeners so a background rediscovery doesn't
+  /// flash the list into a loading state while the user is
+  /// navigating.
+  async refreshQuiet() {
+    try {
+      this.groups = await refreshGroups();
+    } catch (err) {
+      this.error = formatErr(err);
+    }
+  }
 }
 
 function formatErr(err: unknown): string {
