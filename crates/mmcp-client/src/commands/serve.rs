@@ -2024,7 +2024,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Initialize the AI's context for this session. Returns the curated set of memories (mandatory, project-scoped, or both) with their bodies inline, plus advisory diagnostics about the project's CLAUDE.md state. Call at session start, after context compaction, before starting a new phase or task, and before/after each commit cycle. This tool never writes files — CLAUDE.md advice appears in `diagnostics` and must be acted on by calling `init_claude` explicitly."
+        description = "Initialize the AI's context for this session. Returns the session protocol as `instructions` plus a metadata manifest of the mandatory and project-scoped memories the caller should plan to read. Memory BODIES are not inlined; fetch each with `read_memory(group, slug|id)` as needed. Call at session start, after context compaction, before starting a new phase or task, and before/after each commit cycle. This tool never writes files - CLAUDE.md advice appears in `diagnostics` and must be acted on by calling `init_claude` explicitly."
     )]
     async fn bootstrap_context(
         &self,
@@ -2062,7 +2062,13 @@ impl McpServer {
                 .collect(),
         };
 
-        // Walk every local group, collecting memories that match scope.
+        // Walk every local group, collecting matching memory
+        // metadata. Bodies are deliberately NOT read or returned -
+        // the response stays small enough to fit under client
+        // tool-output caps, and AI callers fetch each body on
+        // demand via `read_memory`. We still parse the frontmatter
+        // because the wire shape exposes `name` / `description` /
+        // `kind` / `tags` / `mandatory`.
         let mut memories: Vec<serde_json::Value> = Vec::new();
         for entry in self.state.groups.list().await {
             let entry_uuid = *entry.manifest.group_id.as_uuid();
@@ -2118,13 +2124,13 @@ impl McpServer {
                 memories.push(json!({
                     "group": entry_uuid,
                     "slug": file_ref.slug,
+                    "id": file_ref.id.to_string(),
                     "name": file.frontmatter.name,
                     "description": file.frontmatter.description,
                     "kind": file.frontmatter.kind.as_str(),
                     "tags": file.frontmatter.tags,
                     "mandatory": is_mandatory,
                     "reason": reason,
-                    "body": file.body,
                 }));
             }
         }
@@ -2134,6 +2140,7 @@ impl McpServer {
         let diagnostics = build_claude_diagnostics(project_root.as_deref());
 
         Ok(ok_json(json!({
+            "instructions": SESSION_INSTRUCTIONS,
             "memories": memories,
             "project_root": project_root.as_ref().map(|p| p.to_string_lossy().into_owned()),
             "project_uuid": project_uuid.map(|u| u.to_string()),
@@ -4139,7 +4146,7 @@ mod tests {
     const OPTIONAL_MEMORY: &str = "+++\nname = \"Optional Note\"\ndescription = \"Nice to read but not required\"\nkind = \"reference\"\nmandatory = false\ntags = [\"reference\"]\n+++\n\nSome background.\n";
 
     #[tokio::test]
-    async fn bootstrap_context_mandatory_scope_returns_only_mandatory_with_body() {
+    async fn bootstrap_context_mandatory_scope_returns_metadata_manifest_without_bodies() {
         let (state, _tmp) = test_state().await;
         // FR-025: the mandatory memory must live in a Global-scoped
         // group to surface when no `.mmcp.toml` is in cwd. The
@@ -4180,8 +4187,24 @@ mod tests {
         );
         assert_eq!(m.get("mandatory").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(m.get("reason").and_then(|v| v.as_str()), Some("mandatory"));
-        let body = m.get("body").and_then(|v| v.as_str()).expect("body inline");
-        assert!(body.contains("Always follow this rule."));
+        // Metadata-only: the body is deliberately absent; AI clients
+        // pull it via `read_memory(group, slug|id)` on demand.
+        assert!(
+            m.get("body").is_none(),
+            "memory bodies must not be inlined in bootstrap_context; got: {m:?}"
+        );
+        assert!(
+            m.get("id").and_then(|v| v.as_str()).is_some(),
+            "memory id must be surfaced so callers can address without slug ambiguity",
+        );
+        let instructions = parsed
+            .get("instructions")
+            .and_then(|v| v.as_str())
+            .expect("instructions string");
+        assert!(
+            instructions.contains("Session-start protocol"),
+            "instructions must carry the session protocol preamble",
+        );
     }
 
     #[tokio::test]
