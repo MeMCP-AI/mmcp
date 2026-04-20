@@ -18,8 +18,9 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use mmcp_core::manifest::GroupScope;
 use mmcp_git::{NativeBackend, RepoHandle};
-use mmcp_sync::{GroupHandleResolver, PendingQueue, SyncClient, SyncEngine};
+use mmcp_sync::{GroupHandleResolver, PendingQueue, ScopeIndex, SyncClient, SyncEngine};
 use uuid::Uuid;
 
 use crate::groups::GroupIndex;
@@ -72,5 +73,61 @@ impl GroupHandleResolver for IndexResolver {
                 })
             })
             .map(|entry| entry.handle)
+    }
+}
+
+impl ScopeIndex for IndexResolver {
+    fn scope_of(&self, group_id: Uuid) -> Option<GroupScope> {
+        // `try_scope_of` is the non-blocking lookup on `GroupIndex`
+        // so this impl stays safe to call from inside an async
+        // runtime. Unlike `resolve`, there is no block_on bridge
+        // here - the engine's filter dispatch needs to run on the
+        // current worker without requisitioning a second thread.
+        self.index
+            .try_scope_of(&mmcp_core::id::GroupId::from_uuid(group_id))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::home::MmcpHome;
+    use mmcp_core::id::GroupId;
+    use mmcp_core::manifest::GroupManifest;
+    use mmcp_git::GitBackend;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn index_resolver_returns_scope_for_known_group() {
+        // Seed a tempdir-rooted home with two groups at different
+        // scopes so the test pins the lookup path rather than
+        // accidentally matching whatever the default scope is.
+        let tmp = TempDir::new().expect("tempdir");
+        let home = MmcpHome::from_root(tmp.path().join("mmcp-home"));
+        let (backend, index) = home.init_backend().await.expect("init backend");
+
+        let shared_id = GroupId::new();
+        let mut shared = GroupManifest::new_user_owned(shared_id, "team", Uuid::now_v7());
+        shared.scope = GroupScope::Shared;
+        backend.create_group_repo(&shared).await.expect("seed shared");
+
+        let project_id = GroupId::new();
+        let project = GroupManifest::new_user_owned(project_id, "proj", Uuid::now_v7());
+        backend
+            .create_group_repo(&project)
+            .await
+            .expect("seed project");
+        index.refresh().await.expect("refresh");
+
+        let resolver = IndexResolver { index };
+        assert_eq!(
+            resolver.scope_of(*shared_id.as_uuid()),
+            Some(GroupScope::Shared),
+        );
+        assert_eq!(
+            resolver.scope_of(*project_id.as_uuid()),
+            Some(GroupScope::Project),
+        );
+        assert!(resolver.scope_of(Uuid::now_v7()).is_none());
     }
 }

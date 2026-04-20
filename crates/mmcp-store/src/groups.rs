@@ -76,6 +76,27 @@ impl GroupIndex {
         self.inner.read().await.get(group_id).cloned()
     }
 
+    /// Non-blocking scope lookup for use from sync contexts.
+    ///
+    /// Returns `Some(scope)` when the group is indexed and the
+    /// index is not being rewritten; `None` when either condition
+    /// fails. The sync engine's `ScopeIndex::scope_of` impl goes
+    /// through this helper, which needs a non-blocking path
+    /// because it runs inside an already-driving tokio runtime and
+    /// a `block_on` would panic with "Cannot start a runtime from
+    /// within a runtime". The index's `RwLock` is never held
+    /// across an await point and refresh is rare, so `try_read`
+    /// almost always succeeds; when it does not, the engine treats
+    /// the result as "unknown" and the caller retries on its next
+    /// tick.
+    #[must_use]
+    pub fn try_scope_of(&self, group_id: &GroupId) -> Option<mmcp_core::manifest::GroupScope> {
+        self.inner
+            .try_read()
+            .ok()
+            .and_then(|guard| guard.get(group_id).map(|entry| entry.manifest.scope))
+    }
+
     /// Snapshot of every entry in the index.
     pub async fn list(&self) -> Vec<GroupEntry> {
         self.inner.read().await.values().cloned().collect()
