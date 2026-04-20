@@ -11,6 +11,8 @@
     User,
     X
   } from 'lucide-svelte';
+  import { fly } from 'svelte/transition';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { diffMemory, listMemoryHistory, loadMemoryAt } from '$lib/api/history';
   import { settingsStore, type DiffViewMode } from '$lib/stores/settings.svelte';
   import type { CommitMeta, DiffResult, DiffRow, DiffSpan, KindStr, MemoryFile } from '$lib/types';
@@ -165,6 +167,37 @@
     })();
   });
 
+  /// Silent refresh on mirror:changed. Refetches the commit list
+  /// without touching `loadingCommits` so the UI doesn't flash a
+  /// spinner; new commits animate in via the keyed `{#each}` +
+  /// `transition:fly`.
+  $effect(() => {
+    let unlisten: UnlistenFn | null = null;
+    let cancelled = false;
+    void (async () => {
+      const off = await listen<{ group_id: string | null }>(
+        'mirror:changed',
+        async (e) => {
+          const gid = e.payload?.group_id ?? null;
+          if (gid !== null && gid !== groupId) return;
+          try {
+            const fresh = await listMemoryHistory(groupId, slug);
+            commits = fresh;
+          } catch {
+            // Silent — user can refresh manually by toggling
+            // history off/on if the list gets stuck.
+          }
+        }
+      );
+      if (cancelled) off();
+      else unlisten = off;
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  });
+
   // Read the memory at the currently selected commit.
   $effect(() => {
     const id = selectedId;
@@ -289,7 +322,10 @@
             {#each commits as commit, idx (commit.id)}
               {@const active = selectedId === commit.id}
               {@const latest = idx === 0}
-              <li class="border-b border-zinc-900 last:border-b-0">
+              <li
+                class="border-b border-zinc-900 last:border-b-0"
+                transition:fly={{ y: -12, duration: 220 }}
+              >
                 <button
                   type="button"
                   class="flex w-full flex-col gap-0.5 px-3 py-2 text-left transition-colors
