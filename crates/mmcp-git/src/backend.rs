@@ -5,7 +5,9 @@ use bytes::Bytes;
 use mmcp_core::manifest::GroupManifest;
 
 use crate::error::GitError;
-use crate::types::{CommitMeta, CommitSpec, Credentials, PushReport, RefSpec, RepoHandle, Rev};
+use crate::types::{
+    CommitMeta, CommitSpec, Credentials, FastForwardOutcome, PushReport, RefSpec, RepoHandle, Rev,
+};
 
 /// A pluggable git storage backend.
 ///
@@ -109,6 +111,28 @@ pub trait GitBackend: Send + Sync {
         name: &str,
         target: &str,
     ) -> Result<(), GitError>;
+
+    /// Fast-forward `local_ref` to the commit pointed at by
+    /// `target_ref`.
+    ///
+    /// Pure-local ref manipulation: both refs must already exist
+    /// in the repo (the caller is expected to have run `fetch`
+    /// first to populate `target_ref`, typically the
+    /// `refs/remotes/origin/<branch>` tracking ref).
+    ///
+    /// Returns a [`FastForwardOutcome`] distinguishing the three
+    /// relevant cases: `AlreadyAt` when the refs already agree,
+    /// `Advanced` when the local ref was moved (or created from
+    /// nothing), and `NotFastForward` when local is not an
+    /// ancestor of target and the caller has to resolve the
+    /// divergence. The ref is not modified in the `NotFastForward`
+    /// case.
+    async fn fast_forward(
+        &self,
+        repo: &RepoHandle,
+        local_ref: &str,
+        target_ref: &str,
+    ) -> Result<FastForwardOutcome, GitError>;
 
     /// Walk the commit history that touches `path`, most recent first.
     async fn walk_history(

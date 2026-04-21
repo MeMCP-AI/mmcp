@@ -2,7 +2,7 @@
 
 use mmcp_core::id::GroupId;
 use mmcp_core::manifest::{GroupManifest, MANIFEST_FILENAME};
-use mmcp_git::{CommitSpec, GitBackend, NativeBackend, Rev};
+use mmcp_git::{CommitSpec, FastForwardOutcome, GitBackend, NativeBackend, Rev};
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -267,4 +267,177 @@ async fn remote_operations_fail_fast_without_a_remote() {
         .await
         .unwrap_err();
     assert!(matches!(err, mmcp_git::GitError::Transport { .. }));
+}
+
+#[tokio::test]
+async fn fast_forward_advances_local_ref_to_target_commit() {
+    // Seed a repo with an initial manifest commit (creates main),
+    // then commit a second blob to a synthetic `refs/remotes/origin/main`
+    // tracking ref and run fast_forward to advance main. The
+    // outcome should be `Advanced { from: Some(parent), to: child }`.
+    let (backend, _tmp) = backend_in_tempdir();
+    let manifest = sample_manifest();
+    let repo = backend.create_group_repo(&manifest).await.unwrap();
+
+    // Parent commit: the manifest commit that `create_group_repo`
+    // already wrote. Read its id off `main`.
+    let parent_bytes = backend
+        .read_file(&repo, MANIFEST_FILENAME, &Rev::Branch("main".into()))
+        .await
+        .unwrap();
+    assert!(!parent_bytes.is_empty());
+
+    // Child commit on main: adds a file.
+    let child_id = backend
+        .write_commit(
+            &repo,
+            sample_commit("alice", "main", "hello.md", "hi"),
+        )
+        .await
+        .unwrap();
+
+    // Simulate what fetch-to-tracking-ref would produce: point a
+    // new ref `refs/remotes/origin/main` at child_id, then rewind
+    // local `refs/heads/main` to the parent so the two refs have
+    // something to differ on.
+    let tmp_path = _tmp.path().join(format!("{}.git", manifest.group_id));
+    let gix_repo = gix::open(&tmp_path).unwrap();
+    let child_obj = gix::ObjectId::from_hex(child_id.as_bytes()).unwrap();
+
+    // Create the tracking ref at child.
+    gix_repo
+        .reference(
+            "refs/remotes/origin/main",
+            child_obj,
+            gix::refs::transaction::PreviousValue::MustNotExist,
+            "seed tracking ref",
+        )
+        .unwrap();
+
+    // Walk back one commit to find the parent so we can rewind local.
+    let parent_id = {
+        let commit = gix_repo.find_object(child_obj).unwrap().into_commit();
+        let decoded = commit.decode().unwrap();
+        decoded.parents().next().expect("child has a parent")
+    };
+    let mut local_main = gix_repo.find_reference("refs/heads/main").unwrap();
+    local_main
+        .set_target_id(parent_id, "rewind for FF test")
+        .unwrap();
+
+    let outcome = backend
+        .fast_forward(&repo, "refs/heads/main", "refs/remotes/origin/main")
+        .await
+        .unwrap();
+    match outcome {
+        FastForwardOutcome::Advanced { from, to } => {
+            assert_eq!(from, Some(parent_id.to_string()));
+            assert_eq!(to, child_id);
+        }
+        other => panic!("expected Advanced, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn fast_forward_on_equal_refs_reports_already_at() {
+    // When local and tracking ref already point at the same commit,
+    // fast_forward returns `AlreadyAt` and leaves the ref alone.
+    let (backend, _tmp) = backend_in_tempdir();
+    let manifest = sample_manifest();
+    let repo = backend.create_group_repo(&manifest).await.unwrap();
+
+    let tmp_path = _tmp.path().join(format!("{}.git", manifest.group_id));
+    let gix_repo = gix::open(&tmp_path).unwrap();
+    let main_id = gix_repo
+        .find_reference("refs/heads/main")
+        .unwrap()
+        .id()
+        .detach();
+    gix_repo
+        .reference(
+            "refs/remotes/origin/main",
+            main_id,
+            gix::refs::transaction::PreviousValue::MustNotExist,
+            "seed tracking ref",
+        )
+        .unwrap();
+
+    let outcome = backend
+        .fast_forward(&repo, "refs/heads/main", "refs/remotes/origin/main")
+        .await
+        .unwrap();
+    match outcome {
+        FastForwardOutcome::AlreadyAt { commit } => {
+            assert_eq!(commit, main_id.to_string());
+        }
+        other => panic!("expected AlreadyAt, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn fast_forward_reports_not_fast_forward_on_divergence() {
+    // Seed two sibling commits off the same parent (one on main,
+    // one on a fake tracking ref). Fast-forwarding main to the
+    // tracking ref should report NotFastForward since neither is
+    // an ancestor of the other.
+    let (backend, _tmp) = backend_in_tempdir();
+    let manifest = sample_manifest();
+    let repo = backend.create_group_repo(&manifest).await.unwrap();
+
+    // Advance main with one commit (the "local" side).
+    let local_child = backend
+        .write_commit(&repo, sample_commit("alice", "main", "local.md", "local"))
+        .await
+        .unwrap();
+
+    // Now rewind main to the initial manifest commit, so we can
+    // create a sibling commit off that parent.
+    let tmp_path = _tmp.path().join(format!("{}.git", manifest.group_id));
+    let gix_repo = gix::open(&tmp_path).unwrap();
+    let local_child_obj = gix::ObjectId::from_hex(local_child.as_bytes()).unwrap();
+    let parent_id = {
+        let commit = gix_repo.find_object(local_child_obj).unwrap().into_commit();
+        let decoded = commit.decode().unwrap();
+        decoded.parents().next().expect("child has a parent")
+    };
+    gix_repo
+        .find_reference("refs/heads/main")
+        .unwrap()
+        .set_target_id(parent_id, "rewind for sibling")
+        .unwrap();
+
+    // Now write a different commit on main (the "remote" sibling).
+    let remote_child = backend
+        .write_commit(&repo, sample_commit("bob", "main", "remote.md", "remote"))
+        .await
+        .unwrap();
+    let remote_child_obj = gix::ObjectId::from_hex(remote_child.as_bytes()).unwrap();
+
+    // Park the remote sibling on the tracking ref and restore local
+    // main to the local child so the two refs diverge.
+    gix_repo
+        .reference(
+            "refs/remotes/origin/main",
+            remote_child_obj,
+            gix::refs::transaction::PreviousValue::MustNotExist,
+            "seed tracking ref",
+        )
+        .unwrap();
+    gix_repo
+        .find_reference("refs/heads/main")
+        .unwrap()
+        .set_target_id(local_child_obj, "restore local main")
+        .unwrap();
+
+    let outcome = backend
+        .fast_forward(&repo, "refs/heads/main", "refs/remotes/origin/main")
+        .await
+        .unwrap();
+    match outcome {
+        FastForwardOutcome::NotFastForward { local, target } => {
+            assert_eq!(local, local_child);
+            assert_eq!(target, remote_child);
+        }
+        other => panic!("expected NotFastForward, got {other:?}"),
+    }
 }

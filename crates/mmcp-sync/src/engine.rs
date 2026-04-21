@@ -155,61 +155,71 @@ impl SyncEngine {
         Ok(PushReport { pushed })
     }
 
-    /// Pull the caller's effective group list from the server and
-    /// fetch any groups whose local head differs from the remote
-    /// head. Groups that do not yet exist locally surface in the
-    /// report under `new_groups` so the caller can clone them
-    /// through a higher-level bootstrap path.
+    /// Pull: fetch into remote-tracking refs, then fast-forward
+    /// local `main` to match.
     ///
-    /// `filter` scopes which groups are fetched. `SyncFilter::All`
-    /// preserves the whole-mirror behaviour; `SyncFilter::Group(u)`
-    /// only touches the matching group; `SyncFilter::Scope(s)`
-    /// consults `scope_index` for each server-advertised group and
-    /// fetches only matches. Groups the client has never seen
-    /// locally ("new groups") are surfaced regardless of filter
-    /// because the engine cannot know their scope until they are
-    /// cloned; operator flows decide whether to adopt them.
+    /// Git-symmetric two-phase operation:
+    ///
+    /// 1. Delegate to `self.fetch`, which writes each in-scope
+    ///    group's remote head into `refs/remotes/origin/main`
+    ///    without touching local `main`.
+    /// 2. For each group whose tracking ref advanced, call
+    ///    `backend.fast_forward(main, origin/main)` to move local
+    ///    `main` forward.
+    ///
+    /// Divergence (local is not an ancestor of remote) surfaces
+    /// today as a silent `FastForwardOutcome::NotFastForward` -
+    /// the group still appears in the report so operators know
+    /// it was considered, but local `main` is left unchanged.
+    /// Step 7 of the sync plan upgrades this to a structured
+    /// `pull_diverged` error.
+    ///
+    /// `filter` and `new_groups` semantics match `fetch`.
     pub async fn pull(
         &self,
         filter: SyncFilter,
         group_handles: &dyn GroupHandleResolver,
         scope_index: &dyn ScopeIndex,
     ) -> Result<PullReport, SyncError> {
-        let manifest: ManifestResponse = self.client.get_manifest().await?;
+        let fetched = self.fetch(filter, group_handles, scope_index).await?;
         let mut updated = Vec::new();
-        let mut new_groups = Vec::new();
-        for remote in manifest.groups {
-            match group_handles.resolve(remote.group_id) {
-                None => new_groups.push(remote),
-                Some(handle) => {
-                    if !group_matches(filter, remote.group_id, scope_index) {
-                        continue;
-                    }
-                    let refs = vec![RefSpec::new(
-                        mmcp_core::conventions::MAIN_BRANCH_REF,
-                        mmcp_core::conventions::MAIN_BRANCH_REF,
-                    )];
-                    let remote_url = self.client.git_url_for(remote.group_id);
-                    let creds = self.client.git_credentials();
-                    match self.backend.fetch(&handle, &remote_url, &refs, &creds).await {
-                        Ok(()) => updated.push(remote),
-                        Err(mmcp_git::GitError::Unsupported(_))
-                        | Err(mmcp_git::GitError::Transport { .. }) => {
-                            // Content plane deferred: the remote is
-                            // unreachable or the backend can't push
-                            // bytes yet. The control-plane view is
-                            // still meaningful, so surface the group
-                            // in `updated` rather than hiding it.
-                            updated.push(remote);
-                        }
+        for fetched_group in fetched.groups {
+            // Only attempt the fast-forward when the tracking ref
+            // actually moved. `ref_updated=false` means the content
+            // plane was skipped (transport failure), so
+            // `refs/remotes/origin/main` still points at whatever
+            // prior fetch left it at - advancing from that is
+            // harmless at best and misleading at worst.
+            if fetched_group.ref_updated {
+                if let Some(handle) = group_handles.resolve(fetched_group.group_id) {
+                    match self
+                        .backend
+                        .fast_forward(
+                            &handle,
+                            mmcp_core::conventions::MAIN_BRANCH_REF,
+                            mmcp_core::conventions::MAIN_REMOTE_TRACKING_REF,
+                        )
+                        .await
+                    {
+                        Ok(_) => {}
+                        // Missing tracking ref on first fetch of a
+                        // freshly-cloned repo: benign, the local
+                        // `main` is already at the target anyway.
+                        Err(mmcp_git::GitError::RevNotFound(_)) => {}
+                        Err(mmcp_git::GitError::Unsupported(_)) => {}
                         Err(other) => return Err(SyncError::Git(other)),
                     }
                 }
             }
+            updated.push(crate::client::RemoteGroup {
+                group_id: fetched_group.group_id,
+                slug: fetched_group.slug,
+                head_commit: fetched_group.remote_head,
+            });
         }
         Ok(PullReport {
             updated,
-            new_groups,
+            new_groups: fetched.new_groups,
         })
     }
 

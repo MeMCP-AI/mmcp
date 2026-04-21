@@ -202,6 +202,44 @@ impl Credentials {
     }
 }
 
+/// Outcome of a local [`GitBackend::fast_forward`] call.
+///
+/// Fast-forward advances a local branch ref to match the commit at
+/// another ref (typically a remote-tracking ref just populated by
+/// `fetch`). The distinction between the variants matters to the
+/// sync engine's pull path: `AlreadyAt` and `Advanced` both mean
+/// "safe to publish as updated"; `NotFastForward` means local work
+/// diverged from the remote and the caller needs to resolve the
+/// split (step 7 of the sync plan upgrades this to the structured
+/// `pull_diverged` error; today the engine records it silently).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FastForwardOutcome {
+    /// `local_ref` already pointed at `target_ref`'s commit; the
+    /// ref was left untouched.
+    AlreadyAt {
+        /// Shared commit id both refs agree on.
+        commit: String,
+    },
+    /// `local_ref` was moved to the target commit. `from` is
+    /// `None` when the local ref did not exist before the call
+    /// (created-from-nothing case).
+    Advanced {
+        /// Prior commit the local ref was at, if any.
+        from: Option<String>,
+        /// New commit the local ref now points at.
+        to: String,
+    },
+    /// `local_ref` is not an ancestor of `target_ref`. The caller
+    /// must resolve the divergence explicitly; the ref was not
+    /// modified.
+    NotFastForward {
+        /// Commit the local ref currently points at.
+        local: String,
+        /// Commit the target ref points at.
+        target: String,
+    },
+}
+
 /// Report returned from a push operation.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PushReport {

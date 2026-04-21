@@ -12,7 +12,7 @@ use gix::bstr::BString;
 use gix::objs::tree::EntryKind;
 
 use crate::error::GitError;
-use crate::types::{CommitMeta, CommitSpec, Credentials, PushReport, Rev};
+use crate::types::{CommitMeta, CommitSpec, Credentials, FastForwardOutcome, PushReport, Rev};
 
 fn gix_err<E: std::fmt::Display>(err: E) -> GitError {
     GitError::Gix(err.to_string())
@@ -161,6 +161,91 @@ pub fn push(
         rejected: Vec::new(),
     };
     Ok(report)
+}
+
+/// Fast-forward `local_ref` to the commit `target_ref` points at.
+///
+/// Pure-local ref manipulation through `gix`; no network. See
+/// [`crate::GitBackend::fast_forward`] for the contract.
+pub fn fast_forward(
+    repo_path: &Path,
+    local_ref: &str,
+    target_ref: &str,
+) -> Result<FastForwardOutcome, GitError> {
+    let repo = open_bare(repo_path)?;
+
+    // Target must exist; this is the whole point of calling FF
+    // after a fetch. Missing target is an operator error, not a
+    // transient.
+    let target_commit = repo
+        .find_reference(target_ref)
+        .map_err(|e| GitError::RevNotFound(format!("{target_ref}: {e}")))?
+        .id()
+        .detach();
+
+    // Local may not exist yet (first-ever pull of a group that
+    // was cloned empty). That's a legal create-from-nothing FF.
+    let local_commit = repo
+        .find_reference(local_ref)
+        .ok()
+        .map(|r| r.id().detach());
+
+    match local_commit {
+        None => {
+            repo.reference(
+                local_ref,
+                target_commit,
+                gix::refs::transaction::PreviousValue::MustNotExist,
+                "mmcp: fast-forward (create)",
+            )
+            .map_err(gix_err)?;
+            Ok(FastForwardOutcome::Advanced {
+                from: None,
+                to: target_commit.to_string(),
+            })
+        }
+        Some(local_id) if local_id == target_commit => Ok(FastForwardOutcome::AlreadyAt {
+            commit: target_commit.to_string(),
+        }),
+        Some(local_id) => {
+            if is_ancestor(&repo, local_id, target_commit)? {
+                let mut reference = repo.find_reference(local_ref).map_err(gix_err)?;
+                reference
+                    .set_target_id(target_commit, "mmcp: fast-forward")
+                    .map_err(gix_err)?;
+                Ok(FastForwardOutcome::Advanced {
+                    from: Some(local_id.to_string()),
+                    to: target_commit.to_string(),
+                })
+            } else {
+                Ok(FastForwardOutcome::NotFastForward {
+                    local: local_id.to_string(),
+                    target: target_commit.to_string(),
+                })
+            }
+        }
+    }
+}
+
+/// True when `ancestor` appears in the commit graph reachable from
+/// `descendant`. Equality counts as ancestry, matching git's
+/// `merge-base --is-ancestor`.
+fn is_ancestor(
+    repo: &gix::Repository,
+    ancestor: gix::ObjectId,
+    descendant: gix::ObjectId,
+) -> Result<bool, GitError> {
+    if ancestor == descendant {
+        return Ok(true);
+    }
+    let walk = repo.rev_walk([descendant]).all().map_err(gix_err)?;
+    for info in walk {
+        let info = info.map_err(gix_err)?;
+        if info.id == ancestor {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Verify every local ref named in the outgoing refspecs actually

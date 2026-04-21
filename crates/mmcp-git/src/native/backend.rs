@@ -9,7 +9,9 @@ use mmcp_core::manifest::GroupManifest;
 use crate::backend::GitBackend;
 use crate::error::GitError;
 use crate::native::repo_ops;
-use crate::types::{CommitMeta, CommitSpec, Credentials, PushReport, RefSpec, RepoHandle, Rev};
+use crate::types::{
+    CommitMeta, CommitSpec, Credentials, FastForwardOutcome, PushReport, RefSpec, RepoHandle, Rev,
+};
 
 /// Native backend serving bare repositories from a root directory on
 /// the local filesystem.
@@ -175,6 +177,22 @@ impl GitBackend for NativeBackend {
         let creds = creds.clone();
         tokio::task::spawn_blocking(move || {
             repo_ops::push(&repo_path, &remote_url, &refspecs, &creds)
+        })
+        .await
+        .map_err(|e| GitError::Gix(format!("join error: {e}")))?
+    }
+
+    async fn fast_forward(
+        &self,
+        repo: &RepoHandle,
+        local_ref: &str,
+        target_ref: &str,
+    ) -> Result<FastForwardOutcome, GitError> {
+        let repo_path = Self::handle_path(repo).to_path_buf();
+        let local_ref = local_ref.to_string();
+        let target_ref = target_ref.to_string();
+        tokio::task::spawn_blocking(move || {
+            repo_ops::fast_forward(&repo_path, &local_ref, &target_ref)
         })
         .await
         .map_err(|e| GitError::Gix(format!("join error: {e}")))?
