@@ -2505,7 +2505,14 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Read each in-scope group's remote HEAD into a local remote-tracking ref without advancing the group's `main` branch. Git-symmetric with `fetch`: use this to inspect what `sync_pull` would fast-forward before committing to it. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block, and the usual `selector_required` / `selector_conflict` / `unknown_group` for arg validation."
+        description = "Read each in-scope group's remote HEAD into a local remote-tracking ref without advancing the group's `main` branch. Git-symmetric with `fetch`: use this to inspect what `sync_pull` would fast-forward before committing to it. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block, and the usual `selector_required` / `selector_conflict` / `unknown_group` for arg validation.",
+        annotations(
+            title = "Fetch remote-tracking refs",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true,
+        )
     )]
     async fn sync_fetch(
         &self,
@@ -2537,7 +2544,14 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Pull updates from the configured mmcp sync server into the local mirror. Returns the groups whose local HEAD advanced plus any groups the server has that are not mirrored yet. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block, and code `sync_conflict` / `sync_remote` / `sync_transport` for engine-level failures."
+        description = "Pull updates from the configured mmcp sync server into the local mirror. Returns the groups whose local HEAD advanced plus any groups the server has that are not mirrored yet. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block, and code `sync_conflict` / `sync_remote` / `sync_transport` for engine-level failures.",
+        annotations(
+            title = "Pull from sync server",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = true,
+        )
     )]
     async fn sync_pull(
         &self,
@@ -2564,7 +2578,14 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Push the local pending-edit queue to the configured mmcp sync server. Returns each drained edit with the server-assigned version and tag, plus whether the content plane (git push) actually shipped bytes. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block."
+        description = "Push the local pending-edit queue to the configured mmcp sync server. Returns each drained edit with the server-assigned version and tag, plus whether the content plane (git push) actually shipped bytes. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block.",
+        annotations(
+            title = "Push to sync server",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true,
+        )
     )]
     async fn sync_push(
         &self,
@@ -2593,7 +2614,14 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Run a full sync (pull then push) against the configured mmcp server. Returns both report shapes nested under `pulled` and `pushed`. Same error codes as `sync_pull` / `sync_push`."
+        description = "Run a full sync (pull then push) against the configured mmcp server. Returns both report shapes nested under `pulled` and `pushed`. Same error codes as `sync_pull` / `sync_push`.",
+        annotations(
+            title = "Full sync (pull + push)",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = true,
+        )
     )]
     async fn sync(
         &self,
