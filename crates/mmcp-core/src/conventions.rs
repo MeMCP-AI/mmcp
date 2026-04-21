@@ -13,6 +13,11 @@ pub const MAIN_BRANCH: &str = "main";
 /// Full ref path for the main branch.
 pub const MAIN_BRANCH_REF: &str = "refs/heads/main";
 
+/// Remote-tracking ref path that fetch-without-apply writes into,
+/// so the local `refs/heads/main` stays put and callers can compare
+/// before fast-forwarding. Mirrors git's `origin/<branch>` layout.
+pub const MAIN_REMOTE_TRACKING_REF: &str = "refs/remotes/origin/main";
+
 /// Directory inside a group repository that holds memory files.
 pub const MEMORIES_DIR: &str = "memories";
 

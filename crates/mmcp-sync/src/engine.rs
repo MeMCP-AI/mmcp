@@ -259,6 +259,67 @@ impl SyncEngine {
         let pushed = self.push(queue, filter, group_handles, scope_index).await?;
         Ok(SyncReport { pulled, pushed })
     }
+
+    /// Fetch each in-scope group's remote head into its local
+    /// remote-tracking ref without advancing `refs/heads/main`.
+    ///
+    /// Git-symmetric read-only sync: the manifest lists what the
+    /// server has, this walks the subset the filter accepts, and
+    /// for each indexed group the native backend writes
+    /// `refs/remotes/origin/main` so operators can inspect the
+    /// incoming tip before `pull` fast-forwards. Groups the client
+    /// has never cloned surface under `new_groups` exactly like
+    /// `pull` reports them - the engine never auto-adopts them.
+    pub async fn fetch(
+        &self,
+        filter: SyncFilter,
+        group_handles: &dyn GroupHandleResolver,
+        scope_index: &dyn ScopeIndex,
+    ) -> Result<FetchReport, SyncError> {
+        let manifest: ManifestResponse = self.client.get_manifest().await?;
+        let mut groups = Vec::new();
+        let mut new_groups = Vec::new();
+        for remote in manifest.groups {
+            match group_handles.resolve(remote.group_id) {
+                None => new_groups.push(remote),
+                Some(handle) => {
+                    if !group_matches(filter, remote.group_id, scope_index) {
+                        continue;
+                    }
+                    // `refs/heads/main:refs/remotes/origin/main` - the
+                    // git-native shape for "inspect before apply"
+                    // fetches. Local `main` stays put; the next `pull`
+                    // fast-forwards it from this tracking ref.
+                    let refs = vec![RefSpec::new(
+                        mmcp_core::conventions::MAIN_BRANCH_REF,
+                        mmcp_core::conventions::MAIN_REMOTE_TRACKING_REF,
+                    )];
+                    let remote_url = self.client.git_url_for(remote.group_id);
+                    let creds = self.client.git_credentials();
+                    let ref_updated = match self
+                        .backend
+                        .fetch(&handle, &remote_url, &refs, &creds)
+                        .await
+                    {
+                        Ok(()) => true,
+                        // Transport gaps are recorded, not raised:
+                        // the control-plane view is still worth
+                        // surfacing, and the caller can retry.
+                        Err(mmcp_git::GitError::Unsupported(_))
+                        | Err(mmcp_git::GitError::Transport { .. }) => false,
+                        Err(other) => return Err(SyncError::Git(other)),
+                    };
+                    groups.push(FetchedGroup {
+                        group_id: remote.group_id,
+                        slug: remote.slug,
+                        remote_head: remote.head_commit,
+                        ref_updated,
+                    });
+                }
+            }
+        }
+        Ok(FetchReport { groups, new_groups })
+    }
 }
 
 /// Resolves a `group_id` to its local [`mmcp_git::RepoHandle`].
@@ -310,4 +371,34 @@ pub struct PullReport {
 pub struct SyncReport {
     pub pulled: PullReport,
     pub pushed: PushReport,
+}
+
+/// Report of a completed `fetch` call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchReport {
+    /// Groups whose remote head was written into the local
+    /// `refs/remotes/origin/main` tracking ref. Empty list means
+    /// no in-scope group was both present locally and advertised
+    /// by the server.
+    pub groups: Vec<FetchedGroup>,
+    /// Groups the server advertises that the client has no local
+    /// clone for yet. Reported so operators can decide whether to
+    /// adopt them; the engine never auto-clones.
+    pub new_groups: Vec<crate::client::RemoteGroup>,
+}
+
+/// One fetched group's before/after snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchedGroup {
+    pub group_id: Uuid,
+    pub slug: String,
+    /// Remote HEAD commit at the time the manifest was read. The
+    /// tracking ref ends up pointing here when `ref_updated` is
+    /// true; a later `pull` fast-forwards local `main` to match.
+    pub remote_head: String,
+    /// `false` when the content-plane fetch was skipped (backend
+    /// returned `Unsupported` or a transport error). The control-
+    /// plane view still shows the remote head so operators can
+    /// see what would have landed.
+    pub ref_updated: bool,
 }

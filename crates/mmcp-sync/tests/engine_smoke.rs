@@ -199,6 +199,49 @@ async fn push_conflict_surfaces_structured_error() {
 }
 
 #[tokio::test]
+async fn fetch_reports_each_in_scope_group_and_lists_new_ones() {
+    // Git-symmetric read path: the manifest lists one known and
+    // one new group. Fetch walks both, reports the indexed one
+    // under `groups` with its advertised remote head, and the
+    // unknown one under `new_groups` (never auto-cloned).
+    let server = MockServer::start().await;
+    let (backend, resolver, group_uuid, _tmp) = seeded_backend().await;
+
+    let new_group = Uuid::now_v7();
+    let manifest = ManifestResponse {
+        groups: vec![
+            RemoteGroup {
+                group_id: group_uuid,
+                slug: "team-rust".to_string(),
+                head_commit: "aaa".to_string(),
+            },
+            RemoteGroup {
+                group_id: new_group,
+                slug: "team-python".to_string(),
+                head_commit: "bbb".to_string(),
+            },
+        ],
+    };
+    Mock::given(method("GET"))
+        .and(path("/sync/manifest"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&manifest))
+        .mount(&server)
+        .await;
+
+    let client = SyncClient::new(server.uri()).expect("client");
+    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, client);
+    let report = engine
+        .fetch(mmcp_sync::SyncFilter::All, &resolver, &resolver)
+        .await
+        .expect("fetch ok");
+    assert_eq!(report.groups.len(), 1);
+    assert_eq!(report.groups[0].slug, "team-rust");
+    assert_eq!(report.groups[0].remote_head, "aaa");
+    assert_eq!(report.new_groups.len(), 1);
+    assert_eq!(report.new_groups[0].slug, "team-python");
+}
+
+#[tokio::test]
 async fn pull_reports_updated_and_new_groups() {
     let server = MockServer::start().await;
     let (backend, resolver, group_uuid, _tmp) = seeded_backend().await;
