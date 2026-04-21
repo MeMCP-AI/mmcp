@@ -21,6 +21,7 @@
 //! and the pure version bump math (`negotiate_next_version`)
 //! used by the server when it assigns a new version to an edit.
 
+pub mod bump;
 pub mod client;
 pub mod engine;
 pub mod error;
@@ -28,6 +29,7 @@ pub mod filter;
 pub mod pending;
 pub mod version;
 
+pub use bump::parse_bump_intent;
 pub use client::{
     ConflictBody, ManifestResponse, PushRequest, PushResponse, RefEntry, RefsResponse,
     RemoteGroup, SyncClient,
