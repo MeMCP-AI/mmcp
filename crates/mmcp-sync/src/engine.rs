@@ -1,17 +1,25 @@
-//! Sync engine orchestrating the pending push queue and the
-//! remote control-plane endpoints.
+//! Sync engine orchestrating the git control and content planes.
 //!
 //! The engine draws a clean line between two concerns:
 //!
 //! - The **control plane**, which lives in `SyncClient` and talks
-//!   JSON over HTTPS to `mmcp-server`. Pushing an edit means
-//!   registering a version bump with the server and receiving the
-//!   assigned semver string back. Pulling means listing which
-//!   groups should exist locally and at what head commit.
+//!   JSON over HTTPS to `mmcp-server`. Today it advertises which
+//!   groups exist and at what head commit (`/sync/manifest`,
+//!   `/sync/refs/<uuid>`); version-bump registration used to live
+//!   here but moved onto the commit stream itself once the client
+//!   became fully git-native.
 //! - The **content plane**, which lives in `GitBackend` and moves
-//!   actual blobs. The engine calls `backend.push` / `backend.fetch`
-//!   once the control-plane decision is recorded. Any failure the
-//!   backend returns propagates as `SyncError::Git`.
+//!   actual blobs. `fetch` / `pull` / `push` all delegate their
+//!   on-wire work to `backend.fetch` and `backend.push`.
+//!
+//! The three verbs are intentionally git-symmetric:
+//!
+//! - `fetch` writes each in-scope group's remote head into
+//!   `refs/remotes/origin/main` without advancing local `main`.
+//! - `pull` fast-forwards local `main` to the remote head.
+//! - `push` ships local `main` to the remote. No per-edit queue;
+//!   each memory mutation already commits to the local repo, and
+//!   push is just `git push origin main` per group.
 //!
 //! Tests under `tests/engine_smoke.rs` exercise the engine against
 //! a `wiremock` HTTP server plus an in-process native git backend
@@ -24,10 +32,9 @@ use mmcp_core::manifest::GroupScope;
 use mmcp_git::{GitBackend, RefSpec};
 use uuid::Uuid;
 
-use crate::client::{ManifestResponse, PushRequest, PushResponse, SyncClient};
+use crate::client::{ManifestResponse, SyncClient};
 use crate::error::SyncError;
 use crate::filter::{ScopeIndex, SyncFilter};
-use crate::pending::{PendingEdit, PendingQueue};
 
 /// True when `group_id` satisfies `filter`.
 ///
@@ -79,113 +86,73 @@ impl SyncEngine {
         Self { backend, client }
     }
 
-    /// Drain the pending push queue.
+    /// Push each in-scope group's local `main` to its remote.
     ///
-    /// For each enqueued edit the engine:
+    /// Git-symmetric write path. No pending-edit queue: every
+    /// memory mutation already commits to the local bare repo, so
+    /// push just walks the selected groups and runs
+    /// `git push origin main` on each one. The server's
+    /// `receive-pack` handler is authoritative for version-bump
+    /// derivation from the commit stream.
     ///
-    /// 1. Registers a version bump with the server via
-    ///    `POST /sync/push` and records the assigned version in
-    ///    the resulting [`DrainedPush`].
-    /// 2. Invokes `GitBackend::push` so the local commit reaches
-    ///    the remote bare repo. When the backend returns
-    ///    [`GitError::Unsupported`](mmcp_git::GitError::Unsupported),
-    ///    the engine records a synthetic report entry explaining
-    ///    that the content plane is not yet wired but the version
-    ///    was recorded on the server; any other git error
-    ///    propagates as an aborted push.
+    /// `filter` selects which groups are shipped:
     ///
-    /// On success the engine removes the drained edit from the
-    /// queue. On any error the edit stays enqueued so the caller
-    /// can retry. The first error aborts further drains and is
-    /// returned alongside the partial report so the caller can
-    /// report "pushed N out of M, stopped on error".
+    /// - `SyncFilter::Group(u)` pushes only `u` (and silently
+    ///   no-ops if `u` has no local handle).
+    /// - `SyncFilter::All` iterates every locally-indexed group.
+    /// - `SyncFilter::Scope(s)` iterates every locally-indexed
+    ///   group whose manifest scope equals `s`.
     ///
-    /// `filter` selects which pending edits are eligible for
-    /// drain; edits whose `group_id` does not match stay in the
-    /// queue and the drain skips them without error. Callers that
-    /// want whole-queue drain pass [`SyncFilter::All`] explicitly.
+    /// Transport-layer failures (backend reports `Unsupported` or
+    /// `Transport`) are recorded as `content_transferred: false`
+    /// rather than raised, so partial network gaps surface in the
+    /// report instead of aborting the whole run. Any other git
+    /// error propagates as `SyncError::Git`.
     pub async fn push(
         &self,
-        queue: &PendingQueue,
         filter: SyncFilter,
         group_handles: &dyn GroupHandleResolver,
         scope_index: &dyn ScopeIndex,
     ) -> Result<PushReport, SyncError> {
-        let mut drained = Vec::new();
-        // Snapshot-then-remove preserves FIFO within the filter
-        // match set: non-matching edits stay in the queue at their
-        // original position, matching ones drain in enqueue order.
-        let snapshot = queue.snapshot();
-        for candidate in snapshot {
-            if !group_matches(filter, candidate.group_id, scope_index) {
+        let targets = match filter {
+            SyncFilter::Group(uuid) => vec![uuid],
+            SyncFilter::All | SyncFilter::Scope(_) => group_handles.iter_group_ids(),
+        };
+
+        let mut pushed = Vec::new();
+        for group_id in targets {
+            if !group_matches(filter, group_id, scope_index) {
                 continue;
             }
-            let edit = match queue.remove(candidate.id) {
-                Ok(edit) => edit,
-                // Another drain may have won the race; treat the
-                // missing entry as already-handled and move on
-                // instead of erroring out.
-                Err(SyncError::NotFound(_)) => continue,
-                Err(other) => return Err(other),
+            let Some(handle) = group_handles.resolve(group_id) else {
+                // Group id appeared in the iteration snapshot but
+                // the handle is gone (index refresh raced with
+                // push). Skip rather than error; the next push
+                // picks it up if the handle comes back.
+                continue;
             };
-            match self.push_one(&edit, group_handles).await {
-                Ok(d) => drained.push(d),
-                Err(err) => {
-                    // Re-enqueue so the next drain picks the edit
-                    // back up; the re-enqueue appends at tail, which
-                    // shifts the edit's relative position but keeps
-                    // it available for retry.
-                    queue.enqueue(edit);
-                    return Err(err);
-                }
-            }
+            let refs = vec![RefSpec::new(
+                mmcp_core::conventions::MAIN_BRANCH_REF,
+                mmcp_core::conventions::MAIN_BRANCH_REF,
+            )];
+            let remote_url = self.client.git_url_for(group_id);
+            let creds = self.client.git_credentials();
+            let content_transferred = match self
+                .backend
+                .push(&handle, &remote_url, &refs, &creds)
+                .await
+            {
+                Ok(_) => true,
+                Err(mmcp_git::GitError::Unsupported(_))
+                | Err(mmcp_git::GitError::Transport { .. }) => false,
+                Err(other) => return Err(SyncError::Git(other)),
+            };
+            pushed.push(PushedGroup {
+                group_id,
+                content_transferred,
+            });
         }
-        Ok(PushReport { drained })
-    }
-
-    async fn push_one(
-        &self,
-        edit: &PendingEdit,
-        group_handles: &dyn GroupHandleResolver,
-    ) -> Result<DrainedPush, SyncError> {
-        let req = PushRequest {
-            group_id: edit.group_id,
-            memory_id: edit.memory,
-            commit: edit.commit.clone(),
-            bump: edit.bump,
-            message: Some(edit.message.clone()),
-        };
-        let response = self.client.push_version(&req).await?;
-
-        // Phase 5 deliberately stops short of running the git
-        // content transfer when the backend returns Unsupported.
-        // That branch is wired in the same phase as the server's
-        // git smart HTTP responder; until then the control-plane
-        // side is a real effect and we record whether the content
-        // side was skipped so callers can explain it to users.
-        let content_transferred = match group_handles.resolve(edit.group_id) {
-            Some(handle) => {
-                let refs = vec![RefSpec::new(
-                        mmcp_core::conventions::MAIN_BRANCH_REF,
-                        mmcp_core::conventions::MAIN_BRANCH_REF,
-                    )];
-                let remote_url = self.client.git_url_for(edit.group_id);
-                let creds = self.client.git_credentials();
-                match self.backend.push(&handle, &remote_url, &refs, &creds).await {
-                    Ok(_) => true,
-                    Err(mmcp_git::GitError::Unsupported(_)) => false,
-                    Err(mmcp_git::GitError::Transport { .. }) => false,
-                    Err(other) => return Err(SyncError::Git(other)),
-                }
-            }
-            None => false,
-        };
-
-        Ok(DrainedPush {
-            edit_id: edit.id,
-            response,
-            content_transferred,
-        })
+        Ok(PushReport { pushed })
     }
 
     /// Pull the caller's effective group list from the server and
@@ -250,13 +217,12 @@ impl SyncEngine {
     /// same scope index.
     pub async fn sync(
         &self,
-        queue: &PendingQueue,
         filter: SyncFilter,
         group_handles: &dyn GroupHandleResolver,
         scope_index: &dyn ScopeIndex,
     ) -> Result<SyncReport, SyncError> {
         let pulled = self.pull(filter, group_handles, scope_index).await?;
-        let pushed = self.push(queue, filter, group_handles, scope_index).await?;
+        let pushed = self.push(filter, group_handles, scope_index).await?;
         Ok(SyncReport { pulled, pushed })
     }
 
@@ -322,7 +288,8 @@ impl SyncEngine {
     }
 }
 
-/// Resolves a `group_id` to its local [`mmcp_git::RepoHandle`].
+/// Resolves a `group_id` to its local [`mmcp_git::RepoHandle`] and
+/// enumerates every locally-known group.
 ///
 /// The client's `GroupIndex` implements this naturally; the sync
 /// engine stays decoupled from any specific index type so tests
@@ -334,25 +301,33 @@ impl SyncEngine {
 /// impls in this workspace are already thread-safe; the bound
 /// simply makes that requirement explicit.
 pub trait GroupHandleResolver: Send + Sync {
+    /// Look up the local bare-repo handle for a group, if any.
     fn resolve(&self, group_id: Uuid) -> Option<mmcp_git::RepoHandle>;
+    /// Snapshot every locally-indexed group id. Used by `push`
+    /// to iterate local groups without a manifest round trip.
+    /// Returns an empty vector when the underlying index cannot
+    /// be read without blocking, which the engine treats as
+    /// "no groups to push" - the caller retries on its next tick.
+    fn iter_group_ids(&self) -> Vec<Uuid>;
 }
 
 /// Report of a completed `push` call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushReport {
-    pub drained: Vec<DrainedPush>,
+    /// Groups the engine attempted to push, in iteration order.
+    /// A group appears here even when the content plane was
+    /// skipped (see `PushedGroup::content_transferred`).
+    pub pushed: Vec<PushedGroup>,
 }
 
-/// One drained pending edit, with the server's response and
-/// whether the content plane was actually able to ship bytes.
+/// One pushed group's before/after snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DrainedPush {
-    pub edit_id: Uuid,
-    pub response: PushResponse,
-    /// `false` means the control plane registered the version but
-    /// the git backend returned `Unsupported` so nothing moved on
-    /// the wire yet. Real transport lands in the native backend's
-    /// HTTP push phase.
+pub struct PushedGroup {
+    pub group_id: Uuid,
+    /// `false` when the content-plane push was skipped (backend
+    /// returned `Unsupported` or a transport error). The group
+    /// still appears in the report so operators can see what was
+    /// attempted; retry on the next push picks it up.
     pub content_transferred: bool,
 }
 

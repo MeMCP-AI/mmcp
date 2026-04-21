@@ -158,27 +158,27 @@ pub async fn run(pull: bool, push: bool, selector: SyncSelector) -> Result<()> {
     let mmcp_home = MmcpHome::discover()?;
     let (backend, group_index) = mmcp_home.init_backend().await?;
     let filter = resolve_sync_filter(&selector, &group_index).await?;
-    let (engine, resolver, queue) = build_engine(backend, group_index, &sync_cfg.server_url)?;
+    let (engine, resolver, _queue) = build_engine(backend, group_index, &sync_cfg.server_url)?;
 
     let report = match (pull, push) {
         (true, true) => {
             let report = engine
-                .sync(&queue, filter, &resolver, &resolver)
+                .sync(filter, &resolver, &resolver)
                 .await
                 .map_err(to_anyhow)?;
             tracing::info!(
                 server = %sync_cfg.server_url,
                 updated = report.pulled.updated.len(),
                 new_groups = report.pulled.new_groups.len(),
-                drained = report.pushed.drained.len(),
+                pushed = report.pushed.pushed.len(),
                 "sync completed"
             );
             format!(
-                "sync against {} completed: pulled {} groups ({} new), pushed {} edits",
+                "sync against {} completed: pulled {} groups ({} new), pushed {} groups",
                 sync_cfg.server_url,
                 report.pulled.updated.len(),
                 report.pulled.new_groups.len(),
-                report.pushed.drained.len()
+                report.pushed.pushed.len()
             )
         }
         (true, false) => {
@@ -201,18 +201,18 @@ pub async fn run(pull: bool, push: bool, selector: SyncSelector) -> Result<()> {
         }
         (false, true) => {
             let report = engine
-                .push(&queue, filter, &resolver, &resolver)
+                .push(filter, &resolver, &resolver)
                 .await
                 .map_err(to_anyhow)?;
             tracing::info!(
                 server = %sync_cfg.server_url,
-                drained = report.drained.len(),
+                pushed = report.pushed.len(),
                 "push completed"
             );
             format!(
-                "push to {} completed: {} edits drained",
+                "push to {} completed: {} groups pushed",
                 sync_cfg.server_url,
-                report.drained.len()
+                report.pushed.len()
             )
         }
         (false, false) => {

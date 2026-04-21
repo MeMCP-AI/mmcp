@@ -97,6 +97,23 @@ impl GroupIndex {
             .and_then(|guard| guard.get(group_id).map(|entry| entry.manifest.scope))
     }
 
+    /// Non-blocking snapshot of every indexed group's UUID.
+    ///
+    /// Mirrors [`try_scope_of`]: the sync engine's
+    /// `GroupHandleResolver::iter_group_ids` calls this from an
+    /// async worker without bridging through `block_on`, so it has
+    /// to stay non-blocking. Returns an empty vector when the lock
+    /// is held by a writer; callers treat that as "no groups" and
+    /// retry on the next tick.
+    #[must_use]
+    pub fn try_list_ids(&self) -> Vec<Uuid> {
+        self.inner
+            .try_read()
+            .ok()
+            .map(|guard| guard.keys().map(|gid| *gid.as_uuid()).collect())
+            .unwrap_or_default()
+    }
+
     /// Snapshot of every entry in the index.
     pub async fn list(&self) -> Vec<GroupEntry> {
         self.inner.read().await.values().cloned().collect()

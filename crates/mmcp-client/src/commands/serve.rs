@@ -2438,24 +2438,20 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         let (cfg, server_url) = self.require_sync_configured()?;
         let filter = resolve_sync_filter(&args, &self.state.groups).await?;
-        let (engine, resolver, queue) = mmcp_store::sync::build_engine(
+        let (engine, resolver, _queue) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
             self.state.groups.clone(),
             &server_url,
         )
         .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
         let report = engine
-            .push(&queue, filter, &resolver, &resolver)
+            .push(filter, &resolver, &resolver)
             .await
             .map_err(map_sync_error_to_mcp)?;
         Ok(ok_json(json!({
-            "drained": report.drained.iter().map(|d| json!({
-                "edit_id": d.edit_id.to_string(),
-                "group_id": d.response.group_id.to_string(),
-                "memory_id": d.response.memory_id.to_string(),
-                "assigned_version": d.response.assigned_version,
-                "tag": d.response.tag,
-                "content_transferred": d.content_transferred,
+            "pushed": report.pushed.iter().map(|p| json!({
+                "group_id": p.group_id.to_string(),
+                "content_transferred": p.content_transferred,
             })).collect::<Vec<_>>(),
             "project_uuid": cfg.project_uuid.to_string(),
             "server_url": server_url,
@@ -2471,14 +2467,14 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         let (cfg, server_url) = self.require_sync_configured()?;
         let filter = resolve_sync_filter(&args, &self.state.groups).await?;
-        let (engine, resolver, queue) = mmcp_store::sync::build_engine(
+        let (engine, resolver, _queue) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
             self.state.groups.clone(),
             &server_url,
         )
         .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
         let report = engine
-            .sync(&queue, filter, &resolver, &resolver)
+            .sync(filter, &resolver, &resolver)
             .await
             .map_err(map_sync_error_to_mcp)?;
         Ok(ok_json(json!({
@@ -2487,13 +2483,9 @@ impl McpServer {
                 "new_groups": report.pulled.new_groups,
             },
             "pushed": {
-                "drained": report.pushed.drained.iter().map(|d| json!({
-                    "edit_id": d.edit_id.to_string(),
-                    "group_id": d.response.group_id.to_string(),
-                    "memory_id": d.response.memory_id.to_string(),
-                    "assigned_version": d.response.assigned_version,
-                    "tag": d.response.tag,
-                    "content_transferred": d.content_transferred,
+                "pushed": report.pushed.pushed.iter().map(|p| json!({
+                    "group_id": p.group_id.to_string(),
+                    "content_transferred": p.content_transferred,
                 })).collect::<Vec<_>>(),
             },
             "project_uuid": cfg.project_uuid.to_string(),

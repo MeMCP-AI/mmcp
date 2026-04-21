@@ -74,6 +74,16 @@ impl GroupHandleResolver for IndexResolver {
             })
             .map(|entry| entry.handle)
     }
+
+    fn iter_group_ids(&self) -> Vec<Uuid> {
+        // `try_list_ids` is the non-blocking snapshot on
+        // `GroupIndex`. Same rationale as `scope_of`: the engine
+        // calls iter from inside an async runtime, and a
+        // `block_on` would panic. Empty result is treated by the
+        // engine as "no groups to push", which is the correct
+        // behaviour when the index is mid-rewrite.
+        self.index.try_list_ids()
+    }
 }
 
 impl ScopeIndex for IndexResolver {
