@@ -1432,7 +1432,14 @@ impl McpServer {
     }
 
     #[tool(
-        description = "CREATE a new memory in a group. All metadata fields (name, description, kind, tags, mandatory) are typed parameters — the server builds the frontmatter. Errors with code `memory_already_exists` when the slug is already on disk; use `edit_memory` to apply partial updates, `delete_memory` to remove, or pass `override: true` to deliberately replace the whole file (bulk-reset flows only — the default should almost always stay false)."
+        description = "CREATE a new memory in a group. All metadata fields (name, description, kind, tags, mandatory) are typed parameters — the server builds the frontmatter. Errors with code `memory_already_exists` when the slug is already on disk; use `edit_memory` to apply partial updates, `delete_memory` to remove, or pass `override: true` to deliberately replace the whole file (bulk-reset flows only — the default should almost always stay false).",
+        annotations(
+            title = "Create memory",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
     )]
     async fn write_memory(
         &self,
@@ -1508,7 +1515,14 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Import a memory from a source document (markdown with a `+++` / `---` / `---json` frontmatter fence, or a raw body plus `name` + `description` + `kind` synth fields). Set `format` to `adoc` / `asciidoc` to route through the AsciiDoc bridge before import; the stored memory always lands as markdown at `memories/<slug>/<uuid>.md`. For typed-args creation with no source parsing use `write_memory`; for partial edits use `edit_memory`. Errors include `invalid_slug`, `synth_frontmatter_partial`, `missing_frontmatter`, `memory_already_exists`, and `adoc_parse_failed` / `adoc_render_failed`."
+        description = "Import a memory from a source document (markdown with a `+++` / `---` / `---json` frontmatter fence, or a raw body plus `name` + `description` + `kind` synth fields). Set `format` to `adoc` / `asciidoc` to route through the AsciiDoc bridge before import; the stored memory always lands as markdown at `memories/<slug>/<uuid>.md`. For typed-args creation with no source parsing use `write_memory`; for partial edits use `edit_memory`. Errors include `invalid_slug`, `synth_frontmatter_partial`, `missing_frontmatter`, `memory_already_exists`, and `adoc_parse_failed` / `adoc_render_failed`.",
+        annotations(
+            title = "Import memory from source document",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
     )]
     async fn import_memory(
         &self,
@@ -1580,7 +1594,14 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Apply partial frontmatter / body deltas to an existing memory and record the result as a new commit. Every mutator field is optional: omit it to leave that slice of the memory untouched. `tags_add` / `tags_remove` compose additively so repeated calls dedupe correctly. Errors with code `memory_not_found` when the slug has no file in the target group; use `write_memory` to create fresh memories."
+        description = "Apply partial frontmatter / body deltas to an existing memory and record the result as a new commit. Every mutator field is optional: omit it to leave that slice of the memory untouched. `tags_add` / `tags_remove` compose additively so repeated calls dedupe correctly. Errors with code `memory_not_found` when the slug has no file in the target group; use `write_memory` to create fresh memories.",
+        annotations(
+            title = "Edit memory (partial update)",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
     )]
     async fn edit_memory(
         &self,
@@ -1671,7 +1692,14 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Remove a memory from a group by committing a deletion on `main`. Errors with code `memory_not_found` when the slug has no file; no silent no-op. The commit is addressable through `list_versions` just like any other write, so the removal is auditable."
+        description = "Remove a memory from a group by committing a deletion on `main`. Errors with code `memory_not_found` when the slug has no file; no silent no-op. The commit is addressable through `list_versions` just like any other write, so the removal is auditable.",
+        annotations(
+            title = "Delete memory",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn delete_memory(
         &self,
@@ -1774,7 +1802,14 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Apply an ordered list of section-level or line-level edits to a memory's markdown body and commit the result (FR-026). Section ops address a whole section (heading + nested children) by the dot-path id returned from `read_memory_body_sections`. Line ops are escape hatches for non-heading content. Ops run transactionally: the first error aborts the batch. Structured error codes: `section_not_found`, `move_would_loop`, `level_out_of_range`, `invalid_line_range`, `line_past_eof`, `body_parse_failed`. The protected-group guard from FR-019 / FR-011 still gates this path."
+        description = "Apply an ordered list of section-level or line-level edits to a memory's markdown body and commit the result (FR-026). Section ops address a whole section (heading + nested children) by the dot-path id returned from `read_memory_body_sections`. Line ops are escape hatches for non-heading content. Ops run transactionally: the first error aborts the batch. Structured error codes: `section_not_found`, `move_would_loop`, `level_out_of_range`, `invalid_line_range`, `line_past_eof`, `body_parse_failed`. The protected-group guard from FR-019 / FR-011 still gates this path.",
+        annotations(
+            title = "Edit memory body (semantic ops)",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
     )]
     async fn edit_memory_body(
         &self,
@@ -1942,7 +1977,14 @@ impl McpServer {
     // ── Debug tools ─────────────────────────────────────────
 
     #[tool(
-        description = "Enable or disable debug tools. Debug tools provide raw git access for troubleshooting. Pass enabled=true to activate, enabled=false to deactivate. Returns the new state."
+        description = "Enable or disable debug tools. Debug tools provide raw git access for troubleshooting. Pass enabled=true to activate, enabled=false to deactivate. Returns the new state.",
+        annotations(
+            title = "Debug: toggle raw-access gate",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn debug_toggle(
         &self,
@@ -2081,7 +2123,14 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Write any file at any path in a group's git repo. Requires debug mode. Use for low-level repairs. Protected groups are gated the same as `edit_memory` / `delete_memory`: the write errors with `protected_requires_elicitation` so a raw debug path can't silently poke at shared rules."
+        description = "Write any file at any path in a group's git repo. Requires debug mode. Use for low-level repairs. Protected groups are gated the same as `edit_memory` / `delete_memory`: the write errors with `protected_requires_elicitation` so a raw debug path can't silently poke at shared rules.",
+        annotations(
+            title = "Debug: raw file write",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
     )]
     async fn debug_write_file(
         &self,
@@ -2272,7 +2321,14 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Manage CLAUDE.md for the current project. Actions: `override` writes a fresh mmcp stub, `append` inserts or replaces the mmcp-managed fence block, `convert` splits existing CLAUDE.md into typed project memories and replaces the file with a stub. When the file is dirty or untracked and `on_conflict` is not set, the call errors with a structured `conflict_unresolved` payload naming the observed state so the caller can retry with a choice. Default backup policy writes `.bak` only when the file is dirty or untracked."
+        description = "Manage CLAUDE.md for the current project. Actions: `override` writes a fresh mmcp stub, `append` inserts or replaces the mmcp-managed fence block, `convert` splits existing CLAUDE.md into typed project memories and replaces the file with a stub. When the file is dirty or untracked and `on_conflict` is not set, the call errors with a structured `conflict_unresolved` payload naming the observed state so the caller can retry with a choice. Default backup policy writes `.bak` only when the file is dirty or untracked.",
+        annotations(
+            title = "Manage CLAUDE.md fence",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn init_claude(
         &self,
@@ -2606,7 +2662,14 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Bootstrap the project's `.mmcp.toml` and backing group repo. Idempotent and never-overwrite: a second call returns `created_config: false` / `created_repo: false` without rewriting either artifact. Errors with code `invalid_slug` when the slug does not satisfy the memory-slug contract, `slug_required` when no slug is available (arg missing and no `project_slug` in `.mmcp.toml`), `slug_mismatch` / `project_uuid_mismatch` when args disagree with an existing config, and `repo_without_config` if the bare repo exists but the config has been deleted."
+        description = "Bootstrap the project's `.mmcp.toml` and backing group repo. Idempotent and never-overwrite: a second call returns `created_config: false` / `created_repo: false` without rewriting either artifact. Errors with code `invalid_slug` when the slug does not satisfy the memory-slug contract, `slug_required` when no slug is available (arg missing and no `project_slug` in `.mmcp.toml`), `slug_mismatch` / `project_uuid_mismatch` when args disagree with an existing config, and `repo_without_config` if the bare repo exists but the config has been deleted.",
+        annotations(
+            title = "Initialize mmcp project",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn init_project(
         &self,
@@ -2652,7 +2715,14 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Create a standalone group under `~/.mmcp/repos/`. Does not touch `.mmcp.toml`; use `init_project` for project-backed groups. Scope defaults to `shared`. Errors: `invalid_slug`, `slug_already_exists` (with existing `group_id`)."
+        description = "Create a standalone group under `~/.mmcp/repos/`. Does not touch `.mmcp.toml`; use `init_project` for project-backed groups. Scope defaults to `shared`. Errors: `invalid_slug`, `slug_already_exists` (with existing `group_id`).",
+        annotations(
+            title = "Create group",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
     )]
     async fn create_group(
         &self,
@@ -2695,7 +2765,14 @@ impl McpServer {
     // `init_project` or ask the user to `cd` into the repo.
 
     #[tool(
-        description = "File a new feature request in the current project's group. Slug is auto-minted from the title when omitted. Status defaults to `open`; supply one of `open | resolved | blocked | deferred | duplicate` to override. Errors with code `project_not_found` when no `.mmcp.toml` is on any ancestor of the server's cwd, `invalid_slug` when the supplied or derived slug fails validation, and `memory_already_exists` when the slug collides with an existing memory in the project group."
+        description = "File a new feature request in the current project's group. Slug is auto-minted from the title when omitted. Status defaults to `open`; supply one of `open | resolved | blocked | deferred | duplicate` to override. Errors with code `project_not_found` when no `.mmcp.toml` is on any ancestor of the server's cwd, `invalid_slug` when the supplied or derived slug fails validation, and `memory_already_exists` when the slug collides with an existing memory in the project group.",
+        annotations(
+            title = "Add feature request",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
     )]
     async fn add_feature(
         &self,
@@ -2761,7 +2838,14 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Apply partial updates to an existing feature request and commit the result. Every mutator is optional — omit to leave untouched. `depends_on` and `blocks` are full-list replacements; pass `[]` to clear, omit to preserve. `status` takes the wire form of the status enum. Errors with `memory_not_found` when the slug has no FR, `not_a_feature` when the slug is a non-FR memory, and `invalid_feature_status` when `status` is not one of the five variants."
+        description = "Apply partial updates to an existing feature request and commit the result. Every mutator is optional — omit to leave untouched. `depends_on` and `blocks` are full-list replacements; pass `[]` to clear, omit to preserve. `status` takes the wire form of the status enum. Errors with `memory_not_found` when the slug has no FR, `not_a_feature` when the slug is a non-FR memory, and `invalid_feature_status` when `status` is not one of the five variants.",
+        annotations(
+            title = "Update feature request",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
     )]
     async fn update_feature(
         &self,
@@ -2810,7 +2894,14 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Delete a feature request by slug. The deletion is committed on the group's main branch so the FR is recoverable via `list_versions`. Refuses with `not_a_feature` when the slug points at a non-FR memory so the FR tools never drop unrelated memories."
+        description = "Delete a feature request by slug. The deletion is committed on the group's main branch so the FR is recoverable via `list_versions`. Refuses with `not_a_feature` when the slug points at a non-FR memory so the FR tools never drop unrelated memories.",
+        annotations(
+            title = "Delete feature request",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn delete_feature(
         &self,
@@ -2837,7 +2928,14 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Rename every feature memory under `old_slug` to `new_slug` in a single atomic commit (FR-027). UUIDs stay stable across the rename so cross-references in other features keep resolving without further rewrites. Duplicate slugs (FR-028) move as a batch — every entry under `memories/<old_slug>/` lands under `memories/<new_slug>/`. Errors with `memory_not_found` when no memory lives at `old_slug` and with `not_a_feature` when the source is a non-FR memory."
+        description = "Rename every feature memory under `old_slug` to `new_slug` in a single atomic commit (FR-027). UUIDs stay stable across the rename so cross-references in other features keep resolving without further rewrites. Duplicate slugs (FR-028) move as a batch — every entry under `memories/<old_slug>/` lands under `memories/<new_slug>/`. Errors with `memory_not_found` when no memory lives at `old_slug` and with `not_a_feature` when the source is a non-FR memory.",
+        annotations(
+            title = "Rename feature request",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn rename_feature(
         &self,
