@@ -2371,6 +2371,38 @@ impl McpServer {
     }
 
     #[tool(
+        description = "Read each in-scope group's remote HEAD into a local remote-tracking ref without advancing the group's `main` branch. Git-symmetric with `fetch`: use this to inspect what `sync_pull` would fast-forward before committing to it. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block, and the usual `selector_required` / `selector_conflict` / `unknown_group` for arg validation."
+    )]
+    async fn sync_fetch(
+        &self,
+        Parameters(args): Parameters<SyncToolArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (cfg, server_url) = self.require_sync_configured()?;
+        let filter = resolve_sync_filter(&args, &self.state.groups).await?;
+        let (engine, resolver, _queue) = mmcp_store::sync::build_engine(
+            self.state.backend.clone(),
+            self.state.groups.clone(),
+            &server_url,
+        )
+        .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
+        let report = engine
+            .fetch(filter, &resolver, &resolver)
+            .await
+            .map_err(map_sync_error_to_mcp)?;
+        Ok(ok_json(json!({
+            "groups": report.groups.iter().map(|g| json!({
+                "group_id": g.group_id.to_string(),
+                "slug": g.slug,
+                "remote_head": g.remote_head,
+                "ref_updated": g.ref_updated,
+            })).collect::<Vec<_>>(),
+            "new_groups": report.new_groups,
+            "project_uuid": cfg.project_uuid.to_string(),
+            "server_url": server_url,
+        })))
+    }
+
+    #[tool(
         description = "Pull updates from the configured mmcp sync server into the local mirror. Returns the groups whose local HEAD advanced plus any groups the server has that are not mirrored yet. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block, and code `sync_conflict` / `sync_remote` / `sync_transport` for engine-level failures."
     )]
     async fn sync_pull(

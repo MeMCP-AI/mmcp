@@ -51,6 +51,14 @@ enum Command {
         selector: commands::sync::SyncSelector,
     },
 
+    /// Read remote heads into local tracking refs without
+    /// advancing the group's main branch. Mirrors `git fetch`;
+    /// use `mmcp pull` to fast-forward.
+    Fetch {
+        #[command(flatten)]
+        selector: commands::sync::SyncSelector,
+    },
+
     /// Pull updates from the remote server.
     Pull {
         #[command(flatten)]
@@ -193,6 +201,7 @@ async fn main() -> Result<()> {
         },
         Command::Status => commands::status::run().await?,
         Command::Sync { selector } => commands::sync::run(true, true, selector).await?,
+        Command::Fetch { selector } => commands::sync::run_fetch(selector).await?,
         Command::Pull { selector } => commands::sync::run(true, false, selector).await?,
         Command::Push { selector } => commands::sync::run(false, true, selector).await?,
         Command::Import {

@@ -89,6 +89,48 @@ pub async fn resolve_sync_filter(
     );
 }
 
+/// Run the read-only `mmcp fetch` subcommand.
+///
+/// Walks the in-scope groups and writes each remote head into the
+/// local remote-tracking ref without advancing `refs/heads/main`.
+/// Mirrors `git fetch` semantics so operators can inspect what
+/// would land before `mmcp pull` fast-forwards.
+pub async fn run_fetch(selector: SyncSelector) -> Result<()> {
+    let cwd = std::env::current_dir().context("reading current working directory")?;
+    let root = find_project_root(&cwd)
+        .context("no mmcp project found in current directory or any parent")?;
+    let cfg = load(&root)?;
+    let Some(sync_cfg) = cfg.sync.as_ref() else {
+        bail!(
+            "project {} has no [sync] block; cannot fetch against a remote",
+            cfg.project_uuid
+        );
+    };
+
+    let mmcp_home = MmcpHome::discover()?;
+    let (backend, group_index) = mmcp_home.init_backend().await?;
+    let filter = resolve_sync_filter(&selector, &group_index).await?;
+    let (engine, resolver, _queue) =
+        build_engine(backend, group_index, &sync_cfg.server_url)?;
+    let report = engine
+        .fetch(filter, &resolver, &resolver)
+        .await
+        .map_err(to_anyhow)?;
+    tracing::info!(
+        server = %sync_cfg.server_url,
+        groups = report.groups.len(),
+        new_groups = report.new_groups.len(),
+        "fetch completed"
+    );
+    println!(
+        "fetch from {} completed: {} groups tracked, {} new groups advertised",
+        sync_cfg.server_url,
+        report.groups.len(),
+        report.new_groups.len()
+    );
+    Ok(())
+}
+
 /// Run the sync engine.
 ///
 /// `pull` and `push` may be toggled independently so that `mmcp
