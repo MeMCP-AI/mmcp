@@ -1115,7 +1115,13 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Enumerate every group the local mirror holds. Returns `{groups: [{slug, uuid, memory_count, protected, is_project}]}` — cheap manifest-only walk, no memory bodies. `is_project` is true for the group whose UUID matches the current cwd's `.mmcp.toml`; false for every other group including cases where no project is in scope. Pure-local, no network."
+        description = "Enumerate every group the local mirror holds. Returns `{groups: [{slug, uuid, memory_count, protected, is_project}]}` — cheap manifest-only walk, no memory bodies. `is_project` is true for the group whose UUID matches the current cwd's `.mmcp.toml`; false for every other group including cases where no project is in scope. Pure-local, no network.",
+        annotations(
+            title = "List mirrored groups",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn list_groups(
         &self,
@@ -1151,7 +1157,13 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List memories that live in the specified group. The group argument is the group UUID. Returns `{group, memories, mirrored: bool}` — `mirrored: false` signals the group UUID is unknown to the local mirror (distinct from a mirrored-but-empty group, which returns `mirrored: true` with `memories: []`)."
+        description = "List memories that live in the specified group. The group argument is the group UUID. Returns `{group, memories, mirrored: bool}` — `mirrored: false` signals the group UUID is unknown to the local mirror (distinct from a mirrored-but-empty group, which returns `mirrored: true` with `memories: []`).",
+        annotations(
+            title = "List memories in a group",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn list_memories(
         &self,
@@ -1193,7 +1205,13 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Read a memory by group and slug. Returns the TOML frontmatter and the Markdown body exactly as stored in git. Set `version` to a branch name, tag, or commit hex to read a specific revision; defaults to the latest `main`."
+        description = "Read a memory by group and slug. Returns the TOML frontmatter and the Markdown body exactly as stored in git. Set `version` to a branch name, tag, or commit hex to read a specific revision; defaults to the latest `main`.",
+        annotations(
+            title = "Read a memory",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn read_memory(
         &self,
@@ -1241,7 +1259,13 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List the commit history of a single memory, most recent first. Each entry includes the commit id, author, message, and timestamp."
+        description = "List the commit history of a single memory, most recent first. Each entry includes the commit id, author, message, and timestamp.",
+        annotations(
+            title = "List memory versions",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn list_versions(
         &self,
@@ -1284,7 +1308,13 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Return the manifest metadata for a group: slug, display name, owner kind and id, creation timestamp, and the number of memories currently stored in the group."
+        description = "Return the manifest metadata for a group: slug, display name, owner kind and id, creation timestamp, and the number of memories currently stored in the group.",
+        annotations(
+            title = "Inspect a group manifest",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn group_info(
         &self,
@@ -1311,7 +1341,13 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Case-insensitive substring search across the local mirror. Matches against the memory slug and the frontmatter `name` field. Optional `group` (UUID or slug) and `scope` (`global`/`shared`/`project`) filter the search set; absent means whole-mirror search, which stays the default because the tool is read-only. Returns up to `limit` hits (default 50)."
+        description = "Case-insensitive substring search across the local mirror. Matches against the memory slug and the frontmatter `name` field. Optional `group` (UUID or slug) and `scope` (`global`/`shared`/`project`) filter the search set; absent means whole-mirror search, which stays the default because the tool is read-only. Returns up to `limit` hits (default 50).",
+        annotations(
+            title = "Search memories",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn search_memories(
         &self,
@@ -1679,7 +1715,13 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Return the section tree of a memory's markdown body (FR-026). Every heading gets a stable dot-separated path id (slugified heading trail with `-2`, `-3` disambiguators for duplicate siblings) plus its level, raw heading text, and half-open line range. Callers discover addressable nodes here before issuing `edit_memory_body` ops. A synthetic `preamble` section covers content before the first heading so even headingless bodies return one entry."
+        description = "Return the section tree of a memory's markdown body (FR-026). Every heading gets a stable dot-separated path id (slugified heading trail with `-2`, `-3` disambiguators for duplicate siblings) plus its level, raw heading text, and half-open line range. Callers discover addressable nodes here before issuing `edit_memory_body` ops. A synthetic `preamble` section covers content before the first heading so even headingless bodies return one entry.",
+        annotations(
+            title = "Read memory body sections",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn read_memory_body_sections(
         &self,
@@ -1816,7 +1858,13 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Validate manifests and memory frontmatter for a group. Returns issues found: parse errors, missing required fields, empty bodies. Checks one group if group UUID given, all groups if omitted."
+        description = "Validate manifests and memory frontmatter for a group. Returns issues found: parse errors, missing required fields, empty bodies. Checks one group if group UUID given, all groups if omitted.",
+        annotations(
+            title = "Check group health",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn check_health(
         &self,
@@ -1843,7 +1891,13 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Deep diagnostic analysis of a group's memories. Everything check_health does plus: missing tags, empty bodies, naming drift, empty groups, UUID mismatches, created_at sanity, cross-group duplicate slugs, and structural hints. Severity levels: error, warning, info."
+        description = "Deep diagnostic analysis of a group's memories. Everything check_health does plus: missing tags, empty bodies, naming drift, empty groups, UUID mismatches, created_at sanity, cross-group duplicate slugs, and structural hints. Severity levels: error, warning, info.",
+        annotations(
+            title = "Deep diagnose group",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn diagnose(
         &self,
@@ -1902,7 +1956,13 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Read any file at any path in a group's git repo. Requires debug mode. Use for inspecting raw repo state."
+        description = "Read any file at any path in a group's git repo. Requires debug mode. Use for inspecting raw repo state.",
+        annotations(
+            title = "Debug: raw file read",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn debug_read_file(
         &self,
@@ -1933,7 +1993,13 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List all files (blobs) under a path prefix in a group's git repo. Requires debug mode."
+        description = "List all files (blobs) under a path prefix in a group's git repo. Requires debug mode.",
+        annotations(
+            title = "Debug: raw tree walk",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn debug_list_tree(
         &self,
@@ -1964,7 +2030,13 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Show raw git commit history for the entire repo or a specific path. Requires debug mode."
+        description = "Show raw git commit history for the entire repo or a specific path. Requires debug mode.",
+        annotations(
+            title = "Debug: raw git log",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn debug_git_log(
         &self,
@@ -2069,7 +2141,13 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Initialize the AI's context for this session. Returns the session protocol as `instructions` plus a metadata manifest of the mandatory and project-scoped memories the caller should plan to read. Memory BODIES are not inlined; fetch each with `read_memory(group, slug|id)` as needed. Call at session start, after context compaction, before starting a new phase or task, and before/after each commit cycle. This tool never writes files - CLAUDE.md advice appears in `diagnostics` and must be acted on by calling `init_claude` explicitly."
+        description = "Initialize the AI's context for this session. Returns the session protocol as `instructions` plus a metadata manifest of the mandatory and project-scoped memories the caller should plan to read. Memory BODIES are not inlined; fetch each with `read_memory(group, slug|id)` as needed. Call at session start, after context compaction, before starting a new phase or task, and before/after each commit cycle. This tool never writes files - CLAUDE.md advice appears in `diagnostics` and must be acted on by calling `init_claude` explicitly.",
+        annotations(
+            title = "Bootstrap session context",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn bootstrap_context(
         &self,
@@ -2494,7 +2572,13 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Return the local mmcp project state: discovered project root, configured sync server, and the mirrored groups with their memory counts. Pure-local — no network. Returns `project_configured: false` when no `.mmcp.toml` is in scope, so callers can distinguish 'not in a project' from transient errors."
+        description = "Return the local mmcp project state: discovered project root, configured sync server, and the mirrored groups with their memory counts. Pure-local — no network. Returns `project_configured: false` when no `.mmcp.toml` is in scope, so callers can distinguish 'not in a project' from transient errors.",
+        annotations(
+            title = "Local mirror status",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn status(
         &self,
@@ -2649,7 +2733,13 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Read a feature request by slug from the current project's group. Returns the full FR record (title, description, body, status, depends_on, blocks, commit_id). Set `version` to a branch, tag, or 40-char commit hex to read a specific revision. Errors with `not_a_feature` when the slug resolves to a memory whose kind is not `fr`."
+        description = "Read a feature request by slug from the current project's group. Returns the full FR record (title, description, body, status, depends_on, blocks, commit_id). Set `version` to a branch, tag, or 40-char commit hex to read a specific revision. Errors with `not_a_feature` when the slug resolves to a memory whose kind is not `fr`.",
+        annotations(
+            title = "Read a feature request",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn read_feature(
         &self,
@@ -2781,7 +2871,13 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List feature requests in the current project's group. By default returns only FRs whose status is `open` — pass `all: true` to include every status, or `status: <variant>` to pin a specific lifecycle state (explicit `status` wins over the `all` flag). Non-FR memories in the same group are skipped so the listing stays FR-shaped. Memories whose frontmatter fails to parse are quietly omitted; use `diagnose` to surface those."
+        description = "List feature requests in the current project's group. By default returns only FRs whose status is `open` — pass `all: true` to include every status, or `status: <variant>` to pin a specific lifecycle state (explicit `status` wins over the `all` flag). Non-FR memories in the same group are skipped so the listing stays FR-shaped. Memories whose frontmatter fails to parse are quietly omitted; use `diagnose` to surface those.",
+        annotations(
+            title = "List feature requests",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     async fn list_features(
         &self,
