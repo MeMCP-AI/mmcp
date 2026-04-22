@@ -332,7 +332,7 @@
         type="button"
         class="rounded-md px-3 py-1 text-xs font-medium transition-colors
           {active
-          ? 'bg-sky-500/15 text-sky-100'
+          ? 'bg-sky-500/15 text-selected-fg'
           : 'text-fg-muted hover:bg-surface-2/70 hover:text-fg'}
           disabled:cursor-not-allowed disabled:opacity-40"
         disabled={tab.disabled}

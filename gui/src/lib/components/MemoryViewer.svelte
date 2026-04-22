@@ -50,20 +50,20 @@
            reader's scroll isn't disturbed; click to adopt the fresh
            copy, X to keep reading the current one. -->
       <div
-        class="flex shrink-0 items-center gap-2 border-b border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-xs text-sky-100"
+        class="flex shrink-0 items-center gap-2 border-b border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-xs text-selected-fg"
       >
         <RefreshCw size={12} class="text-sky-300" />
         <span>A newer version of this memory is available.</span>
         <button
           type="button"
-          class="ml-auto inline-flex items-center gap-1 rounded-md bg-sky-500/30 px-2 py-0.5 font-medium text-sky-50 hover:bg-sky-500/50"
+          class="ml-auto inline-flex items-center gap-1 rounded-md bg-sky-500/30 px-2 py-0.5 font-medium text-selected-fg hover:bg-sky-500/50"
           onclick={() => onAcceptPending?.()}
         >
           View new version
         </button>
         <button
           type="button"
-          class="rounded-md p-1 text-sky-300 hover:bg-sky-500/20 hover:text-sky-100"
+          class="rounded-md p-1 text-sky-300 hover:bg-sky-500/20 hover:text-selected-fg"
           aria-label="Dismiss"
           title="Keep current version"
           onclick={() => onDismissPending?.()}

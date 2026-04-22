@@ -38,7 +38,7 @@
               type="button"
               class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors
                 {selected
-                ? 'bg-sky-500/15 text-sky-100'
+                ? 'bg-sky-500/15 text-selected-fg'
                 : 'text-fg hover:bg-surface-2/70'}"
               onclick={() => onSelect(group.group_id)}
               title={hint}

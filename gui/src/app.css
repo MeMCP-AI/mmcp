@@ -22,6 +22,12 @@
   --color-fg: var(--mmcp-fg);
   --color-fg-muted: var(--mmcp-fg-muted);
   --color-fg-subtle: var(--mmcp-fg-subtle);
+
+  /* Text colour that reads against a sky-500 tinted background
+     (selected rows, active tabs, "new version" banners). sky-100
+     on dark, sky-900 on light — the sky/15 backdrop is the same
+     tint in both modes, only the foreground flips. */
+  --color-selected-fg: var(--mmcp-selected-fg);
 }
 
 /* Dark theme is the default — the tokens resolve to the same zinc
@@ -38,6 +44,7 @@
   --mmcp-fg: #fafafa;        /* zinc-50 */
   --mmcp-fg-muted: #a1a1aa;  /* zinc-400 */
   --mmcp-fg-subtle: #71717a; /* zinc-500 */
+  --mmcp-selected-fg: #e0f2fe; /* sky-100 */
   --mmcp-scrollbar-track: transparent;
   --mmcp-scrollbar-thumb: #27272a;
   --mmcp-scrollbar-thumb-hover: #52525b;
@@ -54,6 +61,7 @@
   --mmcp-fg: #18181b;        /* zinc-900 */
   --mmcp-fg-muted: #52525b;  /* zinc-600 */
   --mmcp-fg-subtle: #71717a; /* zinc-500 */
+  --mmcp-selected-fg: #0c4a6e; /* sky-900 */
   --mmcp-scrollbar-thumb: #d4d4d8;
   --mmcp-scrollbar-thumb-hover: #a1a1aa;
   color-scheme: light;

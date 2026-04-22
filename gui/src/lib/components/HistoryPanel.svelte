@@ -330,7 +330,7 @@
                   type="button"
                   class="flex w-full flex-col gap-0.5 px-3 py-2 text-left transition-colors
                     {active
-                    ? 'bg-sky-500/15 text-sky-100'
+                    ? 'bg-sky-500/15 text-selected-fg'
                     : 'text-fg hover:bg-surface-2/70'}"
                   onclick={() => (selectedId = commit.id)}
                   title={commit.subject}
@@ -388,7 +388,7 @@
             type="button"
             class="rounded-md px-2.5 py-1 text-xs font-medium transition-colors
               {detailTab === 'memory'
-              ? 'bg-sky-500/15 text-sky-100'
+              ? 'bg-sky-500/15 text-selected-fg'
               : 'text-fg-muted hover:bg-surface-2/70 hover:text-fg'}"
             onclick={() => (detailTab = 'memory')}
           >
@@ -398,7 +398,7 @@
             type="button"
             class="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors
               {detailTab === 'diff'
-              ? 'bg-sky-500/15 text-sky-100'
+              ? 'bg-sky-500/15 text-selected-fg'
               : 'text-fg-muted hover:bg-surface-2/70 hover:text-fg'}"
             onclick={() => (detailTab = 'diff')}
           >
@@ -569,7 +569,7 @@
                       type="button"
                       class="inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors
                         {active
-                        ? 'bg-sky-500/15 text-sky-100'
+                        ? 'bg-sky-500/15 text-selected-fg'
                         : 'text-fg-muted hover:bg-surface-2/70 hover:text-fg'}"
                       onclick={() => settingsStore.setDiffView(btn.mode)}
                       title={btn.label + ' view'}

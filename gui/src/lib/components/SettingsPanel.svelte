@@ -233,7 +233,7 @@
           type="button"
           class="flex shrink-0 items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors
             {active
-            ? 'bg-sky-500/15 text-sky-100'
+            ? 'bg-sky-500/15 text-selected-fg'
             : 'text-fg-muted hover:bg-surface-2/70 hover:text-fg'}"
           onclick={() => (tab = t.id)}
         >
@@ -258,7 +258,7 @@
                   type="button"
                   class="flex items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors
                     {active
-                    ? 'border-sky-500/50 bg-sky-500/15 text-sky-100'
+                    ? 'border-sky-500/50 bg-sky-500/15 text-selected-fg'
                     : 'border-line-strong text-fg-muted hover:bg-surface-2'}"
                   onclick={() => onThemeChange(opt.mode)}
                   aria-pressed={active}

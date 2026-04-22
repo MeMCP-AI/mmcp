@@ -150,7 +150,7 @@
               type="button"
               class="rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset transition-colors
                 {active
-                ? 'bg-sky-500/20 text-sky-200 ring-sky-500/50'
+                ? 'bg-sky-500/20 text-selected-fg ring-sky-500/50'
                 : 'text-fg-muted ring-line-strong hover:bg-surface-2/60'}"
               onclick={() => onFilterChange(f.value)}
             >

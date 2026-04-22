@@ -135,12 +135,12 @@
     {/if}
     {#if multi.size > 0}
       <span
-        class="ml-auto inline-flex items-center gap-1 rounded-full bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-semibold normal-case text-sky-200 ring-1 ring-inset ring-sky-500/40"
+        class="ml-auto inline-flex items-center gap-1 rounded-full bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-semibold normal-case text-selected-fg ring-1 ring-inset ring-sky-500/40"
       >
         {multi.size} selected
         <button
           type="button"
-          class="rounded-sm p-0.5 text-sky-200 hover:bg-sky-500/30"
+          class="rounded-sm p-0.5 text-selected-fg hover:bg-sky-500/30"
           onclick={onClearMulti}
           aria-label="Clear selection"
           title="Clear selection"
@@ -182,7 +182,7 @@
           type="button"
           class="relative rounded-md p-1 transition-colors
             {facetsOpen || kindFilter.size > 0 || mandatoryOnly
-            ? 'bg-sky-500/15 text-sky-200'
+            ? 'bg-sky-500/15 text-selected-fg'
             : 'text-fg-muted hover:bg-surface-2 hover:text-fg'}"
           onclick={() => (facetsOpen = !facetsOpen)}
           aria-label="Toggle facet filters"
@@ -302,7 +302,7 @@
               type="button"
               class="flex min-w-0 flex-1 items-center gap-2 py-1.5 pr-2 text-left text-sm transition-colors
                 {selected
-                ? 'bg-sky-500/15 text-sky-100'
+                ? 'bg-sky-500/15 text-selected-fg'
                 : 'text-fg hover:bg-surface-2/70'}"
               onclick={(e) => handleRowClick(e, slug, filtered ?? [])}
             >

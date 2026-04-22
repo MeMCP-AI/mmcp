@@ -67,7 +67,7 @@
   const tabBtn = (active: boolean) =>
     'rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ' +
     (active
-      ? 'bg-sky-500/15 text-sky-100'
+      ? 'bg-sky-500/15 text-selected-fg'
       : 'text-fg-muted hover:bg-surface-2/70 hover:text-fg');
 </script>
 
