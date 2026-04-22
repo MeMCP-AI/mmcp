@@ -74,10 +74,6 @@ pub async fn sync_pull(
 pub async fn sync_push(state: State<'_, AppState>) -> GuiResult<PushReportDto> {
     let guard = state.sync.read().await;
     let bundle = guard.as_ref().ok_or(GuiError::SyncNotConfigured)?;
-    // The engine no longer consumes an explicit `PendingQueue`
-    // argument — filter + resolver pair does the same work, so
-    // the stored queue just lives on for any future feature that
-    // needs it.
     let report = bundle
         .engine
         .push(SyncFilter::All, &bundle.resolver, &bundle.resolver)

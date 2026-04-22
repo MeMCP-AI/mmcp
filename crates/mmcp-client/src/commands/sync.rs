@@ -110,8 +110,7 @@ pub async fn run_fetch(selector: SyncSelector) -> Result<()> {
     let mmcp_home = MmcpHome::discover()?;
     let (backend, group_index) = mmcp_home.init_backend().await?;
     let filter = resolve_sync_filter(&selector, &group_index).await?;
-    let (engine, resolver, _queue) =
-        build_engine(backend, group_index, &sync_cfg.server_url)?;
+    let (engine, resolver) = build_engine(backend, group_index, &sync_cfg.server_url)?;
     let report = engine
         .fetch(filter, &resolver, &resolver)
         .await
@@ -162,7 +161,7 @@ async fn prepare(
     let mmcp_home = MmcpHome::discover()?;
     let (backend, group_index) = mmcp_home.init_backend().await?;
     let filter = resolve_sync_filter(selector, &group_index).await?;
-    let (engine, resolver, _queue) = build_engine(backend, group_index, &server_url)?;
+    let (engine, resolver) = build_engine(backend, group_index, &server_url)?;
     Ok((server_url, engine, resolver, filter))
 }
 

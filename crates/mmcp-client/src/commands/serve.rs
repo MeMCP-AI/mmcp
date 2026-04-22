@@ -2520,7 +2520,7 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         let (cfg, server_url) = self.require_sync_configured()?;
         let filter = resolve_sync_filter(&args, &self.state.groups).await?;
-        let (engine, resolver, _queue) = mmcp_store::sync::build_engine(
+        let (engine, resolver) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
             self.state.groups.clone(),
             &server_url,
@@ -2559,7 +2559,7 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         let (cfg, server_url) = self.require_sync_configured()?;
         let filter = resolve_sync_filter(&args, &self.state.groups).await?;
-        let (engine, resolver, _queue) = mmcp_store::sync::build_engine(
+        let (engine, resolver) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
             self.state.groups.clone(),
             &server_url,
@@ -2593,7 +2593,7 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         let (cfg, server_url) = self.require_sync_configured()?;
         let filter = resolve_sync_filter(&args, &self.state.groups).await?;
-        let (engine, resolver, _queue) = mmcp_store::sync::build_engine(
+        let (engine, resolver) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
             self.state.groups.clone(),
             &server_url,
@@ -2629,7 +2629,7 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         let (cfg, server_url) = self.require_sync_configured()?;
         let filter = resolve_sync_filter(&args, &self.state.groups).await?;
-        let (engine, resolver, _queue) = mmcp_store::sync::build_engine(
+        let (engine, resolver) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
             self.state.groups.clone(),
             &server_url,

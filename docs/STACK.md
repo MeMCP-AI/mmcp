@@ -17,7 +17,7 @@ Rust workspace, edition 2024. All crates live under `crates/` except the web fro
 | `mmcp-auth`      | Password hashing, PASETO tokens, `axum-login` trait impls, OAuth and passkey wiring.          | `mmcp-core`, `mmcp-db`                               |
 | `mmcp-proto`     | MCP tool schemas (request + response types) and a `ProtoError` surface (including `NotImplemented`). Shared by client and server so they never drift. Every memory-addressed tool takes an optional `slug` + optional `id` pair; feature cross-refs are UUID strings on the wire. | `mmcp-core`                                          |
 | `mmcp-session`   | Compaction detection primitives: `TranscriptSignature`, `compute_signature`, `detect_compaction`. Pure, dependency-light, consumed by whichever storage layer wants them. | (leaf — no mmcp deps)                                |
-| `mmcp-sync`      | Push/pull/diff/merge engine. Drives `mmcp-git` for repo ops; pending-push state is currently an in-process `PendingQueue` (server-side persistence via `mmcp-db` is reserved for §5 but not yet wired). | `mmcp-core`, `mmcp-git`, `mmcp-proto`                |
+| `mmcp-sync`      | Git-symmetric fetch/pull/push/sync engine. Drives `mmcp-git` for repo ops; bump intent rides on commit-message trailers (see `bump::parse_bump_intent`) so no sidecar pending-edit queue is needed. | `mmcp-core`, `mmcp-git`, `mmcp-proto`                |
 
 ### 1.2 Binaries
 

@@ -16,7 +16,7 @@ use mmcp_git::NativeBackend;
 use mmcp_store::{
     GroupIndex, IndexResolver, MmcpHome, ResolvedAuthor, build_engine, config as project_config,
 };
-use mmcp_sync::{PendingQueue, SyncEngine};
+use mmcp_sync::SyncEngine;
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{Debouncer, new_debouncer};
 use tauri::async_runtime::JoinHandle;
@@ -29,7 +29,6 @@ use crate::error::{GuiError, GuiResult};
 pub struct SyncBundle {
     pub engine: SyncEngine,
     pub resolver: IndexResolver,
-    pub queue: Mutex<PendingQueue>,
     pub server_url: String,
 }
 
@@ -208,12 +207,11 @@ fn build_sync(
         return Ok(None);
     };
     let server_url = cfg.server_url.clone();
-    let (engine, resolver, queue) =
+    let (engine, resolver) =
         build_engine(Arc::clone(backend), index.clone(), &server_url).map_err(GuiError::from)?;
     Ok(Some(SyncBundle {
         engine,
         resolver,
-        queue: Mutex::new(queue),
         server_url,
     }))
 }

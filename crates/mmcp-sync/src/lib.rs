@@ -4,29 +4,27 @@
 //!
 //! - The **control plane**: a typed `SyncClient` wrapping the
 //!   HTTP endpoints that `mmcp-server` serves under `/sync/*`.
-//!   It lists the caller's groups, reads advertised refs, and
-//!   registers version bumps when local edits ship.
+//!   Today it advertises which groups exist and at what head
+//!   commit; version-bump registration rode on the retired
+//!   `PendingQueue` until the push rewrite made it redundant
+//!   (the bump intent now travels on the commit itself — see
+//!   [`bump::parse_bump_intent`]).
 //! - The **content plane**: a `GitBackend` handle that moves the
-//!   actual git objects. The engine calls `backend.push` and
-//!   `backend.fetch` once the control-plane decision has been
-//!   recorded, so content transfer and metadata registration
-//!   stay in lockstep.
+//!   actual git objects. The engine calls `backend.push`,
+//!   `backend.fetch`, and `backend.fast_forward` — fetch populates
+//!   the local tracking ref, pull fast-forwards from it, push
+//!   ships local `main` to the remote.
 //!
-//! `SyncEngine` orchestrates both. Tests drive the engine through
-//! `wiremock` + an in-process native backend so every path except
-//! real network transport is covered without a running
-//! `mmcp-server`.
-//!
-//! The crate also holds the pending push queue (`PendingQueue`)
-//! and the pure version bump math (`negotiate_next_version`)
-//! used by the server when it assigns a new version to an edit.
+//! `SyncEngine` orchestrates the four verbs — fetch, pull, push,
+//! sync. Tests drive the engine through `wiremock` + an in-process
+//! native backend so every path except real network transport is
+//! covered without a running `mmcp-server`.
 
 pub mod bump;
 pub mod client;
 pub mod engine;
 pub mod error;
 pub mod filter;
-pub mod pending;
 pub mod version;
 
 pub use bump::parse_bump_intent;
@@ -40,5 +38,4 @@ pub use engine::{
 };
 pub use error::SyncError;
 pub use filter::{ScopeIndex, SyncFilter};
-pub use pending::{PendingEdit, PendingQueue};
 pub use version::negotiate_next_version;
