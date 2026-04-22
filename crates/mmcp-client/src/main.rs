@@ -200,10 +200,10 @@ async fn main() -> Result<()> {
             Some(InitCommand::Project(args)) => commands::init::run_project(args).await?,
         },
         Command::Status => commands::status::run().await?,
-        Command::Sync { selector } => commands::sync::run(true, true, selector).await?,
+        Command::Sync { selector } => commands::sync::run_sync(selector).await?,
         Command::Fetch { selector } => commands::sync::run_fetch(selector).await?,
-        Command::Pull { selector } => commands::sync::run(true, false, selector).await?,
-        Command::Push { selector } => commands::sync::run(false, true, selector).await?,
+        Command::Pull { selector } => commands::sync::run_pull(selector).await?,
+        Command::Push { selector } => commands::sync::run_push(selector).await?,
         Command::Import {
             group,
             file,

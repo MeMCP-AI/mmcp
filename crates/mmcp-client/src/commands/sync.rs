@@ -131,96 +131,110 @@ pub async fn run_fetch(selector: SyncSelector) -> Result<()> {
     Ok(())
 }
 
-/// Run the sync engine.
+/// Shared prelude for every sync verb: resolve the project, the
+/// sync config, the backend, and the requested [`SyncFilter`] so
+/// the verb-specific runner just calls the matching engine method.
 ///
-/// `pull` and `push` may be toggled independently so that `mmcp
-/// pull` and `mmcp push` reuse the same code path.
-///
-/// Exit codes (returned via `Result`):
-///
-/// - Ok(()) - sync succeeded (0).
-/// - `anyhow::Error` carrying a `SyncError::Conflict` - conflict,
-///   caller maps to exit 2.
-/// - Any other `anyhow::Error` - generic failure (1).
-pub async fn run(pull: bool, push: bool, selector: SyncSelector) -> Result<()> {
+/// Keeping this factored out stops each runner from re-implementing
+/// the same eight lines of boilerplate and guarantees `mmcp fetch`,
+/// `mmcp pull`, `mmcp push`, and `mmcp sync` all see identical
+/// project discovery / config loading / error wording.
+async fn prepare(
+    selector: &SyncSelector,
+) -> Result<(
+    String,
+    mmcp_sync::SyncEngine,
+    mmcp_store::sync::IndexResolver,
+    mmcp_sync::SyncFilter,
+)> {
     let cwd = std::env::current_dir().context("reading current working directory")?;
     let root = find_project_root(&cwd)
         .context("no mmcp project found in current directory or any parent")?;
     let cfg = load(&root)?;
-
     let Some(sync_cfg) = cfg.sync.as_ref() else {
         bail!(
             "project {} has no [sync] block; cannot sync against a remote",
             cfg.project_uuid
         );
     };
+    let server_url = sync_cfg.server_url.clone();
 
     let mmcp_home = MmcpHome::discover()?;
     let (backend, group_index) = mmcp_home.init_backend().await?;
-    let filter = resolve_sync_filter(&selector, &group_index).await?;
-    let (engine, resolver, _queue) = build_engine(backend, group_index, &sync_cfg.server_url)?;
+    let filter = resolve_sync_filter(selector, &group_index).await?;
+    let (engine, resolver, _queue) = build_engine(backend, group_index, &server_url)?;
+    Ok((server_url, engine, resolver, filter))
+}
 
-    let report = match (pull, push) {
-        (true, true) => {
-            let report = engine
-                .sync(filter, &resolver, &resolver)
-                .await
-                .map_err(to_anyhow)?;
-            tracing::info!(
-                server = %sync_cfg.server_url,
-                updated = report.pulled.updated.len(),
-                new_groups = report.pulled.new_groups.len(),
-                pushed = report.pushed.pushed.len(),
-                "sync completed"
-            );
-            format!(
-                "sync against {} completed: pulled {} groups ({} new), pushed {} groups",
-                sync_cfg.server_url,
-                report.pulled.updated.len(),
-                report.pulled.new_groups.len(),
-                report.pushed.pushed.len()
-            )
-        }
-        (true, false) => {
-            let report = engine
-                .pull(filter, &resolver, &resolver)
-                .await
-                .map_err(to_anyhow)?;
-            tracing::info!(
-                server = %sync_cfg.server_url,
-                updated = report.updated.len(),
-                new_groups = report.new_groups.len(),
-                "pull completed"
-            );
-            format!(
-                "pull from {} completed: {} groups updated, {} new groups",
-                sync_cfg.server_url,
-                report.updated.len(),
-                report.new_groups.len()
-            )
-        }
-        (false, true) => {
-            let report = engine
-                .push(filter, &resolver, &resolver)
-                .await
-                .map_err(to_anyhow)?;
-            tracing::info!(
-                server = %sync_cfg.server_url,
-                pushed = report.pushed.len(),
-                "push completed"
-            );
-            format!(
-                "push to {} completed: {} groups pushed",
-                sync_cfg.server_url,
-                report.pushed.len()
-            )
-        }
-        (false, false) => {
-            bail!("neither pull nor push requested; nothing to do");
-        }
-    };
+/// Run `mmcp pull`: fetch each in-scope group's remote head into
+/// the local tracking ref, then fast-forward local `main`.
+pub async fn run_pull(selector: SyncSelector) -> Result<()> {
+    let (server_url, engine, resolver, filter) = prepare(&selector).await?;
+    let report = engine
+        .pull(filter, &resolver, &resolver)
+        .await
+        .map_err(to_anyhow)?;
+    tracing::info!(
+        server = %server_url,
+        updated = report.updated.len(),
+        new_groups = report.new_groups.len(),
+        "pull completed"
+    );
+    println!(
+        "pull from {} completed: {} groups updated, {} new groups",
+        server_url,
+        report.updated.len(),
+        report.new_groups.len()
+    );
+    Ok(())
+}
 
-    println!("{report}");
+/// Run `mmcp push`: walk each in-scope group and ship local `main`
+/// to the remote.
+pub async fn run_push(selector: SyncSelector) -> Result<()> {
+    let (server_url, engine, resolver, filter) = prepare(&selector).await?;
+    let report = engine
+        .push(filter, &resolver, &resolver)
+        .await
+        .map_err(to_anyhow)?;
+    tracing::info!(
+        server = %server_url,
+        pushed = report.pushed.len(),
+        "push completed"
+    );
+    println!(
+        "push to {} completed: {} groups pushed",
+        server_url,
+        report.pushed.len()
+    );
+    Ok(())
+}
+
+/// Run `mmcp sync`: pull then push against the same filter.
+///
+/// Exit-code contract (returned via `Result`): `Ok(())` on success,
+/// an `anyhow::Error` carrying `SyncError::Conflict` on conflict
+/// (caller maps to exit 2), any other `anyhow::Error` generic (1).
+pub async fn run_sync(selector: SyncSelector) -> Result<()> {
+    let (server_url, engine, resolver, filter) = prepare(&selector).await?;
+    let report = engine
+        .sync(filter, &resolver, &resolver)
+        .await
+        .map_err(to_anyhow)?;
+    tracing::info!(
+        server = %server_url,
+        updated = report.pulled.updated.len(),
+        new_groups = report.pulled.new_groups.len(),
+        pushed = report.pushed.pushed.len(),
+        "sync completed"
+    );
+    println!(
+        "sync against {} completed: pulled {} groups ({} new), pushed {} groups",
+        server_url,
+        report.pulled.updated.len(),
+        report.pulled.new_groups.len(),
+        report.pushed.pushed.len()
+    );
     Ok(())
 }
 
