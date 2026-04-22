@@ -1,5 +1,6 @@
 //! Sync commands (pull / push / status snapshot).
 
+use mmcp_sync::SyncFilter;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
@@ -26,7 +27,7 @@ pub struct PullReportDto {
 
 #[derive(Debug, Serialize)]
 pub struct PushReportDto {
-    pub drained: usize,
+    pub pushed: usize,
 }
 
 #[tauri::command]
@@ -45,9 +46,14 @@ pub async fn sync_pull(
 ) -> GuiResult<PullReportDto> {
     let guard = state.sync.read().await;
     let bundle = guard.as_ref().ok_or(GuiError::SyncNotConfigured)?;
+    // `IndexResolver` implements both `GroupHandleResolver` and
+    // `ScopeIndex`, so it plays both roles in the engine's new
+    // three-arg signature. `SyncFilter::All` iterates every
+    // locally-indexed group — the GUI doesn't expose a subset
+    // picker yet, matching what the CLI's default pull does.
     let report = bundle
         .engine
-        .pull(&bundle.resolver)
+        .pull(SyncFilter::All, &bundle.resolver, &bundle.resolver)
         .await
         .map_err(|e| GuiError::Sync(e.to_string()))?;
     // A pull touched one or more groups' refs — tell every frontend
@@ -68,13 +74,16 @@ pub async fn sync_pull(
 pub async fn sync_push(state: State<'_, AppState>) -> GuiResult<PushReportDto> {
     let guard = state.sync.read().await;
     let bundle = guard.as_ref().ok_or(GuiError::SyncNotConfigured)?;
-    let queue = bundle.queue.lock().await;
+    // The engine no longer consumes an explicit `PendingQueue`
+    // argument — filter + resolver pair does the same work, so
+    // the stored queue just lives on for any future feature that
+    // needs it.
     let report = bundle
         .engine
-        .push(&queue, &bundle.resolver)
+        .push(SyncFilter::All, &bundle.resolver, &bundle.resolver)
         .await
         .map_err(|e| GuiError::Sync(e.to_string()))?;
     Ok(PushReportDto {
-        drained: report.drained.len(),
+        pushed: report.pushed.len(),
     })
 }

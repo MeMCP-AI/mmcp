@@ -84,7 +84,7 @@ class SyncStore {
         t: 'ok',
         op: 'push',
         serverUrl: url,
-        summary: `${report.drained} edit(s) pushed`
+        summary: `${report.pushed} group(s) pushed`
       };
     } catch (err) {
       this.phase = {

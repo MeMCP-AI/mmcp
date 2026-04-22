@@ -45,7 +45,7 @@ export interface PullReport {
 }
 
 export interface PushReport {
-  drained: number;
+  pushed: number;
 }
 
 export interface Issue {
