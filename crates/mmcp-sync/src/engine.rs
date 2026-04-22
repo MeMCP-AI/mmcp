@@ -143,8 +143,20 @@ impl SyncEngine {
                 .await
             {
                 Ok(_) => true,
-                Err(mmcp_git::GitError::Unsupported(_))
-                | Err(mmcp_git::GitError::Transport { .. }) => false,
+                Err(mmcp_git::GitError::Unsupported(_)) => false,
+                Err(mmcp_git::GitError::Transport { stderr, .. })
+                    if stderr_indicates_non_fast_forward(&stderr) =>
+                {
+                    // Git-symmetric signal: remote has commits we
+                    // do not, `git push` refused to overwrite. Raise
+                    // structured so the CLI and MCP surfaces can
+                    // tell the operator to pull first.
+                    return Err(SyncError::PushDiverged {
+                        group: group_id,
+                        stderr,
+                    });
+                }
+                Err(mmcp_git::GitError::Transport { .. }) => false,
                 Err(other) => return Err(SyncError::Git(other)),
             };
             pushed.push(PushedGroup {
@@ -201,7 +213,22 @@ impl SyncEngine {
                         )
                         .await
                     {
-                        Ok(_) => {}
+                        Ok(mmcp_git::FastForwardOutcome::AlreadyAt { .. })
+                        | Ok(mmcp_git::FastForwardOutcome::Advanced { .. }) => {}
+                        // Divergence: local has commits the remote
+                        // does not. Git-symmetric `git pull --ff-only`
+                        // failure. Raise so the operator can resolve
+                        // before any more groups get touched.
+                        Ok(mmcp_git::FastForwardOutcome::NotFastForward {
+                            local,
+                            target,
+                        }) => {
+                            return Err(SyncError::PullDiverged {
+                                group: fetched_group.group_id,
+                                local,
+                                target,
+                            });
+                        }
                         // Missing tracking ref on first fetch of a
                         // freshly-cloned repo: benign, the local
                         // `main` is already at the target anyway.
@@ -298,6 +325,18 @@ impl SyncEngine {
     }
 }
 
+/// Sniff the `git push` stderr for the canonical non-fast-forward
+/// signals. Git's output here is stable across versions for the
+/// three phrasings below; each one means "remote advanced, rebase
+/// / pull / force your way out". Matching case-insensitively so
+/// future output tweaks around capitalisation do not miss.
+fn stderr_indicates_non_fast_forward(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("non-fast-forward")
+        || lower.contains("fetch first")
+        || lower.contains("rejected")
+}
+
 /// Resolves a `group_id` to its local [`mmcp_git::RepoHandle`] and
 /// enumerates every locally-known group.
 ///
@@ -370,6 +409,38 @@ pub struct FetchReport {
     /// clone for yet. Reported so operators can decide whether to
     /// adopt them; the engine never auto-clones.
     pub new_groups: Vec<crate::client::RemoteGroup>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stderr_indicates_non_fast_forward;
+
+    #[test]
+    fn stderr_non_fast_forward_message_is_recognised() {
+        let stderr = "To http://example.com/g.git\n \
+                      ! [rejected]        main -> main (non-fast-forward)\n \
+                      error: failed to push some refs to 'http://example.com/g.git'\n \
+                      hint: Updates were rejected because the tip of your current branch is behind\n";
+        assert!(stderr_indicates_non_fast_forward(stderr));
+    }
+
+    #[test]
+    fn stderr_fetch_first_variant_is_recognised() {
+        // Git surfaces this phrasing for the "non-fast-forward of
+        // an unrelated branch" case. We still want to classify it
+        // as divergence.
+        let stderr = " ! [rejected]   main -> main (fetch first)\n";
+        assert!(stderr_indicates_non_fast_forward(stderr));
+    }
+
+    #[test]
+    fn stderr_without_rejection_markers_is_not_a_divergence() {
+        // Generic transport error (wrong URL, TLS failure, etc.)
+        // must NOT be classified as divergence.
+        let stderr = "fatal: unable to access 'http://127.0.0.1:1/no-such.git/': \
+                      Failed to connect to 127.0.0.1 port 1: Connection refused";
+        assert!(!stderr_indicates_non_fast_forward(stderr));
+    }
 }
 
 /// One fetched group's before/after snapshot.

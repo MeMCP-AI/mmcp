@@ -3207,6 +3207,21 @@ fn map_sync_error_to_mcp(err: mmcp_sync::SyncError) -> McpError {
             "code": "sync_invalid_version",
             "detail": v.to_string(),
         }),
+        SyncError::PullDiverged {
+            group,
+            local,
+            target,
+        } => json!({
+            "code": "pull_diverged",
+            "group": group.to_string(),
+            "local": local,
+            "target": target,
+        }),
+        SyncError::PushDiverged { group, stderr } => json!({
+            "code": "push_diverged",
+            "group": group.to_string(),
+            "stderr": stderr,
+        }),
     };
     McpError::invalid_params(message, Some(payload))
 }

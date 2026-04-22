@@ -40,6 +40,29 @@ pub enum SyncError {
         local_commit: String,
         remote_commit: String,
     },
+
+    /// Pull refused to advance local `main` because the local ref
+    /// is not an ancestor of the incoming remote head. Operator
+    /// has to resolve the divergence by hand (rebase / reset /
+    /// discard) before the next pull.
+    ///
+    /// Git-symmetric: matches the `non-fast-forward` signal `git
+    /// pull --ff-only` would report. The payload carries both
+    /// commit ids so the CLI can print the diff range.
+    #[error("pull diverged: group {group} local {local} is not an ancestor of remote {target}")]
+    PullDiverged {
+        group: Uuid,
+        local: String,
+        target: String,
+    },
+
+    /// Push was rejected by the remote with a non-fast-forward
+    /// signal: the server holds commits local has not yet seen.
+    /// Operator has to pull, reconcile, then push again. The raw
+    /// stderr is preserved so the CLI can surface the underlying
+    /// rejection reason verbatim without paraphrasing.
+    #[error("push diverged: group {group} rejected by remote — {stderr}")]
+    PushDiverged { group: Uuid, stderr: String },
 }
 
 impl SyncError {
