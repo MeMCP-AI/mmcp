@@ -86,6 +86,16 @@ class SettingsStore {
     void this.save();
   }
 
+  /// Advance through the theme modes in a fixed order. Backs the
+  /// toolbar's quick-switch button, which doesn't expose a full
+  /// picker — cycling keeps the affordance to a single click
+  /// while still reaching all three options.
+  cycleTheme() {
+    const order: ThemeMode[] = ['dark', 'light', 'system'];
+    const next = order[(order.indexOf(this.values.theme) + 1) % order.length];
+    this.setTheme(next);
+  }
+
   reset() {
     this.values = { ...DEFAULT_SETTINGS };
     void this.save();

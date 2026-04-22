@@ -4,13 +4,17 @@
     CloudUpload,
     Columns2,
     History as HistoryIcon,
+    Monitor,
+    Moon,
     Pencil,
     Plus,
     Rows2,
     Settings as SettingsIcon,
     Stethoscope,
+    Sun,
     Trash2
   } from 'lucide-svelte';
+  import type { ThemeMode } from '$lib/stores/settings.svelte';
 
   export type LayoutMode = 'columns' | 'stacked';
 
@@ -21,6 +25,7 @@
     canViewHistory: boolean;
     syncReady: boolean;
     layout: LayoutMode;
+    theme: ThemeMode;
     onNew: () => void;
     onEdit: () => void;
     onDelete: () => void;
@@ -30,6 +35,7 @@
     onDiagnose: () => void;
     onSettings: () => void;
     onToggleLayout: () => void;
+    onCycleTheme: () => void;
   }
 
   let {
@@ -39,6 +45,7 @@
     canViewHistory,
     syncReady,
     layout,
+    theme,
     onNew,
     onEdit,
     onDelete,
@@ -47,8 +54,20 @@
     onPush,
     onDiagnose,
     onSettings,
-    onToggleLayout
+    onToggleLayout,
+    onCycleTheme
   }: Props = $props();
+
+  // Advances dark → light → system → dark. The icon mirrors the
+  // *current* mode so the user sees what's active; the tooltip
+  // previews what clicking will switch to.
+  const themeDescriptor = $derived(
+    theme === 'dark'
+      ? { Icon: Moon, label: 'Dark', next: 'Light' }
+      : theme === 'light'
+        ? { Icon: Sun, label: 'Light', next: 'System' }
+        : { Icon: Monitor, label: 'System', next: 'Dark' }
+  );
 
   // Label is hidden below sm (< 640 px) — only the icon stays visible
   // so the toolbar still fits on a narrow window. Aria-label keeps
@@ -121,6 +140,16 @@
       <Columns2 size={14} />
     {/if}
     <span class="hidden sm:inline">Layout</span>
+  </button>
+
+  <button
+    class={btn}
+    onclick={onCycleTheme}
+    aria-label={`Theme: ${themeDescriptor.label}`}
+    title={`Theme: ${themeDescriptor.label} — click to switch to ${themeDescriptor.next}`}
+  >
+    <themeDescriptor.Icon size={14} />
+    <span class="hidden sm:inline">{themeDescriptor.label}</span>
   </button>
 
   <button class={btn} onclick={onSettings} aria-label="Settings" title="Settings">

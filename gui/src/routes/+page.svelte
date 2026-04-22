@@ -298,6 +298,7 @@
     {canViewHistory}
     {syncReady}
     layout={settingsStore.values.layout_mode}
+    theme={settingsStore.values.theme}
     onNew={handleNew}
     onEdit={handleEdit}
     onDelete={handleDeleteRequest}
@@ -307,6 +308,7 @@
     onDiagnose={() => void openDiagnosticsWindow()}
     onSettings={() => void openSettingsWindow()}
     onToggleLayout={() => settingsStore.toggleLayoutMode()}
+    onCycleTheme={() => settingsStore.cycleTheme()}
   />
 
   <!-- Mobile-only pane tabs. Hidden at md+ where all three panes are
