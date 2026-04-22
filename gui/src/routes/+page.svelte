@@ -290,7 +290,7 @@
   let groupsHeight = $state(220);
 </script>
 
-<div class="flex h-full w-full flex-col overflow-hidden bg-zinc-950 text-zinc-100">
+<div class="flex h-full w-full flex-col overflow-hidden bg-surface-0 text-fg">
   <Toolbar
     {canCreate}
     {canEdit}
@@ -312,7 +312,7 @@
   <!-- Mobile-only pane tabs. Hidden at md+ where all three panes are
        visible simultaneously in the grid. -->
   <nav
-    class="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-zinc-800 bg-zinc-900/70 px-2 text-sm md:hidden"
+    class="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-line bg-surface-1/70 px-2 text-sm md:hidden"
   >
     {#each [
       { id: 'groups' as const, label: 'Groups', disabled: false },
@@ -333,7 +333,7 @@
         class="rounded-md px-3 py-1 text-xs font-medium transition-colors
           {active
           ? 'bg-sky-500/15 text-sky-100'
-          : 'text-zinc-400 hover:bg-zinc-800/70 hover:text-zinc-200'}
+          : 'text-fg-muted hover:bg-surface-2/70 hover:text-fg'}
           disabled:cursor-not-allowed disabled:opacity-40"
         disabled={tab.disabled}
         onclick={() => (mobilePane = tab.id)}

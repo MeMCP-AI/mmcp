@@ -118,14 +118,14 @@
 </script>
 
 <aside
-  class="flex h-full min-h-0 flex-col overflow-hidden border-r border-zinc-800 bg-zinc-900/40"
+  class="flex h-full min-h-0 flex-col overflow-hidden border-r border-line bg-surface-1/40"
 >
   <div
-    class="flex h-9 shrink-0 items-center gap-2 border-b border-zinc-900 px-3 text-xs font-semibold uppercase tracking-wide text-zinc-400"
+    class="flex h-9 shrink-0 items-center gap-2 border-b border-line px-3 text-xs font-semibold uppercase tracking-wide text-fg-muted"
   >
     <span>Memories</span>
     {#if slugs}
-      <span class="text-[10px] font-normal normal-case text-zinc-500">
+      <span class="text-[10px] font-normal normal-case text-fg-subtle">
         {#if filtersActive && filtered}
           {filtered.length} / {slugs.length}
         {:else}
@@ -152,16 +152,16 @@
   </div>
 
   {#if groupSelected && slugs && slugs.length > 0}
-    <div class="flex shrink-0 flex-col gap-1.5 border-b border-zinc-900 bg-zinc-950/40 px-2 py-1.5">
+    <div class="flex shrink-0 flex-col gap-1.5 border-b border-line bg-surface-0/40 px-2 py-1.5">
       <div class="flex items-center gap-1">
         <div class="relative flex-1">
           <Search
             size={12}
-            class="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-zinc-500"
+            class="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-fg-subtle"
           />
           <input
             type="text"
-            class="w-full rounded-md border border-zinc-800 bg-zinc-950 py-1 pl-7 pr-7 text-xs text-zinc-100 placeholder:text-zinc-600 focus:border-zinc-600 focus:outline-none"
+            class="w-full rounded-md border border-line bg-surface-0 py-1 pl-7 pr-7 text-xs text-fg placeholder:text-fg-subtle focus:border-line-strong focus:outline-none"
             placeholder="Filter by slug, name, tag…"
             value={filter}
             oninput={(e) => onFilterChange((e.currentTarget as HTMLInputElement).value)}
@@ -169,7 +169,7 @@
           {#if filter}
             <button
               type="button"
-              class="absolute right-1 top-1/2 -translate-y-1/2 rounded-sm p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+              class="absolute right-1 top-1/2 -translate-y-1/2 rounded-sm p-0.5 text-fg-subtle hover:bg-surface-2 hover:text-fg"
               onclick={() => onFilterChange('')}
               aria-label="Clear filter"
               title="Clear filter"
@@ -183,7 +183,7 @@
           class="relative rounded-md p-1 transition-colors
             {facetsOpen || kindFilter.size > 0 || mandatoryOnly
             ? 'bg-sky-500/15 text-sky-200'
-            : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'}"
+            : 'text-fg-muted hover:bg-surface-2 hover:text-fg'}"
           onclick={() => (facetsOpen = !facetsOpen)}
           aria-label="Toggle facet filters"
           aria-expanded={facetsOpen}
@@ -192,7 +192,7 @@
           <FilterIcon size={13} />
           {#if kindFilter.size > 0 || mandatoryOnly}
             <span
-              class="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-sky-400 ring-2 ring-zinc-950"
+              class="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-sky-400 ring-2 ring-surface-0"
             ></span>
           {/if}
         </button>
@@ -200,7 +200,7 @@
           {@const allChecked = filtered.every((s) => multi.has(s))}
           <button
             type="button"
-            class="rounded-md p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+            class="rounded-md p-1 text-fg-muted hover:bg-surface-2 hover:text-fg"
             onclick={() => (allChecked ? onClearMulti() : onSelectAll(filtered))}
             aria-label={allChecked ? 'Clear all' : 'Select all'}
             title={allChecked ? 'Clear all visible' : 'Select all visible'}
@@ -217,7 +217,7 @@
       {#if facetsOpen}
         <div class="flex flex-col gap-1.5">
           <div class="flex flex-wrap items-center gap-1">
-            <span class="text-[10px] uppercase tracking-wide text-zinc-500">Kinds</span>
+            <span class="text-[10px] uppercase tracking-wide text-fg-subtle">Kinds</span>
             {#each KINDS as k (k)}
               {@const active = kindFilter.has(k)}
               <button
@@ -233,10 +233,10 @@
           </div>
           <div class="flex flex-wrap items-center gap-2">
             <label
-              class="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] text-zinc-300 ring-1 ring-inset
+              class="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] text-fg-muted ring-1 ring-inset
                 {mandatoryOnly
                 ? 'bg-amber-500/15 text-amber-200 ring-amber-500/40'
-                : 'ring-zinc-700 hover:bg-zinc-800'}"
+                : 'ring-line-strong hover:bg-surface-2'}"
             >
               <input
                 type="checkbox"
@@ -244,13 +244,13 @@
                 checked={mandatoryOnly}
                 onchange={onToggleMandatoryOnly}
               />
-              <Pin size={10} class={mandatoryOnly ? 'text-amber-300' : 'text-zinc-500'} />
+              <Pin size={10} class={mandatoryOnly ? 'text-amber-300' : 'text-fg-subtle'} />
               Mandatory only
             </label>
             {#if filtersActive}
               <button
                 type="button"
-                class="ml-auto text-[11px] text-zinc-500 hover:text-zinc-200"
+                class="ml-auto text-[11px] text-fg-subtle hover:text-fg"
                 onclick={onClearFilters}
                 title="Clear all filters"
               >
@@ -265,16 +265,16 @@
 
   <div class="min-h-0 flex-1 overflow-y-auto">
     {#if !groupSelected}
-      <div class="px-3 py-2 text-xs text-zinc-500">Select a group on the left.</div>
+      <div class="px-3 py-2 text-xs text-fg-subtle">Select a group on the left.</div>
     {:else if loading || slugs === undefined}
-      <div class="flex items-center gap-2 px-3 py-2 text-xs text-zinc-500">
+      <div class="flex items-center gap-2 px-3 py-2 text-xs text-fg-subtle">
         <LoaderCircle size={12} class="animate-spin" />
         Loading memories…
       </div>
     {:else if slugs.length === 0}
-      <div class="px-3 py-2 text-xs text-zinc-500">No memories in this group.</div>
+      <div class="px-3 py-2 text-xs text-fg-subtle">No memories in this group.</div>
     {:else if filtered && filtered.length === 0}
-      <div class="px-3 py-2 text-xs text-zinc-500">No memories match the current filters.</div>
+      <div class="px-3 py-2 text-xs text-fg-subtle">No memories match the current filters.</div>
     {:else if filtered}
       <ul class="flex flex-col">
         {#each filtered as slug (slug)}
@@ -286,7 +286,7 @@
           <li class="flex items-stretch">
             <button
               type="button"
-              class="flex w-7 shrink-0 items-center justify-center text-zinc-500 hover:text-zinc-200
+              class="flex w-7 shrink-0 items-center justify-center text-fg-subtle hover:text-fg
                 {checked ? 'text-sky-300' : ''}"
               onclick={() => onToggleMulti(slug)}
               aria-label={checked ? `Deselect ${slug}` : `Select ${slug}`}
@@ -303,7 +303,7 @@
               class="flex min-w-0 flex-1 items-center gap-2 py-1.5 pr-2 text-left text-sm transition-colors
                 {selected
                 ? 'bg-sky-500/15 text-sky-100'
-                : 'text-zinc-200 hover:bg-zinc-800/70'}"
+                : 'text-fg hover:bg-surface-2/70'}"
               onclick={(e) => handleRowClick(e, slug, filtered ?? [])}
             >
               {#if kindDisplay !== 'off'}

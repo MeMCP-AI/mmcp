@@ -271,26 +271,26 @@
   }
 </script>
 
-<section class="flex h-full min-h-0 flex-col overflow-hidden bg-zinc-950 text-zinc-100">
+<section class="flex h-full min-h-0 flex-col overflow-hidden bg-surface-0 text-fg">
   <header
-    class="flex shrink-0 items-center gap-2 border-b border-zinc-800 bg-zinc-900/40 px-4 py-2 sm:px-6"
+    class="flex shrink-0 items-center gap-2 border-b border-line bg-surface-1/40 px-4 py-2 sm:px-6"
   >
-    <GitCommit size={14} class="text-zinc-400" />
-    <h1 class="text-sm font-semibold text-zinc-100">History</h1>
+    <GitCommit size={14} class="text-fg-muted" />
+    <h1 class="text-sm font-semibold text-fg">History</h1>
     <code
-      class="truncate rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-300"
+      class="truncate rounded bg-surface-2 px-1.5 py-0.5 text-xs text-fg-muted"
       title={slug}
     >
       {slug}
     </code>
     {#if commits}
-      <span class="text-[11px] text-zinc-500">
+      <span class="text-[11px] text-fg-subtle">
         {commits.length} commit{commits.length === 1 ? '' : 's'}
       </span>
     {/if}
     <button
       type="button"
-      class="ml-auto rounded-md p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+      class="ml-auto rounded-md p-1 text-fg-muted hover:bg-surface-2 hover:text-fg"
       aria-label="Close history"
       title="Close history"
       onclick={onClose}
@@ -303,11 +303,11 @@
     <!-- Commit list. Narrow on desktop, full-width on mobile with
          a small max-height so the detail still has room. -->
     <div
-      class="flex shrink-0 flex-col overflow-hidden border-b border-zinc-800 md:w-72 md:border-b-0 md:border-r"
+      class="flex shrink-0 flex-col overflow-hidden border-b border-line md:w-72 md:border-b-0 md:border-r"
     >
       <div class="min-h-0 flex-1 overflow-y-auto">
         {#if loadingCommits}
-          <div class="flex items-center gap-2 px-3 py-2 text-xs text-zinc-500">
+          <div class="flex items-center gap-2 px-3 py-2 text-xs text-fg-subtle">
             <LoaderCircle size={12} class="animate-spin" />
             Walking history…
           </div>
@@ -316,14 +316,14 @@
             {commitsError}
           </div>
         {:else if commits && commits.length === 0}
-          <div class="px-3 py-2 text-xs text-zinc-500">No commits touched this memory yet.</div>
+          <div class="px-3 py-2 text-xs text-fg-subtle">No commits touched this memory yet.</div>
         {:else if commits}
           <ul class="flex flex-col">
             {#each commits as commit, idx (commit.id)}
               {@const active = selectedId === commit.id}
               {@const latest = idx === 0}
               <li
-                class="border-b border-zinc-900 last:border-b-0"
+                class="border-b border-line last:border-b-0"
                 transition:fly={{ y: -12, duration: 220 }}
               >
                 <button
@@ -331,13 +331,13 @@
                   class="flex w-full flex-col gap-0.5 px-3 py-2 text-left transition-colors
                     {active
                     ? 'bg-sky-500/15 text-sky-100'
-                    : 'text-zinc-200 hover:bg-zinc-800/70'}"
+                    : 'text-fg hover:bg-surface-2/70'}"
                   onclick={() => (selectedId = commit.id)}
                   title={commit.subject}
                 >
                   <div class="flex items-center gap-2">
                     <code
-                      class="shrink-0 rounded bg-zinc-800 px-1 py-0.5 font-mono text-[10px] text-zinc-300"
+                      class="shrink-0 rounded bg-surface-2 px-1 py-0.5 font-mono text-[10px] text-fg-muted"
                       title={commit.id}
                     >
                       {commit.short_id}
@@ -350,7 +350,7 @@
                       </span>
                     {/if}
                     <span
-                      class="ml-auto shrink-0 text-[10px] text-zinc-500"
+                      class="ml-auto shrink-0 text-[10px] text-fg-subtle"
                       title={fullTimestamp(commit.timestamp)}
                     >
                       {timeAgo(commit.timestamp)}
@@ -358,7 +358,7 @@
                   </div>
                   <span class="truncate text-xs" title={commit.subject}>{commit.subject}</span>
                   <span
-                    class="truncate text-[10px] text-zinc-500"
+                    class="truncate text-[10px] text-fg-subtle"
                     title="{commit.author_name} <{commit.author_email}>"
                   >
                     {commit.author_name}
@@ -374,7 +374,7 @@
     <!-- Commit detail + memory / diff. -->
     <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
       {#if !selectedId}
-        <div class="flex flex-1 items-center justify-center p-6 text-sm text-zinc-500">
+        <div class="flex flex-1 items-center justify-center p-6 text-sm text-fg-subtle">
           Pick a commit on the left.
         </div>
       {:else}
@@ -382,14 +382,14 @@
         <!-- Tab bar. Sits above the scroll container so switching
              views doesn't jump back to the top of the commit card. -->
         <div
-          class="flex shrink-0 items-center gap-1 border-b border-zinc-800 bg-zinc-900/40 px-3 py-1.5"
+          class="flex shrink-0 items-center gap-1 border-b border-line bg-surface-1/40 px-3 py-1.5"
         >
           <button
             type="button"
             class="rounded-md px-2.5 py-1 text-xs font-medium transition-colors
               {detailTab === 'memory'
               ? 'bg-sky-500/15 text-sky-100'
-              : 'text-zinc-400 hover:bg-zinc-800/70 hover:text-zinc-200'}"
+              : 'text-fg-muted hover:bg-surface-2/70 hover:text-fg'}"
             onclick={() => (detailTab = 'memory')}
           >
             Memory
@@ -399,7 +399,7 @@
             class="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors
               {detailTab === 'diff'
               ? 'bg-sky-500/15 text-sky-100'
-              : 'text-zinc-400 hover:bg-zinc-800/70 hover:text-zinc-200'}"
+              : 'text-fg-muted hover:bg-surface-2/70 hover:text-fg'}"
             onclick={() => (detailTab = 'diff')}
           >
             Diff
@@ -413,10 +413,10 @@
         <div class="min-h-0 flex-1 overflow-y-auto">
           <div class="mx-auto max-w-4xl px-4 py-5 sm:px-6 sm:py-6">
             {#if current}
-              <div class="rounded-lg border border-zinc-800 bg-zinc-900 p-4 sm:p-5">
-                <div class="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500">
+              <div class="rounded-lg border border-line bg-surface-1 p-4 sm:p-5">
+                <div class="flex flex-wrap items-center gap-2 text-[11px] text-fg-subtle">
                   <code
-                    class="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[11px] text-zinc-200"
+                    class="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-fg"
                     title={current.id}
                   >
                     {current.short_id}
@@ -425,13 +425,13 @@
                     {timeAgo(current.timestamp)} — {fullTimestamp(current.timestamp)}
                   </span>
                 </div>
-                <h2 class="mt-2 text-base font-semibold text-zinc-50">{current.subject}</h2>
+                <h2 class="mt-2 text-base font-semibold text-fg">{current.subject}</h2>
                 {#if current.message.trim() !== current.subject.trim()}
                   <pre
-                    class="mt-2 whitespace-pre-wrap font-mono text-xs text-zinc-300"
+                    class="mt-2 whitespace-pre-wrap font-mono text-xs text-fg-muted"
                   >{current.message}</pre>
                 {/if}
-                <div class="mt-3 flex flex-wrap gap-3 text-xs text-zinc-400">
+                <div class="mt-3 flex flex-wrap gap-3 text-xs text-fg-muted">
                   <span class="inline-flex items-center gap-1">
                     <User size={12} /> {current.author_name}
                   </span>
@@ -445,7 +445,7 @@
             {#if detailTab === 'memory'}
               {#if loadingMemory}
                 <div
-                  class="mt-5 flex items-center justify-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900 p-6 text-sm text-zinc-500"
+                  class="mt-5 flex items-center justify-center gap-2 rounded-lg border border-line bg-surface-1 p-6 text-sm text-fg-subtle"
                 >
                   <LoaderCircle size={14} class="animate-spin" />
                   Reading memory at commit…
@@ -457,15 +457,15 @@
                   {memoryError}
                 </div>
               {:else if memoryAt}
-                <div class="mt-5 rounded-lg border border-zinc-800 bg-zinc-900 p-4 sm:p-5">
+                <div class="mt-5 rounded-lg border border-line bg-surface-1 p-4 sm:p-5">
                   <h3
-                    class="text-base font-semibold text-zinc-50"
+                    class="text-base font-semibold text-fg"
                     title={memoryAt.frontmatter.name}
                   >
                     {memoryAt.frontmatter.name}
                   </h3>
                   <p
-                    class="mt-0.5 text-sm text-zinc-400"
+                    class="mt-0.5 text-sm text-fg-muted"
                     title={memoryAt.frontmatter.description}
                   >
                     {memoryAt.frontmatter.description}
@@ -484,7 +484,7 @@
                     {/if}
                     {#if memoryAt.frontmatter.version}
                       <span
-                        class="inline-flex items-center rounded-md bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300"
+                        class="inline-flex items-center rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] text-fg-muted"
                         title="version"
                       >
                         v{memoryAt.frontmatter.version}
@@ -492,7 +492,7 @@
                     {/if}
                     {#each memoryAt.frontmatter.tags as tag (tag)}
                       <span
-                        class="inline-flex items-center rounded-md bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300"
+                        class="inline-flex items-center rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] text-fg-muted"
                         title={tag}
                       >
                         {tag}
@@ -501,21 +501,21 @@
                   </div>
                 </div>
 
-                <div class="mt-5 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 sm:p-5">
+                <div class="mt-5 rounded-lg border border-line bg-surface-1/40 p-4 sm:p-5">
                   <div
-                    class="prose prose-invert prose-zinc prose-sm max-w-none prose-pre:bg-zinc-950 prose-pre:ring-1 prose-pre:ring-zinc-800 prose-headings:tracking-tight"
+                    class="prose prose-zinc prose-sm max-w-none prose-pre:bg-surface-0 prose-pre:ring-1 prose-pre:ring-line prose-headings:tracking-tight"
                   >
                     {#if memoryAt.body.trim()}
                       {@html previewHtml}
                     {:else}
-                      <p class="text-zinc-500 italic">(empty body)</p>
+                      <p class="text-fg-subtle italic">(empty body)</p>
                     {/if}
                   </div>
                 </div>
               {/if}
             {:else if loadingDiff}
               <div
-                class="mt-5 flex items-center justify-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900 p-6 text-sm text-zinc-500"
+                class="mt-5 flex items-center justify-center gap-2 rounded-lg border border-line bg-surface-1 p-6 text-sm text-fg-subtle"
               >
                 <LoaderCircle size={14} class="animate-spin" />
                 Computing diff…
@@ -528,15 +528,15 @@
               </div>
             {:else if diff}
               <div
-                class="mt-5 overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950"
+                class="mt-5 overflow-hidden rounded-lg border border-line bg-surface-0"
               >
                 <div
-                  class="flex flex-wrap items-center gap-2 border-b border-zinc-800 bg-zinc-900/40 px-3 py-1.5 text-[11px] text-zinc-400"
+                  class="flex flex-wrap items-center gap-2 border-b border-line bg-surface-1/40 px-3 py-1.5 text-[11px] text-fg-muted"
                 >
                   <span>
                     {#if diff.from}
                       <code
-                        class="rounded bg-zinc-800 px-1 py-0.5 text-[10px] text-zinc-300"
+                        class="rounded bg-surface-2 px-1 py-0.5 text-[10px] text-fg-muted"
                         title={diff.from}
                       >
                         {diff.from.slice(0, 7)}
@@ -551,7 +551,7 @@
                       →
                     {/if}
                     <code
-                      class="rounded bg-zinc-800 px-1 py-0.5 text-[10px] text-zinc-300"
+                      class="rounded bg-surface-2 px-1 py-0.5 text-[10px] text-fg-muted"
                       title={diff.to}
                     >
                       {diff.to.slice(0, 7)}
@@ -562,7 +562,7 @@
                     <span class="text-rose-300">-{diff.deleted}</span>
                   </span>
                 </div>
-                <div class="flex flex-wrap items-center gap-1 border-b border-zinc-800 bg-zinc-900/20 px-2 py-1">
+                <div class="flex flex-wrap items-center gap-1 border-b border-line bg-surface-1/20 px-2 py-1">
                   {#each DIFF_VIEW_BUTTONS as btn (btn.mode)}
                     {@const active = diffView === btn.mode}
                     <button
@@ -570,7 +570,7 @@
                       class="inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors
                         {active
                         ? 'bg-sky-500/15 text-sky-100'
-                        : 'text-zinc-400 hover:bg-zinc-800/70 hover:text-zinc-200'}"
+                        : 'text-fg-muted hover:bg-surface-2/70 hover:text-fg'}"
                       onclick={() => settingsStore.setDiffView(btn.mode)}
                       title={btn.label + ' view'}
                     >
@@ -580,7 +580,7 @@
                   {/each}
                 </div>
                 {#if diff.rows.length === 0}
-                  <div class="p-4 text-xs text-zinc-500 italic">
+                  <div class="p-4 text-xs text-fg-subtle italic">
                     Commits are byte-identical at this path.
                   </div>
                 {:else if diffView === 'unified'}
@@ -592,22 +592,22 @@
                             ? 'bg-emerald-500/10 text-emerald-100'
                             : row.kind === 'delete'
                               ? 'bg-rose-500/10 text-rose-100'
-                              : 'text-zinc-300'}
+                              : 'text-fg-muted'}
                         {@const sigil =
                           row.kind === 'insert' ? '+' : row.kind === 'delete' ? '-' : ' '}
                         <tr class={cls}>
                           <td
-                            class="w-10 shrink-0 select-none border-r border-zinc-800/70 px-2 text-right text-[10px] text-zinc-600"
+                            class="w-10 shrink-0 select-none border-r border-line/70 px-2 text-right text-[10px] text-fg-subtle"
                           >
                             {row.kind === 'insert' ? '' : row.old_lineno}
                           </td>
                           <td
-                            class="w-10 shrink-0 select-none border-r border-zinc-800/70 px-2 text-right text-[10px] text-zinc-600"
+                            class="w-10 shrink-0 select-none border-r border-line/70 px-2 text-right text-[10px] text-fg-subtle"
                           >
                             {row.kind === 'delete' ? '' : row.new_lineno}
                           </td>
                           <td
-                            class="w-4 shrink-0 select-none px-1 text-center text-zinc-500"
+                            class="w-4 shrink-0 select-none px-1 text-center text-fg-subtle"
                           >
                             {sigil}
                           </td>
@@ -633,21 +633,21 @@
                           row.kind === 'insert' ? '+' : row.kind === 'delete' ? '-' : ' '}
                         <tr class={cls}>
                           <td
-                            class="w-10 shrink-0 select-none border-r border-zinc-800/70 px-2 text-right text-[10px] text-zinc-600"
+                            class="w-10 shrink-0 select-none border-r border-line/70 px-2 text-right text-[10px] text-fg-subtle"
                           >
                             {row.kind === 'insert' ? '' : row.old_lineno}
                           </td>
                           <td
-                            class="w-10 shrink-0 select-none border-r border-zinc-800/70 px-2 text-right text-[10px] text-zinc-600"
+                            class="w-10 shrink-0 select-none border-r border-line/70 px-2 text-right text-[10px] text-fg-subtle"
                           >
                             {row.kind === 'delete' ? '' : row.new_lineno}
                           </td>
                           <td
-                            class="w-4 shrink-0 select-none px-1 text-center text-zinc-500"
+                            class="w-4 shrink-0 select-none px-1 text-center text-fg-subtle"
                           >
                             {sigil}
                           </td>
-                          <td class="whitespace-pre-wrap break-all px-2 py-0 text-zinc-300">
+                          <td class="whitespace-pre-wrap break-all px-2 py-0 text-fg-muted">
                             {#if row.kind === 'equal'}
                               {row.text}
                             {:else}
@@ -687,17 +687,17 @@
                     <tbody>
                       {#each pairedRows as row, idx (idx)}
                         {#if row.kind === 'equal'}
-                          <tr class="text-zinc-300">
+                          <tr class="text-fg-muted">
                             <td
-                              class="select-none border-r border-zinc-800/70 px-2 text-right text-[10px] text-zinc-600"
+                              class="select-none border-r border-line/70 px-2 text-right text-[10px] text-fg-subtle"
                             >
                               {row.old_lineno}
                             </td>
-                            <td class="whitespace-pre-wrap break-all border-r border-zinc-800 px-2 py-0">
+                            <td class="whitespace-pre-wrap break-all border-r border-line px-2 py-0">
                               {row.text}
                             </td>
                             <td
-                              class="select-none border-r border-zinc-800/70 px-2 text-right text-[10px] text-zinc-600"
+                              class="select-none border-r border-line/70 px-2 text-right text-[10px] text-fg-subtle"
                             >
                               {row.new_lineno}
                             </td>
@@ -706,12 +706,12 @@
                         {:else if row.kind === 'replace'}
                           <tr>
                             <td
-                              class="select-none border-r border-zinc-800/70 bg-rose-500/5 px-2 text-right text-[10px] text-zinc-600"
+                              class="select-none border-r border-line/70 bg-rose-500/5 px-2 text-right text-[10px] text-fg-subtle"
                             >
                               {row.old_lineno}
                             </td>
                             <td
-                              class="whitespace-pre-wrap break-all border-r border-zinc-800 bg-rose-500/10 px-2 py-0 text-rose-100"
+                              class="whitespace-pre-wrap break-all border-r border-line bg-rose-500/10 px-2 py-0 text-rose-100"
                             >
                               {#each row.old_spans as span, sidx (sidx)}
                                 <span
@@ -723,7 +723,7 @@
                               {#if row.old_spans.length === 0}{row.old_text}{/if}
                             </td>
                             <td
-                              class="select-none border-r border-zinc-800/70 bg-emerald-500/5 px-2 text-right text-[10px] text-zinc-600"
+                              class="select-none border-r border-line/70 bg-emerald-500/5 px-2 text-right text-[10px] text-fg-subtle"
                             >
                               {row.new_lineno}
                             </td>
@@ -743,28 +743,28 @@
                         {:else if row.kind === 'delete'}
                           <tr>
                             <td
-                              class="select-none border-r border-zinc-800/70 bg-rose-500/5 px-2 text-right text-[10px] text-zinc-600"
+                              class="select-none border-r border-line/70 bg-rose-500/5 px-2 text-right text-[10px] text-fg-subtle"
                             >
                               {row.old_lineno}
                             </td>
                             <td
-                              class="whitespace-pre-wrap break-all border-r border-zinc-800 bg-rose-500/10 px-2 py-0 text-rose-100"
+                              class="whitespace-pre-wrap break-all border-r border-line bg-rose-500/10 px-2 py-0 text-rose-100"
                             >
                               {row.text}
                             </td>
                             <td
-                              class="select-none border-r border-zinc-800/70 px-2 text-right text-[10px] text-zinc-600"
+                              class="select-none border-r border-line/70 px-2 text-right text-[10px] text-fg-subtle"
                             ></td>
                             <td class="px-2 py-0"></td>
                           </tr>
                         {:else}
                           <tr>
                             <td
-                              class="select-none border-r border-zinc-800/70 px-2 text-right text-[10px] text-zinc-600"
+                              class="select-none border-r border-line/70 px-2 text-right text-[10px] text-fg-subtle"
                             ></td>
-                            <td class="border-r border-zinc-800 px-2 py-0"></td>
+                            <td class="border-r border-line px-2 py-0"></td>
                             <td
-                              class="select-none border-r border-zinc-800/70 bg-emerald-500/5 px-2 text-right text-[10px] text-zinc-600"
+                              class="select-none border-r border-line/70 bg-emerald-500/5 px-2 text-right text-[10px] text-fg-subtle"
                             >
                               {row.new_lineno}
                             </td>

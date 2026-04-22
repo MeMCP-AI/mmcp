@@ -23,17 +23,17 @@
   role="presentation"
 >
   <div
-    class="relative mt-16 w-full {widthClass} overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900 shadow-2xl"
+    class="relative mt-16 w-full {widthClass} overflow-hidden rounded-xl border border-line bg-surface-1 shadow-2xl"
     onclick={(e) => e.stopPropagation()}
     role="dialog"
     aria-modal="true"
     aria-label={title}
   >
-    <header class="flex items-center justify-between border-b border-zinc-800 px-5 py-3">
-      <h2 class="text-sm font-semibold text-zinc-100">{title}</h2>
+    <header class="flex items-center justify-between border-b border-line px-5 py-3">
+      <h2 class="text-sm font-semibold text-fg">{title}</h2>
       <button
         type="button"
-        class="rounded-md p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+        class="rounded-md p-1 text-fg-muted hover:bg-surface-2 hover:text-fg"
         aria-label="Close"
         onclick={onClose}
       >

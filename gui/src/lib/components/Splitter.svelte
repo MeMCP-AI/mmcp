@@ -68,7 +68,7 @@
 <svelte:window onmousemove={onMouseMove} onmouseup={onMouseUp} />
 
 <div
-  class="group shrink-0 bg-zinc-800/40 transition-colors hover:bg-sky-500/40
+  class="group shrink-0 bg-surface-2/40 transition-colors hover:bg-sky-500/40
     {dragging ? 'bg-sky-500/60' : ''}
     {orientation === 'horizontal'
     ? 'h-full w-[3px] cursor-col-resize'

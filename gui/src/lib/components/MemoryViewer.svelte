@@ -36,13 +36,13 @@
   });
 </script>
 
-<section class="flex h-full min-h-0 flex-col overflow-hidden bg-zinc-950">
+<section class="flex h-full min-h-0 flex-col overflow-hidden bg-surface-0">
   {#if !slug}
-    <div class="m-auto flex flex-col items-center gap-2 text-sm text-zinc-500">
+    <div class="m-auto flex flex-col items-center gap-2 text-sm text-fg-subtle">
       <span>Select a memory to view its body.</span>
     </div>
   {:else if loading || !memory}
-    <div class="m-auto flex items-center gap-2 text-sm text-zinc-500">Loading memory…</div>
+    <div class="m-auto flex items-center gap-2 text-sm text-fg-subtle">Loading memory…</div>
   {:else}
     {@const fm = memory.frontmatter}
     {#if pending}
@@ -75,10 +75,10 @@
     <article class="min-h-0 flex-1 overflow-y-auto">
       <div class="mx-auto max-w-3xl px-4 py-5 sm:px-6 sm:py-6">
         <!-- frontmatter card -->
-        <div class="rounded-lg border border-zinc-800 bg-zinc-900 p-4 sm:p-5">
-          <h1 class="text-lg font-semibold text-zinc-50" title={fm.name}>{fm.name}</h1>
-          <div class="mt-0.5 text-xs text-zinc-500" title={slug}>{slug}</div>
-          <p class="mt-3 text-sm text-zinc-300" title={fm.description}>{fm.description}</p>
+        <div class="rounded-lg border border-line bg-surface-1 p-4 sm:p-5">
+          <h1 class="text-lg font-semibold text-fg" title={fm.name}>{fm.name}</h1>
+          <div class="mt-0.5 text-xs text-fg-subtle" title={slug}>{slug}</div>
+          <p class="mt-3 text-sm text-fg-muted" title={fm.description}>{fm.description}</p>
           <div class="mt-3 flex flex-wrap items-center gap-1.5">
             <KindBadge kind={fm.kind as KindStr} mode="icon_and_text" />
             {#if fm.mandatory}
@@ -91,7 +91,7 @@
             {/if}
             {#if fm.version}
               <span
-                class="inline-flex items-center rounded-md bg-zinc-800 px-1.5 py-0.5 text-[10px] font-semibold text-zinc-300"
+                class="inline-flex items-center rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-fg-muted"
                 title="Schema version"
               >
                 v{fm.version}
@@ -99,7 +99,7 @@
             {/if}
             {#each fm.tags as tag (tag)}
               <span
-                class="inline-flex items-center rounded-md bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300"
+                class="inline-flex items-center rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] text-fg-muted"
                 title={tag}
               >
                 {tag}
@@ -109,9 +109,9 @@
         </div>
 
         <!-- body card -->
-        <div class="mt-5 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 sm:p-5">
+        <div class="mt-5 rounded-lg border border-line bg-surface-1/40 p-4 sm:p-5">
           <div
-            class="prose prose-invert prose-zinc prose-sm max-w-none prose-pre:bg-zinc-950 prose-pre:ring-1 prose-pre:ring-zinc-800 prose-headings:tracking-tight"
+            class="prose prose-zinc prose-sm max-w-none prose-pre:bg-surface-0 prose-pre:ring-1 prose-pre:ring-line prose-headings:tracking-tight"
           >
             {@html html}
           </div>

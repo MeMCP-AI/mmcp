@@ -19,26 +19,26 @@
 >
   <div class="flex flex-col gap-4 p-5">
     {#if multi}
-      <p class="text-sm text-zinc-200">
+      <p class="text-sm text-fg">
         Delete {slugs.length} memories?
       </p>
-      <ul class="max-h-48 overflow-y-auto rounded-md border border-zinc-800 bg-zinc-950 p-2 text-xs">
+      <ul class="max-h-48 overflow-y-auto rounded-md border border-line bg-surface-0 p-2 text-xs">
         {#each slugs as slug (slug)}
-          <li class="truncate px-1 py-0.5 font-mono text-zinc-300" title={slug}>{slug}</li>
+          <li class="truncate px-1 py-0.5 font-mono text-fg-muted" title={slug}>{slug}</li>
         {/each}
       </ul>
     {:else}
-      <p class="text-sm text-zinc-200">
-        Delete memory <code class="rounded bg-zinc-800 px-1 py-0.5 text-xs">{slugs[0]}</code>?
+      <p class="text-sm text-fg">
+        Delete memory <code class="rounded bg-surface-2 px-1 py-0.5 text-xs">{slugs[0]}</code>?
       </p>
     {/if}
-    <p class="text-xs text-zinc-500">
+    <p class="text-xs text-fg-subtle">
       A git commit records the deletion; the memor{multi ? 'ies' : 'y'} can be recovered from history.
     </p>
     <div class="flex justify-end gap-2">
       <button
         type="button"
-        class="inline-flex items-center rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800"
+        class="inline-flex items-center rounded-md border border-line-strong px-3 py-1.5 text-sm text-fg hover:bg-surface-2"
         onclick={onCancel}
       >
         Cancel

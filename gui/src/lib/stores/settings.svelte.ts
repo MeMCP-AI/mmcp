@@ -10,19 +10,22 @@ const SETTINGS_CHANGED_EVENT = 'settings:changed';
 export type KindDisplay = 'off' | 'icon' | 'text' | 'icon_and_text';
 export type LayoutMode = 'columns' | 'stacked';
 export type DiffViewMode = 'unified' | 'side_by_side' | 'inline_word';
+export type ThemeMode = 'dark' | 'light' | 'system';
 
 export interface UiSettings {
   kind_display: KindDisplay;
   reference_point: string | null;
   layout_mode: LayoutMode;
   diff_view: DiffViewMode;
+  theme: ThemeMode;
 }
 
 const DEFAULT_SETTINGS: UiSettings = {
   kind_display: 'icon_and_text',
   reference_point: null,
   layout_mode: 'columns',
-  diff_view: 'unified'
+  diff_view: 'unified',
+  theme: 'dark'
 };
 
 class SettingsStore {
@@ -75,6 +78,11 @@ class SettingsStore {
 
   setDiffView(mode: DiffViewMode) {
     this.values.diff_view = mode;
+    void this.save();
+  }
+
+  setTheme(mode: ThemeMode) {
+    this.values.theme = mode;
     void this.save();
   }
 

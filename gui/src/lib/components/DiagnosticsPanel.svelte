@@ -91,14 +91,14 @@
   }
 </script>
 
-<section class="flex h-full min-h-0 flex-col overflow-hidden bg-zinc-950 text-zinc-100">
+<section class="flex h-full min-h-0 flex-col overflow-hidden bg-surface-0 text-fg">
   <header
-    class="flex shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900/40 px-4 py-2 sm:px-6"
+    class="flex shrink-0 items-center gap-3 border-b border-line bg-surface-1/40 px-4 py-2 sm:px-6"
   >
-    <h1 class="text-sm font-semibold text-zinc-100">Diagnostics</h1>
+    <h1 class="text-sm font-semibold text-fg">Diagnostics</h1>
     <button
       type="button"
-      class="ml-auto inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+      class="ml-auto inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium text-fg-muted hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
       disabled={loading}
       onclick={onRefresh}
       title="Re-run diagnose_all"
@@ -108,7 +108,7 @@
     </button>
     <button
       type="button"
-      class="rounded-md p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+      class="rounded-md p-1 text-fg-muted hover:bg-surface-2 hover:text-fg"
       aria-label="Close"
       title="Close"
       onclick={onClose}
@@ -120,7 +120,7 @@
   <div class="min-h-0 flex-1 overflow-y-auto">
     <div class="flex flex-col gap-4 p-5 sm:p-6">
       {#if loading}
-        <div class="flex items-center gap-2 py-8 text-sm text-zinc-400">
+        <div class="flex items-center gap-2 py-8 text-sm text-fg-muted">
           <LoaderCircle size={14} class="animate-spin" /> Running diagnose_all…
         </div>
       {:else if error}
@@ -151,7 +151,7 @@
               class="rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset transition-colors
                 {active
                 ? 'bg-sky-500/20 text-sky-200 ring-sky-500/50'
-                : 'text-zinc-400 ring-zinc-700 hover:bg-zinc-800/60'}"
+                : 'text-fg-muted ring-line-strong hover:bg-surface-2/60'}"
               onclick={() => onFilterChange(f.value)}
             >
               {f.label} ({f.count})
@@ -161,15 +161,15 @@
 
         {#if report.project_issues.length > 0}
           <section
-            class="rounded-lg border border-l-4 border-zinc-800 {groupAccent(report.project_issues)} bg-zinc-900/40 p-3"
+            class="rounded-lg border border-l-4 border-line {groupAccent(report.project_issues)} bg-surface-1/40 p-3"
           >
-            <h3 class="text-sm font-semibold text-zinc-100">Project</h3>
+            <h3 class="text-sm font-semibold text-fg">Project</h3>
             <div class="mt-2 flex flex-col gap-1.5">
               {#each report.project_issues.filter((i) => matchesFilter(i.severity)) as issue, idx (idx)}
                 {@const icon = issueIcon(issue.severity)}
                 <div class="flex items-start gap-2 text-sm">
                   <icon.Icon size={14} class="mt-0.5 {icon.cls}" />
-                  <span class="text-zinc-200">{issue.message}</span>
+                  <span class="text-fg">{issue.message}</span>
                 </div>
               {/each}
             </div>
@@ -182,12 +182,12 @@
               {@const open = !collapsed[group.slug]}
               {@const counts = countIssues(group.issues)}
               <section
-                class="rounded-lg border border-l-4 border-zinc-800 {groupAccent(group.issues)} bg-zinc-900/40"
+                class="rounded-lg border border-l-4 border-line {groupAccent(group.issues)} bg-surface-1/40"
               >
                 <header class="flex flex-wrap items-center gap-2 p-3">
                   <button
                     type="button"
-                    class="flex items-center gap-2 text-sm font-semibold text-zinc-100"
+                    class="flex items-center gap-2 text-sm font-semibold text-fg"
                     onclick={() => onToggleGroup(group.slug)}
                   >
                     {#if open}
@@ -206,7 +206,7 @@
                     {group.manifest_ok ? 'manifest ok' : 'manifest broken'}
                   </span>
                   <span
-                    class="inline-flex items-center rounded-md bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300"
+                    class="inline-flex items-center rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] text-fg-muted"
                   >
                     {group.memory_count} mem
                   </span>
@@ -243,15 +243,15 @@
                         <icon.Icon size={14} class="mt-0.5 {icon.cls}" />
                         {#if issue.slug}
                           <code
-                            class="rounded bg-zinc-800 px-1 py-0.5 text-[11px] text-zinc-300"
+                            class="rounded bg-surface-2 px-1 py-0.5 text-[11px] text-fg-muted"
                           >
                             {issue.slug}
                           </code>
                         {/if}
-                        <span class="text-zinc-200">{issue.message}</span>
+                        <span class="text-fg">{issue.message}</span>
                       </div>
                     {:else}
-                      <span class="text-xs text-zinc-500">(no issues at current filter)</span>
+                      <span class="text-xs text-fg-subtle">(no issues at current filter)</span>
                     {/each}
                   </div>
                 {/if}
@@ -260,7 +260,7 @@
           {/each}
         </div>
       {:else}
-        <div class="py-8 text-center text-sm text-zinc-400">
+        <div class="py-8 text-center text-sm text-fg-muted">
           Click Refresh to run a report.
         </div>
       {/if}

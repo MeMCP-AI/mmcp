@@ -1,9 +1,10 @@
 @import 'tailwindcss';
 @plugin '@tailwindcss/typography';
 
-/* Theme tokens consumed as CSS variables. Kept in sync with the
-   Tailwind preset's `theme.extend.colors.kind` so utility classes
-   and raw var(--kind-*) calls agree. */
+/* Theme tokens consumed as CSS variables. The `surface-*` / `fg-*` /
+   `line` tokens point at mmcp-* variables declared below per theme,
+   so the generated utility classes (`bg-surface-1`, `text-fg-muted`,
+   `border-line`, etc.) flip with `data-theme` without a rebuild. */
 @theme {
   --color-kind-rule: #60a0f0;
   --color-kind-snapshot: #aa82e6;
@@ -11,11 +12,58 @@
   --color-kind-reference: #5ac8be;
   --color-kind-scratch: #96a0aa;
   --color-kind-feature: #f0965a;
+
+  --color-surface-0: var(--mmcp-surface-0);
+  --color-surface-1: var(--mmcp-surface-1);
+  --color-surface-2: var(--mmcp-surface-2);
+  --color-surface-3: var(--mmcp-surface-3);
+  --color-line: var(--mmcp-line);
+  --color-line-strong: var(--mmcp-line-strong);
+  --color-fg: var(--mmcp-fg);
+  --color-fg-muted: var(--mmcp-fg-muted);
+  --color-fg-subtle: var(--mmcp-fg-subtle);
+}
+
+/* Dark theme is the default — the tokens resolve to the same zinc
+   shades the GUI shipped with, so "Dark" is a pixel-identical
+   carry-over of the pre-theming look. */
+:root,
+:root[data-theme='dark'] {
+  --mmcp-surface-0: #09090b; /* zinc-950 */
+  --mmcp-surface-1: #18181b; /* zinc-900 */
+  --mmcp-surface-2: #27272a; /* zinc-800 */
+  --mmcp-surface-3: #3f3f46; /* zinc-700 */
+  --mmcp-line: #27272a;      /* zinc-800 */
+  --mmcp-line-strong: #3f3f46; /* zinc-700 */
+  --mmcp-fg: #fafafa;        /* zinc-50 */
+  --mmcp-fg-muted: #a1a1aa;  /* zinc-400 */
+  --mmcp-fg-subtle: #71717a; /* zinc-500 */
+  --mmcp-scrollbar-track: transparent;
+  --mmcp-scrollbar-thumb: #27272a;
+  --mmcp-scrollbar-thumb-hover: #52525b;
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --mmcp-surface-0: #fafafa;
+  --mmcp-surface-1: #ffffff;
+  --mmcp-surface-2: #f4f4f5; /* zinc-100 */
+  --mmcp-surface-3: #e4e4e7; /* zinc-200 */
+  --mmcp-line: #e4e4e7;
+  --mmcp-line-strong: #d4d4d8; /* zinc-300 */
+  --mmcp-fg: #18181b;        /* zinc-900 */
+  --mmcp-fg-muted: #52525b;  /* zinc-600 */
+  --mmcp-fg-subtle: #71717a; /* zinc-500 */
+  --mmcp-scrollbar-thumb: #d4d4d8;
+  --mmcp-scrollbar-thumb-hover: #a1a1aa;
+  color-scheme: light;
 }
 
 html,
 body {
   height: 100%;
+  background: var(--mmcp-surface-0);
+  color: var(--mmcp-fg);
 }
 
 /* Select cleanly in webview: avoids the default-text-select
@@ -27,11 +75,10 @@ button,
 
 /* Custom scrollbars. WebView2 + Chromium honour `::-webkit-scrollbar`,
    Firefox honours `scrollbar-width` / `scrollbar-color`. Both are
-   covered so the look is consistent across every target runtime.
-   Thin, dark-theme track, subtle thumb that lifts on hover. */
+   covered so the look is consistent across every target runtime. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--color-zinc-700) transparent;
+  scrollbar-color: var(--mmcp-scrollbar-thumb) var(--mmcp-scrollbar-track);
 }
 
 *::-webkit-scrollbar {
@@ -44,18 +91,43 @@ button,
 }
 
 *::-webkit-scrollbar-thumb {
-  background: var(--color-zinc-800);
+  background: var(--mmcp-scrollbar-thumb);
   border: 2px solid transparent;
   background-clip: padding-box;
   border-radius: 999px;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background: var(--color-zinc-600);
+  background: var(--mmcp-scrollbar-thumb-hover);
   background-clip: padding-box;
   border: 2px solid transparent;
 }
 
 *::-webkit-scrollbar-corner {
   background: transparent;
+}
+
+/* Apply `prose-invert`'s inverse palette automatically under the
+   dark theme so Svelte components don't have to toggle the class
+   themselves. Mirrors what `prose-invert` does in the typography
+   plugin. */
+:root[data-theme='dark'] .prose {
+  --tw-prose-body: var(--tw-prose-invert-body);
+  --tw-prose-headings: var(--tw-prose-invert-headings);
+  --tw-prose-lead: var(--tw-prose-invert-lead);
+  --tw-prose-links: var(--tw-prose-invert-links);
+  --tw-prose-bold: var(--tw-prose-invert-bold);
+  --tw-prose-counters: var(--tw-prose-invert-counters);
+  --tw-prose-bullets: var(--tw-prose-invert-bullets);
+  --tw-prose-hr: var(--tw-prose-invert-hr);
+  --tw-prose-quotes: var(--tw-prose-invert-quotes);
+  --tw-prose-quote-borders: var(--tw-prose-invert-quote-borders);
+  --tw-prose-captions: var(--tw-prose-invert-captions);
+  --tw-prose-kbd: var(--tw-prose-invert-kbd);
+  --tw-prose-kbd-shadows: var(--tw-prose-invert-kbd-shadows);
+  --tw-prose-code: var(--tw-prose-invert-code);
+  --tw-prose-pre-code: var(--tw-prose-invert-pre-code);
+  --tw-prose-pre-bg: var(--tw-prose-invert-pre-bg);
+  --tw-prose-th-borders: var(--tw-prose-invert-th-borders);
+  --tw-prose-td-borders: var(--tw-prose-invert-td-borders);
 }

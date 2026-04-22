@@ -20,7 +20,7 @@
   let { reachability, sync, selectedGroupSlug, selectedMemoryCount }: Props = $props();
 
   const tone = {
-    muted: 'text-zinc-500',
+    muted: 'text-fg-subtle',
     online: 'text-emerald-400',
     offline: 'text-rose-400',
     warn: 'text-amber-400'
@@ -28,7 +28,7 @@
 </script>
 
 <footer
-  class="flex h-7 shrink-0 items-center gap-3 border-t border-zinc-800 bg-zinc-950 px-3 text-xs {tone.muted}"
+  class="flex h-7 shrink-0 items-center gap-3 border-t border-line bg-surface-0 px-3 text-xs {tone.muted}"
 >
   {#if sync.t !== 'not_configured'}
     {#if reachability.t === 'online'}
@@ -44,7 +44,7 @@
         <LoaderCircle size={12} class="animate-spin" /> probing…
       </span>
     {/if}
-    <span class="h-3 w-px bg-zinc-800"></span>
+    <span class="h-3 w-px bg-surface-2"></span>
   {/if}
 
   <span>

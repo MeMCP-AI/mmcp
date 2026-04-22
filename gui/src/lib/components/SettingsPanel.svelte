@@ -5,17 +5,22 @@
     FolderOpen,
     Info,
     LoaderCircle,
+    Monitor,
+    Moon,
     Palette,
+    Sun,
     User,
     Waypoints,
     X
   } from 'lucide-svelte';
   import type { KindStr, LoadedProjectConfig, ProjectConfig, UserConfig } from '$lib/types';
-  import type { KindDisplay } from '$lib/stores/settings.svelte';
+  import type { KindDisplay, ThemeMode } from '$lib/stores/settings.svelte';
 
   interface Props {
     value: KindDisplay;
+    theme: ThemeMode;
     onChange: (mode: KindDisplay) => void;
+    onThemeChange: (mode: ThemeMode) => void;
     onReset: () => void;
     onClose: () => void;
     referencePoint: string | null;
@@ -32,7 +37,9 @@
 
   let {
     value,
+    theme,
     onChange,
+    onThemeChange,
     onReset,
     onClose,
     referencePoint,
@@ -46,6 +53,12 @@
     saving,
     lastError
   }: Props = $props();
+
+  const THEME_OPTIONS: { mode: ThemeMode; label: string; Icon: typeof Sun }[] = [
+    { mode: 'dark', label: 'Dark', Icon: Moon },
+    { mode: 'light', label: 'Light', Icon: Sun },
+    { mode: 'system', label: 'System', Icon: Monitor }
+  ];
 
   type TabId = 'appearance' | 'workspace' | 'user' | 'project' | 'storage' | 'about';
   let tab = $state<TabId>('appearance');
@@ -183,13 +196,13 @@
   }
 </script>
 
-<section class="flex h-full min-h-0 flex-col overflow-hidden bg-zinc-950 text-zinc-100">
+<section class="flex h-full min-h-0 flex-col overflow-hidden bg-surface-0 text-fg">
   <header
-    class="flex shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900/40 px-4 py-2 sm:px-6"
+    class="flex shrink-0 items-center gap-3 border-b border-line bg-surface-1/40 px-4 py-2 sm:px-6"
   >
-    <h1 class="text-sm font-semibold text-zinc-100">Settings</h1>
+    <h1 class="text-sm font-semibold text-fg">Settings</h1>
     {#if saving}
-      <span class="inline-flex items-center gap-1.5 text-[11px] text-zinc-400">
+      <span class="inline-flex items-center gap-1.5 text-[11px] text-fg-muted">
         <LoaderCircle size={12} class="animate-spin" />
         Saving…
       </span>
@@ -201,7 +214,7 @@
     {/if}
     <button
       type="button"
-      class="ml-auto rounded-md p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+      class="ml-auto rounded-md p-1 text-fg-muted hover:bg-surface-2 hover:text-fg"
       aria-label="Close"
       title="Close"
       onclick={onClose}
@@ -212,7 +225,7 @@
 
   <div class="flex min-h-0 flex-1 flex-col overflow-hidden sm:flex-row">
     <nav
-      class="flex shrink-0 gap-1 overflow-x-auto border-b border-zinc-800 bg-zinc-950/40 p-2 sm:w-48 sm:flex-col sm:gap-0 sm:overflow-x-visible sm:border-b-0 sm:border-r"
+      class="flex shrink-0 gap-1 overflow-x-auto border-b border-line bg-surface-0/40 p-2 sm:w-48 sm:flex-col sm:gap-0 sm:overflow-x-visible sm:border-b-0 sm:border-r"
     >
       {#each TABS as t (t.id)}
         {@const active = tab === t.id}
@@ -221,7 +234,7 @@
           class="flex shrink-0 items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors
             {active
             ? 'bg-sky-500/15 text-sky-100'
-            : 'text-zinc-400 hover:bg-zinc-800/70 hover:text-zinc-200'}"
+            : 'text-fg-muted hover:bg-surface-2/70 hover:text-fg'}"
           onclick={() => (tab = t.id)}
         >
           <t.Icon size={14} />
@@ -234,13 +247,38 @@
       {#if tab === 'appearance'}
         <section class="flex flex-col gap-5">
           <div>
-            <h3 class="text-sm font-semibold text-zinc-100">Memory list prefix</h3>
-            <p class="mt-0.5 text-xs text-zinc-500">
+            <h3 class="text-sm font-semibold text-fg">Theme</h3>
+            <p class="mt-0.5 text-xs text-fg-subtle">
+              Follow the operating system, or pin to a specific colour scheme.
+            </p>
+            <div class="mt-3 grid grid-cols-3 gap-2">
+              {#each THEME_OPTIONS as opt (opt.mode)}
+                {@const active = theme === opt.mode}
+                <button
+                  type="button"
+                  class="flex items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors
+                    {active
+                    ? 'border-sky-500/50 bg-sky-500/15 text-sky-100'
+                    : 'border-line-strong text-fg-muted hover:bg-surface-2'}"
+                  onclick={() => onThemeChange(opt.mode)}
+                  aria-pressed={active}
+                  title={`${opt.label} theme`}
+                >
+                  <opt.Icon size={13} />
+                  {opt.label}
+                </button>
+              {/each}
+            </div>
+          </div>
+
+          <div>
+            <h3 class="text-sm font-semibold text-fg">Memory list prefix</h3>
+            <p class="mt-0.5 text-xs text-fg-subtle">
               How the kind badge appears next to each slug in the memory list.
             </p>
             <div class="mt-3 flex flex-col gap-1.5">
               {#each KIND_OPTIONS as opt (opt.mode)}
-                <label class="flex cursor-pointer items-center gap-2 text-sm text-zinc-200">
+                <label class="flex cursor-pointer items-center gap-2 text-sm text-fg">
                   <input
                     type="radio"
                     name="kind-display"
@@ -255,11 +293,11 @@
           </div>
 
           <div>
-            <h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-400">Preview</h3>
-            <div class="mt-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+            <h3 class="text-xs font-semibold uppercase tracking-wide text-fg-muted">Preview</h3>
+            <div class="mt-2 rounded-lg border border-line bg-surface-0 p-3">
               <ul class="flex flex-col gap-1 font-mono text-sm">
                 {#each SAMPLES as sample (sample.slug)}
-                  <li class="flex items-center gap-2 text-zinc-200">
+                  <li class="flex items-center gap-2 text-fg">
                     {#if value !== 'off'}
                       <KindBadge kind={sample.kind} mode={value} />
                     {/if}
@@ -273,15 +311,15 @@
       {:else if tab === 'workspace'}
         <section class="flex flex-col gap-5">
           <div>
-            <h3 class="text-sm font-semibold text-zinc-100">Reference point</h3>
-            <p class="mt-0.5 text-xs text-zinc-500">
+            <h3 class="text-sm font-semibold text-fg">Reference point</h3>
+            <p class="mt-0.5 text-xs text-fg-subtle">
               Directory mmcp-gui anchors project-config discovery on. When set,
               the backend walks up from here to find a <code
-                class="rounded bg-zinc-800 px-1 py-0.5 text-zinc-300">.mmcp.toml</code
+                class="rounded bg-surface-2 px-1 py-0.5 text-fg-muted">.mmcp.toml</code
               >. When cleared, it falls back to the launching shell's cwd.
             </p>
             <div
-              class="mt-3 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 font-mono text-xs text-zinc-300"
+              class="mt-3 rounded-md border border-line bg-surface-0 px-3 py-2 font-mono text-xs text-fg-muted"
             >
               {referencePoint ?? '(unset — using process cwd)'}
             </div>
@@ -297,7 +335,7 @@
               </button>
               <button
                 type="button"
-                class="inline-flex items-center rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+                class="inline-flex items-center rounded-md border border-line-strong px-3 py-1.5 text-sm text-fg hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
                 onclick={onClearReferencePoint}
                 disabled={!referencePoint || saving}
               >
@@ -307,27 +345,27 @@
           </div>
 
           <div>
-            <h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+            <h3 class="text-xs font-semibold uppercase tracking-wide text-fg-muted">
               Project detection
             </h3>
-            <div class="mt-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-sm">
+            <div class="mt-2 rounded-lg border border-line bg-surface-0 p-3 text-sm">
               {#if projectConfig?.root}
-                <div class="text-zinc-200">
-                  Found <code class="rounded bg-zinc-800 px-1 py-0.5 text-zinc-300"
+                <div class="text-fg">
+                  Found <code class="rounded bg-surface-2 px-1 py-0.5 text-fg-muted"
                     >.mmcp.toml</code
                   >
                   at:
                 </div>
-                <div class="mt-1 break-all font-mono text-xs text-zinc-400">
+                <div class="mt-1 break-all font-mono text-xs text-fg-muted">
                   {projectConfig.root}
                 </div>
               {:else}
-                <span class="text-zinc-500">
-                  No <code class="rounded bg-zinc-800 px-1 py-0.5 text-zinc-300"
+                <span class="text-fg-subtle">
+                  No <code class="rounded bg-surface-2 px-1 py-0.5 text-fg-muted"
                     >.mmcp.toml</code
                   >
                   found under the reference point. Run
-                  <code class="rounded bg-zinc-800 px-1 py-0.5 text-zinc-300">mmcp init project</code>
+                  <code class="rounded bg-surface-2 px-1 py-0.5 text-fg-muted">mmcp init project</code>
                   inside the folder to create one.
                 </span>
               {/if}
@@ -337,41 +375,41 @@
       {:else if tab === 'user'}
         <section class="flex flex-col gap-5">
           <div>
-            <h3 class="text-sm font-semibold text-zinc-100">User config</h3>
-            <p class="mt-0.5 text-xs text-zinc-500">
+            <h3 class="text-sm font-semibold text-fg">User config</h3>
+            <p class="mt-0.5 text-xs text-fg-subtle">
               Defaults that apply across every project. Stored at
-              <code class="rounded bg-zinc-800 px-1 py-0.5 text-zinc-300">
+              <code class="rounded bg-surface-2 px-1 py-0.5 text-fg-muted">
                 {userPath ?? '~/.mmcp/config.toml'}
               </code>.
             </p>
           </div>
 
           {#if !userConfig}
-            <div class="text-xs text-zinc-500">Loading…</div>
+            <div class="text-xs text-fg-subtle">Loading…</div>
           {:else}
             <div class="grid grid-cols-[140px_1fr] items-center gap-3 text-sm">
-              <label for="u-name" class="text-zinc-400">author name</label>
+              <label for="u-name" class="text-fg-muted">author name</label>
               <input
                 id="u-name"
                 type="text"
-                class="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-zinc-100"
+                class="rounded-md border border-line-strong bg-surface-0 px-2 py-1.5 text-fg"
                 bind:value={draftUserName}
                 placeholder="(unset — uses mmcp fallback)"
               />
 
-              <label for="u-email" class="text-zinc-400">author email</label>
+              <label for="u-email" class="text-fg-muted">author email</label>
               <input
                 id="u-email"
                 type="text"
-                class="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-zinc-100"
+                class="rounded-md border border-line-strong bg-surface-0 px-2 py-1.5 text-fg"
                 bind:value={draftUserEmail}
                 placeholder="(unset — uses mmcp fallback)"
               />
 
-              <label for="u-git" class="text-zinc-400">git fallback</label>
+              <label for="u-git" class="text-fg-muted">git fallback</label>
               <select
                 id="u-git"
-                class="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-zinc-100"
+                class="rounded-md border border-line-strong bg-surface-0 px-2 py-1.5 text-fg"
                 bind:value={draftUserGitFallback}
               >
                 <option value="unset">Unset (warn)</option>
@@ -379,20 +417,20 @@
                 <option value="disabled">Disabled (never read git config)</option>
               </select>
 
-              <label for="u-group" class="text-zinc-400">default group</label>
+              <label for="u-group" class="text-fg-muted">default group</label>
               <input
                 id="u-group"
                 type="text"
-                class="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-zinc-100"
+                class="rounded-md border border-line-strong bg-surface-0 px-2 py-1.5 text-fg"
                 bind:value={draftUserDefaultGroup}
                 placeholder="slug or UUID"
               />
 
-              <label for="u-sync" class="text-zinc-400">default sync URL</label>
+              <label for="u-sync" class="text-fg-muted">default sync URL</label>
               <input
                 id="u-sync"
                 type="text"
-                class="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-zinc-100"
+                class="rounded-md border border-line-strong bg-surface-0 px-2 py-1.5 text-fg"
                 bind:value={draftUserSyncUrl}
                 placeholder="https://…"
               />
@@ -413,75 +451,75 @@
       {:else if tab === 'project'}
         <section class="flex flex-col gap-5">
           <div>
-            <h3 class="text-sm font-semibold text-zinc-100">Project config</h3>
-            <p class="mt-0.5 text-xs text-zinc-500">
-              The <code class="rounded bg-zinc-800 px-1 py-0.5 text-zinc-300">.mmcp.toml</code>
+            <h3 class="text-sm font-semibold text-fg">Project config</h3>
+            <p class="mt-0.5 text-xs text-fg-subtle">
+              The <code class="rounded bg-surface-2 px-1 py-0.5 text-fg-muted">.mmcp.toml</code>
               resolved at the current reference point. Sync changes take effect
               after you pick the folder again from the Workspace tab.
             </p>
           </div>
 
           {#if !projectConfig?.config}
-            <div class="rounded-md border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-500">
+            <div class="rounded-md border border-line bg-surface-0 p-3 text-xs text-fg-subtle">
               No project config found under the reference point. Set a folder
               on the Workspace tab and run <code
-                class="rounded bg-zinc-800 px-1 py-0.5 text-zinc-300">mmcp init project</code
+                class="rounded bg-surface-2 px-1 py-0.5 text-fg-muted">mmcp init project</code
               >
               if the folder is a new project.
             </div>
           {:else}
             {@const cfg = projectConfig.config}
             <div class="grid grid-cols-[140px_1fr] items-center gap-3 text-sm">
-              <span class="text-zinc-400">project UUID</span>
+              <span class="text-fg-muted">project UUID</span>
               <code
-                class="truncate rounded bg-zinc-950 px-2 py-1.5 font-mono text-xs text-zinc-400 ring-1 ring-inset ring-zinc-800"
+                class="truncate rounded bg-surface-0 px-2 py-1.5 font-mono text-xs text-fg-muted ring-1 ring-inset ring-line"
                 title={cfg.project_uuid}
               >
                 {cfg.project_uuid}
               </code>
 
-              <label for="p-slug" class="text-zinc-400">project slug</label>
+              <label for="p-slug" class="text-fg-muted">project slug</label>
               <input
                 id="p-slug"
                 type="text"
-                class="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-zinc-100"
+                class="rounded-md border border-line-strong bg-surface-0 px-2 py-1.5 text-fg"
                 bind:value={draftProjectSlug}
               />
 
-              <label for="p-sync" class="text-zinc-400">sync server URL</label>
+              <label for="p-sync" class="text-fg-muted">sync server URL</label>
               <input
                 id="p-sync"
                 type="text"
-                class="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-zinc-100"
+                class="rounded-md border border-line-strong bg-surface-0 px-2 py-1.5 text-fg"
                 bind:value={draftProjectSyncUrl}
                 placeholder="(empty = local-only)"
               />
 
-              <label class="self-start pt-1.5 text-zinc-400">groups</label>
+              <label class="self-start pt-1.5 text-fg-muted">groups</label>
               <div class="flex flex-col gap-2">
-                <label class="flex items-center gap-2 text-zinc-200">
+                <label class="flex items-center gap-2 text-fg">
                   <input type="checkbox" bind:checked={draftProjectNoDefault} />
                   skip the default <code
-                    class="rounded bg-zinc-800 px-1 py-0.5 text-[11px] text-zinc-300">global</code
+                    class="rounded bg-surface-2 px-1 py-0.5 text-[11px] text-fg-muted">global</code
                   > group
                 </label>
                 <input
                   type="text"
-                  class="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-zinc-100"
+                  class="rounded-md border border-line-strong bg-surface-0 px-2 py-1.5 text-fg"
                   bind:value={draftProjectAdditional}
                   placeholder="additional groups — comma-separated"
                 />
               </div>
 
-              <label class="self-start pt-1.5 text-zinc-400">languages</label>
+              <label class="self-start pt-1.5 text-fg-muted">languages</label>
               <div class="flex flex-col gap-2">
-                <label class="flex items-center gap-2 text-zinc-200">
+                <label class="flex items-center gap-2 text-fg">
                   <input type="checkbox" bind:checked={draftProjectAutoDetect} />
                   auto-detect languages from marker files
                 </label>
                 <input
                   type="text"
-                  class="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-zinc-100"
+                  class="rounded-md border border-line-strong bg-surface-0 px-2 py-1.5 text-fg"
                   bind:value={draftProjectLangUse}
                   placeholder="explicit languages — comma-separated"
                 />
@@ -503,33 +541,33 @@
       {:else if tab === 'storage'}
         <section class="flex flex-col gap-5">
           <div>
-            <h3 class="text-sm font-semibold text-zinc-100">Settings file</h3>
-            <p class="mt-0.5 text-xs text-zinc-500">
+            <h3 class="text-sm font-semibold text-fg">Settings file</h3>
+            <p class="mt-0.5 text-xs text-fg-subtle">
               Persists across restarts. Written by the Tauri backend on every change.
             </p>
             <div
-              class="mt-3 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 font-mono text-xs text-zinc-300"
+              class="mt-3 rounded-md border border-line bg-surface-0 px-3 py-2 font-mono text-xs text-fg-muted"
             >
               {settingsPathHint}
             </div>
           </div>
 
           <div>
-            <h3 class="text-sm font-semibold text-zinc-100">Reset to defaults</h3>
-            <p class="mt-0.5 text-xs text-zinc-500">
+            <h3 class="text-sm font-semibold text-fg">Reset to defaults</h3>
+            <p class="mt-0.5 text-xs text-fg-subtle">
               Clears every preference on this device. Memories and groups are untouched.
             </p>
             {#if !resetConfirm}
               <button
                 type="button"
-                class="mt-3 inline-flex items-center rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800"
+                class="mt-3 inline-flex items-center rounded-md border border-line-strong px-3 py-1.5 text-sm text-fg hover:bg-surface-2"
                 onclick={() => (resetConfirm = true)}
               >
                 Reset settings…
               </button>
             {:else}
               <div class="mt-3 flex flex-wrap items-center gap-2">
-                <span class="text-xs text-zinc-400">Confirm reset?</span>
+                <span class="text-xs text-fg-muted">Confirm reset?</span>
                 <button
                   type="button"
                   class="inline-flex items-center rounded-md bg-rose-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-rose-500"
@@ -542,7 +580,7 @@
                 </button>
                 <button
                   type="button"
-                  class="inline-flex items-center rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800"
+                  class="inline-flex items-center rounded-md border border-line-strong px-3 py-1.5 text-sm text-fg hover:bg-surface-2"
                   onclick={() => (resetConfirm = false)}
                 >
                   Cancel
@@ -554,29 +592,29 @@
       {:else if tab === 'about'}
         <section class="flex flex-col gap-5">
           <div>
-            <h3 class="text-sm font-semibold text-zinc-100">mmcp-gui</h3>
-            <p class="mt-0.5 text-xs text-zinc-500">
+            <h3 class="text-sm font-semibold text-fg">mmcp-gui</h3>
+            <p class="mt-0.5 text-xs text-fg-subtle">
               Desktop visual client for mmcp memories. Reads, writes, and syncs through
-              <code class="rounded bg-zinc-800 px-1 py-0.5 text-zinc-300">mmcp-store</code> directly —
+              <code class="rounded bg-surface-2 px-1 py-0.5 text-fg-muted">mmcp-store</code> directly —
               no HTTP, no MCP round-trip.
             </p>
           </div>
 
           <dl class="grid grid-cols-[120px_1fr] gap-y-2 text-sm">
-            <dt class="text-zinc-500">Version</dt>
-            <dd class="text-zinc-200">0.1.0</dd>
-            <dt class="text-zinc-500">Shell</dt>
-            <dd class="text-zinc-200">Tauri 2</dd>
-            <dt class="text-zinc-500">Frontend</dt>
-            <dd class="text-zinc-200">SvelteKit 2 · Svelte 5 runes · Tailwind v4</dd>
-            <dt class="text-zinc-500">Icons</dt>
-            <dd class="text-zinc-200">Lucide</dd>
-            <dt class="text-zinc-500">Package manager</dt>
-            <dd class="text-zinc-200">bun</dd>
+            <dt class="text-fg-subtle">Version</dt>
+            <dd class="text-fg">0.1.0</dd>
+            <dt class="text-fg-subtle">Shell</dt>
+            <dd class="text-fg">Tauri 2</dd>
+            <dt class="text-fg-subtle">Frontend</dt>
+            <dd class="text-fg">SvelteKit 2 · Svelte 5 runes · Tailwind v4</dd>
+            <dt class="text-fg-subtle">Icons</dt>
+            <dd class="text-fg">Lucide</dd>
+            <dt class="text-fg-subtle">Package manager</dt>
+            <dd class="text-fg">bun</dd>
           </dl>
 
-          <p class="text-xs text-zinc-500">
-            See <code class="rounded bg-zinc-800 px-1 py-0.5 text-zinc-300">gui/README.md</code>
+          <p class="text-xs text-fg-subtle">
+            See <code class="rounded bg-surface-2 px-1 py-0.5 text-fg-muted">gui/README.md</code>
             for setup and build instructions.
           </p>
         </section>

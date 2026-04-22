@@ -7,7 +7,11 @@
     saveUserConfig
   } from '$lib/api/config';
   import { pickDirectory, setReferencePoint } from '$lib/api/workspace';
-  import { settingsStore, type KindDisplay } from '$lib/stores/settings.svelte';
+  import {
+    settingsStore,
+    type KindDisplay,
+    type ThemeMode
+  } from '$lib/stores/settings.svelte';
   import type { LoadedProjectConfig, ProjectConfig, UserConfig } from '$lib/types';
   import { emit } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -118,7 +122,9 @@
 <div class="h-full w-full">
   <SettingsPanel
     value={settingsStore.values.kind_display}
+    theme={settingsStore.values.theme}
     onChange={(mode: KindDisplay) => settingsStore.setKindDisplay(mode)}
+    onThemeChange={(mode: ThemeMode) => settingsStore.setTheme(mode)}
     onReset={() => settingsStore.reset()}
     onClose={close}
     referencePoint={settingsStore.values.reference_point}

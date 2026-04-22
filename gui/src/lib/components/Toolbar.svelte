@@ -55,14 +55,14 @@
   // screen readers happy and `title` gives sighted users a tooltip
   // when they hover the bare icon.
   const btn =
-    'inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-zinc-200 ' +
-    'hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ' +
+    'inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-fg ' +
+    'hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ' +
     'transition-colors sm:px-2.5';
-  const sep = 'h-5 w-px bg-zinc-800 mx-1 sm:mx-2';
+  const sep = 'h-5 w-px bg-surface-2 mx-1 sm:mx-2';
 </script>
 
 <header
-  class="flex h-11 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-zinc-800 bg-zinc-900 px-2 sm:gap-1 sm:px-3"
+  class="flex h-11 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-line bg-surface-1 px-2 sm:gap-1 sm:px-3"
 >
   <button class={btn} disabled={!canCreate} onclick={onNew} aria-label="New" title="New">
     <Plus size={14} />

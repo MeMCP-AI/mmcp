@@ -68,15 +68,15 @@
     'rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ' +
     (active
       ? 'bg-sky-500/15 text-sky-100'
-      : 'text-zinc-400 hover:bg-zinc-800/70 hover:text-zinc-200');
+      : 'text-fg-muted hover:bg-surface-2/70 hover:text-fg');
 </script>
 
-<section class="flex h-full min-h-0 flex-col overflow-hidden bg-zinc-950">
+<section class="flex h-full min-h-0 flex-col overflow-hidden bg-surface-0">
   <!-- Header: title only. Never scrolls. -->
   <header
-    class="flex shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900/40 px-4 py-2 sm:px-6"
+    class="flex shrink-0 items-center gap-3 border-b border-line bg-surface-1/40 px-4 py-2 sm:px-6"
   >
-    <h1 class="text-sm font-semibold text-zinc-100">
+    <h1 class="text-sm font-semibold text-fg">
       {mode === 'new' ? 'New memory' : 'Edit memory'}
     </h1>
   </header>
@@ -86,40 +86,40 @@
   <div class="min-h-0 flex-1 overflow-y-auto">
     <div class="mx-auto max-w-4xl px-4 py-5 sm:px-6 sm:py-6">
       <!-- frontmatter form -->
-      <div class="rounded-lg border border-zinc-800 bg-zinc-900 p-4 sm:p-5">
+      <div class="rounded-lg border border-line bg-surface-1 p-4 sm:p-5">
         <div
           class="grid grid-cols-[100px_1fr] items-center gap-3 text-sm sm:grid-cols-[120px_1fr]"
         >
-          <label for="slug" class="text-zinc-400">slug</label>
+          <label for="slug" class="text-fg-muted">slug</label>
           <input
             id="slug"
             type="text"
-            class="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-zinc-100 disabled:opacity-50"
+            class="rounded-md border border-line-strong bg-surface-0 px-2 py-1.5 text-fg disabled:opacity-50"
             bind:value={slug}
             disabled={mode === 'edit'}
             placeholder="kebab-case, e.g. rule-commit-format"
           />
 
-          <label for="name" class="text-zinc-400">name</label>
+          <label for="name" class="text-fg-muted">name</label>
           <input
             id="name"
             type="text"
-            class="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-zinc-100"
+            class="rounded-md border border-line-strong bg-surface-0 px-2 py-1.5 text-fg"
             bind:value={name}
           />
 
-          <label for="description" class="text-zinc-400">description</label>
+          <label for="description" class="text-fg-muted">description</label>
           <input
             id="description"
             type="text"
-            class="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-zinc-100"
+            class="rounded-md border border-line-strong bg-surface-0 px-2 py-1.5 text-fg"
             bind:value={description}
           />
 
-          <label for="kind" class="text-zinc-400">kind</label>
+          <label for="kind" class="text-fg-muted">kind</label>
           <select
             id="kind"
-            class="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-zinc-100"
+            class="rounded-md border border-line-strong bg-surface-0 px-2 py-1.5 text-fg"
             bind:value={kind}
           >
             <option value="rule">rule</option>
@@ -130,7 +130,7 @@
             <option value="feature">feature</option>
           </select>
 
-          <label for="mandatory" class="text-zinc-400">mandatory</label>
+          <label for="mandatory" class="text-fg-muted">mandatory</label>
           <input
             id="mandatory"
             type="checkbox"
@@ -138,12 +138,12 @@
             class="justify-self-start"
           />
 
-          <label for="tags" class="self-start pt-1.5 text-zinc-400">tags</label>
+          <label for="tags" class="self-start pt-1.5 text-fg-muted">tags</label>
           <div class="flex flex-col gap-2">
             <input
               id="tags"
               type="text"
-              class="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-zinc-100"
+              class="rounded-md border border-line-strong bg-surface-0 px-2 py-1.5 text-fg"
               bind:value={tags}
               placeholder="comma-separated"
             />
@@ -151,25 +151,25 @@
               <div class="flex flex-wrap gap-1.5">
                 {#each tagsList as tag (tag)}
                   <span
-                    class="inline-flex items-center rounded-md bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300"
+                    class="inline-flex items-center rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] text-fg-muted"
                   >
                     {tag}
                   </span>
                 {/each}
               </div>
             {:else}
-              <span class="text-[10px] text-zinc-600">No tags yet — comma-separate to add.</span>
+              <span class="text-[10px] text-fg-subtle">No tags yet — comma-separate to add.</span>
             {/if}
           </div>
         </div>
       </div>
 
       <!-- Body editor with inline Edit/Preview tabs. -->
-      <div class="mt-5 overflow-hidden rounded-md border border-zinc-800 bg-zinc-950">
+      <div class="mt-5 overflow-hidden rounded-md border border-line bg-surface-0">
         <div
-          class="flex items-center justify-between border-b border-zinc-800 bg-zinc-900/40 px-3 py-1.5"
+          class="flex items-center justify-between border-b border-line bg-surface-1/40 px-3 py-1.5"
         >
-          <div class="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+          <div class="text-[11px] font-semibold uppercase tracking-wide text-fg-subtle">
             Body (markdown)
           </div>
           <div class="flex items-center gap-1">
@@ -192,23 +192,23 @@
 
         {#if bodyTab === 'edit'}
           <textarea
-            class="block min-h-[320px] w-full resize-y bg-zinc-950 p-3 font-mono text-sm text-zinc-100 outline-none"
+            class="block min-h-[320px] w-full resize-y bg-surface-0 p-3 font-mono text-sm text-fg outline-none"
             bind:value={body}
             spellcheck="false"
           ></textarea>
         {:else}
           <div class="min-h-[320px] p-4 sm:p-5">
             <div
-              class="prose prose-invert prose-zinc prose-sm max-w-none prose-pre:bg-zinc-900 prose-pre:ring-1 prose-pre:ring-zinc-800 prose-headings:tracking-tight"
+              class="prose prose-zinc prose-sm max-w-none prose-pre:bg-surface-1 prose-pre:ring-1 prose-pre:ring-line prose-headings:tracking-tight"
             >
               {#if body.trim()}
                 {@html previewHtml}
               {:else}
-                <p class="text-zinc-500 italic">(empty body)</p>
+                <p class="text-fg-subtle italic">(empty body)</p>
               {/if}
             </div>
             {#if tagsList.length > 0 || mandatory}
-              <div class="mt-4 flex flex-wrap items-center gap-1.5 border-t border-zinc-800 pt-3">
+              <div class="mt-4 flex flex-wrap items-center gap-1.5 border-t border-line pt-3">
                 <KindBadge kind={kind as KindStr} mode="icon_and_text" />
                 {#if mandatory}
                   <span
@@ -219,7 +219,7 @@
                 {/if}
                 {#each tagsList as tag (tag)}
                   <span
-                    class="inline-flex items-center rounded-md bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300"
+                    class="inline-flex items-center rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] text-fg-muted"
                   >
                     {tag}
                   </span>
@@ -238,14 +238,14 @@
        actions sit where the mouse expects them in modal-style
        editors. -->
   <footer
-    class="flex shrink-0 flex-wrap items-center gap-3 border-t border-zinc-800 bg-zinc-900/40 px-4 py-3 sm:px-6"
+    class="flex shrink-0 flex-wrap items-center gap-3 border-t border-line bg-surface-1/40 px-4 py-3 sm:px-6"
   >
     {#if validation}
       <span class="text-xs text-rose-400">{validation}</span>
     {/if}
     <button
       type="button"
-      class="ml-auto inline-flex items-center rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800"
+      class="ml-auto inline-flex items-center rounded-md border border-line-strong px-3 py-1.5 text-sm text-fg hover:bg-surface-2"
       onclick={onCancel}
     >
       Cancel
