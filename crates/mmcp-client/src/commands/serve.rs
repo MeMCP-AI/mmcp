@@ -6103,4 +6103,119 @@ mod tests {
             "second call must not rewrite anything",
         );
     }
+
+    /// FR-029 regression: every `#[tool(...)]` site in this file must
+    /// carry `ToolAnnotations` with the exact hint bits the project
+    /// committed to in the FR. If a new tool lands without
+    /// `annotations(...)`, the helper will see `annotations = None`
+    /// and fail loudly so the reviewer catches the omission.
+    #[test]
+    fn tool_annotations_match_fr029_matrix() {
+        use rmcp::model::Tool;
+
+        fn check(
+            tool: Tool,
+            expected_read_only: Option<bool>,
+            expected_destructive: Option<bool>,
+            expected_idempotent: Option<bool>,
+            expected_open_world: Option<bool>,
+        ) {
+            let name = tool.name.clone();
+            let ann = tool
+                .annotations
+                .as_ref()
+                .unwrap_or_else(|| panic!("{name}: missing ToolAnnotations"));
+            assert!(
+                ann.title.as_deref().map(str::is_empty) == Some(false),
+                "{name}: annotations.title must be set to a human-readable label",
+            );
+            assert_eq!(
+                ann.read_only_hint, expected_read_only,
+                "{name}: read_only_hint mismatch",
+            );
+            assert_eq!(
+                ann.destructive_hint, expected_destructive,
+                "{name}: destructive_hint mismatch",
+            );
+            assert_eq!(
+                ann.idempotent_hint, expected_idempotent,
+                "{name}: idempotent_hint mismatch",
+            );
+            assert_eq!(
+                ann.open_world_hint, expected_open_world,
+                "{name}: open_world_hint mismatch",
+            );
+        }
+
+        // Helper that expands the 4-tuple expectation to four args.
+        fn check_bits(
+            tool: Tool,
+            bits: (Option<bool>, Option<bool>, Option<bool>, Option<bool>),
+        ) {
+            check(tool, bits.0, bits.1, bits.2, bits.3);
+        }
+
+        // ── Read-only tools ─────────────────────────────────────
+        // read_only=true, idempotent=true, open_world=false.
+        // destructive_hint intentionally unset (read-only implies it).
+        let ro = (Some(true), None, Some(true), Some(false));
+        check_bits(McpServer::list_groups_tool_attr(), ro);
+        check_bits(McpServer::list_memories_tool_attr(), ro);
+        check_bits(McpServer::read_memory_tool_attr(), ro);
+        check_bits(McpServer::list_versions_tool_attr(), ro);
+        check_bits(McpServer::group_info_tool_attr(), ro);
+        check_bits(McpServer::search_memories_tool_attr(), ro);
+        check_bits(McpServer::read_memory_body_sections_tool_attr(), ro);
+        check_bits(McpServer::check_health_tool_attr(), ro);
+        check_bits(McpServer::diagnose_tool_attr(), ro);
+        check_bits(McpServer::debug_read_file_tool_attr(), ro);
+        check_bits(McpServer::debug_list_tree_tool_attr(), ro);
+        check_bits(McpServer::debug_git_log_tool_attr(), ro);
+        check_bits(McpServer::bootstrap_context_tool_attr(), ro);
+        check_bits(McpServer::status_tool_attr(), ro);
+        check_bits(McpServer::read_feature_tool_attr(), ro);
+        check_bits(McpServer::list_features_tool_attr(), ro);
+
+        // ── Local mutation tools (open_world = false) ───────────
+        // write_memory / import_memory: additive, not idempotent.
+        let add = (Some(false), Some(false), Some(false), Some(false));
+        check_bits(McpServer::write_memory_tool_attr(), add);
+        check_bits(McpServer::import_memory_tool_attr(), add);
+
+        // Destructive local mutations.
+        let dmod = (Some(false), Some(true), Some(false), Some(false));
+        check_bits(McpServer::edit_memory_tool_attr(), dmod);
+        check_bits(McpServer::edit_memory_body_tool_attr(), dmod);
+        check_bits(McpServer::debug_write_file_tool_attr(), dmod);
+        check_bits(McpServer::update_feature_tool_attr(), dmod);
+
+        // Destructive + idempotent (delete shapes + init_claude rewrite).
+        let ddel = (Some(false), Some(true), Some(true), Some(false));
+        check_bits(McpServer::delete_memory_tool_attr(), ddel);
+        check_bits(McpServer::init_claude_tool_attr(), ddel);
+        check_bits(McpServer::delete_feature_tool_attr(), ddel);
+
+        // Non-destructive + idempotent.
+        let iden = (Some(false), Some(false), Some(true), Some(false));
+        check_bits(McpServer::debug_toggle_tool_attr(), iden);
+        check_bits(McpServer::init_project_tool_attr(), iden);
+        check_bits(McpServer::rename_feature_tool_attr(), iden);
+
+        // Non-destructive + non-idempotent (create_group, add_feature).
+        let cre = (Some(false), Some(false), Some(false), Some(false));
+        check_bits(McpServer::create_group_tool_attr(), cre);
+        check_bits(McpServer::add_feature_tool_attr(), cre);
+
+        // ── Sync tools (open_world = true) ──────────────────────
+        // sync_fetch / sync_push: non-destructive, idempotent.
+        let sw_safe = (Some(false), Some(false), Some(true), Some(true));
+        check_bits(McpServer::sync_fetch_tool_attr(), sw_safe);
+        check_bits(McpServer::sync_push_tool_attr(), sw_safe);
+
+        // sync_pull / sync: destructive (remote replay can shadow
+        // local work), idempotent.
+        let sw_pull = (Some(false), Some(true), Some(true), Some(true));
+        check_bits(McpServer::sync_pull_tool_attr(), sw_pull);
+        check_bits(McpServer::sync_tool_attr(), sw_pull);
+    }
 }
