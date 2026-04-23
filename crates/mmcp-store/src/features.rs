@@ -871,15 +871,19 @@ pub async fn delete_feature(
 
 /// Enumerate FRs in the group, optionally filtered by status.
 ///
-/// Filter precedence (FR-024):
+/// Filter precedence (FR-024 + supersede follow-up):
 /// 1. `status_filter = Some(x)` → include every FR whose status
 ///    matches, regardless of `show_all`. Explicit selector wins so
-///    a caller asking for `resolved` FRs always sees them.
+///    a caller asking for `resolved` or `superseded` FRs always
+///    sees them.
 /// 2. `status_filter = None` + `show_all = true` → include every
 ///    FR. The "show me literally everything" escape hatch.
-/// 3. `status_filter = None` + `show_all = false` → include only
-///    `FeatureStatus::Open`. Default listing, matches the
-///    "what still needs work?" mental model operators reach for.
+/// 3. `status_filter = None` + `show_all = false` → hide every
+///    status marked [`FeatureStatus::is_default_hidden`]
+///    (`Resolved`, `Duplicate`, `Superseded`). Default listing
+///    matches the "what still needs work?" mental model operators
+///    reach for; the closed-ish statuses only come back via the
+///    `show_all` escape hatch or an explicit `status` selector.
 ///
 /// Non-FR memories in the same group are skipped silently — FRs
 /// share the group with rules / snapshots / logs / references /
@@ -907,7 +911,7 @@ pub async fn list_features(
                 let keep = match status_filter {
                     Some(want) => record.status == want,
                     None if show_all => true,
-                    None => record.status == FeatureStatus::Open,
+                    None => !record.status.is_default_hidden(),
                 };
                 if keep {
                     out.push(record);
@@ -1120,11 +1124,18 @@ mod tests {
         let seeded = scratch.seed_group("fr-group").await.expect("seed");
         let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
 
+        // Cover the visibility matrix: two visible (Open +
+        // Blocked), two default-hidden (Resolved + Duplicate).
+        // Superseded is intentionally omitted from this fixture
+        // because it only reaches the on-disk state via the
+        // two-commit supersede flow, which is exercised
+        // separately by `list_default_hides_superseded_fr`
+        // below.
         for (slug, status) in [
             ("fr-a", FeatureStatus::Open),
             ("fr-b", FeatureStatus::Resolved),
-            ("fr-c", FeatureStatus::Open),
-            ("fr-d", FeatureStatus::Blocked),
+            ("fr-c", FeatureStatus::Blocked),
+            ("fr-d", FeatureStatus::Duplicate),
         ] {
             add_feature(
                 scratch.backend(),
@@ -1150,15 +1161,14 @@ mod tests {
         let scratch = ScratchHome::new().await.expect("scratch home");
         let entry = seed_mixed_status_fixture(&scratch).await;
 
-        // Explicit status selector wins over the default open-only
-        // filter — even with `show_all=false` the caller receives
-        // every FR matching the requested status.
+        // Explicit status selector wins over the default filter —
+        // even with `show_all=false` the caller receives every FR
+        // matching the requested status.
         let opens = list_features(scratch.backend(), &entry, Some(FeatureStatus::Open), false)
             .await
             .expect("list open");
-        let mut open_slugs: Vec<_> = opens.into_iter().map(|r| r.slug).collect();
-        open_slugs.sort();
-        assert_eq!(open_slugs, vec!["fr-a".to_string(), "fr-c".to_string()]);
+        let open_slugs: Vec<_> = opens.into_iter().map(|r| r.slug).collect();
+        assert_eq!(open_slugs, vec!["fr-a".to_string()]);
 
         let resolved = list_features(
             scratch.backend(),
@@ -1171,16 +1181,27 @@ mod tests {
         assert_eq!(
             resolved.len(),
             1,
-            "explicit status filter wins over default open-only hide",
+            "explicit status filter wins over the default hide",
         );
+
+        let duplicate = list_features(
+            scratch.backend(),
+            &entry,
+            Some(FeatureStatus::Duplicate),
+            false,
+        )
+        .await
+        .expect("list duplicate with show_all=false still returns matches");
+        assert_eq!(duplicate.len(), 1);
     }
 
     #[tokio::test]
-    async fn list_hides_closed_like_fr_by_default() {
-        // FR-024: `list_features(None, false)` returns only FRs
-        // whose status is `open`. Resolved, blocked, deferred, and
-        // duplicate all drop out of the listing so the default
-        // signal is "what still needs work?".
+    async fn list_default_hides_resolved_and_duplicate_but_keeps_blocked() {
+        // Default listing (status=None, show_all=false) hides only
+        // the terminal-ish statuses: Resolved, Duplicate,
+        // Superseded. In-progress-but-gated statuses (Blocked,
+        // Deferred) stay visible so operators can still see what
+        // is waiting on them. Open stays visible.
         let scratch = ScratchHome::new().await.expect("scratch home");
         let entry = seed_mixed_status_fixture(&scratch).await;
 
@@ -1192,8 +1213,76 @@ mod tests {
         assert_eq!(
             slugs,
             vec!["fr-a".to_string(), "fr-c".to_string()],
-            "default listing must hide resolved / blocked / duplicate FRs",
+            "default listing must keep Open + Blocked and drop Resolved + Duplicate",
         );
+    }
+
+    #[tokio::test]
+    async fn list_default_hides_superseded_fr() {
+        // Supersede flow creates a Superseded FR via the canonical
+        // two-commit path. Default listing drops it; show_all
+        // surfaces both the old and the new.
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("old".into()),
+                title: "Old".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed old FR");
+
+        add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("new".into()),
+                title: "New".into(),
+                supersedes: Some("old".into()),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("add with supersedes");
+
+        let visible = list_features(scratch.backend(), &entry, None, false)
+            .await
+            .expect("default list");
+        let slugs: Vec<_> = visible.into_iter().map(|r| r.slug).collect();
+        assert_eq!(
+            slugs,
+            vec!["new".to_string()],
+            "Superseded FR must drop out of the default listing",
+        );
+
+        let all = list_features(scratch.backend(), &entry, None, true)
+            .await
+            .expect("show_all");
+        assert_eq!(
+            all.len(),
+            2,
+            "show_all must re-include the superseded FR",
+        );
+
+        // Explicit status filter also surfaces it.
+        let superseded_only = list_features(
+            scratch.backend(),
+            &entry,
+            Some(FeatureStatus::Superseded),
+            false,
+        )
+        .await
+        .expect("list superseded");
+        assert_eq!(superseded_only.len(), 1);
+        assert_eq!(superseded_only[0].slug, "old");
     }
 
     #[tokio::test]

@@ -3152,7 +3152,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List feature requests in the current project's group. By default returns only FRs whose status is `open` — pass `all: true` to include every status, or `status: <variant>` to pin a specific lifecycle state (explicit `status` wins over the `all` flag). Non-FR memories in the same group are skipped so the listing stays FR-shaped. Memories whose frontmatter fails to parse are quietly omitted; use `diagnose` to surface those.",
+        description = "List feature requests in the current project's group. By default hides every FR whose status is terminal-ish: `resolved`, `duplicate`, `superseded`. Open, blocked, and deferred FRs stay visible so the default listing reads as 'what still needs work'. Pass `all: true` to include every status, or `status: <variant>` to pin a specific lifecycle state (explicit `status` wins over the `all` flag). Non-FR memories in the same group are skipped so the listing stays FR-shaped. Memories whose frontmatter fails to parse are quietly omitted; use `diagnose` to surface those.",
         annotations(
             title = "List feature requests",
             read_only_hint = true,
