@@ -258,6 +258,11 @@ async fn run_add(args: AddArgs) -> Result<()> {
         depends_on,
         blocks,
         message: args.message,
+        // `refs` and `supersedes` are MCP-only today; the CLI
+        // `mmcp feature add` subcommand does not expose the
+        // typed-ref surface until the CLI UX is designed. Keep
+        // defaults so the CLI path stays backward-compatible.
+        ..AddSpec::default()
     };
     let record = add_feature(&backend, &entry, spec, &author)
         .await
@@ -329,6 +334,9 @@ async fn run_update(args: UpdateArgs) -> Result<()> {
         depends_on,
         blocks,
         message: args.message,
+        // CLI does not yet expose the refs / supersede knobs;
+        // the MCP tools are the primary surface for now.
+        ..UpdateSpec::default()
     };
     let record = update_feature(&backend, &entry, &args.slug, spec, &author)
         .await

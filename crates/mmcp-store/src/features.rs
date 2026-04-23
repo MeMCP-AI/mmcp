@@ -98,6 +98,42 @@ pub enum FeatureError {
         field: &'static str,
         value: String,
     },
+
+    /// A `refs` entry carried a malformed UUID or commit sha. Both
+    /// field positions funnel through [`parse_memory_refs`] so this
+    /// is the single source of truth for bad [`MemoryRef`] input.
+    #[error("memory reference on field `{field}`: {detail}")]
+    InvalidMemoryRef {
+        field: &'static str,
+        detail: String,
+    },
+
+    /// `supersedes` pointed at a slug / UUID the local mirror could
+    /// not resolve in the caller's project group.
+    #[error("supersedes target '{query}' does not resolve in this project group")]
+    SupersedesUnknown { query: String },
+
+    /// `supersedes` pointed at an FR whose current status rules out
+    /// supersession: `Resolved`, `Duplicate`, or `Superseded`. The
+    /// already-superseded case carries the typed back-link so
+    /// callers can chase to the tip of the chain.
+    #[error("supersedes target '{slug}' has status '{}' which cannot be superseded", status.as_str())]
+    SupersedesInvalidStatus {
+        slug: String,
+        status: FeatureStatus,
+        /// When `status == Superseded`, the `superseded_by` link on
+        /// the target so callers can follow the chain without a
+        /// second round-trip. `None` on every other bad status.
+        existing_link: Option<MemoryRef>,
+    },
+
+    /// `supersedes` pointed at an FR in a different group. v1 rejects
+    /// cross-group supersede until the project-selector FR lands a
+    /// broader story; the data model itself supports it.
+    #[error(
+        "supersedes target '{query}' lives in a different group than the caller's project group; cross-group supersede is not yet supported"
+    )]
+    SupersedesCrossGroupUnsupported { query: String },
 }
 
 /// Parse a list of raw cross-reference strings (as they arrive on
@@ -113,6 +149,42 @@ pub fn parse_cross_refs(values: &[String], field: &'static str) -> Result<Vec<Uu
                 field,
                 value: raw.clone(),
             })
+        })
+        .collect()
+}
+
+/// Raw MCP / CLI input shape for a single [`MemoryRef`]. Plain
+/// strings on the wire so both surfaces can funnel through
+/// [`parse_memory_refs`] without pre-parsing UUIDs themselves.
+#[derive(Debug, Clone)]
+pub struct MemoryRefInput {
+    pub target: String,
+    pub commit: String,
+}
+
+/// Parse a list of raw `(target, commit)` pairs into the
+/// [`MemoryRef`] shape that [`AddSpec`] / [`UpdateSpec`] expect.
+/// Validates UUID shape on the target and 40-char lowercase hex on
+/// the commit; rejects either with the canonical
+/// [`FeatureError::InvalidMemoryRef`] code.
+pub fn parse_memory_refs(
+    values: &[MemoryRefInput],
+    field: &'static str,
+) -> Result<Vec<MemoryRef>, FeatureError> {
+    values
+        .iter()
+        .map(|raw| {
+            let target = Uuid::parse_str(&raw.target).map_err(|_| FeatureError::InvalidMemoryRef {
+                field,
+                detail: format!("target '{}' is not a valid UUID", raw.target),
+            })?;
+            MemoryRef::validate_commit_shape(&raw.commit).map_err(|e| {
+                FeatureError::InvalidMemoryRef {
+                    field,
+                    detail: format!("{e}"),
+                }
+            })?;
+            Ok(MemoryRef::new(target, raw.commit.clone()))
         })
         .collect()
 }
@@ -139,6 +211,20 @@ pub struct AddSpec {
     pub number: Option<u32>,
     pub depends_on: Vec<Uuid>,
     pub blocks: Vec<Uuid>,
+    /// Typed cross-references attached to the new FR. When
+    /// [`AddSpec::supersedes`] is set and this is empty, the
+    /// supersede flow auto-populates one entry pointing at the
+    /// old FR at its pre-supersede commit. Callers that want an
+    /// explicit refs list plus the auto-entry should include the
+    /// old-FR ref themselves; the flow dedupes by `target`.
+    pub refs: Vec<MemoryRef>,
+    /// Slug or UUID (string form) of an existing FR in the same
+    /// project group to supersede. When present, `add_feature`
+    /// runs the two-commit supersede flow: commit A writes the
+    /// new FR, commit B re-writes the old FR with
+    /// `status = Superseded` and `superseded_by` pointing at the
+    /// new FR's commit A.
+    pub supersedes: Option<String>,
     /// Optional override for the git commit message; when absent,
     /// defaults to `create feature <slug>` so history stays
     /// self-describing.
@@ -164,6 +250,22 @@ pub struct UpdateSpec {
     pub number: Option<u32>,
     pub depends_on: Option<Vec<Uuid>>,
     pub blocks: Option<Vec<Uuid>>,
+    /// Compose-dedup add-side for `refs`. Entries with the same
+    /// `target` as an existing ref replace it (commit sha wins
+    /// from the add side); truly new entries are appended.
+    pub refs_add: Option<Vec<MemoryRef>>,
+    /// Compose-dedup remove-side for `refs`. Removes every
+    /// existing ref whose `target` matches any uuid in this list,
+    /// ignoring commit sha so callers do not have to remember
+    /// which revision a ref was pinned to.
+    pub refs_remove: Option<Vec<Uuid>>,
+    /// Typed back-link retry path for the two-commit supersede
+    /// flow. Set when commit B of [`add_feature`]'s supersede
+    /// needs to be re-run after a partial landing:
+    /// `update_feature(old_slug, UpdateSpec { status:
+    /// Superseded, superseded_by: Some(ref), ..default })`.
+    /// `None` leaves the existing back-link untouched.
+    pub superseded_by: Option<MemoryRef>,
     pub message: Option<String>,
 }
 
@@ -203,6 +305,24 @@ pub struct FeatureRecord {
 /// `FeatureError::Memory(ImportError::MemoryAlreadyExists)` when
 /// the slug already points at something on disk, mirroring the
 /// strict-create contract the rest of the memory surface enforces.
+///
+/// When `spec.supersedes` is set, the call runs the two-commit
+/// supersede flow:
+///
+/// 1. Resolve the old FR in the same group. Reject when the old
+///    FR is in a status that cannot be superseded (`Resolved`,
+///    `Duplicate`, `Superseded`).
+/// 2. Commit A: write the new FR. Its `refs` list auto-receives
+///    an entry pointing at the old FR pinned to that FR's
+///    pre-supersede HEAD commit.
+/// 3. Commit B: re-write the old FR with `status = Superseded`
+///    and `superseded_by` pointing at commit A.
+///
+/// Commits A and B are sequential. The inconsistency window
+/// between them is small and recoverable: if B fails, callers
+/// complete the chain with `update_feature(old_slug, UpdateSpec {
+/// status: Some(Superseded), superseded_by: Some(ref), .. })`
+/// carrying the new FR's ref.
 pub async fn add_feature(
     backend: &NativeBackend,
     entry: &GroupEntry,
@@ -212,11 +332,19 @@ pub async fn add_feature(
     if spec.title.trim().is_empty() && spec.slug.is_none() {
         return Err(FeatureError::TitleRequired);
     }
-    let slug = match spec.slug {
+    let slug = match spec.slug.clone() {
         Some(raw) => raw,
         None => slugify_filename(&spec.title),
     };
     validate_slug(&slug).map_err(FeatureError::Memory)?;
+
+    // Resolve the old FR up front (before we auto-assign the new
+    // number) so supersede-specific errors surface before we touch
+    // the numbering state.
+    let supersede_target = match spec.supersedes.as_deref() {
+        Some(query) => Some(resolve_supersede_target(backend, entry, query).await?),
+        None => None,
+    };
 
     // Auto-assign the sequential number when the caller did not
     // pin one. The FR-027 migration binary pins explicitly so
@@ -228,6 +356,19 @@ pub async fn add_feature(
     };
 
     let id = Uuid::now_v7();
+
+    // Build the new FR's refs: start with whatever the caller
+    // provided, then dedupe-append the auto-entry for the
+    // supersede target so callers that explicitly listed the old
+    // FR still get one canonical entry.
+    let mut refs = spec.refs.clone();
+    if let Some(target) = supersede_target.as_ref() {
+        let auto_ref = MemoryRef::new(target.id, target.head_commit.clone());
+        if !refs.iter().any(|r| r.target == target.id) {
+            refs.push(auto_ref);
+        }
+    }
+
     let metadata = FeatureMetadata {
         status: spec.status,
         number,
@@ -241,7 +382,7 @@ pub async fn add_feature(
         spec.body.clone(),
         metadata,
     );
-    file.frontmatter = file.frontmatter.clone().with_id(id);
+    file.frontmatter = file.frontmatter.clone().with_id(id).with_refs(refs.clone());
     let rendered = file
         .to_string()
         .map_err(|e| FeatureError::Memory(ImportError::Render(e.to_string())))?;
@@ -249,7 +390,10 @@ pub async fn add_feature(
     let message = spec
         .message
         .clone()
-        .unwrap_or_else(|| format!("create feature {slug}"));
+        .unwrap_or_else(|| match supersede_target.as_ref() {
+            Some(t) => format!("create feature {slug} (supersedes {})", t.slug),
+            None => format!("create feature {slug}"),
+        });
     let commit_id = write_memory_by_id(
         backend,
         &entry.handle,
@@ -262,6 +406,29 @@ pub async fn add_feature(
     )
     .await?;
 
+    // Commit B of the supersede flow: re-write the old FR with
+    // `status = Superseded` and `superseded_by` pointing at the
+    // commit we just wrote above. A failure here leaves the new
+    // FR live but the old one un-superseded; callers recover by
+    // retrying `update_feature` with the same knobs.
+    if let Some(target) = supersede_target {
+        let back_link = MemoryRef::new(id, commit_id.clone());
+        let retry_message = format!("mark {} superseded by {slug}", target.slug);
+        update_feature(
+            backend,
+            entry,
+            &target.slug,
+            UpdateSpec {
+                status: Some(FeatureStatus::Superseded),
+                superseded_by: Some(back_link),
+                message: Some(retry_message),
+                ..UpdateSpec::default()
+            },
+            author,
+        )
+        .await?;
+    }
+
     Ok(FeatureRecord {
         slug,
         title: spec.title,
@@ -273,6 +440,69 @@ pub async fn add_feature(
         blocks: spec.blocks,
         superseded_by: None,
         commit_id,
+    })
+}
+
+/// Internal resolved form of an `AddSpec::supersedes` target.
+struct SupersedeTarget {
+    slug: String,
+    id: Uuid,
+    head_commit: String,
+}
+
+/// Resolve `query` (a slug or UUID string) into a [`SupersedeTarget`]
+/// against `entry`'s group, rejecting every status that cannot be
+/// superseded.
+async fn resolve_supersede_target(
+    backend: &NativeBackend,
+    entry: &GroupEntry,
+    query: &str,
+) -> Result<SupersedeTarget, FeatureError> {
+    // Simplification for v1: resolve by slug. UUID-by-slug
+    // disambiguation lands alongside FR-028's full UUID surface;
+    // today the feature tools keep the slug-centric lookup the
+    // rest of the FR CRUD uses.
+    let record = match read_feature(backend, entry, query, None).await {
+        Ok(r) => r,
+        Err(FeatureError::Memory(ImportError::MemoryNotFound { .. })) => {
+            return Err(FeatureError::SupersedesUnknown {
+                query: query.to_string(),
+            });
+        }
+        Err(other) => return Err(other),
+    };
+
+    match record.status {
+        FeatureStatus::Open | FeatureStatus::Blocked | FeatureStatus::Deferred => {}
+        FeatureStatus::Superseded => {
+            return Err(FeatureError::SupersedesInvalidStatus {
+                slug: record.slug,
+                status: FeatureStatus::Superseded,
+                existing_link: record.superseded_by,
+            });
+        }
+        other => {
+            return Err(FeatureError::SupersedesInvalidStatus {
+                slug: record.slug,
+                status: other,
+                existing_link: None,
+            });
+        }
+    }
+
+    // The FR's UUID is minted into the frontmatter on create (FR-028);
+    // every present-era FR has one. Legacy memories that predate FR-028
+    // are read via `write_memory_by_id` migrations; if we ever hit one
+    // without an id, surface it as an unknown target rather than
+    // committing a supersede back-link against an empty UUID.
+    let resolved = resolve_memory(backend, &entry.handle, Some(&record.slug), None)
+        .await
+        .map_err(FeatureError::Memory)?;
+
+    Ok(SupersedeTarget {
+        slug: record.slug,
+        id: resolved.id,
+        head_commit: record.commit_id,
     })
 }
 
@@ -350,6 +580,11 @@ pub async fn update_feature(
         .await
         .map_err(FeatureError::Memory)?;
     let current = read_feature(backend, entry, slug, None).await?;
+    // Pull the current refs list off the on-disk memory so compose
+    // ops can merge against it. `read_feature` drops the frontmatter
+    // `refs` since it builds a feature-centric record; re-read the
+    // raw memory here to preserve them across the update.
+    let current_refs = read_memory_refs(backend, &entry.handle, &resolved.path).await?;
 
     let title = spec.title.unwrap_or(current.title);
     let description = spec.description.unwrap_or(current.description);
@@ -361,12 +596,15 @@ pub async fn update_feature(
     let number = spec.number.or(current.number);
     let depends_on = spec.depends_on.unwrap_or(current.depends_on);
     let blocks = spec.blocks.unwrap_or(current.blocks);
-    // `superseded_by` is not yet a surface on `UpdateSpec`; preserve
-    // whatever the on-disk memory already carries so ordinary edits
-    // do not clear the supersede back-link. The commit-3 slice adds
-    // an explicit `superseded_by` knob to `UpdateSpec` for the retry
-    // path when the two-commit supersede flow half-lands.
-    let superseded_by = current.superseded_by;
+    // Compose-dedup on the typed refs: remove-side first (by
+    // target UUID, ignoring commit), then add-side (dedup by
+    // target so add-side wins the commit pin on collision).
+    let refs = compose_refs(current_refs, spec.refs_remove.as_deref(), spec.refs_add.as_deref());
+    // `superseded_by`: `Some` replaces, `None` leaves the existing
+    // on-disk back-link untouched. Clearing requires a direct
+    // frontmatter edit — not yet plumbed to avoid overloading this
+    // shape.
+    let superseded_by = spec.superseded_by.or(current.superseded_by);
 
     let metadata = FeatureMetadata {
         status,
@@ -375,10 +613,18 @@ pub async fn update_feature(
         blocks: blocks.clone(),
         superseded_by: superseded_by.clone(),
     };
+    metadata
+        .validate_supersede_invariant()
+        .map_err(|e| FeatureError::Memory(ImportError::Render(e.to_string())))?;
+
     let mut file = build_memory_file(title.clone(), description.clone(), body.clone(), metadata);
     // Preserve the id pinned on disk so the rewrite hits the same
     // canonical path and stays addressable by UUID across the edit.
-    file.frontmatter = file.frontmatter.clone().with_id(resolved.id);
+    file.frontmatter = file
+        .frontmatter
+        .clone()
+        .with_id(resolved.id)
+        .with_refs(refs);
     let rendered = file
         .to_string()
         .map_err(|e| FeatureError::Memory(ImportError::Render(e.to_string())))?;
@@ -409,6 +655,46 @@ pub async fn update_feature(
         superseded_by,
         commit_id,
     })
+}
+
+/// Read the raw `refs` list off a memory's frontmatter without
+/// going through [`FeatureRecord`] (which deliberately omits
+/// general-purpose refs to keep feature-flavored listings focused).
+async fn read_memory_refs(
+    backend: &NativeBackend,
+    handle: &mmcp_git::RepoHandle,
+    path: &str,
+) -> Result<Vec<MemoryRef>, FeatureError> {
+    let bytes = backend
+        .read_file(handle, path, &Rev::head())
+        .await
+        .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|e| FeatureError::Memory(ImportError::Render(e.to_string())))?;
+    let file = MemoryFile::parse(text).map_err(|e| FeatureError::Memory(ImportError::Parse(e)))?;
+    Ok(file.frontmatter.refs)
+}
+
+/// Merge an add-side and remove-side edit onto an existing typed
+/// refs list. The remove-side runs first by UUID match (commit sha
+/// ignored), then the add-side dedupes-and-replaces by target so
+/// add-side commit pins win on collision.
+fn compose_refs(
+    current: Vec<MemoryRef>,
+    remove: Option<&[Uuid]>,
+    add: Option<&[MemoryRef]>,
+) -> Vec<MemoryRef> {
+    let mut out = current;
+    if let Some(remove) = remove {
+        out.retain(|r| !remove.contains(&r.target));
+    }
+    if let Some(add) = add {
+        for new in add {
+            out.retain(|r| r.target != new.target);
+            out.push(new.clone());
+        }
+    }
+    out
 }
 
 /// Commit a deletion. Propagates `MemoryNotFound` verbatim so CLI
@@ -743,10 +1029,9 @@ mod tests {
             description: "Sanity test for the add/read round trip".into(),
             body: "## Need\n\nA round trip.\n".into(),
             status: FeatureStatus::Open,
-            number: None,
             depends_on: vec![prior_id],
             blocks: vec![later_id],
-            message: None,
+            ..AddSpec::default()
         };
         let created = add_feature(scratch.backend(), &entry, spec.clone(), scratch.author())
             .await
@@ -1216,5 +1501,277 @@ mod tests {
         .await
         .expect_err("delete on a non-FR must refuse");
         assert!(matches!(err, FeatureError::NotAFeature { .. }));
+    }
+
+    fn forty_char_hex() -> &'static str {
+        "0123456789abcdef0123456789abcdef01234567"
+    }
+
+    #[tokio::test]
+    async fn add_feature_with_supersedes_marks_target_superseded() {
+        // Two-commit supersede flow: the new FR is created and the
+        // old FR gets `status = Superseded` plus a typed
+        // `superseded_by` link pointing at the new FR's create
+        // commit. The new FR's refs auto-includes the old one.
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("old-fr".into()),
+                title: "Old".into(),
+                description: "original idea".into(),
+                body: "body".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed old FR");
+
+        let new_record = add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("new-fr".into()),
+                title: "New".into(),
+                description: "better-scoped replacement".into(),
+                body: "body".into(),
+                supersedes: Some("old-fr".into()),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("add with supersedes");
+
+        // Old FR now reports Superseded status with a typed back-link.
+        let old_record = read_feature(scratch.backend(), &entry, "old-fr", None)
+            .await
+            .expect("read old after supersede");
+        assert_eq!(old_record.status, FeatureStatus::Superseded);
+        let link = old_record.superseded_by.expect("back-link set");
+        assert_eq!(link.commit, new_record.commit_id);
+
+        // New FR's refs auto-include the old FR's pre-supersede commit.
+        let new_refs = read_memory_refs(
+            scratch.backend(),
+            &entry.handle,
+            &resolve_memory(
+                scratch.backend(),
+                &entry.handle,
+                Some(&new_record.slug),
+                None,
+            )
+            .await
+            .expect("resolve new")
+            .path,
+        )
+        .await
+        .expect("refs");
+        assert_eq!(new_refs.len(), 1, "auto-ref must point at the old FR");
+    }
+
+    #[tokio::test]
+    async fn add_feature_supersedes_unknown_slug_errors() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        let err = add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("new-fr".into()),
+                title: "New".into(),
+                supersedes: Some("does-not-exist".into()),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect_err("unknown supersede target must fail");
+        match err {
+            FeatureError::SupersedesUnknown { query } => {
+                assert_eq!(query, "does-not-exist")
+            }
+            other => panic!("expected SupersedesUnknown, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn add_feature_supersedes_resolved_fr_errors() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("old-resolved".into()),
+                title: "Old".into(),
+                status: FeatureStatus::Resolved,
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed resolved FR");
+
+        let err = add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("new-fr".into()),
+                title: "New".into(),
+                supersedes: Some("old-resolved".into()),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect_err("resolved FR must reject supersede");
+        match err {
+            FeatureError::SupersedesInvalidStatus { status, .. } => {
+                assert_eq!(status, FeatureStatus::Resolved)
+            }
+            other => panic!("expected SupersedesInvalidStatus, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn add_feature_supersedes_already_superseded_fr_chains_the_link() {
+        // Superseding an already-superseded FR surfaces the
+        // existing back-link in the error so callers can chase to
+        // the tip of the chain.
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("old-fr".into()),
+                title: "Old".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed old FR");
+
+        let middle = add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("middle-fr".into()),
+                title: "Middle".into(),
+                supersedes: Some("old-fr".into()),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("first supersede");
+
+        let err = add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("newest-fr".into()),
+                title: "Newest".into(),
+                supersedes: Some("old-fr".into()),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect_err("re-superseding an already-superseded FR must fail");
+        match err {
+            FeatureError::SupersedesInvalidStatus {
+                status,
+                existing_link,
+                ..
+            } => {
+                assert_eq!(status, FeatureStatus::Superseded);
+                let link = existing_link.expect("chain-pointer set");
+                assert_eq!(link.commit, middle.commit_id);
+            }
+            other => panic!("expected SupersedesInvalidStatus, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_feature_refs_add_remove_compose_by_target() {
+        // refs_remove strips by target UUID (commit sha ignored);
+        // refs_add then dedupe-replaces by target so add-side
+        // commit pins win.
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        let seed = add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("fr-refs".into()),
+                title: "t".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed");
+
+        // Seed two refs via update (add-side only).
+        let keep = Uuid::now_v7();
+        let drop = Uuid::now_v7();
+        let ref_keep = MemoryRef::new(keep, forty_char_hex());
+        let ref_drop = MemoryRef::new(drop, forty_char_hex());
+        update_feature(
+            scratch.backend(),
+            &entry,
+            &seed.slug,
+            UpdateSpec {
+                refs_add: Some(vec![ref_keep.clone(), ref_drop.clone()]),
+                ..UpdateSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed refs");
+
+        // Drop one, replace the kept one with a newer commit pin.
+        let new_commit = "fedcba9876543210fedcba9876543210fedcba98";
+        let ref_keep_updated = MemoryRef::new(keep, new_commit);
+        update_feature(
+            scratch.backend(),
+            &entry,
+            &seed.slug,
+            UpdateSpec {
+                refs_remove: Some(vec![drop]),
+                refs_add: Some(vec![ref_keep_updated.clone()]),
+                ..UpdateSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("compose refs");
+
+        // Re-read raw refs and assert the shape.
+        let resolved = resolve_memory(scratch.backend(), &entry.handle, Some(&seed.slug), None)
+            .await
+            .expect("resolve");
+        let refs = read_memory_refs(scratch.backend(), &entry.handle, &resolved.path)
+            .await
+            .expect("refs");
+        assert_eq!(refs.len(), 1, "drop + replace leaves exactly one ref");
+        assert_eq!(refs[0].target, keep);
+        assert_eq!(refs[0].commit, new_commit);
     }
 }

@@ -2825,6 +2825,9 @@ impl McpServer {
             depends_on,
             blocks,
             message: args.message,
+            // The MCP `refs` + `supersedes` surface lands in a
+            // follow-up slice; defaults preserve today's behavior.
+            ..mmcp_store::features::AddSpec::default()
         };
         let record = mmcp_store::features::add_feature(
             &self.state.backend,
@@ -2908,6 +2911,8 @@ impl McpServer {
             depends_on,
             blocks,
             message: args.message,
+            // Follow-up slice exposes the refs / supersede knobs.
+            ..mmcp_store::features::UpdateSpec::default()
         };
         let record = mmcp_store::features::update_feature(
             &self.state.backend,
@@ -3404,6 +3409,44 @@ fn map_feature_error_to_mcp(err: mmcp_store::features::FeatureError) -> McpError
                 "code": "invalid_feature_cross_reference",
                 "field": field,
                 "value": value,
+            })),
+        ),
+        FeatureError::InvalidMemoryRef { field, detail } => McpError::invalid_params(
+            message,
+            Some(json!({
+                "code": "invalid_memory_ref",
+                "field": field,
+                "detail": detail,
+            })),
+        ),
+        FeatureError::SupersedesUnknown { query } => McpError::invalid_params(
+            message,
+            Some(json!({
+                "code": "supersedes_unknown",
+                "query": query,
+            })),
+        ),
+        FeatureError::SupersedesInvalidStatus {
+            slug,
+            status,
+            existing_link,
+        } => McpError::invalid_params(
+            message,
+            Some(json!({
+                "code": "supersedes_invalid_status",
+                "slug": slug,
+                "status": status.as_str(),
+                "existing_link": existing_link.map(|r| json!({
+                    "target": r.target.to_string(),
+                    "commit": r.commit,
+                })),
+            })),
+        ),
+        FeatureError::SupersedesCrossGroupUnsupported { query } => McpError::invalid_params(
+            message,
+            Some(json!({
+                "code": "supersedes_cross_group_unsupported",
+                "query": query,
             })),
         ),
         FeatureError::Memory(inner) => map_memory_error_to_mcp(inner),
