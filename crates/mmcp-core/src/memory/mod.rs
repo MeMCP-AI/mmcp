@@ -16,6 +16,7 @@ mod feature;
 mod frontmatter;
 mod kind;
 mod parser;
+mod refs;
 mod version;
 
 pub use body::{BodyParseError, Section, parse_sections, render_sections, slugify_heading};
@@ -25,4 +26,5 @@ pub use feature::{FeatureMetadata, FeatureStatus, FeatureStatusParseError};
 pub use frontmatter::MemoryFrontmatter;
 pub use kind::MemoryKind;
 pub use parser::{FrontmatterFormat, MemoryFile, MemoryParseError};
+pub use refs::{InvalidCommit, MemoryRef};
 pub use version::Version;

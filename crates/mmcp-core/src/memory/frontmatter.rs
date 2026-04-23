@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::memory::{BumpIntent, FeatureMetadata, MemoryKind};
+use crate::memory::{BumpIntent, FeatureMetadata, MemoryKind, MemoryRef};
 
 /// User-visible metadata written in the `+++`-delimited TOML block at
 /// the top of a memory file.
@@ -61,6 +61,15 @@ pub struct MemoryFrontmatter {
     /// wire shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feature: Option<FeatureMetadata>,
+
+    /// Typed cross-references to other memories (or features - the
+    /// two share a UUID space). Each entry pins a commit so the
+    /// reference survives later edits on the target side. Empty
+    /// list is the common case; the serializer skips the field when
+    /// unset so memories that do not cross-reference anything keep
+    /// their existing wire shape.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<MemoryRef>,
 }
 
 impl MemoryFrontmatter {
@@ -88,7 +97,16 @@ impl MemoryFrontmatter {
             tags: Vec::new(),
             bump_intent: None,
             feature: None,
+            refs: Vec::new(),
         }
+    }
+
+    /// Replace the typed cross-reference list. See [`MemoryRef`] for
+    /// the wire shape.
+    #[must_use]
+    pub fn with_refs(mut self, refs: Vec<MemoryRef>) -> Self {
+        self.refs = refs;
+        self
     }
 
     /// Pin the canonical UUIDv7 primary key (FR-028).
