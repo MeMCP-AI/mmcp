@@ -210,6 +210,32 @@ impl ToolMemoryKind {
     }
 }
 
+/// Wire-form [`mmcp_core::memory::MemoryRef`] input shared by every
+/// tool that accepts typed cross-references (`write_memory` /
+/// `edit_memory` / `add_feature` / `update_feature`). Plain-string
+/// fields so schemars generates the obvious JSON object; the tool
+/// methods funnel every entry through
+/// [`mmcp_store::features::parse_memory_refs`] for UUID / commit-sha
+/// validation.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct MemoryRefArg {
+    /// UUID of the referenced memory (post-FR-028 primary key).
+    pub target: String,
+    /// 40-character lowercase hex commit sha pinning the reference
+    /// to a specific revision of the target.
+    pub commit: String,
+}
+
+impl MemoryRefArg {
+    fn into_store_input(self) -> mmcp_store::features::MemoryRefInput {
+        mmcp_store::features::MemoryRefInput {
+            target: self.target,
+            commit: self.commit,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct WriteMemoryArgs {
@@ -239,6 +265,11 @@ struct WriteMemoryArgs {
     /// Whether this memory must be read at least once per session.
     #[serde(default)]
     pub mandatory: bool,
+    /// Typed cross-references to other memories, pinned at a
+    /// specific commit each. Empty list is the common case; the
+    /// server stores absent as "no refs".
+    #[serde(default)]
+    pub refs: Vec<MemoryRefArg>,
     /// Opt into replacing an already-existing memory at this slug.
     /// `false` (default) makes the tool a strict CREATE — the wire
     /// name is `override` via serde rename; the Rust field uses a
@@ -360,6 +391,17 @@ struct EditMemoryArgs {
     /// silently ignored.
     #[serde(default)]
     pub tags_remove: Vec<String>,
+    /// Typed refs to add or replace. Dedupe is by target UUID —
+    /// entries whose `target` already appears in the memory's
+    /// existing refs are replaced in place (so the new commit pin
+    /// wins); new targets are appended.
+    #[serde(default)]
+    pub refs_add: Vec<MemoryRefArg>,
+    /// UUIDs to strip from the existing refs list. Commit sha is
+    /// not part of the match so callers do not need to remember
+    /// which revision a ref was pinned to.
+    #[serde(default)]
+    pub refs_remove: Vec<String>,
     /// Replace the mandatory flag. Absent leaves it untouched.
     #[serde(default)]
     pub mandatory: Option<bool>,
@@ -994,6 +1036,23 @@ struct AddFeatureArgs {
     #[serde(default)]
     pub blocks: Vec<String>,
 
+    /// Typed cross-references attached to the new FR. Every entry
+    /// is a `{target, commit}` pair pinning the referenced memory
+    /// to a specific revision. Absent is the common case.
+    #[serde(default)]
+    pub refs: Vec<MemoryRefArg>,
+
+    /// Slug (or UUID) of an existing FR in the same project group
+    /// to supersede. When present, the server runs the two-commit
+    /// supersede flow: commit A writes this new FR with its refs
+    /// auto-populated to include the target; commit B re-writes
+    /// the target FR with `status = superseded` and a typed
+    /// `superseded_by` back-link pointing at commit A. Errors:
+    /// `supersedes_unknown`, `supersedes_invalid_status`,
+    /// `supersedes_cross_group_unsupported`.
+    #[serde(default)]
+    pub supersedes: Option<String>,
+
     /// Optional override for the git commit message.
     #[serde(default)]
     pub message: Option<String>,
@@ -1051,6 +1110,26 @@ struct UpdateFeatureArgs {
     /// Pass `[]` to clear.
     #[serde(default)]
     pub blocks: Option<Vec<String>>,
+
+    /// Typed refs to add or replace. Dedupe is by target UUID;
+    /// entries whose target already appears replace in place
+    /// (add-side commit pin wins on collision).
+    #[serde(default)]
+    pub refs_add: Vec<MemoryRefArg>,
+
+    /// UUIDs to strip from the existing refs list. Commit sha is
+    /// not part of the match.
+    #[serde(default)]
+    pub refs_remove: Vec<String>,
+
+    /// Typed `superseded_by` back-link retry path for when commit
+    /// B of a two-commit `supersedes` flow half-landed. Callers
+    /// pass the new FR's `{target, commit}`; the server flips
+    /// `status` to `superseded` and writes the link. Setting this
+    /// with any other `status` surfaces the
+    /// `SupersedeInvariantError` via `invalid_memory_ref`.
+    #[serde(default)]
+    pub superseded_by: Option<MemoryRefArg>,
 
     /// Optional override for the git commit message.
     #[serde(default)]
@@ -1480,12 +1559,14 @@ impl McpServer {
         let supplied_id = parse_optional_uuid(args.id.as_deref())?;
         let id = supplied_id.unwrap_or_else(Uuid::now_v7);
 
+        let refs = parse_wire_refs(args.refs, "refs")?;
         use mmcp_core::memory::{FrontmatterFormat, MemoryFile, MemoryFrontmatter};
         let file = MemoryFile {
             frontmatter: MemoryFrontmatter::new(args.name, args.description, kind)
                 .with_id(id)
                 .with_mandatory(args.mandatory)
-                .with_tags(args.tags),
+                .with_tags(args.tags)
+                .with_refs(refs),
             body: args.body,
             format: FrontmatterFormat::TomlPlus,
         };
@@ -1663,6 +1744,39 @@ impl McpServer {
             // order is not load-bearing for readers.
             file.frontmatter.tags.sort_unstable();
             file.frontmatter.tags.dedup();
+        }
+
+        // Compose refs: remove-side first (by target UUID,
+        // ignoring commit), add-side second (dedupe by target so
+        // the add-side commit pin wins on collision with an
+        // existing entry).
+        if !args.refs_remove.is_empty() {
+            let removed: Vec<Uuid> = args
+                .refs_remove
+                .iter()
+                .map(|raw| {
+                    Uuid::parse_str(raw).map_err(|_| {
+                        McpError::invalid_params(
+                            format!("refs_remove entry '{raw}' is not a valid UUID"),
+                            Some(json!({
+                                "code": "invalid_memory_ref",
+                                "field": "refs_remove",
+                                "detail": format!("'{raw}' is not a valid UUID"),
+                            })),
+                        )
+                    })
+                })
+                .collect::<Result<_, _>>()?;
+            file.frontmatter
+                .refs
+                .retain(|r| !removed.contains(&r.target));
+        }
+        if !args.refs_add.is_empty() {
+            let to_add = parse_wire_refs(args.refs_add, "refs_add")?;
+            for new in to_add {
+                file.frontmatter.refs.retain(|r| r.target != new.target);
+                file.frontmatter.refs.push(new);
+            }
         }
 
         let rendered = file
@@ -2815,6 +2929,7 @@ impl McpServer {
             mmcp_store::parse_cross_refs(&args.depends_on, "depends_on").map_err(map_feature_error_to_mcp)?;
         let blocks = mmcp_store::parse_cross_refs(&args.blocks, "blocks")
             .map_err(map_feature_error_to_mcp)?;
+        let refs = parse_wire_refs(args.refs, "refs")?;
         let spec = mmcp_store::features::AddSpec {
             slug: args.slug,
             title: args.title,
@@ -2824,10 +2939,9 @@ impl McpServer {
             number: args.number,
             depends_on,
             blocks,
+            refs,
+            supersedes: args.supersedes,
             message: args.message,
-            // The MCP `refs` + `supersedes` surface lands in a
-            // follow-up slice; defaults preserve today's behavior.
-            ..mmcp_store::features::AddSpec::default()
         };
         let record = mmcp_store::features::add_feature(
             &self.state.backend,
@@ -2902,6 +3016,41 @@ impl McpServer {
             .map(|v| mmcp_store::parse_cross_refs(v, "blocks"))
             .transpose()
             .map_err(map_feature_error_to_mcp)?;
+        let refs_add = if args.refs_add.is_empty() {
+            None
+        } else {
+            Some(parse_wire_refs(args.refs_add, "refs_add")?)
+        };
+        let refs_remove = if args.refs_remove.is_empty() {
+            None
+        } else {
+            let parsed: Result<Vec<Uuid>, _> = args
+                .refs_remove
+                .iter()
+                .map(|raw| {
+                    Uuid::parse_str(raw).map_err(|_| {
+                        McpError::invalid_params(
+                            format!("refs_remove entry '{raw}' is not a valid UUID"),
+                            Some(json!({
+                                "code": "invalid_memory_ref",
+                                "field": "refs_remove",
+                                "detail": format!("'{raw}' is not a valid UUID"),
+                            })),
+                        )
+                    })
+                })
+                .collect();
+            Some(parsed?)
+        };
+        let superseded_by = match args.superseded_by {
+            None => None,
+            Some(arg) => Some(
+                parse_wire_refs(vec![arg], "superseded_by")?
+                    .into_iter()
+                    .next()
+                    .expect("parse_wire_refs returns one entry per input"),
+            ),
+        };
         let spec = mmcp_store::features::UpdateSpec {
             title: args.title,
             description: args.description,
@@ -2910,9 +3059,10 @@ impl McpServer {
             number: args.number,
             depends_on,
             blocks,
+            refs_add,
+            refs_remove,
+            superseded_by,
             message: args.message,
-            // Follow-up slice exposes the refs / supersede knobs.
-            ..mmcp_store::features::UpdateSpec::default()
         };
         let record = mmcp_store::features::update_feature(
             &self.state.backend,
@@ -3346,17 +3496,42 @@ fn feature_record_to_json(
     record: &mmcp_store::features::FeatureRecord,
 ) -> serde_json::Value {
     json!({
-        "group":       entry.manifest.group_id.to_string(),
-        "slug":        record.slug,
-        "title":       record.title,
-        "description": record.description,
-        "body":        record.body,
-        "status":      record.status.as_str(),
-        "number":      record.number,
-        "depends_on":  record.depends_on,
-        "blocks":      record.blocks,
-        "commit_id":   record.commit_id,
+        "group":         entry.manifest.group_id.to_string(),
+        "slug":          record.slug,
+        "title":         record.title,
+        "description":   record.description,
+        "body":          record.body,
+        "status":        record.status.as_str(),
+        "number":        record.number,
+        "depends_on":    record.depends_on,
+        "blocks":        record.blocks,
+        "superseded_by": record.superseded_by.as_ref().map(memory_ref_to_json),
+        "commit_id":     record.commit_id,
     })
+}
+
+/// Render a [`mmcp_core::memory::MemoryRef`] onto the MCP wire shape
+/// as a plain `{ target, commit }` object. Used by every response
+/// that surfaces typed refs so the shape stays identical across
+/// `read_memory`, `read_feature`, and the feature CRUD returns.
+fn memory_ref_to_json(r: &mmcp_core::memory::MemoryRef) -> serde_json::Value {
+    json!({
+        "target": r.target.to_string(),
+        "commit": r.commit,
+    })
+}
+
+/// Parse a wire-form `Vec<MemoryRefArg>` (raw from the tool args)
+/// into the `Vec<MemoryRef>` the store layer expects. Funnels
+/// through [`mmcp_store::features::parse_memory_refs`] so UUID +
+/// commit-sha validation lives in one place; the MCP boundary
+/// maps the resulting error to `invalid_memory_ref`.
+fn parse_wire_refs(
+    raw: Vec<MemoryRefArg>,
+    field: &'static str,
+) -> Result<Vec<mmcp_core::memory::MemoryRef>, McpError> {
+    let inputs: Vec<_> = raw.into_iter().map(MemoryRefArg::into_store_input).collect();
+    mmcp_store::features::parse_memory_refs(&inputs, field).map_err(map_feature_error_to_mcp)
 }
 
 /// Map a [`features::FeatureError`] onto an [`McpError`] with a
@@ -4065,6 +4240,7 @@ fn frontmatter_to_json(fm: &MemoryFrontmatter) -> serde_json::Value {
         "version": fm.version.as_ref().map(|v| v.to_string()),
         "tags": fm.tags,
         "bump_intent": fm.bump_intent,
+        "refs": fm.refs.iter().map(memory_ref_to_json).collect::<Vec<_>>(),
     })
 }
 
@@ -5479,6 +5655,7 @@ mod tests {
             body: "# Draft\nBody.".into(),
             tags: Vec::new(),
             mandatory: false,
+            refs: Vec::new(),
             override_,
         }
     }
