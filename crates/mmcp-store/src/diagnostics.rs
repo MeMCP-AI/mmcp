@@ -198,6 +198,20 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
     let mut feature_numbers: std::collections::HashMap<u32, Vec<String>> =
         std::collections::HashMap::new();
 
+    // Index every feature in this group by its UUID so the
+    // post-loop supersede-chain integrity pass can look targets up
+    // without a second pass over the files. Value is
+    // `(slug, status, refs)` — enough to verify reciprocity
+    // without carrying the full frontmatter around.
+    let mut features_by_id: std::collections::HashMap<
+        Uuid,
+        (String, mmcp_core::memory::FeatureStatus, Vec<mmcp_core::memory::MemoryRef>),
+    > = std::collections::HashMap::new();
+
+    // Collected `(slug, superseded_by)` pairs so the post-loop
+    // pass can walk them in deterministic order.
+    let mut supersede_links: Vec<(String, Uuid, mmcp_core::memory::MemoryRef)> = Vec::new();
+
     // Deep manifest checks
     if let Ok(m) = backend.read_manifest(&entry.handle).await {
         // group_id vs directory UUID
@@ -422,6 +436,13 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                     .or_default()
                     .push(mem_slug.to_string());
             }
+            if let Some(link) = feat.superseded_by.as_ref() {
+                supersede_links.push((mem_slug.to_string(), file_ref.id, link.clone()));
+            }
+            features_by_id.insert(
+                file_ref.id,
+                (mem_slug.to_string(), feat.status, fm.refs.clone()),
+            );
         }
 
         // FR-025 awareness: a `mandatory = true` memory living in a
@@ -450,6 +471,42 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                 severity: "warning",
                 message: format!("body failed FR-026 section parse: {err}"),
             });
+        }
+    }
+
+    // Supersede-chain integrity: every feature with a typed
+    // `superseded_by` back-link should have its target present in
+    // the same group, reciprocating via a `refs` entry pointing
+    // back at the source's UUID. Catches the half-landed
+    // two-commit supersede case (commit A wrote the new FR,
+    // commit B never flipped the old FR — or in the opposite
+    // direction, commit B flipped the old FR but an operator
+    // later removed the new FR's ref by hand).
+    for (old_slug, old_uuid, link) in &supersede_links {
+        match features_by_id.get(&link.target) {
+            None => {
+                report.issues.push(Issue {
+                    group: gid.clone(),
+                    slug: Some(old_slug.clone()),
+                    severity: "warning",
+                    message: format!(
+                        "supersede target {} is not present in this group — cross-group supersede is not supported in v1",
+                        link.target
+                    ),
+                });
+            }
+            Some((new_slug, _status, new_refs)) => {
+                if !new_refs.iter().any(|r| r.target == *old_uuid) {
+                    report.issues.push(Issue {
+                        group: gid.clone(),
+                        slug: Some(old_slug.clone()),
+                        severity: "warning",
+                        message: format!(
+                            "supersede chain one-sided: `{old_slug}` points at `{new_slug}` via superseded_by, but `{new_slug}`'s `refs` does not reference `{old_slug}` back"
+                        ),
+                    });
+                }
+            }
         }
     }
 
