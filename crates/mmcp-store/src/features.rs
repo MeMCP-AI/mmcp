@@ -28,6 +28,7 @@ use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION, memory_path};
 use mmcp_core::id::GroupId;
 use mmcp_core::memory::{
     FeatureMetadata, FeatureStatus, FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryKind,
+    MemoryRef,
 };
 use mmcp_git::{GitBackend, NativeBackend, Rev};
 use uuid::Uuid;
@@ -184,6 +185,12 @@ pub struct FeatureRecord {
     pub number: Option<u32>,
     pub depends_on: Vec<Uuid>,
     pub blocks: Vec<Uuid>,
+    /// Typed back-link to the FR that replaced this one. Present
+    /// when the FR has been through the supersede flow; `None`
+    /// otherwise. Paired with `status = FeatureStatus::Superseded`
+    /// at the frontmatter level via
+    /// [`FeatureMetadata::validate_supersede_invariant`].
+    pub superseded_by: Option<MemoryRef>,
     /// Commit id of the most recent write for this FR, or the head
     /// commit that produced the record on a read. Empty string on a
     /// freshly read FR whose history starts before this field was
@@ -226,6 +233,7 @@ pub async fn add_feature(
         number,
         depends_on: spec.depends_on.clone(),
         blocks: spec.blocks.clone(),
+        superseded_by: None,
     };
     let mut file = build_memory_file(
         spec.title.clone(),
@@ -263,6 +271,7 @@ pub async fn add_feature(
         number,
         depends_on: spec.depends_on,
         blocks: spec.blocks,
+        superseded_by: None,
         commit_id,
     })
 }
@@ -352,12 +361,19 @@ pub async fn update_feature(
     let number = spec.number.or(current.number);
     let depends_on = spec.depends_on.unwrap_or(current.depends_on);
     let blocks = spec.blocks.unwrap_or(current.blocks);
+    // `superseded_by` is not yet a surface on `UpdateSpec`; preserve
+    // whatever the on-disk memory already carries so ordinary edits
+    // do not clear the supersede back-link. The commit-3 slice adds
+    // an explicit `superseded_by` knob to `UpdateSpec` for the retry
+    // path when the two-commit supersede flow half-lands.
+    let superseded_by = current.superseded_by;
 
     let metadata = FeatureMetadata {
         status,
         number,
         depends_on: depends_on.clone(),
         blocks: blocks.clone(),
+        superseded_by: superseded_by.clone(),
     };
     let mut file = build_memory_file(title.clone(), description.clone(), body.clone(), metadata);
     // Preserve the id pinned on disk so the rewrite hits the same
@@ -390,6 +406,7 @@ pub async fn update_feature(
         number,
         depends_on,
         blocks,
+        superseded_by,
         commit_id,
     })
 }
@@ -702,6 +719,7 @@ fn record_from_file(
         number: metadata.number,
         depends_on: metadata.depends_on,
         blocks: metadata.blocks,
+        superseded_by: metadata.superseded_by,
         commit_id,
     })
 }

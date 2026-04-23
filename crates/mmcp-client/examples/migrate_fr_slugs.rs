@@ -229,6 +229,7 @@ mod tests {
             number,
             depends_on: Vec::new(),
             blocks: Vec::new(),
+            superseded_by: None,
             commit_id: String::new(),
         }
     }
