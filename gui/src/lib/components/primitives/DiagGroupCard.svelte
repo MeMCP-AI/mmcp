@@ -5,7 +5,7 @@
   // header with name + status pill + per-severity chip counts,
   // and a body that renders DiagIssueRow for every visible issue.
 
-  import { ChevronDown, ChevronRight } from 'lucide-svelte';
+  import { AlertTriangle, ChevronDown, ChevronRight, Info, XCircle } from 'lucide-svelte';
   import type { Issue } from '$lib/types';
   import {
     accentFor,
@@ -83,7 +83,13 @@
             class="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-semibold ring-1 ring-inset {meta.chip}"
             title={meta.plural}
           >
-            <meta.Icon size={10} />
+            {#if sev === 'error'}
+              <XCircle size={10} />
+            {:else if sev === 'warning'}
+              <AlertTriangle size={10} />
+            {:else}
+              <Info size={10} />
+            {/if}
             {counts[sev]}
           </span>
         {/if}
@@ -91,7 +97,7 @@
     </span>
   </header>
   {#if open}
-    <div class="flex flex-col gap-1.5 px-5 pb-3">
+    <div class="flex flex-col gap-2 px-3 pb-3">
       {#each visible as issue, idx (idx)}
         <DiagIssueRow {issue} />
       {:else}
