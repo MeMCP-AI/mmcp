@@ -2077,7 +2077,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Validate manifests and memory frontmatter for a group. Returns issues found: parse errors, missing required fields, empty bodies. Checks one group if group UUID given, all groups if omitted.",
+        description = "Validate manifests and memory frontmatter for a group. Returns one entry per group (manifest ok?, memory count) and lifts every finding onto the FR-45 notes channel: parse errors, missing required fields, empty bodies, and similar surface issues all appear as `notes` with stable codes. Checks one group if group UUID given, all groups if omitted.",
         annotations(
             title = "Check group health",
             read_only_hint = true,
@@ -2101,16 +2101,31 @@ impl McpServer {
         } else {
             health_check_all(&self.state.backend, &self.state.groups).await
         };
-        let total_issues: usize = reports.iter().map(|r| r.issues.len()).sum();
-        Ok(ok_json(json!({
-            "groups": reports,
-            "total_issues": total_issues,
-            "healthy": total_issues == 0,
-        })))
+        // FR-45: every issue becomes a note; wire response keeps
+        // only the per-group structural summary.
+        let mut notes: Vec<mmcp_proto::Note> = Vec::new();
+        let mut groups_body: Vec<serde_json::Value> = Vec::with_capacity(reports.len());
+        for report in &reports {
+            notes.extend(issues_to_notes(&report.issues));
+            groups_body.push(json!({
+                "group_id": report.group_id,
+                "slug": report.slug,
+                "manifest_ok": report.manifest_ok,
+                "memory_count": report.memory_count,
+            }));
+        }
+        let healthy = notes.is_empty();
+        Ok(ok_json_with_notes(
+            json!({
+                "groups": groups_body,
+                "healthy": healthy,
+            }),
+            notes,
+        ))
     }
 
     #[tool(
-        description = "Deep diagnostic analysis of a group's memories. Everything check_health does plus: missing tags, empty bodies, naming drift, empty groups, UUID mismatches, created_at sanity, cross-group duplicate slugs, and structural hints. Severity levels: error, warning, info.",
+        description = "Deep diagnostic analysis of a group's memories. Everything check_health does plus: missing tags, empty bodies, naming drift, empty groups, UUID mismatches, created_at sanity, cross-group duplicate slugs, cross-ref integrity, supersede-chain reciprocity, and structural hints. Per-group structural summary lives in `groups`; every finding — plus project-level (user / sync / config) signals — rides the FR-45 notes channel with stable codes.",
         annotations(
             title = "Deep diagnose group",
             read_only_hint = true,
@@ -2137,25 +2152,30 @@ impl McpServer {
         } else {
             diagnose_all(&self.state.backend, &self.state.groups).await
         };
-        let all_issues = diag
-            .groups
+        // FR-45: collapse project_issues and every group's issues
+        // onto the notes channel. Wire body keeps only the
+        // per-group structural summary.
+        let mut notes: Vec<mmcp_proto::Note> = issues_to_notes(&diag.project_issues);
+        let mut groups_body: Vec<serde_json::Value> = Vec::with_capacity(diag.groups.len());
+        for report in &diag.groups {
+            notes.extend(issues_to_notes(&report.issues));
+            groups_body.push(json!({
+                "group_id": report.group_id,
+                "slug": report.slug,
+                "manifest_ok": report.manifest_ok,
+                "memory_count": report.memory_count,
+            }));
+        }
+        let healthy = !notes
             .iter()
-            .flat_map(|r| &r.issues)
-            .chain(diag.project_issues.iter());
-        let errors: usize = all_issues.clone().filter(|i| i.severity == "error").count();
-        let warnings: usize = all_issues
-            .clone()
-            .filter(|i| i.severity == "warning")
-            .count();
-        let infos: usize = all_issues.filter(|i| i.severity == "info").count();
-        Ok(ok_json(json!({
-            "project_issues": diag.project_issues,
-            "groups": diag.groups,
-            "errors": errors,
-            "warnings": warnings,
-            "infos": infos,
-            "healthy": errors == 0,
-        })))
+            .any(|n| n.level == mmcp_proto::NoteLevel::Error);
+        Ok(ok_json_with_notes(
+            json!({
+                "groups": groups_body,
+                "healthy": healthy,
+            }),
+            notes,
+        ))
     }
 
     // ── Debug tools ─────────────────────────────────────────
@@ -2518,17 +2538,21 @@ impl McpServer {
             }
         }
 
-        // Advisory diagnostics about CLAUDE.md. These never block the
-        // call and never write anything; the AI or operator decides.
-        let diagnostics = build_claude_diagnostics(project_root.as_deref());
+        // FR-45: advisory CLAUDE.md signals flow through the
+        // standard notes channel; no bespoke `diagnostics` field.
+        // `init_claude` is still the only remediation — the note
+        // context points callers at it.
+        let notes = claude_md_notes(project_root.as_deref());
 
-        Ok(ok_json(json!({
-            "instructions": SESSION_INSTRUCTIONS,
-            "memories": memories,
-            "project_root": project_root.as_ref().map(|p| p.to_string_lossy().into_owned()),
-            "project_uuid": project_uuid.map(|u| u.to_string()),
-            "diagnostics": diagnostics,
-        })))
+        Ok(ok_json_with_notes(
+            json!({
+                "instructions": SESSION_INSTRUCTIONS,
+                "memories": memories,
+                "project_root": project_root.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                "project_uuid": project_uuid.map(|u| u.to_string()),
+            }),
+            notes,
+        ))
     }
 
     #[tool(
@@ -4518,25 +4542,28 @@ fn action_wire(action: InitClaudeAction) -> &'static str {
 /// project carries an older fence.
 const CLAUDE_MD_BLOCK_VERSION: &str = "v1";
 
-/// Compute advisory diagnostics about the project's CLAUDE.md state.
+/// Compute notes about the project's CLAUDE.md state (FR-45).
 ///
 /// Read-only: the function inspects the file on disk but never writes
-/// anything. `bootstrap_context` emits these so the AI can decide to
-/// call `init_claude`. An empty vector means either no project root
-/// was resolved (nothing to diagnose) or the file is already healthy.
-fn build_claude_diagnostics(project_root: Option<&std::path::Path>) -> Vec<serde_json::Value> {
+/// anything. `bootstrap_context` emits these through the standard
+/// notes channel so callers can surface actionable `init_claude`
+/// hints alongside every other signal. An empty vector means either
+/// no project root was resolved (nothing to diagnose) or the file is
+/// already healthy.
+fn claude_md_notes(project_root: Option<&std::path::Path>) -> Vec<mmcp_proto::Note> {
     let Some(root) = project_root else {
         return Vec::new();
     };
     let claude_md = root.join("CLAUDE.md");
     if !claude_md.exists() {
-        return vec![json!({
-            "severity": "warning",
-            "code": "claude_md_missing",
-            "message": "CLAUDE.md is missing at the project root. Running `init_claude` (action=override) bootstraps it with the mmcp pointer template so future sessions see the checkpoint protocol.",
+        return vec![mmcp_proto::Note::warn(
+            "claude_md_missing",
+            "CLAUDE.md is missing at the project root. Running `init_claude` (action=override) bootstraps it with the mmcp pointer template so future sessions see the checkpoint protocol.",
+        )
+        .with_context(json!({
             "suggested_tool": "init_claude",
             "suggested_args": { "action": "override" },
-        })];
+        }))];
     }
     let Ok(body) = std::fs::read_to_string(&claude_md) else {
         return Vec::new();
@@ -4547,24 +4574,56 @@ fn build_claude_diagnostics(project_root: Option<&std::path::Path>) -> Vec<serde
     }
     // Older-version fence present? Flag as stale so init_claude can upgrade.
     if body.contains("<!-- mmcp:begin ") {
-        return vec![json!({
-            "severity": "info",
-            "code": "claude_md_stale",
-            "message": format!(
+        return vec![mmcp_proto::Note::info(
+            "claude_md_stale",
+            format!(
                 "CLAUDE.md carries an older mmcp block; current version is {CLAUDE_MD_BLOCK_VERSION}. Re-run `init_claude` (action=append) to upgrade the fenced region in place."
             ),
+        )
+        .with_context(json!({
             "suggested_tool": "init_claude",
             "suggested_args": { "action": "append" },
-        })];
+        }))];
     }
     // No fence at all — file is unmanaged.
-    vec![json!({
-        "severity": "warning",
-        "code": "claude_md_unmanaged",
-        "message": "CLAUDE.md has no mmcp-managed block. Run `init_claude` (action=append) to insert the session-start protocol without touching user-authored content, or (action=convert) to split existing rule content into typed memories and replace the file with a stub.",
+    vec![mmcp_proto::Note::warn(
+        "claude_md_unmanaged",
+        "CLAUDE.md has no mmcp-managed block. Run `init_claude` (action=append) to insert the session-start protocol without touching user-authored content, or (action=convert) to split existing rule content into typed memories and replace the file with a stub.",
+    )
+    .with_context(json!({
         "suggested_tool": "init_claude",
         "suggested_args": { "action": "append" },
-    })]
+    }))]
+}
+
+/// Convert a [`mmcp_store::diagnostics::Issue`] into the FR-45
+/// standard [`mmcp_proto::Note`] wire shape.
+///
+/// `severity` maps to `level`; `code` flows through unchanged;
+/// `group` + optional `slug` ride in `context` so callers can
+/// route or group notes without re-parsing the message.
+fn issue_to_note(issue: &mmcp_store::diagnostics::Issue) -> mmcp_proto::Note {
+    let level = match issue.severity {
+        "error" => mmcp_proto::NoteLevel::Error,
+        "warning" => mmcp_proto::NoteLevel::Warn,
+        _ => mmcp_proto::NoteLevel::Info,
+    };
+    let mut ctx = serde_json::Map::new();
+    ctx.insert("group".to_string(), json!(issue.group));
+    if let Some(ref slug) = issue.slug {
+        ctx.insert("slug".to_string(), json!(slug));
+    }
+    mmcp_proto::Note {
+        level,
+        code: issue.code.to_string(),
+        message: issue.message.clone(),
+        context: Some(serde_json::Value::Object(ctx)),
+    }
+}
+
+/// Map a slice of diagnostic issues onto the FR-45 notes channel.
+fn issues_to_notes(issues: &[mmcp_store::diagnostics::Issue]) -> Vec<mmcp_proto::Note> {
+    issues.iter().map(issue_to_note).collect()
 }
 
 fn frontmatter_to_json(fm: &MemoryFrontmatter) -> serde_json::Value {
@@ -5347,50 +5406,88 @@ mod tests {
     }
 
     #[test]
-    fn build_claude_diagnostics_flags_missing_file() {
+    fn claude_md_notes_flags_missing_file() {
         let tmp = TempDir::new().expect("tempdir");
-        let diagnostics = build_claude_diagnostics(Some(tmp.path()));
-        assert_eq!(diagnostics.len(), 1);
-        assert_eq!(
-            diagnostics[0].get("code").and_then(|v| v.as_str()),
-            Some("claude_md_missing")
-        );
+        let notes = claude_md_notes(Some(tmp.path()));
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].code, "claude_md_missing");
+        assert_eq!(notes[0].level, mmcp_proto::NoteLevel::Warn);
     }
 
     #[test]
-    fn build_claude_diagnostics_flags_unmanaged_file() {
+    fn claude_md_notes_flags_unmanaged_file() {
         let tmp = TempDir::new().expect("tempdir");
         std::fs::write(
             tmp.path().join("CLAUDE.md"),
             "# Legacy\n\nHand-authored without any mmcp fence.\n",
         )
         .expect("write claude");
-        let diagnostics = build_claude_diagnostics(Some(tmp.path()));
-        assert_eq!(diagnostics.len(), 1);
-        assert_eq!(
-            diagnostics[0].get("code").and_then(|v| v.as_str()),
-            Some("claude_md_unmanaged")
-        );
+        let notes = claude_md_notes(Some(tmp.path()));
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].code, "claude_md_unmanaged");
+        assert_eq!(notes[0].level, mmcp_proto::NoteLevel::Warn);
     }
 
     #[test]
-    fn build_claude_diagnostics_is_silent_when_fence_matches_current_version() {
+    fn claude_md_notes_is_silent_when_fence_matches_current_version() {
         let tmp = TempDir::new().expect("tempdir");
         std::fs::write(
             tmp.path().join("CLAUDE.md"),
             format!("# Managed\n\n<!-- mmcp:begin {CLAUDE_MD_BLOCK_VERSION} -->\n...\n<!-- mmcp:end {CLAUDE_MD_BLOCK_VERSION} -->\n"),
         )
         .expect("write claude");
-        let diagnostics = build_claude_diagnostics(Some(tmp.path()));
+        let notes = claude_md_notes(Some(tmp.path()));
         assert!(
-            diagnostics.is_empty(),
-            "current-version fence should produce no diagnostics"
+            notes.is_empty(),
+            "current-version fence should produce no notes"
         );
     }
 
     #[test]
-    fn build_claude_diagnostics_is_silent_without_project_root() {
-        assert!(build_claude_diagnostics(None).is_empty());
+    fn claude_md_notes_is_silent_without_project_root() {
+        assert!(claude_md_notes(None).is_empty());
+    }
+
+    #[test]
+    fn issue_to_note_maps_severity_and_carries_group_slug_context() {
+        use mmcp_store::diagnostics::Issue;
+
+        let warn = issue_to_note(&Issue {
+            group: "g-uuid".to_string(),
+            slug: Some("rules".to_string()),
+            severity: "warning",
+            code: "memory_body_empty",
+            message: "body is empty".to_string(),
+        });
+        assert_eq!(warn.level, mmcp_proto::NoteLevel::Warn);
+        assert_eq!(warn.code, "memory_body_empty");
+        assert_eq!(warn.message, "body is empty");
+        let ctx = warn.context.expect("warn context present");
+        assert_eq!(ctx.get("group").and_then(|v| v.as_str()), Some("g-uuid"));
+        assert_eq!(ctx.get("slug").and_then(|v| v.as_str()), Some("rules"));
+
+        let err = issue_to_note(&Issue {
+            group: "g-uuid".to_string(),
+            slug: None,
+            severity: "error",
+            code: "manifest_unreadable",
+            message: "manifest unreadable: io".to_string(),
+        });
+        assert_eq!(err.level, mmcp_proto::NoteLevel::Error);
+        let ctx = err.context.expect("err context present");
+        assert!(
+            ctx.get("slug").is_none(),
+            "slug field must be absent when Issue.slug is None; got: {ctx}",
+        );
+
+        let info = issue_to_note(&Issue {
+            group: "(project)".to_string(),
+            slug: None,
+            severity: "info",
+            code: "memory_no_tags",
+            message: "hint".to_string(),
+        });
+        assert_eq!(info.level, mmcp_proto::NoteLevel::Info);
     }
 
     #[tokio::test]

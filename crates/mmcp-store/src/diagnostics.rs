@@ -29,12 +29,17 @@ use crate::memory::slugify_filename;
 
 // ── Shared types ────────────────────────────────────────────
 
-/// One issue found during check.
+/// One issue found during check. `code` is a stable slug-style
+/// identifier (e.g. `manifest_unreadable`, `memory_body_empty`)
+/// that lets consumers branch without parsing the free-form
+/// `message`. FR-45 maps each issue onto a [`mmcp_proto::Note`]
+/// at the MCP tool boundary using this code.
 #[derive(Debug, Clone, Serialize)]
 pub struct Issue {
     pub group: String,
     pub slug: Option<String>,
     pub severity: &'static str,
+    pub code: &'static str,
     pub message: String,
 }
 
@@ -72,6 +77,7 @@ pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> 
                     group: gid.clone(),
                     slug: None,
                     severity: "error",
+                    code: "manifest_schema_too_new",
                     message: format!(
                         "manifest schema_version {} is newer than supported {}",
                         m.schema_version, MANIFEST_SCHEMA_VERSION
@@ -83,6 +89,7 @@ pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> 
                     group: gid.clone(),
                     slug: None,
                     severity: "error",
+                    code: "manifest_slug_empty",
                     message: "manifest slug is empty".to_string(),
                 });
             }
@@ -93,6 +100,7 @@ pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> 
                 group: gid.clone(),
                 slug: None,
                 severity: "error",
+                code: "manifest_unreadable",
                 message: format!("manifest unreadable: {err}"),
             });
             false
@@ -108,6 +116,7 @@ pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> 
                 group: gid.clone(),
                 slug: None,
                 severity: "warning",
+                code: "memories_list_failed",
                 message: format!("cannot list memories/: {err}"),
             });
             return GroupReport {
@@ -132,6 +141,7 @@ pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> 
                         group: gid.clone(),
                         slug: Some(mem_slug.to_string()),
                         severity: "error",
+                        code: "memory_not_utf8",
                         message: "not valid UTF-8".to_string(),
                     });
                     continue;
@@ -141,6 +151,7 @@ pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> 
                         group: gid.clone(),
                         slug: Some(mem_slug.to_string()),
                         severity: "error",
+                        code: "frontmatter_parse_failed",
                         message: format!("frontmatter parse failed: {err}"),
                     });
                 }
@@ -150,6 +161,7 @@ pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> 
                     group: gid.clone(),
                     slug: Some(mem_slug.to_string()),
                     severity: "error",
+                    code: "memory_read_failed",
                     message: format!("cannot read: {err}"),
                 });
             }
@@ -222,6 +234,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                 group: gid.clone(),
                 slug: None,
                 severity: "error",
+                code: "manifest_group_id_mismatch",
                 message: format!(
                     "manifest group_id {manifest_uuid} does not match directory UUID {dir_uuid}"
                 ),
@@ -234,6 +247,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                 group: gid.clone(),
                 slug: None,
                 severity: "warning",
+                code: "manifest_created_at_invalid",
                 message: format!(
                     "manifest created_at is {}, expected positive timestamp",
                     m.created_at
@@ -247,6 +261,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                 group: gid.clone(),
                 slug: None,
                 severity: "info",
+                code: "manifest_no_display_name",
                 message: "manifest has no display_name set".to_string(),
             });
         }
@@ -258,6 +273,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
             group: gid.clone(),
             slug: None,
             severity: "info",
+            code: "group_empty",
             message: "group has zero memories".to_string(),
         });
     }
@@ -286,6 +302,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "error",
+                code: "memory_name_empty",
                 message: "name is empty".to_string(),
             });
         }
@@ -294,6 +311,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "error",
+                code: "memory_description_empty",
                 message: "description is empty".to_string(),
             });
         }
@@ -304,6 +322,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "warning",
+                code: "memory_body_empty",
                 message: "body is empty".to_string(),
             });
         }
@@ -314,6 +333,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "info",
+                code: "memory_no_tags",
                 message: "no tags set (reduces discoverability)".to_string(),
             });
         }
@@ -326,6 +346,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                     group: gid.clone(),
                     slug: Some(mem_slug.to_string()),
                     severity: "info",
+                    code: "memory_version_zero",
                     message: "version is 0.0.0 (not yet published?)".to_string(),
                 });
             }
@@ -345,6 +366,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "info",
+                code: "slug_name_drift",
                 message: format!(
                     "slug '{mem_slug}' and name '{}' share no common tokens (slugified name: '{name_slug}') — rename may have drifted",
                     fm.name
@@ -358,6 +380,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "error",
+                code: "memory_missing_id",
                 message: format!(
                     "frontmatter has no `id`; expected {} (FR-028 requires every memory to carry its UUID)",
                     file_ref.id
@@ -367,6 +390,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "error",
+                code: "memory_id_filename_mismatch",
                 message: format!(
                     "frontmatter id {fid} does not match filename id {} at {}",
                     file_ref.id, file_ref.path
@@ -384,6 +408,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "info",
+                code: "feature_no_number",
                 message: "feature has no `number` metadata (FR-027 auto-assigns on create)"
                     .to_string(),
             });
@@ -396,6 +421,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "error",
+                code: "feature_no_subtable",
                 message: "kind = \"feature\" but frontmatter has no `[feature]` subtable"
                     .to_string(),
             }),
@@ -404,6 +430,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                     group: gid.clone(),
                     slug: Some(mem_slug.to_string()),
                     severity: "error",
+                    code: "non_feature_has_subtable",
                     message: format!(
                         "kind = \"{}\" carries a stray `[feature]` subtable; only `feature` should",
                         other.as_str()
@@ -427,6 +454,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                         group: gid.clone(),
                         slug: Some(mem_slug.to_string()),
                         severity: "info",
+                        code: "feature_self_reference",
                         message: format!(
                             "feature `{field}` references its own id {self_id} (self-reference)"
                         ),
@@ -457,6 +485,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "info",
+                code: "mandatory_in_non_global_scope",
                 message: format!(
                     "mandatory memory in `scope = \"{}\"` group — FR-025 only fans it out to matching projects; set group scope to `global` for cross-project propagation",
                     scope_str(group_scope)
@@ -472,6 +501,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "warning",
+                code: "memory_body_sections_invalid",
                 message: format!("body failed FR-026 section parse: {err}"),
             });
         }
@@ -492,6 +522,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                     group: gid.clone(),
                     slug: Some(old_slug.clone()),
                     severity: "warning",
+                    code: "supersede_target_missing",
                     message: format!(
                         "supersede target {} is not present in this group — cross-group supersede is not supported in v1",
                         link.target
@@ -504,6 +535,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                         group: gid.clone(),
                         slug: Some(old_slug.clone()),
                         severity: "warning",
+                        code: "supersede_one_sided",
                         message: format!(
                             "supersede chain one-sided: `{old_slug}` points at `{new_slug}` via superseded_by, but `{new_slug}`'s `refs` does not reference `{old_slug}` back"
                         ),
@@ -521,6 +553,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                     group: gid.clone(),
                     slug: Some(slug.clone()),
                     severity: "warning",
+                    code: "feature_number_duplicate",
                     message: format!(
                         "feature number {number} is shared with {} other feature(s): {}",
                         slugs.len() - 1,
@@ -560,6 +593,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                         group: gid.clone(),
                         slug: Some(slug.clone()),
                         severity: "warning",
+                        code: "slug_dir_non_memory_file",
                         message: format!(
                             "non-memory file '{filename}' under {dir}/ (expected `<uuid>.md`)"
                         ),
@@ -571,6 +605,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                         group: gid.clone(),
                         slug: Some(slug.clone()),
                         severity: "error",
+                        code: "slug_dir_bad_filename",
                         message: format!(
                             "memory filename '{filename}' under {dir}/ is not a valid UUID"
                         ),
@@ -584,6 +619,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                     group: gid.clone(),
                     slug: Some(slug.clone()),
                     severity: "info",
+                    code: "slug_dir_empty",
                     message: format!(
                         "slug directory {dir}/ has no memory files (leftover from a rename or delete?)"
                     ),
@@ -651,6 +687,7 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
                         group: report.group_id.clone(),
                         slug: Some(dup_slug.clone()),
                         severity: "info",
+                        code: "slug_cross_group_duplicate",
                         message: format!(
                             "slug '{dup_slug}' also exists in {} other group(s)",
                             group_ids.len() - 1
@@ -717,6 +754,7 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
                         group: record.group_id.clone(),
                         slug: Some(record.slug.clone()),
                         severity: "error",
+                        code: "memory_id_duplicate",
                         message: format!(
                             "duplicate memory id {uuid} also exists at {}",
                             locations
@@ -772,6 +810,7 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
                             group: gid.clone(),
                             slug: Some(file_ref.slug.clone()),
                             severity: "warning",
+                            code: "feature_ref_dangling",
                             message: format!(
                                 "feature `{field}` references unknown memory {uuid} — dangling cross-reference"
                             ),
@@ -786,6 +825,7 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
                                     group: gid.clone(),
                                     slug: Some(file_ref.slug.clone()),
                                     severity: "warning",
+                                    code: "feature_ref_wrong_kind",
                                     message: format!(
                                         "feature `{field}` points at {uuid} which is kind = \"{}\", not `feature`",
                                         record.kind.as_str()
@@ -819,6 +859,7 @@ fn check_project_config(issues: &mut Vec<Issue>) {
             group: "(user)".to_string(),
             slug: None,
             severity: "warning",
+            code: "user_config_missing",
             message: "no user config at ~/.mmcp/config.toml - create one to set author identity and default sync server".to_string(),
         });
     } else {
@@ -829,6 +870,7 @@ fn check_project_config(issues: &mut Vec<Issue>) {
                     group: "(user)".to_string(),
                     slug: None,
                     severity: "warning",
+                    code: "user_author_missing",
                     message: "[author] section missing in user config".to_string(),
                 });
             }
@@ -839,6 +881,7 @@ fn check_project_config(issues: &mut Vec<Issue>) {
                             group: "(user)".to_string(),
                             slug: None,
                             severity: "warning",
+                            code: "user_author_git_fallback_unset",
                             message: "author.git_fallback not set - set to true (use git identity) or false (use mmcp fallback)".to_string(),
                         });
                     }
@@ -851,6 +894,7 @@ fn check_project_config(issues: &mut Vec<Issue>) {
                                 group: "(user)".to_string(),
                                 slug: None,
                                 severity: "warning",
+                                code: "user_author_git_name_empty",
                                 message: "git_fallback=true but git config user.name is empty"
                                     .to_string(),
                             });
@@ -876,6 +920,7 @@ fn check_project_config(issues: &mut Vec<Issue>) {
                     group: "(project)".to_string(),
                     slug: None,
                     severity: "warning",
+                    code: "sync_not_configured",
                     message: "no [sync] server configured in user or project config".to_string(),
                 });
             }
@@ -889,6 +934,7 @@ fn check_project_config(issues: &mut Vec<Issue>) {
                 group: "(project)".to_string(),
                 slug: None,
                 severity: "warning",
+                code: "project_config_missing",
                 message: "no .mmcp.toml project config found in current directory or any parent"
                     .to_string(),
             });
@@ -897,6 +943,7 @@ fn check_project_config(issues: &mut Vec<Issue>) {
                     group: "(project)".to_string(),
                     slug: None,
                     severity: "warning",
+                    code: "sync_not_configured",
                     message: "no [sync] server configured anywhere - push/pull will not work"
                         .to_string(),
                 });
@@ -908,6 +955,7 @@ fn check_project_config(issues: &mut Vec<Issue>) {
                     group: "(project)".to_string(),
                     slug: None,
                     severity: "error",
+                    code: "project_config_load_failed",
                     message: format!("project config failed to load: {err}"),
                 });
             }
@@ -917,6 +965,7 @@ fn check_project_config(issues: &mut Vec<Issue>) {
                         group: "(project)".to_string(),
                         slug: None,
                         severity: "warning",
+                        code: "sync_not_configured",
                         message: "no [sync] server configured in user or project config - push/pull will not work".to_string(),
                     });
                 }
