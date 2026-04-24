@@ -1,7 +1,12 @@
 <script lang="ts">
+  import FeatureBadge from './FeatureBadge.svelte';
+  import FeatureRelations from './FeatureRelations.svelte';
   import KindBadge from './KindBadge.svelte';
   import { marked } from 'marked';
   import { RefreshCw, X } from 'lucide-svelte';
+  import { memoriesStore } from '$lib/stores/memories.svelte';
+  import { selectionStore } from '$lib/stores/selection.svelte';
+  import { groupsStore } from '$lib/stores/groups.svelte';
   import type { KindStr, MemoryFile } from '$lib/types';
   import type { KindDisplay } from '$lib/stores/settings.svelte';
 
@@ -28,6 +33,22 @@
     onAcceptPending,
     onDismissPending
   }: Props = $props();
+
+  // Pre-warm every group's slug list so FeatureRelations can
+  // resolve the current memory's dependencies against the live
+  // cache. The memoriesStore itself guards against double-fetches.
+  $effect(() => {
+    for (const g of groupsStore.groups) {
+      if (!memoriesStore.slugs[g.group_id] && !memoriesStore.loadingSlugs[g.group_id]) {
+        void memoriesStore.loadSlugs(g.group_id);
+      }
+    }
+  });
+
+  function navigateTo(groupId: string, targetSlug: string) {
+    if (selectionStore.groupId !== groupId) selectionStore.selectGroup(groupId);
+    selectionStore.selectMemory(targetSlug);
+  }
 
   marked.setOptions({ breaks: false, gfm: true });
   const html = $derived.by(() => {
@@ -81,6 +102,12 @@
           <p class="mt-3 text-sm text-fg-muted" title={fm.description}>{fm.description}</p>
           <div class="mt-3 flex flex-wrap items-center gap-1.5">
             <KindBadge kind={fm.kind as KindStr} mode="icon_and_text" />
+            {#if fm.feature}
+              <FeatureBadge
+                status={fm.feature.status}
+                number={fm.feature.number}
+              />
+            {/if}
             {#if fm.mandatory}
               <span
                 class="inline-flex items-center rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-300 ring-1 ring-inset ring-amber-500/30"
@@ -107,6 +134,20 @@
             {/each}
           </div>
         </div>
+
+        {#if fm.feature}
+          <!-- Feature-request relations: depends_on / blocks /
+               superseded_by, resolved against cached memories so
+               the user can hop to any linked FR inline. -->
+          <div class="mt-5 rounded-lg border border-line bg-surface-1/40 p-4 sm:p-5">
+            <h3
+              class="mb-2 text-[10px] font-semibold uppercase tracking-wide text-fg-muted"
+            >
+              Feature relations
+            </h3>
+            <FeatureRelations feature={fm.feature} onNavigate={navigateTo} />
+          </div>
+        {/if}
 
         <!-- body card -->
         <div class="mt-5 rounded-lg border border-line bg-surface-1/40 p-4 sm:p-5">

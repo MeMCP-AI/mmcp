@@ -1,4 +1,5 @@
 <script lang="ts">
+  import FeatureBadge from './FeatureBadge.svelte';
   import KindBadge from './KindBadge.svelte';
   import {
     CheckSquare,
@@ -283,6 +284,7 @@
           {@const body = bodyFor(slug)}
           {@const kind = body?.frontmatter.kind as KindStr | undefined}
           {@const mandatory = body?.frontmatter.mandatory === true}
+          {@const feature = body?.frontmatter.feature ?? null}
           <li class="flex items-stretch">
             <button
               type="button"
@@ -321,6 +323,15 @@
               >
                 {slug}
               </span>
+              {#if feature}
+                <span class="shrink-0">
+                  <FeatureBadge
+                    status={feature.status}
+                    number={feature.number}
+                    label={false}
+                  />
+                </span>
+              {/if}
               <span class="flex w-4 shrink-0 items-center justify-center">
                 {#if mandatory}
                   <Pin size={10} class="text-amber-400" aria-label="Mandatory memory" />
