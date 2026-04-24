@@ -156,7 +156,7 @@
       aria-label="Minimize"
       onclick={() => win.minimize()}
     >
-      <span class="codicon codicon-chrome-minimize text-[16px] leading-none" aria-hidden="true"></span>
+      <span class="codicon codicon-chrome-minimize flex h-4 w-4 items-center justify-center text-[16px] leading-none before:block" aria-hidden="true"></span>
     </button>
     <button
       type="button"
@@ -165,9 +165,9 @@
       onclick={() => win.toggleMaximize()}
     >
       {#if maximized}
-        <span class="codicon codicon-chrome-restore text-[16px] leading-none" aria-hidden="true"></span>
+        <span class="codicon codicon-chrome-restore flex h-4 w-4 items-center justify-center text-[16px] leading-none before:block" aria-hidden="true"></span>
       {:else}
-        <span class="codicon codicon-chrome-maximize text-[16px] leading-none" aria-hidden="true"></span>
+        <span class="codicon codicon-chrome-maximize flex h-4 w-4 items-center justify-center text-[16px] leading-none before:block" aria-hidden="true"></span>
       {/if}
     </button>
     <button
@@ -176,7 +176,7 @@
       aria-label="Close"
       onclick={() => win.close()}
     >
-      <span class="codicon codicon-chrome-close text-[16px] leading-none" aria-hidden="true"></span>
+      <span class="codicon codicon-chrome-close flex h-4 w-4 items-center justify-center text-[16px] leading-none before:block" aria-hidden="true"></span>
     </button>
   </div>
 
