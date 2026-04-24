@@ -331,19 +331,22 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
             }
         }
 
-        // Slug/name drift: is the frontmatter name related to the slug?
+        // Slug/name drift: fire only when the slug and slugified
+        // name share *no* meaningful tokens. Substring containment
+        // was too loose — a short curated slug ("global-coding-
+        // rules-rust") and a full title ("Rust Coding Rules")
+        // legitimately differ as abbreviation vs. expansion and
+        // shouldn't spam the report. Zero-overlap is a strong
+        // signal the name actually changed without the slug
+        // rotating.
         let name_slug = slugify_filename(&fm.name);
-        if !name_slug.is_empty()
-            && name_slug != mem_slug
-            && !mem_slug.contains(&name_slug)
-            && !name_slug.contains(mem_slug)
-        {
+        if !name_slug.is_empty() && name_slug != mem_slug && !tokens_overlap(mem_slug, &name_slug) {
             report.issues.push(Issue {
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "info",
                 message: format!(
-                    "slug '{mem_slug}' and name '{}' may have drifted (slugified name: '{name_slug}')",
+                    "slug '{mem_slug}' and name '{}' share no common tokens (slugified name: '{name_slug}') — rename may have drifted",
                     fm.name
                 ),
             });
@@ -920,4 +923,26 @@ fn check_project_config(issues: &mut Vec<Issue>) {
             }
         },
     }
+}
+
+/// Return true when two slug-shaped strings share at least one
+/// substantive token. "Substantive" = length ≥ 3 and not one of
+/// a short stopword list we keep inline (no dep needed). Used to
+/// gate the slug/name drift heuristic so curated-short-label vs.
+/// full-title pairs (e.g. `global-coding-rules-rust` vs.
+/// `rust-coding-rules`) don't trip the check.
+fn tokens_overlap(a: &str, b: &str) -> bool {
+    const STOPWORDS: &[&str] = &[
+        "the", "and", "for", "with", "from", "into", "that", "this", "but", "not", "are", "you",
+        "have", "has", "was", "were", "will",
+    ];
+    let tokenize = |s: &str| -> Vec<String> {
+        s.split('-')
+            .filter(|t| t.len() >= 3 && !STOPWORDS.contains(t))
+            .map(|t| t.to_string())
+            .collect()
+    };
+    let at = tokenize(a);
+    let bt = tokenize(b);
+    at.iter().any(|t| bt.iter().any(|u| u == t))
 }
