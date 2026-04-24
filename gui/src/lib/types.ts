@@ -12,11 +12,35 @@ export type KindStr =
   | 'scratch'
   | 'feature';
 
+export type GroupScope = 'global' | 'shared' | 'project';
+
 export interface GroupEntry {
   group_id: string;
   slug: string;
   display_name: string | null;
   memory_count_hint: number;
+  scope: GroupScope;
+}
+
+export interface MemoryRef {
+  target: string;
+  commit: string;
+}
+
+export type FeatureStatus =
+  | 'open'
+  | 'resolved'
+  | 'blocked'
+  | 'deferred'
+  | 'duplicate'
+  | 'superseded';
+
+export interface FeatureMetadata {
+  status: FeatureStatus;
+  number: number | null;
+  depends_on: string[];
+  blocks: string[];
+  superseded_by: MemoryRef | null;
 }
 
 export interface MemoryFrontmatter {
@@ -27,6 +51,8 @@ export interface MemoryFrontmatter {
   mandatory: boolean;
   version: string | null;
   tags: string[];
+  refs: MemoryRef[];
+  feature?: FeatureMetadata | null;
 }
 
 export interface MemoryFile {
