@@ -249,11 +249,6 @@ pub struct UpdateSpec {
     pub description: Option<String>,
     pub body: Option<String>,
     pub status: Option<FeatureStatus>,
-    /// Explicit re-numbering. Callers almost never set this; it
-    /// exists so the FR-027 slug-migration binary can stamp the
-    /// number parsed from legacy `fr-NNN-*` slugs without racing
-    /// `add_feature`'s auto-assignment.
-    pub number: Option<u32>,
     pub depends_on: Option<Vec<Uuid>>,
     pub blocks: Option<Vec<Uuid>>,
     /// Compose-dedup add-side for `refs`. Entries with the same
@@ -632,10 +627,11 @@ pub async fn update_feature_unlocked(
     let description = spec.description.unwrap_or(current.description);
     let body = spec.body.unwrap_or(current.body);
     let status = spec.status.unwrap_or(current.status);
-    // `spec.number.is_some()` wins (explicit re-numbering); else
-    // keep the existing value so ordinary edits don't wipe the
-    // auto-assigned number.
-    let number = spec.number.or(current.number);
+    // FR-37: numbers are immutable after create. Preserve whatever
+    // the on-disk memory already carries; no UpdateSpec surface for
+    // changing it. The one-shot migrations that needed this path
+    // were retired with the `migrate_fr_slugs` example.
+    let number = current.number;
     let depends_on = spec.depends_on.unwrap_or(current.depends_on);
     let blocks = spec.blocks.unwrap_or(current.blocks);
     // Compose-dedup on the typed refs: remove-side first (by

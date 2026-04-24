@@ -1046,12 +1046,6 @@ struct AddFeatureArgs {
     #[serde(default)]
     pub status: Option<String>,
 
-    /// Explicit sequential number (FR-027). Leave absent and the
-    /// server auto-assigns `max(existing) + 1` per group; pin
-    /// explicitly only when migrating or re-numbering.
-    #[serde(default)]
-    pub number: Option<u32>,
-
     /// Slugs of FRs this one depends on.
     #[serde(default)]
     pub depends_on: Vec<String>,
@@ -1128,12 +1122,6 @@ struct UpdateFeatureArgs {
     /// `AddFeatureArgs::status`.
     #[serde(default)]
     pub status: Option<String>,
-
-    /// Explicit re-numbering (FR-027). Rare; mostly used by the
-    /// slug-migration binary to preserve historical numbers when
-    /// the old `fr-NNN-*` slug prefix is stripped.
-    #[serde(default)]
-    pub number: Option<u32>,
 
     /// Replacement `depends_on` list; omit to leave unchanged.
     /// Pass `[]` to clear.
@@ -3039,12 +3027,15 @@ impl McpServer {
             description: args.description,
             body: args.body,
             status,
-            number: args.number,
             depends_on,
             blocks,
             refs,
             supersedes: args.supersedes,
             message: args.message,
+            // FR-37: `number` is server-assigned only, never
+            // accepted from the wire. Leaving default None lets
+            // `add_feature` auto-assign `max + 1` under lock.
+            ..mmcp_store::features::AddSpec::default()
         };
         let record = mmcp_store::features::add_feature(
             &self.state.backend,
@@ -3167,7 +3158,6 @@ impl McpServer {
             description: args.description,
             body: args.body,
             status,
-            number: args.number,
             depends_on,
             blocks,
             refs_add,

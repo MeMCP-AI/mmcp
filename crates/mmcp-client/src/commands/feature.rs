@@ -65,11 +65,6 @@ pub struct AddArgs {
     #[arg(long)]
     pub status: Option<String>,
 
-    /// Explicit sequential number (FR-027). Leave absent to let
-    /// the server auto-assign `max(existing) + 1` per group.
-    #[arg(long)]
-    pub number: Option<u32>,
-
     /// Slugs of prerequisites. Repeat the flag for each entry.
     #[arg(long = "depends-on")]
     pub depends_on: Vec<String>,
@@ -113,11 +108,6 @@ pub struct UpdateArgs {
     /// New status. Omit to leave unchanged.
     #[arg(long)]
     pub status: Option<String>,
-
-    /// Explicit re-numbering (FR-027). Rare; mostly used by the
-    /// slug-migration flow to preserve historical numbers.
-    #[arg(long)]
-    pub number: Option<u32>,
 
     /// Replacement `depends_on` list. Omit to leave unchanged; pass
     /// `--depends-on-clear` to empty the list.
@@ -254,14 +244,12 @@ async fn run_add(args: AddArgs) -> Result<()> {
         description: args.description,
         body: read_body(&args.body)?,
         status,
-        number: args.number,
         depends_on,
         blocks,
         message: args.message,
-        // `refs` and `supersedes` are MCP-only today; the CLI
-        // `mmcp feature add` subcommand does not expose the
-        // typed-ref surface until the CLI UX is designed. Keep
-        // defaults so the CLI path stays backward-compatible.
+        // `refs`, `supersedes`, and `number` are not exposed on the
+        // CLI. FR-37 makes `number` server-assigned only. Refs and
+        // supersedes are MCP-only until the CLI UX is designed.
         ..AddSpec::default()
     };
     let record = add_feature(&backend, &entry, spec, &author)
@@ -330,7 +318,6 @@ async fn run_update(args: UpdateArgs) -> Result<()> {
         description: args.description,
         body,
         status,
-        number: args.number,
         depends_on,
         blocks,
         message: args.message,
