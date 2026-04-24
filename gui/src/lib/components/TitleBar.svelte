@@ -19,6 +19,7 @@
   let themeSubOpen = $state(false);
   let barEl: HTMLElement | undefined = $state();
   let maximized = $state(false);
+  let altHeld = $state(false);
 
   const win = getCurrentWindow();
 
@@ -50,6 +51,70 @@
     openMenu = openMenu === id ? null : id;
     if (openMenu !== 'view') themeSubOpen = false;
   }
+
+  // Alt-accelerator plumbing. Tracking the Alt key lets the labels
+  // reveal their underlined hotkey only while the user is actually
+  // reaching for one — matches the VSCode / Win32 convention.
+  $effect(() => {
+    const onDown = (e: KeyboardEvent) => {
+      if (e.key === 'Alt') altHeld = true;
+      if (e.altKey) {
+        const k = e.key.toLowerCase();
+        if (k === 'f') { toggle('file'); e.preventDefault(); return; }
+        if (k === 'v') { toggle('view'); e.preventDefault(); return; }
+        if (k === 'h') { toggle('help'); e.preventDefault(); return; }
+      }
+      if (openMenu && !e.altKey && e.key.length === 1) {
+        const handled = runInMenuAccelerator(openMenu, e.key.toLowerCase());
+        if (handled) e.preventDefault();
+      }
+      if (e.key === 'Escape' && openMenu) {
+        openMenu = null;
+        themeSubOpen = false;
+      }
+    };
+    const onUp = (e: KeyboardEvent) => {
+      if (e.key === 'Alt') altHeld = false;
+    };
+    const onBlur = () => (altHeld = false);
+    window.addEventListener('keydown', onDown);
+    window.addEventListener('keyup', onUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('keyup', onUp);
+      window.removeEventListener('blur', onBlur);
+    };
+  });
+
+  function runInMenuAccelerator(menu: MenuId, k: string): boolean {
+    if (menu === 'file') {
+      if (k === 'o') { void onOpenProject(); return true; }
+      if (k === 'c' && settingsStore.values.reference_point) { void onClearProject(); return true; }
+      if (k === 'p' && syncStore.configured && !syncStore.inFlight) { void onPull(); return true; }
+      if (k === 's') { onOpenSettings(); return true; }
+      if (k === 'q') { openMenu = null; void win.close(); return true; }
+    } else if (menu === 'view') {
+      if (!themeSubOpen) {
+        if (k === 't') { themeSubOpen = true; return true; }
+      } else {
+        const pick = THEME_ACCEL[k];
+        if (pick) {
+          settingsStore.setTheme(pick);
+          themeSubOpen = false;
+          openMenu = null;
+          return true;
+        }
+      }
+    } else if (menu === 'help') {
+      if (k === 'd') { onOpenDiagnostics(); return true; }
+    }
+    return false;
+  }
+
+  const THEME_ACCEL: Record<string, ThemeMode> = {
+    d: 'dark', o: 'oled', i: 'dim', l: 'light', s: 'system'
+  };
 
   async function onOpenProject() {
     openMenu = null;
@@ -91,12 +156,12 @@
     void openDiagnosticsWindow();
   }
 
-  const THEME_OPTIONS: { id: ThemeMode; label: string }[] = [
-    { id: 'dark', label: 'Dark' },
-    { id: 'oled', label: 'OLED' },
-    { id: 'dim', label: 'Dim Light' },
-    { id: 'light', label: 'Light' },
-    { id: 'system', label: 'System' }
+  const THEME_OPTIONS: { id: ThemeMode; label: string; accel: number }[] = [
+    { id: 'dark', label: 'Dark', accel: 0 },
+    { id: 'oled', label: 'OLED', accel: 0 },
+    { id: 'dim', label: 'Dim Light', accel: 2 },
+    { id: 'light', label: 'Light', accel: 0 },
+    { id: 'system', label: 'System', accel: 0 }
   ];
 </script>
 
@@ -104,7 +169,7 @@
   bind:this={barEl}
   data-tauri-drag-region
   style="--tb-h: 2rem; --tb-ctrl-w: calc(var(--tb-h) * 1.4375); --tb-glyph: calc(var(--tb-h) * 0.375); height: var(--tb-h);"
-  class="relative flex shrink-0 select-none items-stretch border-b border-line bg-surface-1 text-[0.75rem] text-fg-muted"
+  class="relative flex shrink-0 select-none items-stretch border-b border-line bg-surface-1 text-[0.75rem] text-fg-muted {altHeld ? 'alt-held' : ''}"
 >
   <div data-tauri-drag-region class="flex items-center gap-1 pl-2 pr-1">
     <BrainCircuit size={14} class="text-fg" />
@@ -119,7 +184,7 @@
       aria-expanded={openMenu === 'file'}
       onclick={() => toggle('file')}
     >
-      File
+      <u class="acc">F</u>ile
     </button>
     <button
       type="button"
@@ -128,7 +193,7 @@
       aria-expanded={openMenu === 'view'}
       onclick={() => toggle('view')}
     >
-      View
+      <u class="acc">V</u>iew
     </button>
     <button
       type="button"
@@ -137,7 +202,7 @@
       aria-expanded={openMenu === 'help'}
       onclick={() => toggle('help')}
     >
-      Help
+      <u class="acc">H</u>elp
     </button>
   </nav>
 
@@ -158,7 +223,8 @@
       aria-label="Minimize"
       onclick={() => win.minimize()}
     >
-      <span class="codicon codicon-chrome-minimize codicon-glyph" aria-hidden="true"></span>
+      <svg class="tb-glyph" viewBox="0 0 10 10" aria-hidden="true"
+        ><line x1="1" y1="5" x2="9" y2="5" /></svg>
     </button>
     <button
       type="button"
@@ -168,9 +234,14 @@
       onclick={() => win.toggleMaximize()}
     >
       {#if maximized}
-        <span class="codicon codicon-chrome-restore codicon-glyph" aria-hidden="true"></span>
+        <svg class="tb-glyph" viewBox="0 0 10 10" aria-hidden="true">
+          <rect x="3" y="1" width="6" height="6" />
+          <path d="M1 3 H7 V9 H1 Z" />
+        </svg>
       {:else}
-        <span class="codicon codicon-chrome-maximize codicon-glyph" aria-hidden="true"></span>
+        <svg class="tb-glyph" viewBox="0 0 10 10" aria-hidden="true">
+          <rect x="1" y="1" width="8" height="8" />
+        </svg>
       {/if}
     </button>
     <button
@@ -180,7 +251,10 @@
       aria-label="Close"
       onclick={() => win.close()}
     >
-      <span class="codicon codicon-chrome-close codicon-glyph" aria-hidden="true"></span>
+      <svg class="tb-glyph" viewBox="0 0 10 10" aria-hidden="true">
+        <line x1="1" y1="1" x2="9" y2="9" />
+        <line x1="9" y1="1" x2="1" y2="9" />
+      </svg>
     </button>
   </div>
 
@@ -197,7 +271,7 @@
           class="flex w-full items-center justify-between px-3 py-1.5 text-left hover:bg-surface-2"
           onclick={onOpenProject}
         >
-          <span>Open Project…</span>
+          <span><u class="acc">O</u>pen Project…</span>
           <span class="text-[10px] text-fg-subtle">cwd</span>
         </button>
       </li>
@@ -209,7 +283,7 @@
           disabled={!settingsStore.values.reference_point}
           onclick={onClearProject}
         >
-          <span>Clear Project Anchor</span>
+          <span><u class="acc">C</u>lear Project Anchor</span>
         </button>
       </li>
       <li class="border-t border-line">
@@ -220,7 +294,7 @@
           disabled={!syncStore.configured || syncStore.inFlight}
           onclick={onPull}
         >
-          <span>Pull Now</span>
+          <span><u class="acc">P</u>ull Now</span>
         </button>
       </li>
       <li>
@@ -230,7 +304,7 @@
           class="flex w-full items-center justify-between px-3 py-1.5 text-left hover:bg-surface-2"
           onclick={onOpenSettings}
         >
-          <span>Settings…</span>
+          <span><u class="acc">S</u>ettings…</span>
         </button>
       </li>
       <li class="border-t border-line">
@@ -243,7 +317,7 @@
             void win.close();
           }}
         >
-          <span>Quit</span>
+          <span><u class="acc">Q</u>uit</span>
         </button>
       </li>
     </ul>
@@ -264,7 +338,7 @@
           onmouseenter={() => (themeSubOpen = true)}
           onclick={() => (themeSubOpen = !themeSubOpen)}
         >
-          <span>Theme</span>
+          <span><u class="acc">T</u>heme</span>
           <ChevronRight size={12} class="text-fg-subtle" />
         </button>
         {#if themeSubOpen}
@@ -286,7 +360,11 @@
                     openMenu = null;
                   }}
                 >
-                  <span>{opt.label}</span>
+                  <span
+                    >{opt.label.slice(0, opt.accel)}<u class="acc"
+                      >{opt.label[opt.accel]}</u
+                    >{opt.label.slice(opt.accel + 1)}</span
+                  >
                   {#if active}<span class="text-[10px] text-selected-fg">●</span>{/if}
                 </button>
               </li>
@@ -309,7 +387,7 @@
           class="flex w-full items-center justify-between px-3 py-1.5 text-left hover:bg-surface-2"
           onclick={onOpenDiagnostics}
         >
-          <span>Diagnose…</span>
+          <span><u class="acc">D</u>iagnose…</span>
         </button>
       </li>
     </ul>
@@ -317,19 +395,27 @@
 </header>
 
 <style>
-  /* Title-bar chrome glyphs scale off --tb-glyph on the header so
-     bar height is the single source of truth — change --tb-h and
-     every icon, control width, and glyph follows. */
-  :global(.codicon-glyph) {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
+  /* Title-bar chrome glyphs share a 10x10 viewBox; size scales off
+     --tb-glyph on the header so bar height is the single source of
+     truth. Inline SVG over a webfont: guarantees pixel-aligned
+     stroke widths and identical centering for every glyph. */
+  .tb-glyph {
     width: var(--tb-glyph);
     height: var(--tb-glyph);
-    font-size: var(--tb-glyph);
-    line-height: 1;
+    stroke: currentColor;
+    stroke-width: 1;
+    fill: none;
+    shape-rendering: crispEdges;
   }
-  :global(.codicon-glyph::before) {
-    display: block;
+
+  /* Alt-accelerator underline. The <u> marker sits in the label
+     at all times (so reading order is stable), but the underline
+     only appears while Alt is held — matches the Win32 / VSCode
+     menu-bar convention. */
+  .acc {
+    text-decoration: none;
+  }
+  .alt-held .acc {
+    text-decoration: underline;
   }
 </style>
