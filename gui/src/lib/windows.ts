@@ -42,7 +42,10 @@ async function openSingleton(spec: WindowSpec): Promise<void> {
     minWidth: spec.minWidth,
     minHeight: spec.minHeight,
     resizable: true,
-    focus: true
+    focus: true,
+    // Child windows share the main window's custom chrome. A
+    // thin ChildTitleBar inside each route handles drag + close.
+    decorations: false
   });
 }
 

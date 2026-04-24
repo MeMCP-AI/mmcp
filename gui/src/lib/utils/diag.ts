@@ -41,8 +41,8 @@ export const SEVERITY_META: Record<Severity, SeverityMeta> = {
     plural: 'Errors',
     tone: 'rose',
     Icon: XCircle,
-    tile: 'border-rose-500/30 bg-rose-500/10 text-rose-300',
-    chip: 'bg-rose-500/15 text-rose-300 ring-rose-500/30',
+    tile: 'border-rose-500/40 bg-rose-500/15 text-sev-error',
+    chip: 'bg-rose-500/20 text-sev-error ring-rose-500/40',
     accent: 'border-l-rose-500'
   },
   warning: {
@@ -50,8 +50,8 @@ export const SEVERITY_META: Record<Severity, SeverityMeta> = {
     plural: 'Warnings',
     tone: 'amber',
     Icon: AlertTriangle,
-    tile: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
-    chip: 'bg-amber-500/15 text-amber-300 ring-amber-500/30',
+    tile: 'border-amber-500/40 bg-amber-500/15 text-sev-warning',
+    chip: 'bg-amber-500/20 text-sev-warning ring-amber-500/40',
     accent: 'border-l-amber-500'
   },
   info: {
@@ -59,8 +59,8 @@ export const SEVERITY_META: Record<Severity, SeverityMeta> = {
     plural: 'Infos',
     tone: 'sky',
     Icon: Info,
-    tile: 'border-sky-500/30 bg-sky-500/10 text-sky-300',
-    chip: 'bg-sky-500/15 text-sky-300 ring-sky-500/30',
+    tile: 'border-sky-500/40 bg-sky-500/15 text-sev-info',
+    chip: 'bg-sky-500/20 text-sev-info ring-sky-500/40',
     accent: 'border-l-sky-500'
   }
 };

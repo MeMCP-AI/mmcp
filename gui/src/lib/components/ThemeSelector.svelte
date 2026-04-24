@@ -18,6 +18,7 @@
   const OPTIONS: ThemeOption[] = [
     { id: 'dark', label: 'Dark', Icon: Moon, blurb: 'Default night palette.' },
     { id: 'oled', label: 'OLED', Icon: CircleDot, blurb: 'Pure black, saves OLED pixels.' },
+    { id: 'dim-dark', label: 'Dim Dark', Icon: Contrast, blurb: 'Soft dark, lower contrast.' },
     { id: 'dim', label: 'Dim Light', Icon: Contrast, blurb: 'Low-contrast soft daylight.' },
     { id: 'light', label: 'Light', Icon: Sun, blurb: 'Bright palette for daytime.' },
     { id: 'system', label: 'System', Icon: Monitor, blurb: 'Follow the OS preference.' }

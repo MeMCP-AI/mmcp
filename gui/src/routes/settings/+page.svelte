@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ChildTitleBar from '$lib/components/ChildTitleBar.svelte';
   import SettingsPanel from '$lib/components/SettingsPanel.svelte';
   import {
     loadProjectConfig,
@@ -119,8 +120,10 @@
   <title>mmcp-gui · Settings</title>
 </svelte:head>
 
-<div class="h-full w-full">
-  <SettingsPanel
+<div class="flex h-full w-full flex-col bg-surface-0 text-fg">
+  <ChildTitleBar title="mmcp-gui · Settings" />
+  <div class="min-h-0 flex-1">
+    <SettingsPanel
     value={settingsStore.values.kind_display}
     theme={settingsStore.values.theme}
     onChange={(mode: KindDisplay) => settingsStore.setKindDisplay(mode)}
@@ -138,4 +141,5 @@
     {saving}
     {lastError}
   />
+  </div>
 </div>

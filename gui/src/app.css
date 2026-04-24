@@ -28,6 +28,15 @@
      on dark, sky-900 on light — the sky/15 backdrop is the same
      tint in both modes, only the foreground flips. */
   --color-selected-fg: var(--mmcp-selected-fg);
+
+  /* Severity foregrounds. Every theme overrides them below so the
+     number in a severity tile / chip stays readable whether the
+     backdrop is near-black or near-white. Background + ring tints
+     stay on the shared rose-500 / amber-500 / sky-500 families and
+     rely on alpha, which looks fine in either direction. */
+  --color-sev-error: var(--mmcp-sev-error);
+  --color-sev-warning: var(--mmcp-sev-warning);
+  --color-sev-info: var(--mmcp-sev-info);
 }
 
 /* Dark theme is the default — the tokens resolve to the same zinc
@@ -48,6 +57,29 @@
   --mmcp-scrollbar-track: transparent;
   --mmcp-scrollbar-thumb: #27272a;
   --mmcp-scrollbar-thumb-hover: #52525b;
+  --mmcp-sev-error: #fda4af;    /* rose-300 */
+  --mmcp-sev-warning: #fcd34d;  /* amber-300 */
+  --mmcp-sev-info: #7dd3fc;     /* sky-300 */
+  color-scheme: dark;
+}
+
+:root[data-theme='dim-dark'] {
+  --mmcp-surface-0: #1c1c20;
+  --mmcp-surface-1: #24242a;
+  --mmcp-surface-2: #2d2d34;
+  --mmcp-surface-3: #3a3a42;
+  --mmcp-line: #2a2a30;
+  --mmcp-line-strong: #40404a;
+  --mmcp-fg: #d4d4dc;
+  --mmcp-fg-muted: #9a9aa6;
+  --mmcp-fg-subtle: #6c6c78;
+  --mmcp-selected-fg: #e0f2fe;
+  --mmcp-scrollbar-track: transparent;
+  --mmcp-scrollbar-thumb: #2d2d34;
+  --mmcp-scrollbar-thumb-hover: #50505c;
+  --mmcp-sev-error: #fda4af;
+  --mmcp-sev-warning: #fcd34d;
+  --mmcp-sev-info: #7dd3fc;
   color-scheme: dark;
 }
 
@@ -65,6 +97,9 @@
   --mmcp-scrollbar-track: transparent;
   --mmcp-scrollbar-thumb: #141414;
   --mmcp-scrollbar-thumb-hover: #2a2a2a;
+  --mmcp-sev-error: #fda4af;
+  --mmcp-sev-warning: #fcd34d;
+  --mmcp-sev-info: #7dd3fc;
   color-scheme: dark;
 }
 
@@ -81,6 +116,9 @@
   --mmcp-selected-fg: #0c4a6e;
   --mmcp-scrollbar-thumb: #a1a1aa;
   --mmcp-scrollbar-thumb-hover: #71717a;
+  --mmcp-sev-error: #9f1239;    /* rose-800 */
+  --mmcp-sev-warning: #92400e;  /* amber-800 */
+  --mmcp-sev-info: #075985;     /* sky-800 */
   color-scheme: light;
 }
 
@@ -97,6 +135,9 @@
   --mmcp-selected-fg: #0c4a6e; /* sky-900 */
   --mmcp-scrollbar-thumb: #d4d4d8;
   --mmcp-scrollbar-thumb-hover: #a1a1aa;
+  --mmcp-sev-error: #be123c;    /* rose-700 */
+  --mmcp-sev-warning: #b45309;  /* amber-700 */
+  --mmcp-sev-info: #0369a1;     /* sky-700 */
   color-scheme: light;
 }
 
@@ -153,7 +194,8 @@ button,
    themselves. Mirrors what `prose-invert` does in the typography
    plugin. */
 :root[data-theme='dark'] .prose,
-:root[data-theme='oled'] .prose {
+:root[data-theme='oled'] .prose,
+:root[data-theme='dim-dark'] .prose {
   --tw-prose-body: var(--tw-prose-invert-body);
   --tw-prose-headings: var(--tw-prose-invert-headings);
   --tw-prose-lead: var(--tw-prose-invert-lead);
