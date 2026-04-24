@@ -10,7 +10,7 @@ const SETTINGS_CHANGED_EVENT = 'settings:changed';
 export type KindDisplay = 'off' | 'icon' | 'text' | 'icon_and_text';
 export type LayoutMode = 'columns' | 'stacked';
 export type DiffViewMode = 'unified' | 'side_by_side' | 'inline_word';
-export type ThemeMode = 'dark' | 'light' | 'system';
+export type ThemeMode = 'dark' | 'light' | 'system' | 'oled' | 'dim';
 // `hub` is the chosen UI going forward. `repo` and `feed` stay
 // in the codebase as historical variants pending removal — don't
 // resurface them without user direction.
@@ -103,7 +103,7 @@ class SettingsStore {
   /// picker — cycling keeps the affordance to a single click
   /// while still reaching all three options.
   cycleTheme() {
-    const order: ThemeMode[] = ['dark', 'light', 'system'];
+    const order: ThemeMode[] = ['dark', 'oled', 'dim', 'light', 'system'];
     const next = order[(order.indexOf(this.values.theme) + 1) % order.length];
     this.setTheme(next);
   }

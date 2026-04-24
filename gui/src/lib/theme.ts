@@ -4,8 +4,11 @@ import type { ThemeMode } from '$lib/stores/settings.svelte';
 /// browser's `prefers-color-scheme` hint. Falls back to dark when
 /// the matchMedia API is unavailable (older webviews) so the app
 /// keeps its pre-light-mode appearance.
-export function resolveTheme(mode: ThemeMode): 'dark' | 'light' {
-  if (mode === 'dark' || mode === 'light') return mode;
+export type EffectiveTheme = 'dark' | 'light' | 'oled' | 'dim';
+
+export function resolveTheme(mode: ThemeMode): EffectiveTheme {
+  if (mode === 'dark' || mode === 'light' || mode === 'oled' || mode === 'dim')
+    return mode;
   if (typeof window === 'undefined') return 'dark';
   if (!window.matchMedia) return 'dark';
   return window.matchMedia('(prefers-color-scheme: light)').matches

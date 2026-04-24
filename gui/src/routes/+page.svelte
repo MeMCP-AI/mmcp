@@ -6,7 +6,7 @@
   // mirror-refresh cascade that the stores need to stay fresh.
 
   import CommonFooter from '$lib/components/CommonFooter.svelte';
-  import MenuBar from '$lib/components/MenuBar.svelte';
+  import TitleBar from '$lib/components/TitleBar.svelte';
   import HubView from '$lib/components/variants/HubView.svelte';
 
   import { groupsStore } from '$lib/stores/groups.svelte';
@@ -77,7 +77,7 @@
 </script>
 
 <div class="flex h-full w-full flex-col overflow-hidden bg-surface-0 text-fg">
-  <MenuBar />
+  <TitleBar />
 
   <!-- Hub is the only live variant; `settingsStore.values.ui_variant`
        stays in case a future experiment re-introduces the

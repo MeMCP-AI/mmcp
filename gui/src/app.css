@@ -51,6 +51,39 @@
   color-scheme: dark;
 }
 
+:root[data-theme='oled'] {
+  --mmcp-surface-0: #000000;
+  --mmcp-surface-1: #0a0a0a;
+  --mmcp-surface-2: #141414;
+  --mmcp-surface-3: #1f1f1f;
+  --mmcp-line: #1a1a1a;
+  --mmcp-line-strong: #2a2a2a;
+  --mmcp-fg: #f5f5f5;
+  --mmcp-fg-muted: #9a9a9a;
+  --mmcp-fg-subtle: #6a6a6a;
+  --mmcp-selected-fg: #e0f2fe;
+  --mmcp-scrollbar-track: transparent;
+  --mmcp-scrollbar-thumb: #141414;
+  --mmcp-scrollbar-thumb-hover: #2a2a2a;
+  color-scheme: dark;
+}
+
+:root[data-theme='dim'] {
+  --mmcp-surface-0: #d4d4d8; /* zinc-300 */
+  --mmcp-surface-1: #e4e4e7; /* zinc-200 */
+  --mmcp-surface-2: #d4d4d8; /* zinc-300 */
+  --mmcp-surface-3: #a1a1aa; /* zinc-400 */
+  --mmcp-line: #a1a1aa;
+  --mmcp-line-strong: #71717a;
+  --mmcp-fg: #27272a;        /* zinc-800 */
+  --mmcp-fg-muted: #52525b;  /* zinc-600 */
+  --mmcp-fg-subtle: #71717a; /* zinc-500 */
+  --mmcp-selected-fg: #0c4a6e;
+  --mmcp-scrollbar-thumb: #a1a1aa;
+  --mmcp-scrollbar-thumb-hover: #71717a;
+  color-scheme: light;
+}
+
 :root[data-theme='light'] {
   --mmcp-surface-0: #fafafa;
   --mmcp-surface-1: #ffffff;
@@ -119,7 +152,8 @@ button,
    dark theme so Svelte components don't have to toggle the class
    themselves. Mirrors what `prose-invert` does in the typography
    plugin. */
-:root[data-theme='dark'] .prose {
+:root[data-theme='dark'] .prose,
+:root[data-theme='oled'] .prose {
   --tw-prose-body: var(--tw-prose-invert-body);
   --tw-prose-headings: var(--tw-prose-invert-headings);
   --tw-prose-lead: var(--tw-prose-invert-lead);
