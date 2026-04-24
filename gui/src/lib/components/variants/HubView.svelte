@@ -26,6 +26,7 @@
   import ScopeIcon from '../primitives/ScopeIcon.svelte';
   import ScopeTile from '../primitives/ScopeTile.svelte';
   import SearchInput from '../primitives/SearchInput.svelte';
+  import ThemeSelector from '../ThemeSelector.svelte';
 
   import { settingsStore } from '$lib/stores/settings.svelte';
   import { selectionStore } from '$lib/stores/selection.svelte';
@@ -391,6 +392,8 @@
         </div>
       {/if}
     </div>
+
+    <ThemeSelector />
   </header>
 
   <!-- Routed body -->
