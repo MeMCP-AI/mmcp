@@ -131,6 +131,7 @@ fn to_memory_file(dto: MemoryFileDto) -> GuiResult<MemoryFile> {
         tags: dto.frontmatter.tags,
         bump_intent: None,
         feature: None,
+        refs: Vec::new(),
     };
     Ok(MemoryFile {
         frontmatter: fm,
