@@ -3100,7 +3100,12 @@ impl McpServer {
         )
         .await
         .map_err(map_feature_error_to_mcp)?;
-        Ok(ok_json(feature_record_to_json(&entry, &record)))
+        // FR-45 `dangling_ref` populator: walk this feature's
+        // depends_on / blocks / superseded_by targets against the
+        // group's memory index and flag any UUID that does not
+        // resolve locally.
+        let notes = dangling_ref_notes_for(&self.state.backend, &entry, &record).await;
+        Ok(ok_json_with_notes(feature_record_to_json(&entry, &record), notes))
     }
 
     #[tool(
@@ -3310,15 +3315,26 @@ impl McpServer {
             mmcp_store::features::list_features(&self.state.backend, &entry, status, show_all)
                 .await
                 .map_err(map_feature_error_to_mcp)?;
+        // FR-45 `dangling_ref`: aggregate dangling-ref notes
+        // across every record in the listing so callers see a
+        // single pane of reference-integrity warnings alongside
+        // the listing itself.
+        let mut notes = Vec::new();
+        for record in &records {
+            notes.extend(dangling_ref_notes_for(&self.state.backend, &entry, record).await);
+        }
         let features: Vec<_> = records
             .iter()
             .map(|record| feature_record_to_json(&entry, record))
             .collect();
-        Ok(ok_json(json!({
-            "group":    entry.manifest.group_id.to_string(),
-            "features": features,
-            "count":    records.len(),
-        })))
+        Ok(ok_json_with_notes(
+            json!({
+                "group":    entry.manifest.group_id.to_string(),
+                "features": features,
+                "count":    records.len(),
+            }),
+            notes,
+        ))
     }
 }
 
@@ -3644,6 +3660,78 @@ fn feature_record_to_json(
         "superseded_by": record.superseded_by.as_ref().map(memory_ref_to_json),
         "commit_id":     record.commit_id,
     })
+}
+
+/// FR-45 populator helper: scan a feature record's typed UUID
+/// references (`depends_on`, `blocks`, `superseded_by.target`)
+/// against the group's local memory index and emit a
+/// `dangling_ref` note for each target that does not resolve.
+///
+/// Pure-local check — only verifies the uuid appears as a filename
+/// under `memories/<slug>/<uuid>.md` somewhere in the group.
+/// Cross-group refs always show up as dangling here until the
+/// resolver learns to look across mirrored groups (separate FR).
+async fn dangling_ref_notes_for(
+    backend: &NativeBackend,
+    entry: &GroupEntry,
+    record: &mmcp_store::features::FeatureRecord,
+) -> Vec<mmcp_proto::Note> {
+    let files = match mmcp_store::memory::list_all_memory_files(
+        backend,
+        &entry.handle,
+        &Rev::head(),
+    )
+    .await
+    {
+        Ok(files) => files,
+        // Git failure on enumeration is unusual; surface nothing
+        // rather than inventing a fake dangling-ref storm. The
+        // per-memory reads in the tool body would have failed too
+        // and landed as a real error response upstream.
+        Err(_) => return Vec::new(),
+    };
+    let known: std::collections::HashSet<Uuid> = files.iter().map(|f| f.id).collect();
+
+    let mut notes = Vec::new();
+    for (field, uuid) in record.depends_on.iter().map(|u| ("depends_on", *u)).chain(
+        record.blocks.iter().map(|u| ("blocks", *u)),
+    ) {
+        if !known.contains(&uuid) {
+            notes.push(
+                mmcp_proto::Note::warn(
+                    "dangling_ref",
+                    format!("feature `{}` references unresolved target in `{field}`", record.slug),
+                )
+                .with_context(json!({
+                    "slug": record.slug,
+                    "field": field,
+                    "target": uuid.to_string(),
+                    "group": entry.manifest.group_id.to_string(),
+                })),
+            );
+        }
+    }
+    if let Some(link) = record.superseded_by.as_ref() {
+        if !known.contains(&link.target) {
+            notes.push(
+                mmcp_proto::Note::warn(
+                    "dangling_ref",
+                    format!(
+                        "feature `{}` superseded_by target does not resolve locally",
+                        record.slug
+                    ),
+                )
+                .with_context(json!({
+                    "slug": record.slug,
+                    "field": "superseded_by",
+                    "target": link.target.to_string(),
+                    "commit": link.commit,
+                    "group": entry.manifest.group_id.to_string(),
+                })),
+            );
+        }
+    }
+    notes
 }
 
 /// Render a [`mmcp_core::memory::MemoryRef`] onto the MCP wire shape
