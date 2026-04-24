@@ -103,7 +103,7 @@ class SettingsStore {
   /// picker — cycling keeps the affordance to a single click
   /// while still reaching all three options.
   cycleTheme() {
-    const order: ThemeMode[] = ['dark', 'oled', 'dim-dark', 'dim', 'light', 'system'];
+    const order: ThemeMode[] = ['oled', 'dark', 'dim-dark', 'dim', 'light', 'system'];
     const next = order[(order.indexOf(this.values.theme) + 1) % order.length];
     this.setTheme(next);
   }

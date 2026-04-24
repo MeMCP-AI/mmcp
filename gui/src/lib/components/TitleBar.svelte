@@ -162,8 +162,8 @@
   }
 
   const THEME_OPTIONS: { id: ThemeMode; label: string; accel: number }[] = [
-    { id: 'dark', label: 'Dark', accel: 0 },
     { id: 'oled', label: 'OLED', accel: 0 },
+    { id: 'dark', label: 'Dark', accel: 0 },
     { id: 'dim-dark', label: 'Dim Dark', accel: 6 },
     { id: 'dim', label: 'Dim Light', accel: 2 },
     { id: 'light', label: 'Light', accel: 0 },
