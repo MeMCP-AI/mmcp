@@ -1364,14 +1364,24 @@ impl McpServer {
                 Some(json!({ "slug": resolved.slug })),
             )
         })?;
-        Ok(ok_json(json!({
-            "group": entry.manifest.group_id,
-            "slug": resolved.slug,
-            "id": resolved.id.to_string(),
-            "version": rev_label(&rev),
-            "frontmatter": frontmatter_to_json(&file.frontmatter),
-            "body": file.body,
-        })))
+        // FR-45 `malformed_frontmatter` populator: the parser
+        // accepted the file (hard errors already returned above)
+        // but some soft integrity signals are worth surfacing so
+        // callers know to reconcile. Shape matches what
+        // `mcp:diagnose` flags, but returned through the notes
+        // channel per-read.
+        let notes = malformed_frontmatter_notes(&resolved.slug, resolved.id, &file);
+        Ok(ok_json_with_notes(
+            json!({
+                "group": entry.manifest.group_id,
+                "slug": resolved.slug,
+                "id": resolved.id.to_string(),
+                "version": rev_label(&rev),
+                "frontmatter": frontmatter_to_json(&file.frontmatter),
+                "body": file.body,
+            }),
+            notes,
+        ))
     }
 
     #[tool(
@@ -3730,6 +3740,73 @@ async fn dangling_ref_notes_for(
                 })),
             );
         }
+    }
+    notes
+}
+
+/// FR-45 populator helper: inspect a successfully-parsed
+/// `MemoryFile` for soft integrity issues and emit a note per
+/// issue. Hard parse errors already bail out upstream as a
+/// `McpError::invalid_params`; this function runs only on the
+/// happy path and lets callers know their memory has recoverable
+/// drift (empty name, empty description, frontmatter id ≠
+/// filename UUID, etc.).
+///
+/// Returns an empty Vec when everything checks out.
+fn malformed_frontmatter_notes(
+    slug: &str,
+    filename_id: Uuid,
+    file: &MemoryFile,
+) -> Vec<mmcp_proto::Note> {
+    let fm = &file.frontmatter;
+    let mut notes = Vec::new();
+    if fm.name.trim().is_empty() {
+        notes.push(
+            mmcp_proto::Note::warn(
+                "malformed_frontmatter",
+                format!("memory `{slug}` has an empty `name` field"),
+            )
+            .with_context(json!({ "slug": slug, "field": "name" })),
+        );
+    }
+    if fm.description.trim().is_empty() {
+        notes.push(
+            mmcp_proto::Note::warn(
+                "malformed_frontmatter",
+                format!("memory `{slug}` has an empty `description` field"),
+            )
+            .with_context(json!({ "slug": slug, "field": "description" })),
+        );
+    }
+    match fm.id {
+        None => notes.push(
+            mmcp_proto::Note::warn(
+                "malformed_frontmatter",
+                format!(
+                    "memory `{slug}` has no `id` in frontmatter; expected {filename_id} per FR-028"
+                ),
+            )
+            .with_context(json!({
+                "slug": slug,
+                "field": "id",
+                "expected": filename_id.to_string(),
+            })),
+        ),
+        Some(id) if id != filename_id => notes.push(
+            mmcp_proto::Note::warn(
+                "malformed_frontmatter",
+                format!(
+                    "memory `{slug}` frontmatter id {id} does not match filename UUID {filename_id}"
+                ),
+            )
+            .with_context(json!({
+                "slug": slug,
+                "field": "id",
+                "frontmatter_id": id.to_string(),
+                "filename_id": filename_id.to_string(),
+            })),
+        ),
+        _ => {}
     }
     notes
 }
