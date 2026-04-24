@@ -1,21 +1,21 @@
 <script lang="ts">
+  // Classic-variant action bar. Carries memory-level actions
+  // (new / edit / delete / history), sync push-pull, and the
+  // classic-only columns/stacked layout toggle. App-shell chrome
+  // (theme / settings / variant switcher / diagnose) lives in
+  // CommonNavbar and CommonFooter so it's reachable from every
+  // variant uniformly.
+
   import {
     CloudDownload,
     CloudUpload,
     Columns2,
     History as HistoryIcon,
-    Monitor,
-    Moon,
     Pencil,
     Plus,
     Rows2,
-    Settings as SettingsIcon,
-    Stethoscope,
-    Sun,
     Trash2
   } from 'lucide-svelte';
-  import VariantSwitcher from './variants/VariantSwitcher.svelte';
-  import type { ThemeMode, UiVariant } from '$lib/stores/settings.svelte';
 
   export type LayoutMode = 'columns' | 'stacked';
 
@@ -26,19 +26,13 @@
     canViewHistory: boolean;
     syncReady: boolean;
     layout: LayoutMode;
-    theme: ThemeMode;
-    variant: UiVariant;
     onNew: () => void;
     onEdit: () => void;
     onDelete: () => void;
     onHistory: () => void;
     onPull: () => void;
     onPush: () => void;
-    onDiagnose: () => void;
-    onSettings: () => void;
     onToggleLayout: () => void;
-    onCycleTheme: () => void;
-    onSelectVariant: (variant: UiVariant) => void;
   }
 
   let {
@@ -48,36 +42,15 @@
     canViewHistory,
     syncReady,
     layout,
-    theme,
-    variant,
     onNew,
     onEdit,
     onDelete,
     onHistory,
     onPull,
     onPush,
-    onDiagnose,
-    onSettings,
-    onToggleLayout,
-    onCycleTheme,
-    onSelectVariant
+    onToggleLayout
   }: Props = $props();
 
-  // Advances dark → light → system → dark. The icon mirrors the
-  // *current* mode so the user sees what's active; the tooltip
-  // previews what clicking will switch to.
-  const themeDescriptor = $derived(
-    theme === 'dark'
-      ? { Icon: Moon, label: 'Dark', next: 'Light' }
-      : theme === 'light'
-        ? { Icon: Sun, label: 'Light', next: 'System' }
-        : { Icon: Monitor, label: 'System', next: 'Dark' }
-  );
-
-  // Label is hidden below sm (< 640 px) — only the icon stays visible
-  // so the toolbar still fits on a narrow window. Aria-label keeps
-  // screen readers happy and `title` gives sighted users a tooltip
-  // when they hover the bare icon.
   const btn =
     'inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-fg ' +
     'hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ' +
@@ -122,13 +95,6 @@
     <span class="hidden sm:inline">Push</span>
   </button>
 
-  <span class={sep}></span>
-
-  <button class={btn} onclick={onDiagnose} aria-label="Diagnose" title="Diagnose">
-    <Stethoscope size={14} />
-    <span class="hidden sm:inline">Diagnose</span>
-  </button>
-
   <span class="ml-auto"></span>
 
   <button
@@ -145,22 +111,5 @@
       <Columns2 size={14} />
     {/if}
     <span class="hidden sm:inline">Layout</span>
-  </button>
-
-  <button
-    class={btn}
-    onclick={onCycleTheme}
-    aria-label={`Theme: ${themeDescriptor.label}`}
-    title={`Theme: ${themeDescriptor.label} — click to switch to ${themeDescriptor.next}`}
-  >
-    <themeDescriptor.Icon size={14} />
-    <span class="hidden sm:inline">{themeDescriptor.label}</span>
-  </button>
-
-  <VariantSwitcher current={variant} onSelect={onSelectVariant} />
-
-  <button class={btn} onclick={onSettings} aria-label="Settings" title="Settings">
-    <SettingsIcon size={14} />
-    <span class="hidden sm:inline">Settings</span>
   </button>
 </header>

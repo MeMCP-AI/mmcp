@@ -37,7 +37,6 @@
     Star,
     X
   } from 'lucide-svelte';
-  import ChromeTools from '../ChromeTools.svelte';
   import FeatureBadge from '../FeatureBadge.svelte';
   import FeatureRelations from '../FeatureRelations.svelte';
   import KindBadge from '../KindBadge.svelte';
@@ -477,7 +476,6 @@
       {/if}
     </div>
 
-    <ChromeTools />
   </header>
 
   <!-- Route-driven body. -->

@@ -25,7 +25,6 @@
     Search,
     X
   } from 'lucide-svelte';
-  import ChromeTools from '../ChromeTools.svelte';
   import FeatureBadge from '../FeatureBadge.svelte';
   import FeatureRelations from '../FeatureRelations.svelte';
   import KindBadge from '../KindBadge.svelte';
@@ -288,7 +287,6 @@
         <RefreshCw size={11} class={syncStore.inFlight ? 'animate-spin' : ''} />
         Pull
       </button>
-      <ChromeTools />
     </div>
   </header>
 

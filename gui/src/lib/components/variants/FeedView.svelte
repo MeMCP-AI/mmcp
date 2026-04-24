@@ -18,7 +18,6 @@
     Search,
     X
   } from 'lucide-svelte';
-  import ChromeTools from '../ChromeTools.svelte';
   import FeatureBadge from '../FeatureBadge.svelte';
   import FeatureRelations from '../FeatureRelations.svelte';
   import KindBadge from '../KindBadge.svelte';
@@ -189,7 +188,6 @@
         </button>
       {/if}
     </div>
-    <ChromeTools />
   </header>
 
   <div class="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-line bg-surface-1/40 px-4 py-2">

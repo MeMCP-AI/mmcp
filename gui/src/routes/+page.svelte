@@ -1,4 +1,6 @@
 <script lang="ts">
+  import CommonFooter from '$lib/components/CommonFooter.svelte';
+  import CommonNavbar from '$lib/components/CommonNavbar.svelte';
   import DeleteConfirmation from '$lib/components/DeleteConfirmation.svelte';
   import GroupList from '$lib/components/GroupList.svelte';
   import HistoryPanel from '$lib/components/HistoryPanel.svelte';
@@ -6,7 +8,6 @@
   import MemoryList from '$lib/components/MemoryList.svelte';
   import MemoryViewer from '$lib/components/MemoryViewer.svelte';
   import Splitter from '$lib/components/Splitter.svelte';
-  import StatusBar from '$lib/components/StatusBar.svelte';
   import Toolbar from '$lib/components/Toolbar.svelte';
   import FeedView from '$lib/components/variants/FeedView.svelte';
   import HubView from '$lib/components/variants/HubView.svelte';
@@ -19,7 +20,6 @@
   import { selectionStore } from '$lib/stores/selection.svelte';
   import { settingsStore } from '$lib/stores/settings.svelte';
   import { syncStore } from '$lib/stores/sync.svelte';
-  import { openDiagnosticsWindow, openSettingsWindow } from '$lib/windows';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
   import type { KindStr, MemoryFile } from '$lib/types';
@@ -144,10 +144,6 @@
     }
   });
 
-  const selectedGroup = $derived(
-    groupsStore.groups.find((g: { group_id: string }) => g.group_id === selectionStore.groupId) ??
-      null
-  );
   const slugs = $derived(
     selectionStore.groupId ? memoriesStore.slugs[selectionStore.groupId] : undefined
   );
@@ -293,36 +289,31 @@
   let groupsHeight = $state(220);
 </script>
 
-{#if settingsStore.values.ui_variant === 'repo'}
-  <RepoView />
-{:else if settingsStore.values.ui_variant === 'feed'}
-  <div class="relative h-full w-full overflow-hidden">
-    <FeedView />
-  </div>
-{:else if settingsStore.values.ui_variant === 'hub'}
-  <HubView />
-{:else}
 <div class="flex h-full w-full flex-col overflow-hidden bg-surface-0 text-fg">
-  <Toolbar
+  <CommonNavbar />
+
+  <div class="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+    {#if settingsStore.values.ui_variant === 'repo'}
+      <RepoView />
+    {:else if settingsStore.values.ui_variant === 'feed'}
+      <FeedView />
+    {:else if settingsStore.values.ui_variant === 'hub'}
+      <HubView />
+    {:else}
+      <Toolbar
     {canCreate}
     {canEdit}
     {canDelete}
     {canViewHistory}
     {syncReady}
     layout={settingsStore.values.layout_mode}
-    theme={settingsStore.values.theme}
-    variant={settingsStore.values.ui_variant}
     onNew={handleNew}
     onEdit={handleEdit}
     onDelete={handleDeleteRequest}
     onHistory={handleHistory}
     onPull={() => syncStore.pull()}
     onPush={() => syncStore.push()}
-    onDiagnose={() => void openDiagnosticsWindow()}
-    onSettings={() => void openSettingsWindow()}
     onToggleLayout={() => settingsStore.toggleLayoutMode()}
-    onCycleTheme={() => settingsStore.cycleTheme()}
-    onSelectVariant={(v) => settingsStore.setUiVariant(v)}
   />
 
   <!-- Mobile-only pane tabs. Hidden at md+ where all three panes are
@@ -609,19 +600,15 @@
     {/if}
   </div>
 
-  <StatusBar
-    reachability={reachabilityStore.state}
-    sync={syncStore.phase}
-    selectedGroupSlug={selectedGroup?.slug ?? null}
-    selectedMemoryCount={slugs?.length ?? null}
-  />
+      {#if pendingDelete}
+        <DeleteConfirmation
+          slugs={pendingDelete.slugs}
+          onConfirm={confirmDelete}
+          onCancel={() => (pendingDelete = null)}
+        />
+      {/if}
+    {/if}
+  </div>
 
-  {#if pendingDelete}
-    <DeleteConfirmation
-      slugs={pendingDelete.slugs}
-      onConfirm={confirmDelete}
-      onCancel={() => (pendingDelete = null)}
-    />
-  {/if}
+  <CommonFooter />
 </div>
-{/if}
