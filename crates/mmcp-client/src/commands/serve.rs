@@ -2814,14 +2814,42 @@ impl McpServer {
             .push(filter, &resolver, &resolver)
             .await
             .map_err(map_sync_error_to_mcp)?;
-        Ok(ok_json(json!({
-            "pushed": report.pushed.iter().map(|p| json!({
-                "group_id": p.group_id.to_string(),
-                "content_transferred": p.content_transferred,
-            })).collect::<Vec<_>>(),
-            "project_uuid": cfg.project_uuid.to_string(),
-            "server_url": server_url,
-        })))
+        // FR-45 `sync_partial_failure` populator: per-group
+        // content_transferred=false means the control plane
+        // accepted the push but the git content plane did not
+        // actually ship bytes (transport error, server rejected,
+        // network blip, etc.). Surface one note per such group so
+        // callers don't assume silent success.
+        let notes: Vec<_> = report
+            .pushed
+            .iter()
+            .filter(|p| !p.content_transferred)
+            .map(|p| {
+                mmcp_proto::Note::warn(
+                    "sync_partial_failure",
+                    format!(
+                        "push for group {} did not ship content (transport error or unsupported backend)",
+                        p.group_id
+                    ),
+                )
+                .with_context(json!({
+                    "group": p.group_id.to_string(),
+                    "stage": "push",
+                    "server_url": server_url,
+                }))
+            })
+            .collect();
+        Ok(ok_json_with_notes(
+            json!({
+                "pushed": report.pushed.iter().map(|p| json!({
+                    "group_id": p.group_id.to_string(),
+                    "content_transferred": p.content_transferred,
+                })).collect::<Vec<_>>(),
+                "project_uuid": cfg.project_uuid.to_string(),
+                "server_url": server_url,
+            }),
+            notes,
+        ))
     }
 
     #[tool(
