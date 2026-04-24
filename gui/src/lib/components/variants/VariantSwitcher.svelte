@@ -5,12 +5,7 @@
   // chrome of every variant so switching never requires a trip
   // through Settings.
 
-  import {
-    Compass,
-    LayoutGrid,
-    LayoutPanelLeft,
-    Newspaper
-  } from 'lucide-svelte';
+  import { Compass, LayoutGrid, Newspaper } from 'lucide-svelte';
   import type { UiVariant } from '$lib/stores/settings.svelte';
 
   interface Props {
@@ -27,12 +22,11 @@
   const OPTIONS: {
     id: UiVariant;
     label: string;
-    Icon: typeof LayoutPanelLeft;
+    Icon: typeof Compass;
   }[] = [
-    { id: 'classic', label: 'Classic', Icon: LayoutPanelLeft },
+    { id: 'hub', label: 'Hub', Icon: Compass },
     { id: 'repo', label: 'Repo', Icon: LayoutGrid },
-    { id: 'feed', label: 'Feed', Icon: Newspaper },
-    { id: 'hub', label: 'Hub', Icon: Compass }
+    { id: 'feed', label: 'Feed', Icon: Newspaper }
   ];
 </script>
 

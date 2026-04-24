@@ -11,7 +11,7 @@ export type KindDisplay = 'off' | 'icon' | 'text' | 'icon_and_text';
 export type LayoutMode = 'columns' | 'stacked';
 export type DiffViewMode = 'unified' | 'side_by_side' | 'inline_word';
 export type ThemeMode = 'dark' | 'light' | 'system';
-export type UiVariant = 'classic' | 'repo' | 'feed' | 'hub';
+export type UiVariant = 'repo' | 'feed' | 'hub';
 
 export interface UiSettings {
   kind_display: KindDisplay;
@@ -33,7 +33,7 @@ const DEFAULT_SETTINGS: UiSettings = {
   layout_mode: 'columns',
   diff_view: 'unified',
   theme: 'dark',
-  ui_variant: 'classic',
+  ui_variant: 'hub',
   pinned_groups: []
 };
 
@@ -123,7 +123,7 @@ class SettingsStore {
   }
 
   cycleUiVariant() {
-    const order: UiVariant[] = ['classic', 'repo', 'feed', 'hub'];
+    const order: UiVariant[] = ['hub', 'repo', 'feed'];
     const next = order[(order.indexOf(this.values.ui_variant) + 1) % order.length];
     this.setUiVariant(next);
   }

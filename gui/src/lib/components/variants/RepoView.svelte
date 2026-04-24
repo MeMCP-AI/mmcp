@@ -141,17 +141,6 @@
     currentBody ? (marked.parse(currentBody.body) as string) : ''
   );
 
-  // Siblings: every other memory in the same group, so the reader
-  // can hop laterally through conceptually-related notes without
-  // going back to the tree. Filtered to exclude the viewer's own
-  // slug.
-  const siblings = $derived.by(() => {
-    const gid = selectionStore.groupId;
-    const self = selectionStore.slug;
-    if (!gid || !self) return [] as string[];
-    return (memoriesStore.slugs[gid] ?? []).filter((s) => s !== self);
-  });
-
   // Outgoing refs — the frontmatter `refs` list pins target UUIDs +
   // commits. We resolve each target by scanning every cached body
   // across every group for a matching id, so the chip can render a
@@ -478,38 +467,6 @@
               />
             </section>
           {/if}
-
-          <section class="mb-4">
-            <h3 class="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-fg-muted">
-              Siblings
-            </h3>
-            {#if siblings.length === 0}
-              <p class="text-[11px] text-fg-subtle">No other memories in this group.</p>
-            {:else}
-              <ul class="flex flex-col gap-0.5">
-                {#each siblings as slug (slug)}
-                  {@const body =
-                    selectionStore.groupId
-                      ? memoriesStore.bodyFor(selectionStore.groupId, slug)
-                      : undefined}
-                  <li>
-                    <button
-                      type="button"
-                      class="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-fg hover:bg-surface-2"
-                      onclick={() =>
-                        selectionStore.groupId && pickMemory(selectionStore.groupId, slug)}
-                      title={body?.frontmatter.name ?? slug}
-                    >
-                      {#if body?.frontmatter.kind}
-                        <KindBadge kind={body.frontmatter.kind} mode="icon" />
-                      {/if}
-                      <span class="truncate">{slug}</span>
-                    </button>
-                  </li>
-                {/each}
-              </ul>
-            {/if}
-          </section>
 
           <section class="mb-4">
             <h3

@@ -103,8 +103,13 @@
   // loads the selected body via the shared store.
   $effect(() => {
     if (route.t === 'home') {
-      for (const gid of settingsStore.values.pinned_groups) {
-        loadBodiesInGroup(gid);
+      // Home dashboard surfaces mandatory memories + global
+      // search hits, both of which need bodies resolved across
+      // every group. Eagerly warm every group — slug lists
+      // already loaded; body cache is per-pair and cheap once
+      // hit.
+      for (const g of groupsStore.groups) {
+        loadBodiesInGroup(g.group_id);
       }
     } else if (route.t === 'scope') {
       for (const g of groupsByScope(route.scope)) {
@@ -296,12 +301,6 @@
 
   marked.setOptions({ breaks: false, gfm: true });
   const activeHtml = $derived(activeBody ? (marked.parse(activeBody.body) as string) : '');
-
-  const activeSiblings = $derived.by(() => {
-    if (route.t !== 'memory') return [] as string[];
-    const { groupId, slug: self } = route;
-    return (memoriesStore.slugs[groupId] ?? []).filter((s) => s !== self);
-  });
 
   interface ResolvedRef {
     target: string;
@@ -888,48 +887,6 @@
                 <FeatureRelations feature={fm.feature} onNavigate={gotoMemory} />
               </section>
             {/if}
-            <section class="rounded-lg border border-line bg-surface-1/40 p-3">
-              <h3
-                class="mb-2 text-[10px] font-semibold uppercase tracking-wide text-fg-muted"
-              >
-                Siblings
-              </h3>
-              {#if activeSiblings.length === 0}
-                <p class="text-[11px] text-fg-subtle">No other memories in this group.</p>
-              {:else}
-                <ul class="flex flex-col gap-0.5">
-                  {#each activeSiblings.slice(0, 8) as slug (slug)}
-                    {@const body =
-                      route.t === 'memory'
-                        ? memoriesStore.bodyFor(route.groupId, slug)
-                        : undefined}
-                    <li>
-                      <button
-                        type="button"
-                        class="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-fg hover:bg-surface-2"
-                        onclick={() =>
-                          route.t === 'memory' && gotoMemory(route.groupId, slug)}
-                      >
-                        {#if body?.frontmatter.kind}
-                          <KindBadge kind={body.frontmatter.kind} mode="icon" />
-                        {/if}
-                        <span class="truncate">{body?.frontmatter.name ?? slug}</span>
-                      </button>
-                    </li>
-                  {/each}
-                </ul>
-                {#if activeSiblings.length > 8}
-                  <button
-                    type="button"
-                    class="mt-1 text-[11px] text-fg-muted hover:text-fg"
-                    onclick={() =>
-                      route.t === 'memory' && (route = { t: 'group', groupId: route.groupId })}
-                  >
-                    See all {activeSiblings.length + 1} in group…
-                  </button>
-                {/if}
-              {/if}
-            </section>
             {#if outgoingRefs.length > 0}
               <section class="rounded-lg border border-line bg-surface-1/40 p-3">
                 <h3
