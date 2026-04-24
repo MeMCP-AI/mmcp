@@ -11,7 +11,7 @@ export type KindDisplay = 'off' | 'icon' | 'text' | 'icon_and_text';
 export type LayoutMode = 'columns' | 'stacked';
 export type DiffViewMode = 'unified' | 'side_by_side' | 'inline_word';
 export type ThemeMode = 'dark' | 'light' | 'system';
-export type UiVariant = 'classic' | 'repo' | 'feed';
+export type UiVariant = 'classic' | 'repo' | 'feed' | 'hub';
 
 export interface UiSettings {
   kind_display: KindDisplay;
@@ -20,6 +20,11 @@ export interface UiSettings {
   diff_view: DiffViewMode;
   theme: ThemeMode;
   ui_variant: UiVariant;
+  /** UUIDs of groups the user has pinned on the repo-variant home
+   * dashboard. GitHub-style "starred repos" — scales with
+   * thousands of groups because the long tail never makes it into
+   * the dashboard unless the user opts in. */
+  pinned_groups: string[];
 }
 
 const DEFAULT_SETTINGS: UiSettings = {
@@ -28,7 +33,8 @@ const DEFAULT_SETTINGS: UiSettings = {
   layout_mode: 'columns',
   diff_view: 'unified',
   theme: 'dark',
-  ui_variant: 'classic'
+  ui_variant: 'classic',
+  pinned_groups: []
 };
 
 class SettingsStore {
@@ -104,8 +110,20 @@ class SettingsStore {
     void this.save();
   }
 
+  togglePinnedGroup(groupId: string) {
+    const set = new Set(this.values.pinned_groups);
+    if (set.has(groupId)) set.delete(groupId);
+    else set.add(groupId);
+    this.values.pinned_groups = Array.from(set);
+    void this.save();
+  }
+
+  isGroupPinned(groupId: string): boolean {
+    return this.values.pinned_groups.includes(groupId);
+  }
+
   cycleUiVariant() {
-    const order: UiVariant[] = ['classic', 'repo', 'feed'];
+    const order: UiVariant[] = ['classic', 'repo', 'feed', 'hub'];
     const next = order[(order.indexOf(this.values.ui_variant) + 1) % order.length];
     this.setUiVariant(next);
   }
