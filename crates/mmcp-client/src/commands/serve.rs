@@ -707,12 +707,20 @@ enum BootstrapScope {
     All,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct BootstrapContextArgs {
     /// Which memories to include. Defaults to `all`.
     #[serde(default)]
     pub scope: Option<BootstrapScope>,
+
+    /// Target project group (UUID or slug). When omitted, the
+    /// server falls back to walking `cwd` for a `.mmcp.toml`. Lets
+    /// callers running from a different cwd (MCP harnesses that
+    /// spawn the server under `$HOME`, agents working across
+    /// multiple projects) pin the project explicitly. FR-44.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 /// Action for `init_claude`. Matches the CLI's mutually-exclusive flag
@@ -780,7 +788,17 @@ struct InitClaudeArgs {
 /// without a schema break.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
-struct StatusArgs {}
+struct StatusArgs {
+    /// Target project group (UUID or slug). When omitted, the
+    /// server falls back to walking `cwd` for a `.mmcp.toml`.
+    /// When present, the response returns the minimal shape
+    /// `{project_configured, project_uuid, groups}` — filesystem-
+    /// anchored fields (`project_root`, `sync`) are only emitted
+    /// on the cwd-walk branch since an explicit selector does
+    /// not guarantee a local filesystem root. FR-44.
+    #[serde(default)]
+    pub project: Option<String>,
+}
 
 /// Argument shape for `list_groups`. Takes no parameters today;
 /// a future `owner_scope` filter would land here without breaking
@@ -997,6 +1015,12 @@ struct CreateGroupArgs {
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
 struct AddFeatureArgs {
+    /// Target project group (UUID or slug). When omitted, the
+    /// server falls back to walking `cwd` for a `.mmcp.toml` and
+    /// using whichever project it finds. FR-44.
+    #[serde(default)]
+    pub project: Option<String>,
+
     /// Stable slug for the FR. Auto-minted from the title when
     /// omitted; when present must satisfy the memory-slug contract.
     #[serde(default)]
@@ -1062,6 +1086,11 @@ struct AddFeatureArgs {
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
 struct ReadFeatureArgs {
+    /// Target project group (UUID or slug). When omitted, the
+    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    #[serde(default)]
+    pub project: Option<String>,
+
     /// Slug of the FR to read.
     pub slug: String,
 
@@ -1075,6 +1104,11 @@ struct ReadFeatureArgs {
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
 struct UpdateFeatureArgs {
+    /// Target project group (UUID or slug). When omitted, the
+    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    #[serde(default)]
+    pub project: Option<String>,
+
     /// Slug of the FR to mutate.
     pub slug: String,
 
@@ -1140,6 +1174,11 @@ struct UpdateFeatureArgs {
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
 struct DeleteFeatureArgs {
+    /// Target project group (UUID or slug). When omitted, the
+    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    #[serde(default)]
+    pub project: Option<String>,
+
     /// Slug of the FR to delete.
     pub slug: String,
 
@@ -1152,6 +1191,11 @@ struct DeleteFeatureArgs {
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
 struct RenameFeatureArgs {
+    /// Target project group (UUID or slug). When omitted, the
+    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    #[serde(default)]
+    pub project: Option<String>,
+
     /// Current slug directory. Every memory under
     /// `memories/<old_slug>/` moves in one atomic commit.
     pub old_slug: String,
@@ -1169,6 +1213,11 @@ struct RenameFeatureArgs {
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
 struct ListFeaturesArgs {
+    /// Target project group (UUID or slug). When omitted, the
+    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    #[serde(default)]
+    pub project: Option<String>,
+
     /// Restrict to FRs with this status. Wire form matches
     /// `AddFeatureArgs::status`. Explicit selector wins over the
     /// `all` flag — an operator asking for `resolved` FRs always
@@ -2318,14 +2367,41 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         let scope = args.scope.unwrap_or_default();
 
-        // Resolve the project group (if any) from the cwd's .mmcp.toml.
-        let project_root = std::env::current_dir()
-            .ok()
-            .and_then(|cwd| find_project_root(&cwd));
-        let project_cfg = project_root
-            .as_ref()
-            .and_then(|root| load_project_config(root).ok());
-        let project_uuid = project_cfg.as_ref().map(|cfg| *cfg.project_uuid.as_uuid());
+        // FR-44: when the caller passes an explicit `project`
+        // selector, resolve it against the local mirror and skip
+        // the cwd walk. Otherwise fall back to the historical
+        // `.mmcp.toml` lookup under `cwd`. The selector branch
+        // leaves `project_cfg` as `None` because an explicit
+        // selector does not guarantee the project has a local
+        // filesystem root (the MCP server may be launched far
+        // from any project directory); FR-025 adoption lookup
+        // therefore only fires on the cwd-walk branch.
+        let (project_uuid, project_cfg, project_root) = match args.project.as_deref() {
+            Some(query) => {
+                let entry = mmcp_store::memory::resolve_group(&self.state.groups, query)
+                    .await
+                    .map_err(|_| {
+                        McpError::invalid_params(
+                            format!("project selector '{query}' does not resolve to a mirrored group"),
+                            Some(json!({
+                                "code": "unknown_project",
+                                "query": query,
+                            })),
+                        )
+                    })?;
+                (Some(*entry.manifest.group_id.as_uuid()), None, None)
+            }
+            None => {
+                let project_root = std::env::current_dir()
+                    .ok()
+                    .and_then(|cwd| find_project_root(&cwd));
+                let project_cfg = project_root
+                    .as_ref()
+                    .and_then(|root| load_project_config(root).ok());
+                let project_uuid = project_cfg.as_ref().map(|cfg| *cfg.project_uuid.as_uuid());
+                (project_uuid, project_cfg, project_root)
+            }
+        };
 
         let wants_project = matches!(scope, BootstrapScope::Project | BootstrapScope::All);
         let wants_mandatory = matches!(scope, BootstrapScope::Mandatory | BootstrapScope::All);
@@ -2780,7 +2856,7 @@ impl McpServer {
     )]
     async fn status(
         &self,
-        Parameters(_args): Parameters<StatusArgs>,
+        Parameters(args): Parameters<StatusArgs>,
     ) -> Result<CallToolResult, McpError> {
         let cwd = std::env::current_dir().map_err(|e| {
             McpError::internal_error(format!("cannot read working directory: {e}"), None)
@@ -2798,6 +2874,29 @@ impl McpServer {
                 "uuid": entry.manifest.group_id.to_string(),
                 "memory_count": files.len(),
             }));
+        }
+
+        // FR-44: explicit selector returns the minimal
+        // filesystem-free shape. Cwd walk keeps the full shape
+        // with project_root + sync fields.
+        if let Some(query) = args.project.as_deref() {
+            let entry = mmcp_store::memory::resolve_group(&self.state.groups, query)
+                .await
+                .map_err(|_| {
+                    McpError::invalid_params(
+                        format!("project selector '{query}' does not resolve to a mirrored group"),
+                        Some(json!({
+                            "code": "unknown_project",
+                            "query": query,
+                        })),
+                    )
+                })?;
+            return Ok(ok_json(json!({
+                "project_configured": true,
+                "project_uuid": entry.manifest.group_id.to_string(),
+                "project_slug": entry.manifest.slug,
+                "groups": groups,
+            })));
         }
 
         Ok(ok_json(compose_status(&cwd, groups)?))
@@ -2921,7 +3020,11 @@ impl McpServer {
         Parameters(args): Parameters<AddFeatureArgs>,
     ) -> Result<CallToolResult, McpError> {
         let cwd = current_dir_for_mcp()?;
-        let (entry, _root) = mmcp_store::features::resolve_project_group(&self.state.groups, &cwd)
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
             .await
             .map_err(map_feature_error_to_mcp)?;
         let status = parse_status_arg(args.status.as_deref())?.unwrap_or_default();
@@ -2968,7 +3071,11 @@ impl McpServer {
         Parameters(args): Parameters<ReadFeatureArgs>,
     ) -> Result<CallToolResult, McpError> {
         let cwd = current_dir_for_mcp()?;
-        let (entry, _root) = mmcp_store::features::resolve_project_group(&self.state.groups, &cwd)
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
             .await
             .map_err(map_feature_error_to_mcp)?;
         let record = mmcp_store::features::read_feature(
@@ -2997,7 +3104,11 @@ impl McpServer {
         Parameters(args): Parameters<UpdateFeatureArgs>,
     ) -> Result<CallToolResult, McpError> {
         let cwd = current_dir_for_mcp()?;
-        let (entry, _root) = mmcp_store::features::resolve_project_group(&self.state.groups, &cwd)
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
             .await
             .map_err(map_feature_error_to_mcp)?;
         let status = match args.status.as_deref() {
@@ -3091,7 +3202,11 @@ impl McpServer {
         Parameters(args): Parameters<DeleteFeatureArgs>,
     ) -> Result<CallToolResult, McpError> {
         let cwd = current_dir_for_mcp()?;
-        let (entry, _root) = mmcp_store::features::resolve_project_group(&self.state.groups, &cwd)
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
             .await
             .map_err(map_feature_error_to_mcp)?;
         let commit_id = mmcp_store::features::delete_feature(
@@ -3125,7 +3240,11 @@ impl McpServer {
         Parameters(args): Parameters<RenameFeatureArgs>,
     ) -> Result<CallToolResult, McpError> {
         let cwd = current_dir_for_mcp()?;
-        let (entry, _root) = mmcp_store::features::resolve_project_group(&self.state.groups, &cwd)
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
             .await
             .map_err(map_feature_error_to_mcp)?;
         let records = mmcp_store::rename_feature(
@@ -3165,7 +3284,11 @@ impl McpServer {
         Parameters(args): Parameters<ListFeaturesArgs>,
     ) -> Result<CallToolResult, McpError> {
         let cwd = current_dir_for_mcp()?;
-        let (entry, _root) = mmcp_store::features::resolve_project_group(&self.state.groups, &cwd)
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
             .await
             .map_err(map_feature_error_to_mcp)?;
         let status = parse_status_arg(args.status.as_deref())?;
@@ -3621,6 +3744,13 @@ fn map_feature_error_to_mcp(err: mmcp_store::features::FeatureError) -> McpError
             message,
             Some(json!({
                 "code": "supersedes_cross_group_unsupported",
+                "query": query,
+            })),
+        ),
+        FeatureError::UnknownProject { query } => McpError::invalid_params(
+            message,
+            Some(json!({
+                "code": "unknown_project",
                 "query": query,
             })),
         ),
@@ -4763,6 +4893,7 @@ mod tests {
         let res = server
             .bootstrap_context(Parameters(BootstrapContextArgs {
                 scope: Some(BootstrapScope::Mandatory),
+                project: None,
             }))
             .await
             .expect("bootstrap_context");
@@ -4823,7 +4954,10 @@ mod tests {
 
         // No project config reachable from cwd → `All` collapses to mandatory-only.
         let res = server
-            .bootstrap_context(Parameters(BootstrapContextArgs { scope: None }))
+            .bootstrap_context(Parameters(BootstrapContextArgs {
+                scope: None,
+                project: None,
+            }))
             .await
             .expect("bootstrap_context");
         let parsed = parse_ok_json(res);
@@ -4870,6 +5004,7 @@ mod tests {
         let res = server
             .bootstrap_context(Parameters(BootstrapContextArgs {
                 scope: Some(BootstrapScope::Mandatory),
+                project: None,
             }))
             .await
             .expect("bootstrap_context");
@@ -4914,6 +5049,7 @@ mod tests {
         let res = server
             .bootstrap_context(Parameters(BootstrapContextArgs {
                 scope: Some(BootstrapScope::Mandatory),
+                project: None,
             }))
             .await
             .expect("bootstrap_context without adoption");
@@ -4938,6 +5074,7 @@ mod tests {
         let res = server
             .bootstrap_context(Parameters(BootstrapContextArgs {
                 scope: Some(BootstrapScope::Mandatory),
+                project: None,
             }))
             .await
             .expect("bootstrap_context after adoption");
@@ -5270,6 +5407,96 @@ mod tests {
         assert_eq!(
             payload.get("query").and_then(|v| v.as_str()),
             Some("no-such-group")
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_context_project_selector_resolves_by_uuid() {
+        // FR-44: passing `project: <uuid>` pins the project group
+        // without touching cwd. The bootstrap response lists the
+        // memory(ies) in that group under the project-scope half.
+        let (state, _tmp) = test_state().await;
+        let project = seed_scoped_group_with_memory(
+            &state,
+            "explicit-target",
+            "my-rule",
+            OPTIONAL_MEMORY,
+            mmcp_core::manifest::GroupScope::Project,
+        )
+        .await;
+        let server = McpServer::new(state);
+
+        let res = server
+            .bootstrap_context(Parameters(BootstrapContextArgs {
+                scope: Some(BootstrapScope::Project),
+                project: Some(project.to_string()),
+            }))
+            .await
+            .expect("bootstrap_context with explicit project");
+        let parsed = parse_ok_json(res);
+        assert_eq!(
+            parsed.get("project_uuid").and_then(|v| v.as_str()),
+            Some(project.to_string().as_str()),
+            "explicit project UUID must round-trip into the response",
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_context_unknown_project_returns_structured_code() {
+        let (state, _tmp) = test_state().await;
+        let server = McpServer::new(state);
+
+        let err = server
+            .bootstrap_context(Parameters(BootstrapContextArgs {
+                scope: Some(BootstrapScope::Project),
+                project: Some("no-such-group".into()),
+            }))
+            .await
+            .expect_err("unknown project must error");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("unknown_project")
+        );
+        assert_eq!(
+            payload.get("query").and_then(|v| v.as_str()),
+            Some("no-such-group")
+        );
+    }
+
+    #[tokio::test]
+    async fn status_project_selector_returns_minimal_shape() {
+        // FR-44: `status(project=<uuid>)` returns the filesystem-
+        // free minimal response shape; project_root and sync are
+        // omitted because an explicit selector carries no local
+        // filesystem guarantees.
+        let (state, _tmp) = test_state().await;
+        let project =
+            seed_group_with_memory(&state, "explicit-target", "dummy", OPTIONAL_MEMORY).await;
+        let server = McpServer::new(state);
+
+        let res = server
+            .status(Parameters(StatusArgs {
+                project: Some(project.to_string()),
+            }))
+            .await
+            .expect("status with explicit project");
+        let parsed = parse_ok_json(res);
+        assert_eq!(
+            parsed.get("project_configured").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            parsed.get("project_uuid").and_then(|v| v.as_str()),
+            Some(project.to_string().as_str())
+        );
+        assert!(
+            parsed.get("project_root").is_none(),
+            "project_root must be omitted when selector is explicit"
+        );
+        assert!(
+            parsed.get("sync").is_none(),
+            "sync must be omitted when selector is explicit"
         );
     }
 

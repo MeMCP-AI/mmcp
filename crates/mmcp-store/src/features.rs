@@ -134,6 +134,12 @@ pub enum FeatureError {
         "supersedes target '{query}' lives in a different group than the caller's project group; cross-group supersede is not yet supported"
     )]
     SupersedesCrossGroupUnsupported { query: String },
+
+    /// An explicit `project` selector did not resolve against the
+    /// local mirror. Covers FR-44's `unknown_project` code: the
+    /// caller passed a UUID or slug that is not a mirrored group.
+    #[error("project selector '{query}' does not resolve to a mirrored group")]
+    UnknownProject { query: String },
 }
 
 /// Parse a list of raw cross-reference strings (as they arrive on
@@ -966,6 +972,39 @@ pub async fn resolve_project_group(
         }
     })?;
     Ok((entry, root))
+}
+
+/// FR-44 entry point: resolve the project group using the explicit
+/// selector when provided, falling back to the cwd walk otherwise.
+///
+/// `project` accepts a UUID or a slug and resolves against the
+/// local mirror via [`crate::memory::resolve_group`]. Unknown
+/// identifier surfaces [`FeatureError::UnknownProject`]. When
+/// `project` is `None`, this is a bare `resolve_project_group`
+/// call — the historical cwd walk stays the default so every
+/// existing caller keeps working.
+///
+/// Returns `(entry, project_root_or_cwd)`. The second slot is
+/// only meaningful for the cwd-walk branch (callers use it to
+/// locate `.mmcp.toml`-adjacent files like `CLAUDE.md`); for the
+/// explicit-selector branch we return `cwd` unchanged because the
+/// selected project may not have a local filesystem root at all.
+pub async fn resolve_project_group_with_selector(
+    groups: &GroupIndex,
+    project: Option<&str>,
+    cwd: &Path,
+) -> Result<(GroupEntry, PathBuf), FeatureError> {
+    match project {
+        Some(query) => {
+            let entry = crate::memory::resolve_group(groups, query)
+                .await
+                .map_err(|_| FeatureError::UnknownProject {
+                    query: query.to_string(),
+                })?;
+            Ok((entry, cwd.to_path_buf()))
+        }
+        None => resolve_project_group(groups, cwd).await,
+    }
 }
 
 /// Build a `MemoryFile` with the Fr kind and a populated feature
