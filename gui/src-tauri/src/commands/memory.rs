@@ -14,6 +14,26 @@ use crate::error::{GuiError, GuiResult};
 use crate::state::AppState;
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct MemoryRefDto {
+    pub target: Uuid,
+    pub commit: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FeatureMetadataDto {
+    /// Serde-snake-case: open, resolved, blocked, deferred,
+    /// duplicate, superseded. Kept as a String on the wire so the
+    /// frontend doesn't have to re-declare the enum variants.
+    pub status: String,
+    pub number: Option<u32>,
+    #[serde(default)]
+    pub depends_on: Vec<Uuid>,
+    #[serde(default)]
+    pub blocks: Vec<Uuid>,
+    pub superseded_by: Option<MemoryRefDto>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MemoryFrontmatterDto {
     pub id: Option<Uuid>,
     pub name: String,
@@ -25,6 +45,10 @@ pub struct MemoryFrontmatterDto {
     pub version: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub refs: Vec<MemoryRefDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature: Option<FeatureMetadataDto>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -44,9 +68,40 @@ impl From<&MemoryFile> for MemoryFileDto {
                 mandatory: f.frontmatter.mandatory,
                 version: f.frontmatter.version.as_ref().map(|v| v.to_string()),
                 tags: f.frontmatter.tags.clone(),
+                refs: f
+                    .frontmatter
+                    .refs
+                    .iter()
+                    .map(|r| MemoryRefDto {
+                        target: r.target,
+                        commit: r.commit.clone(),
+                    })
+                    .collect(),
+                feature: f.frontmatter.feature.as_ref().map(|fm| FeatureMetadataDto {
+                    status: fm.status.as_str().to_string(),
+                    number: fm.number,
+                    depends_on: fm.depends_on.clone(),
+                    blocks: fm.blocks.clone(),
+                    superseded_by: fm.superseded_by.as_ref().map(|r| MemoryRefDto {
+                        target: r.target,
+                        commit: r.commit.clone(),
+                    }),
+                }),
             },
             body: f.body.clone(),
         }
+    }
+}
+
+fn parse_feature_status(s: &str) -> mmcp_core::memory::FeatureStatus {
+    use mmcp_core::memory::FeatureStatus;
+    match s {
+        "resolved" => FeatureStatus::Resolved,
+        "blocked" => FeatureStatus::Blocked,
+        "deferred" => FeatureStatus::Deferred,
+        "duplicate" => FeatureStatus::Duplicate,
+        "superseded" => FeatureStatus::Superseded,
+        _ => FeatureStatus::Open,
     }
 }
 
@@ -130,8 +185,25 @@ fn to_memory_file(dto: MemoryFileDto) -> GuiResult<MemoryFile> {
         version,
         tags: dto.frontmatter.tags,
         bump_intent: None,
-        feature: None,
-        refs: Vec::new(),
+        feature: dto.frontmatter.feature.map(|f| mmcp_core::memory::FeatureMetadata {
+            status: parse_feature_status(&f.status),
+            number: f.number,
+            depends_on: f.depends_on,
+            blocks: f.blocks,
+            superseded_by: f.superseded_by.map(|r| mmcp_core::memory::MemoryRef {
+                target: r.target,
+                commit: r.commit,
+            }),
+        }),
+        refs: dto
+            .frontmatter
+            .refs
+            .into_iter()
+            .map(|r| mmcp_core::memory::MemoryRef {
+                target: r.target,
+                commit: r.commit,
+            })
+            .collect(),
     };
     Ok(MemoryFile {
         frontmatter: fm,

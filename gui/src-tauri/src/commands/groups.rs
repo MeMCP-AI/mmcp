@@ -12,6 +12,10 @@ pub struct GroupEntryDto {
     pub slug: String,
     pub display_name: Option<String>,
     pub memory_count_hint: u32,
+    /// Manifest scope, serialised as `global` / `shared` / `project`.
+    /// The repo-style variant uses this to bucket groups into the
+    /// three top-level "repo" tabs the user sees in that layout.
+    pub scope: String,
 }
 
 impl From<&mmcp_store::GroupEntry> for GroupEntryDto {
@@ -21,6 +25,11 @@ impl From<&mmcp_store::GroupEntry> for GroupEntryDto {
             slug: entry.manifest.slug.clone(),
             display_name: entry.manifest.display_name.clone(),
             memory_count_hint: 0,
+            scope: match entry.manifest.scope {
+                mmcp_core::manifest::GroupScope::Global => "global".into(),
+                mmcp_core::manifest::GroupScope::Shared => "shared".into(),
+                mmcp_core::manifest::GroupScope::Project => "project".into(),
+            },
         }
     }
 }
