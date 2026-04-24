@@ -1,12 +1,19 @@
 <script lang="ts">
-  // App-shell footer. Carries sync / reachability status and the
-  // diagnose entry point so every variant surfaces them in the
-  // same place regardless of layout.
+  // App-shell footer. Carries sync / reachability status plus the
+  // diagnose + settings entry points — both render as plain
+  // icon-links (no button chrome) so they sit unobtrusively at
+  // the end of the status row.
 
-  import { LoaderCircle, Stethoscope, Wifi, WifiOff } from 'lucide-svelte';
+  import {
+    LoaderCircle,
+    Settings as SettingsIcon,
+    Stethoscope,
+    Wifi,
+    WifiOff
+  } from 'lucide-svelte';
   import { reachabilityStore } from '$lib/stores/reachability.svelte';
   import { syncStore } from '$lib/stores/sync.svelte';
-  import { openDiagnosticsWindow } from '$lib/windows';
+  import { openDiagnosticsWindow, openSettingsWindow } from '$lib/windows';
 
   const phase = $derived(syncStore.phase);
   const reach = $derived(reachabilityStore.state);
@@ -91,14 +98,26 @@
     sync: {syncLine}
   </span>
 
-  <button
-    type="button"
-    class="ml-auto inline-flex items-center gap-1 rounded-md border border-line px-2 py-0.5 text-fg hover:bg-surface-2"
-    title="Diagnose"
-    aria-label="Diagnose"
-    onclick={() => void openDiagnosticsWindow()}
-  >
-    <Stethoscope size={11} />
-    <span>Diagnose</span>
-  </button>
+  <div class="ml-auto flex items-center gap-2 text-fg-muted">
+    <button
+      type="button"
+      class="inline-flex items-center gap-1 rounded-sm p-0.5 hover:text-fg focus:outline-none focus-visible:text-fg"
+      title="Diagnose"
+      aria-label="Diagnose"
+      onclick={() => void openDiagnosticsWindow()}
+    >
+      <Stethoscope size={12} />
+      <span>Diagnose</span>
+    </button>
+    <button
+      type="button"
+      class="inline-flex items-center gap-1 rounded-sm p-0.5 hover:text-fg focus:outline-none focus-visible:text-fg"
+      title="Settings"
+      aria-label="Settings"
+      onclick={() => void openSettingsWindow()}
+    >
+      <SettingsIcon size={12} />
+      <span>Settings</span>
+    </button>
+  </div>
 </footer>
