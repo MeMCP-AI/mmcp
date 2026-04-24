@@ -4377,6 +4377,30 @@ fn ok_json(value: serde_json::Value) -> CallToolResult {
     CallToolResult::success(vec![Content::text(Cow::Owned(text))])
 }
 
+/// FR-45 notes channel: wrap a JSON response payload and attach a
+/// `notes` array when non-empty. `ok_json` stays for call sites that
+/// never emit notes; tools that can emit them use this helper and
+/// omit the field entirely when the queue is empty (via
+/// `skip_serializing_if`-equivalent behaviour here: absent entry
+/// instead of `"notes": []`).
+///
+/// Returns the same `CallToolResult` shape as `ok_json`, so callers
+/// swap one for the other without changing their return type.
+#[allow(dead_code)]
+fn ok_json_with_notes(
+    mut value: serde_json::Value,
+    notes: Vec<mmcp_proto::Note>,
+) -> CallToolResult {
+    if !notes.is_empty() {
+        if let Some(obj) = value.as_object_mut() {
+            let serialised = serde_json::to_value(&notes).unwrap_or(json!([]));
+            obj.insert("notes".to_string(), serialised);
+        }
+    }
+    let text = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
+    CallToolResult::success(vec![Content::text(Cow::Owned(text))])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
