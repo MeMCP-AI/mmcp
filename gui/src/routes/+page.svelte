@@ -7,9 +7,7 @@
 
   import CommonFooter from '$lib/components/CommonFooter.svelte';
   import CommonNavbar from '$lib/components/CommonNavbar.svelte';
-  import FeedView from '$lib/components/variants/FeedView.svelte';
   import HubView from '$lib/components/variants/HubView.svelte';
-  import RepoView from '$lib/components/variants/RepoView.svelte';
 
   import { groupsStore } from '$lib/stores/groups.svelte';
   import { memoriesStore } from '$lib/stores/memories.svelte';
@@ -81,14 +79,11 @@
 <div class="flex h-full w-full flex-col overflow-hidden bg-surface-0 text-fg">
   <CommonNavbar />
 
+  <!-- Hub is the only live variant; `settingsStore.values.ui_variant`
+       stays in case a future experiment re-introduces the
+       switcher. -->
   <div class="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-    {#if settingsStore.values.ui_variant === 'repo'}
-      <RepoView />
-    {:else if settingsStore.values.ui_variant === 'feed'}
-      <FeedView />
-    {:else}
-      <HubView />
-    {/if}
+    <HubView />
   </div>
 
   <CommonFooter />

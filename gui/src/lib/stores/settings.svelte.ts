@@ -11,7 +11,10 @@ export type KindDisplay = 'off' | 'icon' | 'text' | 'icon_and_text';
 export type LayoutMode = 'columns' | 'stacked';
 export type DiffViewMode = 'unified' | 'side_by_side' | 'inline_word';
 export type ThemeMode = 'dark' | 'light' | 'system';
-export type UiVariant = 'repo' | 'feed' | 'hub';
+// `hub` is the chosen UI going forward. `repo` and `feed` stay
+// in the codebase as historical variants pending removal — don't
+// resurface them without user direction.
+export type UiVariant = 'hub';
 
 export interface UiSettings {
   kind_display: KindDisplay;
@@ -33,7 +36,7 @@ const DEFAULT_SETTINGS: UiSettings = {
   layout_mode: 'columns',
   diff_view: 'unified',
   theme: 'dark',
-  ui_variant: 'hub',
+  ui_variant: 'hub' as UiVariant,
   pinned_groups: []
 };
 
@@ -123,9 +126,9 @@ class SettingsStore {
   }
 
   cycleUiVariant() {
-    const order: UiVariant[] = ['hub', 'repo', 'feed'];
-    const next = order[(order.indexOf(this.values.ui_variant) + 1) % order.length];
-    this.setUiVariant(next);
+    // Only one live variant at the moment; cycling is a no-op.
+    // Kept around so callers don't break while we decide what the
+    // next layout experiment looks like.
   }
 
   reset() {

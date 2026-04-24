@@ -4,7 +4,6 @@
   // layout without each variant re-implementing them.
 
   import { Monitor, Moon, Settings as SettingsIcon, Sun } from 'lucide-svelte';
-  import VariantSwitcher from './variants/VariantSwitcher.svelte';
   import { settingsStore } from '$lib/stores/settings.svelte';
   import { openSettingsWindow } from '$lib/windows';
 
@@ -23,11 +22,6 @@
   <span class="select-none text-sm font-semibold tracking-tight text-fg">mmcp</span>
 
   <div class="ml-auto flex items-center gap-2">
-    <VariantSwitcher
-      current={settingsStore.values.ui_variant}
-      onSelect={(v) => settingsStore.setUiVariant(v)}
-    />
-
     <button
       type="button"
       class="inline-flex items-center gap-1 rounded-md border border-line bg-surface-0 px-2 py-0.5 text-[11px] text-fg hover:bg-surface-2"
