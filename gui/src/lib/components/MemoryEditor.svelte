@@ -57,7 +57,11 @@
         kind: kind as MemoryFile['frontmatter']['kind'],
         mandatory,
         version: initial?.frontmatter.version ?? null,
-        tags: tagsList
+        tags: tagsList,
+        // The editor doesn't expose cross-refs yet; preserve
+        // whatever the source memory carried so a round-trip
+        // edit doesn't drop the list on the floor.
+        refs: initial?.frontmatter.refs ?? []
       },
       body
     };

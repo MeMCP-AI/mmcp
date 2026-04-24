@@ -8,6 +8,8 @@
   import Splitter from '$lib/components/Splitter.svelte';
   import StatusBar from '$lib/components/StatusBar.svelte';
   import Toolbar from '$lib/components/Toolbar.svelte';
+  import FeedView from '$lib/components/variants/FeedView.svelte';
+  import RepoView from '$lib/components/variants/RepoView.svelte';
 
   import { createMemory, deleteMemory, updateMemory } from '$lib/api/memory';
   import { groupsStore } from '$lib/stores/groups.svelte';
@@ -290,6 +292,13 @@
   let groupsHeight = $state(220);
 </script>
 
+{#if settingsStore.values.ui_variant === 'repo'}
+  <RepoView />
+{:else if settingsStore.values.ui_variant === 'feed'}
+  <div class="relative h-full w-full overflow-hidden">
+    <FeedView />
+  </div>
+{:else}
 <div class="flex h-full w-full flex-col overflow-hidden bg-surface-0 text-fg">
   <Toolbar
     {canCreate}
@@ -299,6 +308,7 @@
     {syncReady}
     layout={settingsStore.values.layout_mode}
     theme={settingsStore.values.theme}
+    variant={settingsStore.values.ui_variant}
     onNew={handleNew}
     onEdit={handleEdit}
     onDelete={handleDeleteRequest}
@@ -309,6 +319,7 @@
     onSettings={() => void openSettingsWindow()}
     onToggleLayout={() => settingsStore.toggleLayoutMode()}
     onCycleTheme={() => settingsStore.cycleTheme()}
+    onSelectVariant={(v) => settingsStore.setUiVariant(v)}
   />
 
   <!-- Mobile-only pane tabs. Hidden at md+ where all three panes are
@@ -610,3 +621,4 @@
     />
   {/if}
 </div>
+{/if}

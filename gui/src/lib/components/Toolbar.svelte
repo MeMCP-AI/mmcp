@@ -14,7 +14,8 @@
     Sun,
     Trash2
   } from 'lucide-svelte';
-  import type { ThemeMode } from '$lib/stores/settings.svelte';
+  import VariantSwitcher from './variants/VariantSwitcher.svelte';
+  import type { ThemeMode, UiVariant } from '$lib/stores/settings.svelte';
 
   export type LayoutMode = 'columns' | 'stacked';
 
@@ -26,6 +27,7 @@
     syncReady: boolean;
     layout: LayoutMode;
     theme: ThemeMode;
+    variant: UiVariant;
     onNew: () => void;
     onEdit: () => void;
     onDelete: () => void;
@@ -36,6 +38,7 @@
     onSettings: () => void;
     onToggleLayout: () => void;
     onCycleTheme: () => void;
+    onSelectVariant: (variant: UiVariant) => void;
   }
 
   let {
@@ -46,6 +49,7 @@
     syncReady,
     layout,
     theme,
+    variant,
     onNew,
     onEdit,
     onDelete,
@@ -55,7 +59,8 @@
     onDiagnose,
     onSettings,
     onToggleLayout,
-    onCycleTheme
+    onCycleTheme,
+    onSelectVariant
   }: Props = $props();
 
   // Advances dark → light → system → dark. The icon mirrors the
@@ -151,6 +156,8 @@
     <themeDescriptor.Icon size={14} />
     <span class="hidden sm:inline">{themeDescriptor.label}</span>
   </button>
+
+  <VariantSwitcher current={variant} onSelect={onSelectVariant} />
 
   <button class={btn} onclick={onSettings} aria-label="Settings" title="Settings">
     <SettingsIcon size={14} />

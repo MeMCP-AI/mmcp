@@ -11,6 +11,7 @@ export type KindDisplay = 'off' | 'icon' | 'text' | 'icon_and_text';
 export type LayoutMode = 'columns' | 'stacked';
 export type DiffViewMode = 'unified' | 'side_by_side' | 'inline_word';
 export type ThemeMode = 'dark' | 'light' | 'system';
+export type UiVariant = 'classic' | 'repo' | 'feed';
 
 export interface UiSettings {
   kind_display: KindDisplay;
@@ -18,6 +19,7 @@ export interface UiSettings {
   layout_mode: LayoutMode;
   diff_view: DiffViewMode;
   theme: ThemeMode;
+  ui_variant: UiVariant;
 }
 
 const DEFAULT_SETTINGS: UiSettings = {
@@ -25,7 +27,8 @@ const DEFAULT_SETTINGS: UiSettings = {
   reference_point: null,
   layout_mode: 'columns',
   diff_view: 'unified',
-  theme: 'dark'
+  theme: 'dark',
+  ui_variant: 'classic'
 };
 
 class SettingsStore {
@@ -94,6 +97,17 @@ class SettingsStore {
     const order: ThemeMode[] = ['dark', 'light', 'system'];
     const next = order[(order.indexOf(this.values.theme) + 1) % order.length];
     this.setTheme(next);
+  }
+
+  setUiVariant(variant: UiVariant) {
+    this.values.ui_variant = variant;
+    void this.save();
+  }
+
+  cycleUiVariant() {
+    const order: UiVariant[] = ['classic', 'repo', 'feed'];
+    const next = order[(order.indexOf(this.values.ui_variant) + 1) % order.length];
+    this.setUiVariant(next);
   }
 
   reset() {
