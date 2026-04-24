@@ -1623,13 +1623,36 @@ impl McpServer {
         )
         .await
         .map_err(map_memory_error_to_mcp)?;
-        Ok(ok_json(json!({
-            "slug": args.slug,
-            "id": id.to_string(),
-            "commit_id": commit_id,
-            "group": args.group,
-            "replaced": args.override_,
-        })))
+
+        // FR-45 `deprecated_arg_form`: `override: true` rewrites
+        // the whole file and is almost never the right call.
+        // `mcp:edit_memory` targets specific fields and keeps git
+        // history cleaner. Surface a soft nudge in the notes
+        // channel so callers can migrate.
+        let mut notes = Vec::new();
+        if args.override_ {
+            notes.push(
+                mmcp_proto::Note::warn(
+                    "deprecated_arg_form",
+                    "override: true rewrites the whole file; prefer edit_memory for partial updates",
+                )
+                .with_context(json!({
+                    "tool": "write_memory",
+                    "arg": "override",
+                    "alternative": "edit_memory",
+                })),
+            );
+        }
+        Ok(ok_json_with_notes(
+            json!({
+                "slug": args.slug,
+                "id": id.to_string(),
+                "commit_id": commit_id,
+                "group": args.group,
+                "replaced": args.override_,
+            }),
+            notes,
+        ))
     }
 
     #[tool(
@@ -4386,7 +4409,6 @@ fn ok_json(value: serde_json::Value) -> CallToolResult {
 ///
 /// Returns the same `CallToolResult` shape as `ok_json`, so callers
 /// swap one for the other without changing their return type.
-#[allow(dead_code)]
 fn ok_json_with_notes(
     mut value: serde_json::Value,
     notes: Vec<mmcp_proto::Note>,
@@ -6005,6 +6027,73 @@ mod tests {
         let parsed = parse_ok_json(res);
         assert_eq!(parsed.get("replaced").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(parsed.get("id").and_then(|v| v.as_str()), Some(pinned_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn write_memory_override_surfaces_deprecated_arg_note() {
+        // FR-45 populator: `override: true` on `mcp:write_memory`
+        // emits a deprecated_arg_form note steering callers
+        // toward `mcp:edit_memory` for partial updates.
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "seed", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+
+        // First create so the id exists.
+        let first = server
+            .write_memory_unguarded(write_memory_args(&group, "target", false))
+            .await
+            .expect("first");
+        let pinned_id = parse_ok_json(first)
+            .get("id")
+            .and_then(|v| v.as_str())
+            .expect("id echoed")
+            .to_string();
+
+        // Second call with override: true — expect the note.
+        let mut retry = write_memory_args(&group, "target", true);
+        retry.id = Some(pinned_id.clone());
+        let res = server
+            .write_memory_unguarded(retry)
+            .await
+            .expect("override ok");
+        let parsed = parse_ok_json(res);
+
+        let notes = parsed
+            .get("notes")
+            .and_then(|v| v.as_array())
+            .expect("notes array present on override");
+        assert_eq!(notes.len(), 1, "exactly one deprecation note");
+        let note = &notes[0];
+        assert_eq!(note.get("level").and_then(|v| v.as_str()), Some("warn"));
+        assert_eq!(
+            note.get("code").and_then(|v| v.as_str()),
+            Some("deprecated_arg_form")
+        );
+        let ctx = note.get("context").expect("context present");
+        assert_eq!(
+            ctx.get("tool").and_then(|v| v.as_str()),
+            Some("write_memory")
+        );
+        assert_eq!(ctx.get("arg").and_then(|v| v.as_str()), Some("override"));
+    }
+
+    #[tokio::test]
+    async fn write_memory_without_override_has_no_notes_field() {
+        // Common case: no notes field present in the response when
+        // nothing triggered a populator.
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "seed", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state);
+
+        let res = server
+            .write_memory_unguarded(write_memory_args(&group, "clean", false))
+            .await
+            .expect("create");
+        let parsed = parse_ok_json(res);
+        assert!(
+            parsed.get("notes").is_none(),
+            "empty notes must be omitted, got: {parsed:?}"
+        );
     }
 
     // ── import_memory tool ───────────────────────────────────────
