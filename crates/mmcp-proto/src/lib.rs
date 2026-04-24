@@ -10,10 +10,11 @@
 //! framework wiring lets them stay pure data that is easy to test.
 
 pub mod error;
+pub mod notes;
 pub mod tools;
-pub mod warnings;
 
 pub use error::ProtoError;
+pub use notes::{Note, NoteLevel};
 pub use tools::{
     DiffMemoryRequest, DiffMemoryResponse, GroupInfoRequest, GroupInfoResponse,
     ListMemoriesRequest, ListMemoriesResponse, ListVersionsRequest, ListVersionsResponse,
@@ -21,4 +22,3 @@ pub use tools::{
     SearchMemoriesResponse, SearchMemoryHit, ToolName, VerifyMemoryRequest,
     VerifyMemoryResponse, VersionEntry, WriteMemoryRequest, WriteMemoryResponse,
 };
-pub use warnings::{Warning, WarningKind};

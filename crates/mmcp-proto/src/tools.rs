@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::warnings::Warning;
+use crate::notes::Note;
 
 /// Enumeration of every MCP tool mmcp exposes.
 ///
@@ -101,7 +101,12 @@ pub struct ReadMemoryResponse {
     pub descriptor: MemoryDescriptor,
     pub version: String,
     pub body: String,
-    pub warnings: Vec<Warning>,
+    /// FR-45 notes channel. Entries surface session-state signals
+    /// (`first_read_this_session`, `stale_by_kind`, …) and any
+    /// frontmatter-parse warnings observed while rendering this
+    /// response. Absent / empty in the common case.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<Note>,
 }
 
 // ---- write_memory ---------------------------------------------------
@@ -271,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn read_response_preserves_warnings() {
+    fn read_response_preserves_notes() {
         let res = ReadMemoryResponse {
             descriptor: MemoryDescriptor {
                 id: Uuid::now_v7(),
@@ -285,8 +290,8 @@ mod tests {
             },
             version: "1.0.0".into(),
             body: "# Body\n".into(),
-            warnings: vec![crate::warnings::Warning::new(
-                crate::warnings::WarningKind::FirstReadThisSession,
+            notes: vec![crate::notes::Note::warn(
+                "first_read_this_session",
                 "first read this session",
             )],
         };
