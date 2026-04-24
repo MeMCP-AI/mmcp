@@ -74,6 +74,11 @@ export interface PushReport {
   pushed: number;
 }
 
+/** Raw severity string as emitted by mmcp-store. Rust uses
+ * `"error" | "warning" | "info"`; keep the TS type permissive
+ * (string) and funnel everything through `normalizeSeverity` in
+ * `$lib/utils/diag.ts` so a stale client never silently drops an
+ * issue because of a spelling mismatch. */
 export interface Issue {
   group: string;
   slug: string | null;

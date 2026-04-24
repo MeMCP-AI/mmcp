@@ -1,7 +1,12 @@
 import { runDiagnose } from '$lib/api/diagnose';
 import type { DiagReport } from '$lib/types';
+import {
+  reportTotals,
+  type SeverityCounts,
+  type SeverityFilter
+} from '$lib/utils/diag';
 
-export type SeverityFilter = 'all' | 'errors' | 'warnings' | 'infos';
+export type { SeverityFilter } from '$lib/utils/diag';
 
 class DiagnosticsStore {
   report = $state<DiagReport | null>(null);
@@ -30,35 +35,10 @@ class DiagnosticsStore {
   toggle(groupSlug: string) {
     this.collapsed[groupSlug] = !this.collapsed[groupSlug];
   }
-
-  matches(severity: string): boolean {
-    switch (this.filter) {
-      case 'all':
-        return true;
-      case 'errors':
-        return severity === 'error';
-      case 'warnings':
-        return severity === 'warn';
-      case 'infos':
-        return severity !== 'error' && severity !== 'warn';
-    }
-  }
 }
 
-export function severityTotals(report: DiagReport | null): {
-  errors: number;
-  warnings: number;
-  infos: number;
-} {
-  if (!report) return { errors: 0, warnings: 0, infos: 0 };
-  const acc = { errors: 0, warnings: 0, infos: 0 };
-  const all = [...report.project_issues, ...report.groups.flatMap((g) => g.issues)];
-  for (const issue of all) {
-    if (issue.severity === 'error') acc.errors++;
-    else if (issue.severity === 'warn') acc.warnings++;
-    else acc.infos++;
-  }
-  return acc;
+export function severityTotals(report: DiagReport | null): SeverityCounts {
+  return reportTotals(report);
 }
 
 function formatErr(err: unknown): string {
