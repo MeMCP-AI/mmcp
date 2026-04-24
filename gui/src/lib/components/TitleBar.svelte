@@ -103,7 +103,8 @@
 <header
   bind:this={barEl}
   data-tauri-drag-region
-  class="relative flex h-8 shrink-0 select-none items-stretch border-b border-line bg-surface-1 text-[12px] text-fg-muted"
+  style="--tb-h: 2rem; --tb-ctrl-w: calc(var(--tb-h) * 1.4375); --tb-glyph: calc(var(--tb-h) * 0.375); height: var(--tb-h);"
+  class="relative flex shrink-0 select-none items-stretch border-b border-line bg-surface-1 text-[0.75rem] text-fg-muted"
 >
   <div data-tauri-drag-region class="flex items-center gap-1 pl-2 pr-1">
     <BrainCircuit size={14} class="text-fg" />
@@ -152,31 +153,34 @@
   <div class="flex items-stretch">
     <button
       type="button"
-      class="flex w-[46px] items-center justify-center hover:bg-surface-2 hover:text-fg"
+      style="width: var(--tb-ctrl-w);"
+      class="flex items-center justify-center hover:bg-surface-2 hover:text-fg"
       aria-label="Minimize"
       onclick={() => win.minimize()}
     >
-      <span class="codicon codicon-chrome-minimize flex h-3.5 w-3.5 items-center justify-center text-[12px] leading-none before:block" aria-hidden="true"></span>
+      <span class="codicon codicon-chrome-minimize codicon-glyph" aria-hidden="true"></span>
     </button>
     <button
       type="button"
-      class="flex w-[46px] items-center justify-center hover:bg-surface-2 hover:text-fg"
+      style="width: var(--tb-ctrl-w);"
+      class="flex items-center justify-center hover:bg-surface-2 hover:text-fg"
       aria-label={maximized ? 'Restore' : 'Maximize'}
       onclick={() => win.toggleMaximize()}
     >
       {#if maximized}
-        <span class="codicon codicon-chrome-restore flex h-3.5 w-3.5 items-center justify-center text-[12px] leading-none before:block" aria-hidden="true"></span>
+        <span class="codicon codicon-chrome-restore codicon-glyph" aria-hidden="true"></span>
       {:else}
-        <span class="codicon codicon-chrome-maximize flex h-3.5 w-3.5 items-center justify-center text-[12px] leading-none before:block" aria-hidden="true"></span>
+        <span class="codicon codicon-chrome-maximize codicon-glyph" aria-hidden="true"></span>
       {/if}
     </button>
     <button
       type="button"
-      class="flex w-[46px] items-center justify-center hover:bg-red-600 hover:text-white"
+      style="width: var(--tb-ctrl-w);"
+      class="flex items-center justify-center hover:bg-red-600 hover:text-white"
       aria-label="Close"
       onclick={() => win.close()}
     >
-      <span class="codicon codicon-chrome-close flex h-3.5 w-3.5 items-center justify-center text-[12px] leading-none before:block" aria-hidden="true"></span>
+      <span class="codicon codicon-chrome-close codicon-glyph" aria-hidden="true"></span>
     </button>
   </div>
 
@@ -311,3 +315,21 @@
     </ul>
   {/if}
 </header>
+
+<style>
+  /* Title-bar chrome glyphs scale off --tb-glyph on the header so
+     bar height is the single source of truth — change --tb-h and
+     every icon, control width, and glyph follows. */
+  :global(.codicon-glyph) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--tb-glyph);
+    height: var(--tb-glyph);
+    font-size: var(--tb-glyph);
+    line-height: 1;
+  }
+  :global(.codicon-glyph::before) {
+    display: block;
+  }
+</style>
