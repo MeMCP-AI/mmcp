@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@import '@vscode/codicons/dist/codicon.css';
 @plugin '@tailwindcss/typography';
 
 /* Theme tokens consumed as CSS variables. The `surface-*` / `fg-*` /

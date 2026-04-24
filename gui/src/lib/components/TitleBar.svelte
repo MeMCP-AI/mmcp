@@ -5,7 +5,7 @@
   // a draggable title region, and the min/max/close window
   // controls on the far right.
 
-  import { BrainCircuit, ChevronRight, Minus, Square, X } from 'lucide-svelte';
+  import { BrainCircuit, ChevronRight } from 'lucide-svelte';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { emit } from '@tauri-apps/api/event';
   import { pickDirectory, setReferencePoint } from '$lib/api/workspace';
@@ -156,7 +156,7 @@
       aria-label="Minimize"
       onclick={() => win.minimize()}
     >
-      <Minus size={14} />
+      <span class="codicon codicon-chrome-minimize text-[16px] leading-none" aria-hidden="true"></span>
     </button>
     <button
       type="button"
@@ -165,21 +165,9 @@
       onclick={() => win.toggleMaximize()}
     >
       {#if maximized}
-        <!-- VSCode restore glyph: back square + front square slightly offset. -->
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 12 12"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1"
-          aria-hidden="true"
-        >
-          <rect x="3" y="1" width="8" height="8" />
-          <path d="M9 3 H1 V11 H9 V9" />
-        </svg>
+        <span class="codicon codicon-chrome-restore text-[16px] leading-none" aria-hidden="true"></span>
       {:else}
-        <Square size={12} />
+        <span class="codicon codicon-chrome-maximize text-[16px] leading-none" aria-hidden="true"></span>
       {/if}
     </button>
     <button
@@ -188,7 +176,7 @@
       aria-label="Close"
       onclick={() => win.close()}
     >
-      <X size={14} />
+      <span class="codicon codicon-chrome-close text-[16px] leading-none" aria-hidden="true"></span>
     </button>
   </div>
 

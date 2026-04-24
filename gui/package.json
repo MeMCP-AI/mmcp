@@ -26,6 +26,7 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",
+    "@vscode/codicons": "^0.0.45",
     "lucide-svelte": "^0.469.0",
     "marked": "^15.0.0"
   }
