@@ -25,11 +25,10 @@
     Search,
     X
   } from 'lucide-svelte';
+  import ChromeTools from '../ChromeTools.svelte';
   import FeatureBadge from '../FeatureBadge.svelte';
   import FeatureRelations from '../FeatureRelations.svelte';
   import KindBadge from '../KindBadge.svelte';
-  import VariantSwitcher from './VariantSwitcher.svelte';
-  import { settingsStore } from '$lib/stores/settings.svelte';
   import { selectionStore } from '$lib/stores/selection.svelte';
   import { memoriesStore } from '$lib/stores/memories.svelte';
   import { groupsStore } from '$lib/stores/groups.svelte';
@@ -289,10 +288,7 @@
         <RefreshCw size={11} class={syncStore.inFlight ? 'animate-spin' : ''} />
         Pull
       </button>
-      <VariantSwitcher
-        current={settingsStore.values.ui_variant}
-        onSelect={(v) => settingsStore.setUiVariant(v)}
-      />
+      <ChromeTools />
     </div>
   </header>
 

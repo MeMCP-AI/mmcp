@@ -18,11 +18,10 @@
     Search,
     X
   } from 'lucide-svelte';
+  import ChromeTools from '../ChromeTools.svelte';
   import FeatureBadge from '../FeatureBadge.svelte';
   import FeatureRelations from '../FeatureRelations.svelte';
   import KindBadge from '../KindBadge.svelte';
-  import VariantSwitcher from './VariantSwitcher.svelte';
-  import { settingsStore } from '$lib/stores/settings.svelte';
   import { selectionStore } from '$lib/stores/selection.svelte';
   import { memoriesStore } from '$lib/stores/memories.svelte';
   import { groupsStore } from '$lib/stores/groups.svelte';
@@ -190,10 +189,7 @@
         </button>
       {/if}
     </div>
-    <VariantSwitcher
-      current={settingsStore.values.ui_variant}
-      onSelect={(v) => settingsStore.setUiVariant(v)}
-    />
+    <ChromeTools />
   </header>
 
   <div class="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-line bg-surface-1/40 px-4 py-2">
