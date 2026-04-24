@@ -9,6 +9,7 @@
   import StatusBar from '$lib/components/StatusBar.svelte';
   import Toolbar from '$lib/components/Toolbar.svelte';
   import FeedView from '$lib/components/variants/FeedView.svelte';
+  import HubView from '$lib/components/variants/HubView.svelte';
   import RepoView from '$lib/components/variants/RepoView.svelte';
 
   import { createMemory, deleteMemory, updateMemory } from '$lib/api/memory';
@@ -298,6 +299,8 @@
   <div class="relative h-full w-full overflow-hidden">
     <FeedView />
   </div>
+{:else if settingsStore.values.ui_variant === 'hub'}
+  <HubView />
 {:else}
 <div class="flex h-full w-full flex-col overflow-hidden bg-surface-0 text-fg">
   <Toolbar
