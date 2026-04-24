@@ -47,6 +47,7 @@ pub mod features;
 pub mod groups;
 pub mod home;
 pub mod import_adoc;
+pub mod lock;
 pub mod memory;
 pub mod memory_ops;
 pub mod sessions;

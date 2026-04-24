@@ -335,6 +335,15 @@ pub async fn add_feature(
     spec: AddSpec,
     author: &ResolvedAuthor,
 ) -> Result<FeatureRecord, FeatureError> {
+    // FR-39: serialise concurrent add/update/delete/rename on the
+    // same group so races like `next_feature_number` can't assign
+    // the same integer to two concurrent creates. The lock is
+    // released when this function returns; the supersede flow's
+    // `update_feature_unlocked` call below runs under this same
+    // guard to avoid double-locking the non-reentrant mutex.
+    let _guard =
+        crate::lock::acquire_group_lock(*entry.manifest.group_id.as_uuid()).await;
+
     if spec.title.trim().is_empty() && spec.slug.is_none() {
         return Err(FeatureError::TitleRequired);
     }
@@ -417,10 +426,16 @@ pub async fn add_feature(
     // commit we just wrote above. A failure here leaves the new
     // FR live but the old one un-superseded; callers recover by
     // retrying `update_feature` with the same knobs.
+    //
+    // Use the _unlocked variant: `add_feature`'s caller already
+    // holds the per-group lock (acquired at the top of this
+    // function via the public wrapper below), so re-calling the
+    // locked public `update_feature` would deadlock on the
+    // non-reentrant mutex.
     if let Some(target) = supersede_target {
         let back_link = MemoryRef::new(id, commit_id.clone());
         let retry_message = format!("mark {} superseded by {slug}", target.slug);
-        update_feature(
+        update_feature_unlocked(
             backend,
             entry,
             &target.slug,
@@ -575,7 +590,28 @@ pub async fn read_feature(
 /// field must be `Some`, but this module does not enforce that —
 /// callers that pass an all-`None` `UpdateSpec` pay for a no-op
 /// commit, which is harmless and arguably useful for retagging.
+///
+/// Public wrapper: acquires the per-group write lock (FR-39) and
+/// delegates to [`update_feature_unlocked`]. Callers that already
+/// hold the lock (for instance `add_feature`'s supersede flow)
+/// must call `update_feature_unlocked` directly to avoid
+/// deadlocking on the non-reentrant mutex.
 pub async fn update_feature(
+    backend: &NativeBackend,
+    entry: &GroupEntry,
+    slug: &str,
+    spec: UpdateSpec,
+    author: &ResolvedAuthor,
+) -> Result<FeatureRecord, FeatureError> {
+    let _guard =
+        crate::lock::acquire_group_lock(*entry.manifest.group_id.as_uuid()).await;
+    update_feature_unlocked(backend, entry, slug, spec, author).await
+}
+
+/// Inner, non-locking variant of [`update_feature`]. Every caller
+/// is responsible for acquiring the per-group lock themselves; the
+/// public wrapper does that for external entry points.
+pub async fn update_feature_unlocked(
     backend: &NativeBackend,
     entry: &GroupEntry,
     slug: &str,
@@ -725,6 +761,9 @@ pub async fn rename_feature(
     author: &ResolvedAuthor,
     message: Option<&str>,
 ) -> Result<Vec<FeatureRecord>, FeatureError> {
+    // FR-39: serialise with other writers on this group.
+    let _guard =
+        crate::lock::acquire_group_lock(*entry.manifest.group_id.as_uuid()).await;
     validate_slug(old_slug).map_err(FeatureError::Memory)?;
     validate_slug(new_slug).map_err(FeatureError::Memory)?;
     if old_slug == new_slug {
@@ -845,6 +884,9 @@ pub async fn delete_feature(
     author: &ResolvedAuthor,
     message: Option<&str>,
 ) -> Result<String, FeatureError> {
+    // FR-39: serialise with other writers on this group.
+    let _guard =
+        crate::lock::acquire_group_lock(*entry.manifest.group_id.as_uuid()).await;
     // Guard against accidentally deleting an unrelated memory. The
     // generic delete primitive would happily drop a non-FR memory;
     // routing it through the FR tools would be a surprise.
@@ -1338,6 +1380,66 @@ mod tests {
             all.len(),
             4,
             "show_all must re-include every FR regardless of status",
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_add_feature_assigns_unique_numbers() {
+        // FR-39: two concurrent `add_feature` calls with no
+        // explicit number must not race on
+        // `next_feature_number`. Before the per-group lock
+        // landed, both calls read `max = N` at the same time and
+        // both wrote `N + 1`, producing the duplicate-number
+        // diagnose warning this test exists to prevent.
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+
+        // Fire 8 concurrent add_feature tasks sharing the same
+        // backend + group index. With the lock in place each
+        // one acquires the per-group mutex serially and reads
+        // the fresh max.
+        let mut handles = Vec::new();
+        for i in 0..8u32 {
+            let backend = scratch.backend().clone();
+            let groups = scratch.groups().clone();
+            let gid = seeded.group_id;
+            let author = scratch.author().clone();
+            handles.push(tokio::spawn(async move {
+                let entry = groups.get(&gid).await.expect("entry");
+                add_feature(
+                    &backend,
+                    &entry,
+                    AddSpec {
+                        slug: Some(format!("fr-race-{i}")),
+                        title: format!("Race {i}"),
+                        ..AddSpec::default()
+                    },
+                    &author,
+                )
+                .await
+                .expect("add")
+            }));
+        }
+        let mut numbers: Vec<u32> = Vec::new();
+        for h in handles {
+            let rec = h.await.expect("task ok");
+            numbers.push(rec.number.expect("auto-assigned number"));
+        }
+        numbers.sort_unstable();
+        let unique_len = {
+            let mut n = numbers.clone();
+            n.dedup();
+            n.len()
+        };
+        assert_eq!(
+            unique_len,
+            numbers.len(),
+            "every concurrent add_feature must get a unique number, got {numbers:?}"
+        );
+        assert_eq!(
+            numbers,
+            (1..=8).collect::<Vec<_>>(),
+            "8 concurrent creates with no seeds must produce 1..=8 monotonic",
         );
     }
 
