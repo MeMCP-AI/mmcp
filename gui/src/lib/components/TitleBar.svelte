@@ -5,7 +5,7 @@
   // a draggable title region, and the min/max/close window
   // controls on the far right.
 
-  import { BrainCircuit, ChevronRight, Minus, Square, Copy, X } from 'lucide-svelte';
+  import { BrainCircuit, ChevronRight, Minus, Square, X } from 'lucide-svelte';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { emit } from '@tauri-apps/api/event';
   import { pickDirectory, setReferencePoint } from '$lib/api/workspace';
@@ -165,7 +165,19 @@
       onclick={() => win.toggleMaximize()}
     >
       {#if maximized}
-        <Copy size={12} class="-scale-x-100" />
+        <!-- VSCode restore glyph: back square + front square slightly offset. -->
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 12 12"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1"
+          aria-hidden="true"
+        >
+          <rect x="3" y="1" width="8" height="8" />
+          <path d="M9 3 H1 V11 H9 V9" />
+        </svg>
       {:else}
         <Square size={12} />
       {/if}
