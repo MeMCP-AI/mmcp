@@ -117,6 +117,21 @@ pub enum ImportError {
         got: Uuid,
     },
 
+    /// A write addressed by filename UUID (the caller specified the
+    /// filename path explicitly, or resolved via the filename fast
+    /// path) carried a frontmatter `id` that disagrees with the
+    /// filename. Slice D rejects this by default; callers that
+    /// genuinely intend to overwrite a drifted file pass `force =
+    /// true` to flip the rejection into an accepted-with-note path.
+    #[error(
+        "filename-addressed write to '{path}' has id mismatch: filename {filename}, frontmatter {frontmatter} (pass force=true to override)"
+    )]
+    IdMismatchOnFilenameWrite {
+        path: String,
+        filename: Uuid,
+        frontmatter: Uuid,
+    },
+
     /// Neither `slug` nor `id` was provided to a resolver call that
     /// requires at least one addressing key.
     #[error("resolve_memory requires at least one of slug or id")]
@@ -195,6 +210,91 @@ pub enum AddressingMode {
     /// there is no filename/frontmatter comparison to make. Writes
     /// branch through this mode the same way they always have.
     BySlugOnly,
+}
+
+
+/// Outcome of the filename-vs-frontmatter id check that
+/// [`validate_id_mismatch`] runs on every write. Callers map this
+/// onto FR-45 notes (`id_mismatch_accepted` / `id_mismatch_forced`)
+/// at the tool boundary.
+///
+/// `Match` is the silent common case. The two mismatch variants
+/// distinguish acceptance paths: `MismatchAccepted` rides on
+/// frontmatter-as-truth (D4b/D4c), `MismatchForced` rides on
+/// caller-asserted override of the filename addressing rule (D4a
+/// + force).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdValidation {
+    /// Filename UUID and frontmatter id agree, or one of them was
+    /// absent (no comparison possible).
+    Match,
+    /// Filename ≠ frontmatter; the write was addressed by
+    /// frontmatter / slug only, so frontmatter is source of truth
+    /// and the write proceeds. Surface as a `id_mismatch_accepted`
+    /// note.
+    MismatchAccepted { filename: Uuid, frontmatter: Uuid },
+    /// Filename ≠ frontmatter; the write was addressed by filename
+    /// UUID and the caller passed `force = true` to override the
+    /// rejection rule. Surface as a `id_mismatch_forced` note.
+    MismatchForced { filename: Uuid, frontmatter: Uuid },
+}
+
+/// Compare the filename UUID encoded in `path` against the
+/// frontmatter `id` stamped in `rendered`. Apply the D4 enforcement
+/// rules and return the resulting [`IdValidation`].
+///
+/// Pure function (no I/O). Callers commit only after the validation
+/// resolves to a non-error outcome; the FR-45 note emitted from the
+/// returned variant tags the response so consumers see the drift.
+pub fn validate_id_mismatch(
+    path: &str,
+    rendered: &str,
+    addressing_mode: AddressingMode,
+    force: bool,
+) -> Result<IdValidation, ImportError> {
+    // Extract filename UUID from path stem `<uuid>.md`. If the
+    // path doesn't end in a UUID stem (hand-crafted slugs), there
+    // is nothing to compare; treat as Match.
+    let filename = filename_uuid_from_path(path);
+    let frontmatter = parse_frontmatter_id(rendered.as_bytes());
+    let (filename, frontmatter) = match (filename, frontmatter) {
+        (Some(f), Some(g)) => (f, g),
+        // Either side absent means no comparison applies. Diagnose
+        // separately flags missing frontmatter ids; the resolver
+        // already requires one for `ByFrontmatter` resolution.
+        _ => return Ok(IdValidation::Match),
+    };
+    if filename == frontmatter {
+        return Ok(IdValidation::Match);
+    }
+    match addressing_mode {
+        AddressingMode::ByFilename if !force => Err(ImportError::IdMismatchOnFilenameWrite {
+            path: path.to_string(),
+            filename,
+            frontmatter,
+        }),
+        AddressingMode::ByFilename => Ok(IdValidation::MismatchForced {
+            filename,
+            frontmatter,
+        }),
+        AddressingMode::ByFrontmatter | AddressingMode::BySlugOnly => {
+            Ok(IdValidation::MismatchAccepted {
+                filename,
+                frontmatter,
+            })
+        }
+    }
+}
+
+/// Extract the trailing `<uuid>.md` stem from a `memories/<slug>/<uuid>.md`
+/// path. Returns `None` for hand-crafted filenames whose stem is
+/// not a UUID.
+fn filename_uuid_from_path(path: &str) -> Option<Uuid> {
+    let stem = path
+        .rsplit('/')
+        .next()
+        .and_then(|name| name.strip_suffix(mmcp_core::conventions::MEMORY_EXTENSION))?;
+    Uuid::parse_str(stem).ok()
 }
 
 /// Addressing result from [`resolve_memory`]. Carries the slug,
@@ -439,18 +539,27 @@ fn parse_frontmatter_id(bytes: &[u8]) -> Option<Uuid> {
 }
 
 /// Commit a write of `rendered` at an explicit repo-relative
-/// `path`. Unconditional — callers decide the create-vs-update
-/// collision semantics themselves. FR-028 uses this to commit to
-/// `memories/<slug>/<uuid>.md` once `resolve_memory` has already
-/// picked the target.
+/// `path` after running the FR-28 / D4 id-mismatch check. The
+/// validation compares the filename UUID encoded in `path` to the
+/// frontmatter `id` in `rendered` and applies the rules from
+/// [`validate_id_mismatch`]. Callers thread the
+/// `addressing_mode` from their resolver and `force` from their
+/// tool args.
+///
+/// On success returns the commit id and the [`IdValidation`]
+/// outcome so the caller can surface `id_mismatch_*` FR-45 notes.
+/// `IdMismatchOnFilenameWrite` short-circuits before writing.
 pub async fn write_file_at_path(
     backend: &NativeBackend,
     handle: &RepoHandle,
     path: &str,
     rendered: &str,
     author: &ResolvedAuthor,
+    addressing_mode: AddressingMode,
+    force: bool,
     message: Option<&str>,
-) -> Result<String, ImportError> {
+) -> Result<(String, IdValidation), ImportError> {
+    let validation = validate_id_mismatch(path, rendered, addressing_mode, force)?;
     let commit_message = message
         .map(str::to_string)
         .unwrap_or_else(|| format!("write {path}"));
@@ -465,7 +574,7 @@ pub async fn write_file_at_path(
             ),
         )
         .await?;
-    Ok(commit_id)
+    Ok((commit_id, validation))
 }
 
 /// Commit a deletion of `path`. Unconditional; callers probe first
@@ -495,8 +604,11 @@ pub async fn delete_file_at_path(
 }
 
 /// Write a memory at the two-level `memories/<slug>/<id>.md` path
-/// with create-or-override semantics. Returns
-/// [`ImportError::MemoryAlreadyExists`] on collision when
+/// with create-or-override semantics. Delegates the FR-28 / D4
+/// id-mismatch check to [`write_file_at_path`] so callers thread
+/// `addressing_mode` and `force` through both primitives.
+///
+/// Returns [`ImportError::MemoryAlreadyExists`] on collision when
 /// `override_existing` is `false`; otherwise overwrites in place.
 pub async fn write_memory_by_id(
     backend: &NativeBackend,
@@ -506,8 +618,10 @@ pub async fn write_memory_by_id(
     rendered: &str,
     author: &ResolvedAuthor,
     override_existing: bool,
+    addressing_mode: AddressingMode,
+    force: bool,
     message: Option<&str>,
-) -> Result<String, ImportError> {
+) -> Result<(String, IdValidation), ImportError> {
     validate_slug(slug)?;
     let path = mmcp_core::conventions::memory_path(slug, id);
     let exists = match backend.read_file(handle, &path, &Rev::head()).await {
@@ -527,7 +641,17 @@ pub async fn write_memory_by_id(
             format!("create memory {slug}/{id}")
         }
     });
-    write_file_at_path(backend, handle, &path, rendered, author, Some(&commit_message)).await
+    write_file_at_path(
+        backend,
+        handle,
+        &path,
+        rendered,
+        author,
+        addressing_mode,
+        force,
+        Some(&commit_message),
+    )
+    .await
 }
 
 /// Create a fresh memory file. Errors with
@@ -574,7 +698,12 @@ pub async fn import_memory(
         .map_err(|e| ImportError::Render(e.to_string()))?;
 
     let message = format!("import memory {slug}/{id}");
-    let commit_id = write_memory_by_id(
+    // FR-28 / D4: import_memory mints `id` and stamps it into
+    // frontmatter on the line above, so filename and frontmatter
+    // agree by construction. Use `BySlugOnly` (the import flow has
+    // no caller-supplied addressing) and `force=false`; the
+    // mismatch check is a no-op here.
+    let (commit_id, _validation) = write_memory_by_id(
         backend,
         handle,
         slug,
@@ -582,6 +711,8 @@ pub async fn import_memory(
         &rendered,
         author,
         override_existing,
+        AddressingMode::BySlugOnly,
+        false,
         Some(&message),
     )
     .await?;
@@ -1202,5 +1333,160 @@ mod tests {
             .await
             .expect("resolve");
         assert_eq!(resolved.addressing_mode, AddressingMode::BySlugOnly);
+    }
+
+    // ── Slice D: validate_id_mismatch enforcement matrix ─────────
+
+    fn rendered_for(id: Uuid) -> String {
+        format!(
+            "+++\nid = \"{id}\"\nname = \"d\"\ndescription = \"d\"\nkind = \"rule\"\n+++\nbody\n"
+        )
+    }
+
+    #[test]
+    fn validate_id_mismatch_match_branch() {
+        let id = Uuid::now_v7();
+        let path = format!("memories/rules/{id}.md");
+        let rendered = rendered_for(id);
+        let outcome =
+            validate_id_mismatch(&path, &rendered, AddressingMode::ByFilename, false).unwrap();
+        assert_eq!(outcome, IdValidation::Match);
+    }
+
+    #[test]
+    fn validate_id_mismatch_by_filename_rejects_without_force() {
+        let filename = Uuid::now_v7();
+        let frontmatter = Uuid::now_v7();
+        let path = format!("memories/rules/{filename}.md");
+        let rendered = rendered_for(frontmatter);
+        let err =
+            validate_id_mismatch(&path, &rendered, AddressingMode::ByFilename, false).unwrap_err();
+        assert!(matches!(
+            err,
+            ImportError::IdMismatchOnFilenameWrite { filename: f, frontmatter: g, .. }
+            if f == filename && g == frontmatter
+        ));
+    }
+
+    #[test]
+    fn validate_id_mismatch_by_filename_with_force_returns_forced_variant() {
+        let filename = Uuid::now_v7();
+        let frontmatter = Uuid::now_v7();
+        let path = format!("memories/rules/{filename}.md");
+        let rendered = rendered_for(frontmatter);
+        let outcome =
+            validate_id_mismatch(&path, &rendered, AddressingMode::ByFilename, true).unwrap();
+        assert!(matches!(
+            outcome,
+            IdValidation::MismatchForced { filename: f, frontmatter: g }
+            if f == filename && g == frontmatter
+        ));
+    }
+
+    #[test]
+    fn validate_id_mismatch_by_frontmatter_returns_accepted_variant() {
+        let filename = Uuid::now_v7();
+        let frontmatter = Uuid::now_v7();
+        let path = format!("memories/rules/{filename}.md");
+        let rendered = rendered_for(frontmatter);
+        let outcome =
+            validate_id_mismatch(&path, &rendered, AddressingMode::ByFrontmatter, false).unwrap();
+        assert!(matches!(
+            outcome,
+            IdValidation::MismatchAccepted { filename: f, frontmatter: g }
+            if f == filename && g == frontmatter
+        ));
+    }
+
+    #[test]
+    fn validate_id_mismatch_by_slug_only_accepts_with_warning() {
+        let filename = Uuid::now_v7();
+        let frontmatter = Uuid::now_v7();
+        let path = format!("memories/rules/{filename}.md");
+        let rendered = rendered_for(frontmatter);
+        let outcome =
+            validate_id_mismatch(&path, &rendered, AddressingMode::BySlugOnly, false).unwrap();
+        assert!(matches!(
+            outcome,
+            IdValidation::MismatchAccepted { .. }
+        ));
+    }
+
+    /// Hand-crafted filenames (non-UUID stem) have nothing to
+    /// compare against on the filename side, so the validator
+    /// returns `Match` regardless of frontmatter id.
+    #[test]
+    fn validate_id_mismatch_handcrafted_filename_skips_comparison() {
+        let frontmatter = Uuid::now_v7();
+        let rendered = rendered_for(frontmatter);
+        let outcome = validate_id_mismatch(
+            "memories/hand/scratch.md",
+            &rendered,
+            AddressingMode::ByFrontmatter,
+            false,
+        )
+        .unwrap();
+        assert_eq!(outcome, IdValidation::Match);
+    }
+
+    /// End-to-end: write_memory_by_id propagates the rejection
+    /// when filename UUID disagrees with frontmatter and `force =
+    /// false` under `ByFilename` addressing.
+    #[tokio::test]
+    async fn write_memory_by_id_rejects_filename_mismatch_without_force() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let filename = Uuid::now_v7();
+        let frontmatter = Uuid::now_v7();
+        let rendered = rendered_for(frontmatter);
+        let err = write_memory_by_id(
+            &backend,
+            &handle,
+            "rules",
+            filename,
+            &rendered,
+            &author,
+            false,
+            AddressingMode::ByFilename,
+            false,
+            None,
+        )
+        .await
+        .expect_err("rejection");
+        assert!(matches!(
+            err,
+            ImportError::IdMismatchOnFilenameWrite { .. }
+        ));
+    }
+
+    /// End-to-end: write_memory_by_id with `force = true` under
+    /// `ByFilename` addressing succeeds and returns the
+    /// `MismatchForced` validation outcome.
+    #[tokio::test]
+    async fn write_memory_by_id_force_bypasses_filename_mismatch() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let filename = Uuid::now_v7();
+        let frontmatter = Uuid::now_v7();
+        let rendered = rendered_for(frontmatter);
+        let (commit, validation) = write_memory_by_id(
+            &backend,
+            &handle,
+            "rules",
+            filename,
+            &rendered,
+            &author,
+            false,
+            AddressingMode::ByFilename,
+            true,
+            None,
+        )
+        .await
+        .expect("forced write");
+        assert!(!commit.is_empty());
+        assert!(matches!(
+            validation,
+            IdValidation::MismatchForced { .. }
+        ));
     }
 }

@@ -282,6 +282,13 @@ struct WriteMemoryArgs {
     /// file flows.
     #[serde(default, rename = "override")]
     pub override_: bool,
+    /// FR-28 / D4: bypass the filename-vs-frontmatter id mismatch
+    /// rejection on a `ByFilename` write. Defaults to `false` so
+    /// drift is caught loudly; set `true` only when the caller has
+    /// confirmed they intend to write a new payload at the same
+    /// filename UUID even though the frontmatter id disagrees.
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// Wire-form source format accepted by the `import_memory` tool.
@@ -351,6 +358,12 @@ struct ImportMemoryArgs {
     /// matters for pinned-id flows.
     #[serde(default, rename = "override")]
     pub override_: bool,
+    /// FR-28 / D4: bypass the filename-vs-frontmatter id mismatch
+    /// rejection. Reserved for parity with the other write tools;
+    /// `import_memory` mints / pins ids in lockstep with the
+    /// filename, so the flag is a no-op on the happy path.
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// Argument shape for `edit_memory`.
@@ -412,6 +425,10 @@ struct EditMemoryArgs {
     /// `"update memory {slug}"`.
     #[serde(default)]
     pub message: Option<String>,
+    /// FR-28 / D4: bypass the filename-vs-frontmatter id mismatch
+    /// rejection on a `ByFilename` write. Defaults to `false`.
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// Argument shape for `delete_memory`.
@@ -430,6 +447,11 @@ struct DeleteMemoryArgs {
     /// `"delete memory {slug}"`.
     #[serde(default)]
     pub message: Option<String>,
+    /// FR-28 / D4: present for parity with the other write tools;
+    /// `delete_memory` does not render new bytes, so the flag is a
+    /// no-op on the happy path.
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// Args for `read_memory_body_sections` (FR-026).
@@ -466,6 +488,10 @@ struct EditMemoryBodyArgs {
     /// Optional override for the git commit message.
     #[serde(default)]
     pub message: Option<String>,
+    /// FR-28 / D4: bypass the filename-vs-frontmatter id mismatch
+    /// rejection on a `ByFilename` write. Defaults to `false`.
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// Tool-layer mirror of `mmcp_store::MemoryEditOp`. The store
@@ -1624,7 +1650,12 @@ impl McpServer {
             .to_string()
             .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
 
-        let commit_id = mmcp_store::write_memory_by_id(
+        // FR-28 / D4: write_memory mints / pins `id` and stamps it
+        // into frontmatter on the lines above, so filename and
+        // frontmatter agree by construction. Address by filename
+        // (the caller specified the slug+id pair) and let the
+        // store-side `validate_id_mismatch` pick up future drift.
+        let (commit_id, validation) = mmcp_store::write_memory_by_id(
             &self.state.backend,
             &entry.handle,
             &args.slug,
@@ -1632,6 +1663,8 @@ impl McpServer {
             &rendered,
             &self.state.author,
             args.override_,
+            mmcp_store::AddressingMode::ByFilename,
+            args.force,
             None,
         )
         .await
@@ -1656,6 +1689,7 @@ impl McpServer {
                 })),
             );
         }
+        notes.extend(id_validation_to_notes(&validation, &args.slug));
         Ok(ok_json_with_notes(
             json!({
                 "slug": args.slug,
@@ -1698,6 +1732,13 @@ impl McpServer {
         args: ImportMemoryArgs,
     ) -> Result<CallToolResult, McpError> {
         let entry = self.resolve_group_entry(&args.group).await?;
+
+        // FR-28 / D4: `force` is part of the unified write-tool
+        // wire surface but `import_memory` mints / pins ids in
+        // lockstep with the filename, so the flag has nothing to
+        // bypass on the happy path. Bind to underscore so the
+        // wire arg stays visible to clients.
+        let _force = args.force;
 
         // Synth fields are together-or-not-at-all. Partial sets
         // surface as `synth_frontmatter_partial` so AI callers can
@@ -1859,23 +1900,29 @@ impl McpServer {
         let commit_message = args
             .message
             .unwrap_or_else(|| format!("update memory {}", resolved.slug));
-        let commit_id = mmcp_store::write_file_at_path(
+        let (commit_id, validation) = mmcp_store::write_file_at_path(
             &self.state.backend,
             &entry.handle,
             &resolved.path,
             &rendered,
             &self.state.author,
+            resolved.addressing_mode,
+            args.force,
             Some(&commit_message),
         )
         .await
         .map_err(map_memory_error_to_mcp)?;
 
-        Ok(ok_json(json!({
-            "group": args.group,
-            "slug": resolved.slug,
-            "id": resolved.id.to_string(),
-            "commit_id": commit_id,
-        })))
+        let notes = id_validation_to_notes(&validation, &resolved.slug);
+        Ok(ok_json_with_notes(
+            json!({
+                "group": args.group,
+                "slug": resolved.slug,
+                "id": resolved.id.to_string(),
+                "commit_id": commit_id,
+            }),
+            notes,
+        ))
     }
 
     #[tool(
@@ -1904,6 +1951,11 @@ impl McpServer {
         &self,
         args: DeleteMemoryArgs,
     ) -> Result<CallToolResult, McpError> {
+        // FR-28 / D4: `force` is part of the unified write-tool
+        // wire surface but `delete_memory` does not render new
+        // bytes to validate, so the flag has nothing to bypass.
+        // Bind to underscore so the wire arg stays visible.
+        let _force = args.force;
         let (entry, resolved) = self
             .resolve_memory_address(&args.group, args.slug.as_deref(), args.id.as_deref())
             .await?;
@@ -2043,12 +2095,14 @@ impl McpServer {
         let commit_message = args
             .message
             .unwrap_or_else(|| format!("update memory {}", resolved.slug));
-        let commit_id = mmcp_store::write_file_at_path(
+        let (commit_id, validation) = mmcp_store::write_file_at_path(
             &self.state.backend,
             &entry.handle,
             &resolved.path,
             &rendered,
             &self.state.author,
+            resolved.addressing_mode,
+            args.force,
             Some(&commit_message),
         )
         .await
@@ -2070,13 +2124,17 @@ impl McpServer {
             })
             .collect();
 
-        Ok(ok_json(json!({
-            "group": args.group,
-            "slug": resolved.slug,
-            "id": resolved.id.to_string(),
-            "commit_id": commit_id,
-            "sections": sections_json,
-        })))
+        let notes = id_validation_to_notes(&validation, &resolved.slug);
+        Ok(ok_json_with_notes(
+            json!({
+                "group": args.group,
+                "slug": resolved.slug,
+                "id": resolved.id.to_string(),
+                "commit_id": commit_id,
+                "sections": sections_json,
+            }),
+            notes,
+        ))
     }
 
     #[tool(
@@ -4133,6 +4191,17 @@ fn map_memory_error_to_mcp(err: ImportError) -> McpError {
             "code": "group_not_found",
             "group": group,
         }),
+        ImportError::IdMismatchOnFilenameWrite {
+            path,
+            filename,
+            frontmatter,
+        } => json!({
+            "code": "id_mismatch_on_filename_write",
+            "path": path,
+            "filename": filename.to_string(),
+            "frontmatter": frontmatter.to_string(),
+            "retry_hint": "pass force: true to override (filename UUID stays; the rejected frontmatter id is the new source of truth)",
+        }),
     };
     McpError::invalid_params(message, Some(payload))
 }
@@ -4490,6 +4559,53 @@ fn ok_json_with_notes(
     }
     let text = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
     CallToolResult::success(vec![Content::text(Cow::Owned(text))])
+}
+
+
+/// Map a [`mmcp_store::IdValidation`] outcome onto FR-45 notes.
+/// Returns an empty vector for the silent `Match` case so no note
+/// is emitted; the two mismatch variants surface as
+/// `id_mismatch_accepted` (frontmatter wins) and
+/// `id_mismatch_forced` (caller bypassed the filename rejection).
+fn id_validation_to_notes(
+    validation: &mmcp_store::IdValidation,
+    slug: &str,
+) -> Vec<mmcp_proto::Note> {
+    match validation {
+        mmcp_store::IdValidation::Match => Vec::new(),
+        mmcp_store::IdValidation::MismatchAccepted {
+            filename,
+            frontmatter,
+        } => vec![
+            mmcp_proto::Note::warn(
+                "id_mismatch_accepted",
+                format!(
+                    "memory `{slug}` filename id {filename} disagrees with frontmatter id {frontmatter}; frontmatter is source of truth, write accepted"
+                ),
+            )
+            .with_context(json!({
+                "slug": slug,
+                "filename": filename.to_string(),
+                "frontmatter": frontmatter.to_string(),
+            })),
+        ],
+        mmcp_store::IdValidation::MismatchForced {
+            filename,
+            frontmatter,
+        } => vec![
+            mmcp_proto::Note::warn(
+                "id_mismatch_forced",
+                format!(
+                    "memory `{slug}` filename id {filename} disagrees with frontmatter id {frontmatter}; write forced past the rejection rule"
+                ),
+            )
+            .with_context(json!({
+                "slug": slug,
+                "filename": filename.to_string(),
+                "frontmatter": frontmatter.to_string(),
+            })),
+        ],
+    }
 }
 
 #[cfg(test)]
@@ -6028,6 +6144,7 @@ mod tests {
             mandatory: false,
             refs: Vec::new(),
             override_,
+            force: false,
         }
     }
 
@@ -6221,6 +6338,7 @@ mod tests {
             description: Some("From MCP import".into()),
             kind: Some(ToolMemoryKind::Rule),
             override_: false,
+            force: false,
         }
     }
 
@@ -6495,6 +6613,7 @@ mod tests {
                 slug: Some("doomed".into()),
                 id: None,
                 message: None,
+                force: false,
             })
             .await
             .expect("delete");
@@ -6531,6 +6650,7 @@ mod tests {
                 slug: Some("never-existed".into()),
                 id: None,
                 message: None,
+                force: false,
             })
             .await
             .expect_err("must surface not-found");
@@ -6687,6 +6807,7 @@ mod tests {
                     body: "rewritten need body".into(),
                 }],
                 message: None,
+                force: false,
             })
             .await
             .expect("edit body");
@@ -6728,6 +6849,7 @@ mod tests {
                     path: "does-not-exist".into(),
                 }],
                 message: None,
+                force: false,
             })
             .await
             .expect_err("must error on missing section");

@@ -37,8 +37,8 @@ use crate::config::{find_project_root, load as load_project_config};
 use crate::groups::{GroupEntry, GroupIndex};
 use crate::home::ResolvedAuthor;
 use crate::memory::{
-    ImportError, delete_file_at_path, resolve_memory, slugify_filename, validate_slug,
-    write_file_at_path, write_memory_by_id,
+    AddressingMode, ImportError, delete_file_at_path, resolve_memory, slugify_filename,
+    validate_slug, write_file_at_path, write_memory_by_id,
 };
 
 /// Errors specific to feature-request operations.
@@ -404,13 +404,17 @@ pub async fn add_feature(
             Some(t) => format!("create feature {slug} (supersedes {})", t.slug),
             None => format!("create feature {slug}"),
         });
-    let commit_id = write_memory_by_id(
+    // FR-28 / D4: feature creation mints `id` and stamps it into
+    // frontmatter; filename and frontmatter agree by construction.
+    let (commit_id, _validation) = write_memory_by_id(
         backend,
         &entry.handle,
         &slug,
         id,
         &rendered,
         author,
+        false,
+        AddressingMode::BySlugOnly,
         false,
         Some(&message),
     )
@@ -671,12 +675,21 @@ pub async fn update_feature_unlocked(
         .message
         .clone()
         .unwrap_or_else(|| format!("update feature {slug}"));
-    let commit_id = write_file_at_path(
+    // FR-28 / D4: update_feature_unlocked operates on the
+    // pre-resolved feature memory; the rendered fm.id is the
+    // existing memory's id (preserved through the in-memory edit),
+    // so filename and frontmatter agree by construction. Use the
+    // resolver's `addressing_mode` and `force=false` so any future
+    // drift surfaces through the validation channel rather than
+    // bypassing it.
+    let (commit_id, _validation) = write_file_at_path(
         backend,
         &entry.handle,
         &resolved.path,
         &rendered,
         author,
+        resolved.addressing_mode,
+        false,
         Some(&message),
     )
     .await?;

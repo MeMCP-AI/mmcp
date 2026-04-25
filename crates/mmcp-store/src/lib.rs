@@ -70,9 +70,10 @@ pub use groups::{GroupEntry, GroupIndex};
 pub use home::{MmcpHome, ResolvedAuthor, read_git_global};
 pub use import_adoc::{ADOC_EXTENSIONS, AdocConvertError, convert_adoc_to_markdown, is_adoc_filename};
 pub use memory::{
-    AddressingMode, ImportError, ImportResult, MemoryFileRef, ResolvedMemory, SynthFrontmatter,
-    delete_file_at_path, import_memory, list_all_memory_files, parse_kind, resolve_group,
-    resolve_memory, slugify_filename, validate_slug, write_file_at_path, write_memory_by_id,
+    AddressingMode, IdValidation, ImportError, ImportResult, MemoryFileRef, ResolvedMemory,
+    SynthFrontmatter, delete_file_at_path, import_memory, list_all_memory_files, parse_kind,
+    resolve_group, resolve_memory, slugify_filename, validate_id_mismatch, validate_slug,
+    write_file_at_path, write_memory_by_id,
 };
 pub use memory_ops::{MemoryEditError, MemoryEditOp, apply_ops};
 pub use sessions::{MemoryRead, SessionState, SessionStore};
