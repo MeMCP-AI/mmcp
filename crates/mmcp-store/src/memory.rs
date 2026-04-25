@@ -170,6 +170,33 @@ pub async fn list_all_memory_files(
     Ok(out)
 }
 
+/// How a [`ResolvedMemory`] was reached. Branches the write
+/// enforcement rules in Slice D (FR-28): filename-addressed writes
+/// reject on id mismatch unless `force`, frontmatter-addressed
+/// writes accept with a `malformed_frontmatter` warning note, and
+/// slug-only queries skip the mismatch check because no id was
+/// provided to compare against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AddressingMode {
+    /// Reached via the filename fast path — file at
+    /// `memories/<slug>/<id>.md` exists AND its frontmatter id
+    /// matches the queried id. Writes in this mode treat the
+    /// filename UUID as authoritative and surface mismatches as
+    /// hard rejections (unless the caller passes `force: true`).
+    ByFilename,
+    /// Reached by scanning frontmatter ids across the group after
+    /// the filename fast path missed. Either the file was
+    /// hand-crafted with a non-UUID filename, or its filename
+    /// UUID disagrees with the stored frontmatter id. Writes in
+    /// this mode accept the edit and emit a
+    /// `malformed_frontmatter` warning so the drift stays visible.
+    ByFrontmatter,
+    /// Reached via slug-only resolution; no id was supplied, so
+    /// there is no filename/frontmatter comparison to make. Writes
+    /// branch through this mode the same way they always have.
+    BySlugOnly,
+}
+
 /// Addressing result from [`resolve_memory`]. Carries the slug,
 /// the canonical UUID, and the in-repo path
 /// (`memories/<slug>/<uuid>.md`) that a subsequent `read_file` can
@@ -179,6 +206,10 @@ pub struct ResolvedMemory {
     pub slug: String,
     pub id: Uuid,
     pub path: String,
+    /// How the resolver located this entry. Callers that write
+    /// branch on this to decide whether a filename/frontmatter id
+    /// mismatch is a hard reject or a soft warning.
+    pub addressing_mode: AddressingMode,
 }
 
 /// Locate a memory by slug, id, or both.
@@ -225,6 +256,7 @@ async fn resolve_slug_and_id(
                 slug: slug.to_string(),
                 id: expected,
                 path,
+                addressing_mode: AddressingMode::ByFilename,
             })
         }
         Err(GitError::PathNotFound(_)) => Err(ImportError::MemoryNotFound {
@@ -262,6 +294,7 @@ async fn resolve_by_slug(
                 slug: slug.to_string(),
                 id: only,
                 path: mmcp_core::conventions::memory_path(slug, only),
+                addressing_mode: AddressingMode::BySlugOnly,
             })
         }
         n if n >= 2 => Err(ImportError::MemoryAmbiguous {
@@ -280,25 +313,101 @@ async fn resolve_by_id(
     handle: &RepoHandle,
     expected: Uuid,
 ) -> Result<ResolvedMemory, ImportError> {
-    let filename = format!(
-        "{}{}",
-        expected,
-        mmcp_core::conventions::MEMORY_EXTENSION
-    );
+    // Walk every slug directory once, splitting files into the
+    // three buckets the fallback chain works through (D6):
+    //   1. UUID-named files whose stem == `expected`        (step 1 candidates)
+    //   2. non-UUID-named files (hand-crafted slugs)         (step 2 candidates)
+    //   3. UUID-named files whose stem != `expected`         (step 3 candidates)
+    // Every file read goes through `parse_frontmatter_id` so the
+    // frontmatter id is the source of truth (FR-28 / D4).
+    let rev = Rev::head();
     let dirs = backend
-        .list_subtrees(handle, mmcp_core::conventions::MEMORIES_DIR, &Rev::head())
+        .list_subtrees(handle, mmcp_core::conventions::MEMORIES_DIR, &rev)
         .await?;
-    for slug in dirs {
+
+    let filename_ext = mmcp_core::conventions::MEMORY_EXTENSION;
+    let mut step1_candidates: Vec<(String, String)> = Vec::new();
+    let mut step2_candidates: Vec<(String, String)> = Vec::new();
+    let mut step3_candidates: Vec<(String, String)> = Vec::new();
+
+    for slug in &dirs {
         let dir = format!("{}/{}", mmcp_core::conventions::MEMORIES_DIR, slug);
-        let entries = backend.list_tree(handle, &dir, &Rev::head()).await?;
-        if entries.iter().any(|name| name == &filename) {
+        let entries = backend.list_tree(handle, &dir, &rev).await?;
+        for name in entries {
+            let Some(stem) = name.strip_suffix(filename_ext) else {
+                // Non-`.md` files are a schema violation that
+                // `diagnose` already flags; the resolver ignores
+                // them so a stray `.DS_Store` doesn't poison the
+                // fallback scan.
+                continue;
+            };
+            let path = format!("{}/{}/{}", mmcp_core::conventions::MEMORIES_DIR, slug, name);
+            match Uuid::parse_str(stem) {
+                Ok(file_uuid) if file_uuid == expected => {
+                    step1_candidates.push((slug.clone(), path));
+                }
+                Ok(_) => {
+                    step3_candidates.push((slug.clone(), path));
+                }
+                Err(_) => {
+                    step2_candidates.push((slug.clone(), path));
+                }
+            }
+        }
+    }
+
+    // Step 1: filename fast path. Stem already matches `expected`;
+    // verify the frontmatter id agrees before declaring a hit.
+    for (slug, path) in &step1_candidates {
+        let Ok(bytes) = backend.read_file(handle, path, &rev).await else {
+            continue;
+        };
+        if parse_frontmatter_id(&bytes) == Some(expected) {
             return Ok(ResolvedMemory {
                 slug: slug.clone(),
                 id: expected,
-                path: mmcp_core::conventions::memory_path(&slug, expected),
+                path: path.clone(),
+                addressing_mode: AddressingMode::ByFilename,
             });
         }
     }
+
+    // Step 2: hand-crafted memories (non-UUID filenames). Parse
+    // frontmatter and match on its id. Reached only when step 1
+    // missed because most repos have no non-UUID files.
+    for (slug, path) in &step2_candidates {
+        let Ok(bytes) = backend.read_file(handle, path, &rev).await else {
+            continue;
+        };
+        if parse_frontmatter_id(&bytes) == Some(expected) {
+            return Ok(ResolvedMemory {
+                slug: slug.clone(),
+                id: expected,
+                path: path.clone(),
+                addressing_mode: AddressingMode::ByFrontmatter,
+            });
+        }
+    }
+
+    // Step 3: UUID-named files whose filename stem disagrees with
+    // `expected`. Their frontmatter may still match the queried
+    // id — a drift the resolver honours (frontmatter is source of
+    // truth) while leaving the addressing mode as `ByFrontmatter`
+    // so writes route through the soft-warning branch.
+    for (slug, path) in &step3_candidates {
+        let Ok(bytes) = backend.read_file(handle, path, &rev).await else {
+            continue;
+        };
+        if parse_frontmatter_id(&bytes) == Some(expected) {
+            return Ok(ResolvedMemory {
+                slug: slug.clone(),
+                id: expected,
+                path: path.clone(),
+                addressing_mode: AddressingMode::ByFrontmatter,
+            });
+        }
+    }
+
     Err(ImportError::MemoryNotFound {
         slug: None,
         id: Some(expected),
@@ -942,5 +1051,156 @@ mod tests {
         assert!(parsed.frontmatter.mandatory);
         assert!(parsed.body.contains("Round trip body"));
         assert_eq!(parsed.frontmatter.id, Some(resolved.id));
+    }
+
+    /// Seed an arbitrary file at an arbitrary path. Used by the
+    /// addressing-mode tests to construct hand-crafted layouts the
+    /// regular `import_memory` path won't produce on its own.
+    async fn seed_raw(
+        backend: &NativeBackend,
+        handle: &RepoHandle,
+        path: &str,
+        body: &str,
+        author: &ResolvedAuthor,
+    ) {
+        backend
+            .write_commit(
+                handle,
+                CommitSpec::mmcp_commit(
+                    format!("seed {path}"),
+                    vec![(path.to_string(), Some(body.as_bytes().to_vec()))],
+                    &author.name,
+                    &author.email,
+                ),
+            )
+            .await
+            .expect("seed commit");
+    }
+
+    /// Step 1: filename matches AND frontmatter id agrees → ByFilename.
+    #[tokio::test]
+    async fn resolve_by_id_filename_fast_path_returns_by_filename() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let id = Uuid::now_v7();
+        seed_two_level_memory(&backend, &handle, "rules", id, &author).await;
+
+        let resolved = resolve_memory(&backend, &handle, None, Some(id))
+            .await
+            .expect("resolve");
+        assert_eq!(resolved.id, id);
+        assert_eq!(resolved.slug, "rules");
+        assert_eq!(resolved.addressing_mode, AddressingMode::ByFilename);
+    }
+
+    /// Step 2: hand-crafted file (non-UUID filename) carries a
+    /// matching frontmatter id → ByFrontmatter.
+    #[tokio::test]
+    async fn resolve_by_id_hand_crafted_filename_returns_by_frontmatter() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let id = Uuid::now_v7();
+        // Hand-crafted memory: filename stem is not a UUID, but
+        // frontmatter carries the canonical id.
+        let body = format!(
+            "+++\nid = \"{id}\"\nname = \"hand\"\ndescription = \"d\"\nkind = \"rule\"\n+++\nbody\n"
+        );
+        seed_raw(&backend, &handle, "memories/hand/scratch.md", &body, &author).await;
+
+        let resolved = resolve_memory(&backend, &handle, None, Some(id))
+            .await
+            .expect("resolve");
+        assert_eq!(resolved.id, id);
+        assert_eq!(resolved.slug, "hand");
+        assert_eq!(resolved.path, "memories/hand/scratch.md");
+        assert_eq!(resolved.addressing_mode, AddressingMode::ByFrontmatter);
+    }
+
+    /// Step 3: UUID-named file whose stem disagrees with its
+    /// frontmatter id; the resolver still finds it by frontmatter
+    /// scan and returns ByFrontmatter.
+    #[tokio::test]
+    async fn resolve_by_id_uuid_named_mismatch_returns_by_frontmatter() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let filename_uuid = Uuid::now_v7();
+        let frontmatter_uuid = Uuid::now_v7();
+        let body = format!(
+            "+++\nid = \"{frontmatter_uuid}\"\nname = \"drift\"\ndescription = \"d\"\nkind = \"rule\"\n+++\nbody\n"
+        );
+        let path = format!("memories/drift/{filename_uuid}.md");
+        seed_raw(&backend, &handle, &path, &body, &author).await;
+
+        // Querying by the frontmatter id resolves via step 3.
+        let resolved = resolve_memory(&backend, &handle, None, Some(frontmatter_uuid))
+            .await
+            .expect("resolve via frontmatter");
+        assert_eq!(resolved.id, frontmatter_uuid);
+        assert_eq!(resolved.slug, "drift");
+        assert_eq!(resolved.path, path);
+        assert_eq!(resolved.addressing_mode, AddressingMode::ByFrontmatter);
+    }
+
+    /// Querying by the filename UUID of a drifted file no longer
+    /// resolves: step 1 verifies frontmatter id matches, and the
+    /// frontmatter id is different, so the lookup falls through
+    /// every step and returns MemoryNotFound.
+    #[tokio::test]
+    async fn resolve_by_id_drifted_filename_uuid_is_not_found() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let filename_uuid = Uuid::now_v7();
+        let frontmatter_uuid = Uuid::now_v7();
+        let body = format!(
+            "+++\nid = \"{frontmatter_uuid}\"\nname = \"d\"\ndescription = \"d\"\nkind = \"rule\"\n+++\nbody\n"
+        );
+        let path = format!("memories/drift/{filename_uuid}.md");
+        seed_raw(&backend, &handle, &path, &body, &author).await;
+
+        let err = resolve_memory(&backend, &handle, None, Some(filename_uuid))
+            .await
+            .expect_err("not found via filename uuid");
+        assert!(matches!(
+            err,
+            ImportError::MemoryNotFound { slug: None, id: Some(i) } if i == filename_uuid
+        ));
+    }
+
+    /// Step 1 wins over step 2/3: when a pristine file exists at
+    /// the fast path, the resolver doesn't bother scanning
+    /// hand-crafted siblings even if they'd also match.
+    #[tokio::test]
+    async fn resolve_by_id_prefers_filename_fast_path_over_scan() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let id = Uuid::now_v7();
+        seed_two_level_memory(&backend, &handle, "rules", id, &author).await;
+        // Drop a hand-crafted sibling that also claims `id` in its
+        // frontmatter. Step 1 should still win.
+        let dup_body = format!(
+            "+++\nid = \"{id}\"\nname = \"dup\"\ndescription = \"d\"\nkind = \"rule\"\n+++\nbody\n"
+        );
+        seed_raw(&backend, &handle, "memories/scratch/manual.md", &dup_body, &author).await;
+
+        let resolved = resolve_memory(&backend, &handle, None, Some(id))
+            .await
+            .expect("resolve");
+        assert_eq!(resolved.slug, "rules");
+        assert_eq!(resolved.addressing_mode, AddressingMode::ByFilename);
+    }
+
+    /// Slug-only lookups carry the BySlugOnly tag so write
+    /// enforcement knows there was no id to compare against.
+    #[tokio::test]
+    async fn resolve_by_slug_returns_by_slug_only_addressing() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let id = Uuid::now_v7();
+        seed_two_level_memory(&backend, &handle, "by-slug", id, &author).await;
+
+        let resolved = resolve_memory(&backend, &handle, Some("by-slug"), None)
+            .await
+            .expect("resolve");
+        assert_eq!(resolved.addressing_mode, AddressingMode::BySlugOnly);
     }
 }
