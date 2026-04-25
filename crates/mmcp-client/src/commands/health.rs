@@ -7,15 +7,20 @@
 //! This module keeps only the three binary-specific bits: the
 //! `run_check` / `run_diagnose` entries (walk groups, assemble
 //! reports, map errors to `anyhow::Error`) and the `print_reports`
-//! formatter.
+//! formatter. Per FR-45 the formatter renders each group's summary
+//! line then hands the collected issues to `render_notes_tail` so
+//! the CLI tail mirrors the MCP `notes` channel verbatim.
 
 use anyhow::Result;
 
+use mmcp_proto::{Note, NoteLevel};
 use mmcp_store::diagnostics::{
     DiagReport, GroupReport, diagnose_all, diagnose_group, health_check_all, health_check_group,
 };
 use mmcp_store::home::MmcpHome;
 use mmcp_store::memory::resolve_group;
+
+use crate::notes::{issues_to_notes, render_notes_tail};
 
 // ── CLI entry points ────────────────────────────────────────
 
@@ -33,9 +38,15 @@ pub async fn run_check(group: Option<String>) -> Result<()> {
         health_check_all(&backend, &groups).await
     };
 
-    print_reports(&reports);
-    let total: usize = reports.iter().map(|r| r.issues.len()).sum();
-    if total > 0 {
+    let notes = print_reports(&reports, &[]);
+    if notes.iter().any(|n| n.level == NoteLevel::Error) {
+        std::process::exit(1);
+    }
+    // Any non-error note still counts as an issue on the
+    // surface-check gate. `mmcp check` is the quick
+    // pass-or-fail, so warnings flip exit code 1 too (matches
+    // the old total-issues behaviour).
+    if !notes.is_empty() {
         std::process::exit(1);
     }
     Ok(())
@@ -58,66 +69,35 @@ pub async fn run_diagnose(group: Option<String>) -> Result<()> {
         diagnose_all(&backend, &groups).await
     };
 
-    // Print project-level issues
-    if !diag.project_issues.is_empty() {
-        println!("project:");
-        for issue in &diag.project_issues {
-            println!("  [{}] {}", issue.severity, issue.message);
-        }
-    }
-
-    print_reports(&diag.groups);
-    let errors: usize = diag
-        .groups
-        .iter()
-        .flat_map(|r| &r.issues)
-        .chain(diag.project_issues.iter())
-        .filter(|i| i.severity == "error")
-        .count();
-    if errors > 0 {
+    let notes = print_reports(&diag.groups, &diag.project_issues);
+    if notes.iter().any(|n| n.level == NoteLevel::Error) {
         std::process::exit(1);
     }
     Ok(())
 }
 
-fn print_reports(reports: &[GroupReport]) {
+/// Print the per-group structural summary then render every issue
+/// on the FR-45 notes tail. Returns the assembled notes so the
+/// caller can branch on severity for its exit code. `project_issues`
+/// carries the project/user-level diagnostics that belong to the
+/// whole mirror rather than any one group (sync config, author
+/// identity, CLAUDE.md); an empty slice is fine.
+fn print_reports(reports: &[GroupReport], project_issues: &[mmcp_store::diagnostics::Issue]) -> Vec<Note> {
+    let mut notes: Vec<Note> = issues_to_notes(project_issues);
     for report in reports {
-        if report.issues.is_empty() {
-            println!(
-                "{} ({}): {} memories, healthy",
-                report.slug, report.group_id, report.memory_count
-            );
-        } else {
-            let errors = report
-                .issues
-                .iter()
-                .filter(|i| i.severity == "error")
-                .count();
-            let warnings = report
-                .issues
-                .iter()
-                .filter(|i| i.severity == "warning")
-                .count();
-            let infos = report
-                .issues
-                .iter()
-                .filter(|i| i.severity == "info")
-                .count();
-            println!(
-                "{} ({}): {} memories, {} error(s), {} warning(s), {} info(s):",
-                report.slug, report.group_id, report.memory_count, errors, warnings, infos
-            );
-            for issue in &report.issues {
-                let target = issue.slug.as_deref().unwrap_or("manifest");
-                println!("  [{}] {}: {}", issue.severity, target, issue.message);
-            }
-        }
+        notes.extend(issues_to_notes(&report.issues));
+        println!(
+            "{} ({}): {} memories, manifest_ok={}",
+            report.slug, report.group_id, report.memory_count, report.manifest_ok
+        );
     }
 
-    let total_issues: usize = reports.iter().map(|r| r.issues.len()).sum();
-    if total_issues == 0 {
+    let total_notes = notes.len();
+    if total_notes == 0 {
         println!("\nall healthy");
     } else {
-        println!("\n{total_issues} issue(s) found");
+        println!("\n{total_notes} note(s) found");
     }
+    render_notes_tail(&notes);
+    notes
 }

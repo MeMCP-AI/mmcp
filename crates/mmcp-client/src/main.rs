@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 mod commands;
+mod notes;
 mod state;
 
 use anyhow::Result;

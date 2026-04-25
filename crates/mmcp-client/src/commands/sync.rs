@@ -14,6 +14,8 @@ use mmcp_store::memory::resolve_group;
 use mmcp_store::sync::build_engine;
 use mmcp_sync::{SyncError, SyncFilter};
 
+use crate::notes::{render_notes_tail, sync_push_partial_failure_notes};
+
 /// CLI-side mirror of `GroupScope` that clap can parse via
 /// `ValueEnum`. Kept as a separate wire-form enum so `mmcp-core`
 /// stays clap-free; the mapping is a one-line match.
@@ -206,6 +208,7 @@ pub async fn run_push(selector: SyncSelector) -> Result<()> {
         server_url,
         report.pushed.len()
     );
+    render_notes_tail(&sync_push_partial_failure_notes(&report, &server_url));
     Ok(())
 }
 
@@ -234,6 +237,7 @@ pub async fn run_sync(selector: SyncSelector) -> Result<()> {
         report.pulled.new_groups.len(),
         report.pushed.pushed.len()
     );
+    render_notes_tail(&sync_push_partial_failure_notes(&report.pushed, &server_url));
     Ok(())
 }
 

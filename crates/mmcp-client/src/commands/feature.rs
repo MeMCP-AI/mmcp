@@ -10,11 +10,14 @@
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use mmcp_core::memory::FeatureStatus;
+use mmcp_proto::Note;
 use mmcp_store::features::{
     AddSpec, FeatureRecord, UpdateSpec, add_feature, delete_feature, list_features, read_feature,
     resolve_project_group, update_feature,
 };
 use mmcp_store::home::MmcpHome;
+
+use crate::notes::{dangling_ref_notes_for, render_notes_tail};
 
 // ── Clap surface ────────────────────────────────────────────────
 
@@ -278,6 +281,8 @@ async fn run_read(args: ReadArgs) -> Result<()> {
         .await
         .map_err(anyhow::Error::from)?;
     print_record_full(&record);
+    let notes = dangling_ref_notes_for(&backend, &entry, &record).await;
+    render_notes_tail(&notes);
     Ok(())
 }
 
@@ -387,6 +392,12 @@ async fn run_list(args: ListArgs) -> Result<()> {
         print_record_summary(record);
     }
     println!("\n{} feature(s)", records.len());
+
+    let mut notes: Vec<Note> = Vec::new();
+    for record in &records {
+        notes.extend(dangling_ref_notes_for(&backend, &entry, record).await);
+    }
+    render_notes_tail(&notes);
     Ok(())
 }
 

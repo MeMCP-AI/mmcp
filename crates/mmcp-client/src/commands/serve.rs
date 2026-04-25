@@ -32,6 +32,9 @@ use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::notes::{
+    dangling_ref_notes_for, issues_to_notes, malformed_frontmatter_notes,
+};
 use crate::state::{WatcherHandle, spawn_watcher};
 use mmcp_store::config::{PROJECT_MANIFEST, find_project_root, load as load_project_config};
 use mmcp_store::diagnostics::{
@@ -2842,27 +2845,9 @@ impl McpServer {
         // content_transferred=false means the control plane
         // accepted the push but the git content plane did not
         // actually ship bytes (transport error, server rejected,
-        // network blip, etc.). Surface one note per such group so
-        // callers don't assume silent success.
-        let notes: Vec<_> = report
-            .pushed
-            .iter()
-            .filter(|p| !p.content_transferred)
-            .map(|p| {
-                mmcp_proto::Note::warn(
-                    "sync_partial_failure",
-                    format!(
-                        "push for group {} did not ship content (transport error or unsupported backend)",
-                        p.group_id
-                    ),
-                )
-                .with_context(json!({
-                    "group": p.group_id.to_string(),
-                    "stage": "push",
-                    "server_url": server_url,
-                }))
-            })
-            .collect();
+        // network blip, etc.). Shared helper keeps the CLI and
+        // MCP surfaces emitting identical codes and contexts.
+        let notes = crate::notes::sync_push_partial_failure_notes(&report, &server_url);
         Ok(ok_json_with_notes(
             json!({
                 "pushed": report.pushed.iter().map(|p| json!({
@@ -3724,145 +3709,6 @@ fn feature_record_to_json(
     })
 }
 
-/// FR-45 populator helper: scan a feature record's typed UUID
-/// references (`depends_on`, `blocks`, `superseded_by.target`)
-/// against the group's local memory index and emit a
-/// `dangling_ref` note for each target that does not resolve.
-///
-/// Pure-local check — only verifies the uuid appears as a filename
-/// under `memories/<slug>/<uuid>.md` somewhere in the group.
-/// Cross-group refs always show up as dangling here until the
-/// resolver learns to look across mirrored groups (separate FR).
-async fn dangling_ref_notes_for(
-    backend: &NativeBackend,
-    entry: &GroupEntry,
-    record: &mmcp_store::features::FeatureRecord,
-) -> Vec<mmcp_proto::Note> {
-    let files = match mmcp_store::memory::list_all_memory_files(
-        backend,
-        &entry.handle,
-        &Rev::head(),
-    )
-    .await
-    {
-        Ok(files) => files,
-        // Git failure on enumeration is unusual; surface nothing
-        // rather than inventing a fake dangling-ref storm. The
-        // per-memory reads in the tool body would have failed too
-        // and landed as a real error response upstream.
-        Err(_) => return Vec::new(),
-    };
-    let known: std::collections::HashSet<Uuid> = files.iter().map(|f| f.id).collect();
-
-    let mut notes = Vec::new();
-    for (field, uuid) in record.depends_on.iter().map(|u| ("depends_on", *u)).chain(
-        record.blocks.iter().map(|u| ("blocks", *u)),
-    ) {
-        if !known.contains(&uuid) {
-            notes.push(
-                mmcp_proto::Note::warn(
-                    "dangling_ref",
-                    format!("feature `{}` references unresolved target in `{field}`", record.slug),
-                )
-                .with_context(json!({
-                    "slug": record.slug,
-                    "field": field,
-                    "target": uuid.to_string(),
-                    "group": entry.manifest.group_id.to_string(),
-                })),
-            );
-        }
-    }
-    if let Some(link) = record.superseded_by.as_ref() {
-        if !known.contains(&link.target) {
-            notes.push(
-                mmcp_proto::Note::warn(
-                    "dangling_ref",
-                    format!(
-                        "feature `{}` superseded_by target does not resolve locally",
-                        record.slug
-                    ),
-                )
-                .with_context(json!({
-                    "slug": record.slug,
-                    "field": "superseded_by",
-                    "target": link.target.to_string(),
-                    "commit": link.commit,
-                    "group": entry.manifest.group_id.to_string(),
-                })),
-            );
-        }
-    }
-    notes
-}
-
-/// FR-45 populator helper: inspect a successfully-parsed
-/// `MemoryFile` for soft integrity issues and emit a note per
-/// issue. Hard parse errors already bail out upstream as a
-/// `McpError::invalid_params`; this function runs only on the
-/// happy path and lets callers know their memory has recoverable
-/// drift (empty name, empty description, frontmatter id ≠
-/// filename UUID, etc.).
-///
-/// Returns an empty Vec when everything checks out.
-fn malformed_frontmatter_notes(
-    slug: &str,
-    filename_id: Uuid,
-    file: &MemoryFile,
-) -> Vec<mmcp_proto::Note> {
-    let fm = &file.frontmatter;
-    let mut notes = Vec::new();
-    if fm.name.trim().is_empty() {
-        notes.push(
-            mmcp_proto::Note::warn(
-                "malformed_frontmatter",
-                format!("memory `{slug}` has an empty `name` field"),
-            )
-            .with_context(json!({ "slug": slug, "field": "name" })),
-        );
-    }
-    if fm.description.trim().is_empty() {
-        notes.push(
-            mmcp_proto::Note::warn(
-                "malformed_frontmatter",
-                format!("memory `{slug}` has an empty `description` field"),
-            )
-            .with_context(json!({ "slug": slug, "field": "description" })),
-        );
-    }
-    match fm.id {
-        None => notes.push(
-            mmcp_proto::Note::warn(
-                "malformed_frontmatter",
-                format!(
-                    "memory `{slug}` has no `id` in frontmatter; expected {filename_id} per FR-028"
-                ),
-            )
-            .with_context(json!({
-                "slug": slug,
-                "field": "id",
-                "expected": filename_id.to_string(),
-            })),
-        ),
-        Some(id) if id != filename_id => notes.push(
-            mmcp_proto::Note::warn(
-                "malformed_frontmatter",
-                format!(
-                    "memory `{slug}` frontmatter id {id} does not match filename UUID {filename_id}"
-                ),
-            )
-            .with_context(json!({
-                "slug": slug,
-                "field": "id",
-                "frontmatter_id": id.to_string(),
-                "filename_id": filename_id.to_string(),
-            })),
-        ),
-        _ => {}
-    }
-    notes
-}
-
 /// Render a [`mmcp_core::memory::MemoryRef`] onto the MCP wire shape
 /// as a plain `{ target, commit }` object. Used by every response
 /// that surfaces typed refs so the shape stays identical across
@@ -4596,35 +4442,6 @@ fn claude_md_notes(project_root: Option<&std::path::Path>) -> Vec<mmcp_proto::No
     }))]
 }
 
-/// Convert a [`mmcp_store::diagnostics::Issue`] into the FR-45
-/// standard [`mmcp_proto::Note`] wire shape.
-///
-/// `severity` maps to `level`; `code` flows through unchanged;
-/// `group` + optional `slug` ride in `context` so callers can
-/// route or group notes without re-parsing the message.
-fn issue_to_note(issue: &mmcp_store::diagnostics::Issue) -> mmcp_proto::Note {
-    let level = match issue.severity {
-        "error" => mmcp_proto::NoteLevel::Error,
-        "warning" => mmcp_proto::NoteLevel::Warn,
-        _ => mmcp_proto::NoteLevel::Info,
-    };
-    let mut ctx = serde_json::Map::new();
-    ctx.insert("group".to_string(), json!(issue.group));
-    if let Some(ref slug) = issue.slug {
-        ctx.insert("slug".to_string(), json!(slug));
-    }
-    mmcp_proto::Note {
-        level,
-        code: issue.code.to_string(),
-        message: issue.message.clone(),
-        context: Some(serde_json::Value::Object(ctx)),
-    }
-}
-
-/// Map a slice of diagnostic issues onto the FR-45 notes channel.
-fn issues_to_notes(issues: &[mmcp_store::diagnostics::Issue]) -> Vec<mmcp_proto::Note> {
-    issues.iter().map(issue_to_note).collect()
-}
 
 fn frontmatter_to_json(fm: &MemoryFrontmatter) -> serde_json::Value {
     json!({
@@ -5450,6 +5267,7 @@ mod tests {
 
     #[test]
     fn issue_to_note_maps_severity_and_carries_group_slug_context() {
+        use crate::notes::issue_to_note;
         use mmcp_store::diagnostics::Issue;
 
         let warn = issue_to_note(&Issue {
