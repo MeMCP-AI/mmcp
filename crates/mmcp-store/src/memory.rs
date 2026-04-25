@@ -697,6 +697,19 @@ pub async fn import_memory(
         .to_string()
         .map_err(|e| ImportError::Render(e.to_string()))?;
 
+    // FR-39 v2: import_memory creates (or replaces under
+    // override) one memory under `memories/<slug>/<id>.md`. Take
+    // the create chain so concurrent imports under the same
+    // (group, kind, slug-subdir) serialise on UUID minting and
+    // file creation.
+    let kind = memory_file.frontmatter.kind;
+    let _guards = crate::lock::acquire_chain(&crate::lock::create_chain(
+        handle.group_id,
+        kind,
+        None,
+    ))
+    .await;
+
     let message = format!("import memory {slug}/{id}");
     // FR-28 / D4: import_memory mints `id` and stamps it into
     // frontmatter on the line above, so filename and frontmatter

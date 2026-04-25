@@ -330,14 +330,21 @@ pub async fn add_feature(
     spec: AddSpec,
     author: &ResolvedAuthor,
 ) -> Result<FeatureRecord, FeatureError> {
-    // FR-39: serialise concurrent add/update/delete/rename on the
-    // same group so races like `next_feature_number` can't assign
-    // the same integer to two concurrent creates. The lock is
-    // released when this function returns; the supersede flow's
-    // `update_feature_unlocked` call below runs under this same
-    // guard to avoid double-locking the non-reentrant mutex.
-    let _guard =
-        crate::lock::acquire_group_lock(*entry.manifest.group_id.as_uuid()).await;
+    // FR-39 v2: kind-level create — Exclusive on the
+    // GroupKind(group, Feature, None) scope serialises
+    // `next_feature_number` against concurrent creates while
+    // letting other kinds (e.g. concurrent `mcp:write_memory`
+    // for `kind = "rule"`) proceed in parallel. The supersede
+    // flow's `update_feature_unlocked` call below stays inside
+    // this guard; Exclusive GroupKind covers every nested
+    // Memory-leaf write in the same kind.
+    let group = *entry.manifest.group_id.as_uuid();
+    let _guards = crate::lock::acquire_chain(&crate::lock::create_chain(
+        group,
+        mmcp_core::memory::MemoryKind::Feature,
+        None,
+    ))
+    .await;
 
     if spec.title.trim().is_empty() && spec.slug.is_none() {
         return Err(FeatureError::TitleRequired);
@@ -602,8 +609,36 @@ pub async fn update_feature(
     spec: UpdateSpec,
     author: &ResolvedAuthor,
 ) -> Result<FeatureRecord, FeatureError> {
-    let _guard =
-        crate::lock::acquire_group_lock(*entry.manifest.group_id.as_uuid()).await;
+    // FR-39 v2: take ancestor chain Shared, resolve the memory's
+    // canonical UUID under that view, then upgrade to Exclusive
+    // Memory leaf. Concurrent edits to *different* feature
+    // memories in the same group proceed in parallel; only edits
+    // to the *same* memory contend.
+    let group = *entry.manifest.group_id.as_uuid();
+    let _ancestors = crate::lock::acquire_chain(&[
+        (crate::lock::LockScope::Process, crate::lock::LockMode::Shared),
+        (
+            crate::lock::LockScope::Group(group),
+            crate::lock::LockMode::Shared,
+        ),
+        (
+            crate::lock::LockScope::GroupKind {
+                group,
+                kind: mmcp_core::memory::MemoryKind::Feature,
+                subdir: None,
+            },
+            crate::lock::LockMode::Shared,
+        ),
+    ])
+    .await;
+    let resolved = crate::memory::resolve_memory(backend, &entry.handle, Some(slug), None)
+        .await
+        .map_err(FeatureError::Memory)?;
+    let _leaf = crate::lock::acquire(
+        crate::lock::LockScope::Memory(resolved.id),
+        crate::lock::LockMode::Exclusive,
+    )
+    .await;
     update_feature_unlocked(backend, entry, slug, spec, author).await
 }
 
@@ -770,9 +805,14 @@ pub async fn rename_feature(
     author: &ResolvedAuthor,
     message: Option<&str>,
 ) -> Result<Vec<FeatureRecord>, FeatureError> {
-    // FR-39: serialise with other writers on this group.
-    let _guard =
-        crate::lock::acquire_group_lock(*entry.manifest.group_id.as_uuid()).await;
+    // FR-39 v2: rename always uses `concept:group_coarsening` —
+    // Exclusive Group(g) blocks every narrower Shared-Group
+    // holder via the ancestor-prefix rule, so no concurrent
+    // memory edit can race with a slug-wide move.
+    let _guards = crate::lock::acquire_chain(&crate::lock::coarsen_group_chain(
+        *entry.manifest.group_id.as_uuid(),
+    ))
+    .await;
     validate_slug(old_slug).map_err(FeatureError::Memory)?;
     validate_slug(new_slug).map_err(FeatureError::Memory)?;
     if old_slug == new_slug {
@@ -893,9 +933,33 @@ pub async fn delete_feature(
     author: &ResolvedAuthor,
     message: Option<&str>,
 ) -> Result<String, FeatureError> {
-    // FR-39: serialise with other writers on this group.
-    let _guard =
-        crate::lock::acquire_group_lock(*entry.manifest.group_id.as_uuid()).await;
+    // FR-39 v2: same modify chain as `update_feature` — Shared on
+    // the ancestor chain, Exclusive on the per-memory leaf.
+    let group = *entry.manifest.group_id.as_uuid();
+    let _ancestors = crate::lock::acquire_chain(&[
+        (crate::lock::LockScope::Process, crate::lock::LockMode::Shared),
+        (
+            crate::lock::LockScope::Group(group),
+            crate::lock::LockMode::Shared,
+        ),
+        (
+            crate::lock::LockScope::GroupKind {
+                group,
+                kind: mmcp_core::memory::MemoryKind::Feature,
+                subdir: None,
+            },
+            crate::lock::LockMode::Shared,
+        ),
+    ])
+    .await;
+    let resolved = crate::memory::resolve_memory(backend, &entry.handle, Some(slug), None)
+        .await
+        .map_err(FeatureError::Memory)?;
+    let _leaf = crate::lock::acquire(
+        crate::lock::LockScope::Memory(resolved.id),
+        crate::lock::LockMode::Exclusive,
+    )
+    .await;
     // Guard against accidentally deleting an unrelated memory. The
     // generic delete primitive would happily drop a non-FR memory;
     // routing it through the FR tools would be a surprise.
