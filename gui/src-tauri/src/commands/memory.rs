@@ -4,7 +4,7 @@ use mmcp_core::id::GroupId;
 use mmcp_core::memory::{MemoryFile, MemoryFrontmatter, MemoryKind};
 use mmcp_git::{GitBackend, Rev};
 use mmcp_store::{
-    delete_file_at_path, resolve_memory, write_file_at_path, write_memory_by_id,
+    AddressingMode, delete_file_at_path, resolve_memory, write_file_at_path, write_memory_by_id,
 };
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -231,13 +231,15 @@ pub async fn create_memory(
     let rendered = file
         .to_string()
         .map_err(|e| GuiError::Other(format!("render: {e}")))?;
-    let commit = write_memory_by_id(
+    let (commit, _validation) = write_memory_by_id(
         &state.backend,
         &entry.handle,
         &slug,
         id,
         &rendered,
         &*state.author.read().await,
+        false,
+        AddressingMode::ByFilename,
         false,
         None,
     )
@@ -267,12 +269,14 @@ pub async fn update_memory(
     let rendered = file
         .to_string()
         .map_err(|e| GuiError::Other(format!("render: {e}")))?;
-    let commit = write_file_at_path(
+    let (commit, _validation) = write_file_at_path(
         &state.backend,
         &entry.handle,
         &resolved.path,
         &rendered,
         &*state.author.read().await,
+        resolved.addressing_mode,
+        false,
         None,
     )
     .await
