@@ -59,7 +59,8 @@ crates/
   mmcp-sync/      Push/pull/diff/merge engine layered over mmcp-git
   mmcp-server/    Binary: HTTP/SSE, WebUI backend, git smart HTTP, auth, Postgres
   mmcp-client/    Binary: MCP stdio server + sync engine + CLI + hook subcommands
-webui/            Leptos frontend (separate cargo project, not in main workspace)
+webui/            SvelteKit + Tailwind frontend (separate JS toolchain, no
+                  Rust crossover; served by mmcp-server's static routes)
 gui/              Tauri 2 + SvelteKit + Tailwind desktop client; Rust backend
                   under gui/src-tauri/ (excluded from the workspace; path deps
                   into crates/mmcp-*)
@@ -76,13 +77,13 @@ gui/              Tauri 2 + SvelteKit + Tailwind desktop client; Rust backend
 - **mmcp-session**: pure compaction-detection primitives (`TranscriptSignature`, `compute_signature`, `detect_compaction`). Persistence of per-session state lives next to the consumer that owns it — the client keeps it in flat files, a future server-side representation will keep it in the database.
 - **mmcp-sync**: push/pull/diff/merge engine. Uses `mmcp-git` for repo ops and `mmcp-db` for pending-push state on the server side.
 - **mmcp-server** *(binary)*: `axum`-based HTTP/SSE daemon. Hosts MCP-over-HTTP, WebUI REST API, git smart HTTP, auth endpoints. Owns the Postgres database and the bare git repos on disk (when using `NativeBackend`). `#![forbid(unsafe_code)]`.
-- **gui** *(separate app, not in main workspace)*: Tauri 2 desktop client. Rust backend at `gui/src-tauri/` consumes `mmcp-core`, `mmcp-git`, `mmcp-store`, `mmcp-sync` via path deps and exposes them as IPC commands (`list_groups`, `list_memory_slugs`, `load_memory`, `create_memory` / `update_memory` / `delete_memory`, `sync_pull`, `sync_push`, `run_diagnose`, `load_settings` / `save_settings`) plus a 15 s reachability probe emitting `reachability:changed` events. Frontend is SvelteKit 2 + Svelte 5 runes + Tailwind v4 + Lucide icons, compiled as a pure SPA via `@sveltejs/adapter-static` and served in-process by the Tauri webview. Talks to `mmcp-store` directly — no HTTP, no MCP round-trip.
-- **mmcp-client** *(binary + library)*: runs on the user's machine. Delegates every memory operation to `mmcp-store`, which keeps the CLI, the MCP tool bodies, and the Tauri-backed desktop client aligned on one programmatic surface. Keeps per-session state in flat TOML files under `~/.mmcp/sessions/`. Ships one-shot migration example binaries under `examples/` (`migrate_uuidify` for FR-028's two-level layout, `migrate_fr_slugs` for FR-027's prefix stripping). Does **not** depend on `mmcp-db`. One binary, multiple entry points via `clap` subcommands:
+- **gui** *(separate app, not in main workspace)*: Tauri 2 desktop client. Rust backend at `gui/src-tauri/` consumes `mmcp-core`, `mmcp-git`, `mmcp-store`, `mmcp-sync` via path deps and exposes them as IPC commands grouped by concern: groups (`list_groups`, `refresh_groups`), memory CRUD (`list_memory_slugs`, `load_memory`, `create_memory` / `update_memory` / `delete_memory`), commit history (`list_memory_history`, `load_memory_at`, `diff_memory`), diagnostics (`run_diagnose`), sync (`sync_status`, `sync_pull`, `sync_push`), workspace (`pick_directory`, `set_reference_point`), settings (`load_settings`, `save_settings`), and config CRUD (`load_user_config` / `save_user_config`, `load_project_config` / `save_project_config`). A 15 s reachability probe emits `reachability:changed` events. Frontend is SvelteKit 2 + Svelte 5 runes + Tailwind v4 + Lucide icons, compiled as a pure SPA via `@sveltejs/adapter-static` and served in-process by the Tauri webview. Talks to `mmcp-store` directly — no HTTP, no MCP round-trip.
+- **mmcp-client** *(binary + library)*: runs on the user's machine. Delegates every memory operation to `mmcp-store`, which keeps the CLI, the MCP tool bodies, and the Tauri-backed desktop client aligned on one programmatic surface. Keeps per-session state in flat TOML files under `~/.mmcp/sessions/`. Ships a one-shot migration example binary under `examples/` (`migrate_uuidify` for FR-028's two-level layout). Does **not** depend on `mmcp-db`. One binary, multiple entry points via `clap` subcommands:
   - `mmcp serve` — the MCP stdio server that Claude Code and other AI clients talk to
   - `mmcp init` / `status` / `sync` / `pull` / `push` — CLI workflow commands
   - `mmcp hook user-prompt` — the command invoked by the Claude Code `UserPromptSubmit` hook
   - A library target (`mmcp_client`) exposes the `commands`, `config`, and `state` modules so integration tests under `tests/` can drive them without spawning the binary.
-- **webui** *(separate crate, not in main workspace)*: Leptos fullstack frontend. Talks to `mmcp-server` via its REST API. Shares types with `mmcp-core` via Cargo dependency.
+- **webui** *(separate frontend, not in main workspace)*: SvelteKit 2 + Svelte 5 + Tailwind v4 single-page app, compiled via `@sveltejs/adapter-static`. Talks to `mmcp-server` via its REST API. Type sharing with `mmcp-core` is via JSON over the wire rather than a compiled-in Rust dependency.
 
 ### Transport
 
@@ -425,8 +426,9 @@ Tools exposed by `mmcp-client` to the AI. Every memory-addressed tool accepts an
 | Tool                         | Purpose                                                                 |
 | ---------------------------- | ----------------------------------------------------------------------- |
 | `read_memory`                | Read a memory's frontmatter + body. Addressing: `slug`, `id`, or both. `version` selects a branch, tag, or commit hex. |
-| `write_memory`               | Strict CREATE. Mints a UUIDv7 when `id` is absent; `override: true` opts into replace-whole-file. |
-| `edit_memory`                | Partial update: body / name / description / kind / tags_add / tags_remove / mandatory / message (commit message override). Every mutator is optional. |
+| `write_memory`               | Strict CREATE with typed args (no source parsing). Mints a UUIDv7 when `id` is absent; `override: true` opts into replace-whole-file. |
+| `import_memory`              | Import a memory from a markdown source (with embedded `+++` / `---` frontmatter, or raw body plus synth `name` / `description` / `kind`). `format: "adoc"` routes through the AsciiDoc bridge first. |
+| `edit_memory`                | Partial update: body / name / description / kind / tags_add / tags_remove / refs_add / refs_remove / mandatory / message (commit message override). Every mutator is optional. |
 | `delete_memory`              | Commit a deletion on `main`. Refuses silently-on-no-op — missing slug surfaces `memory_not_found`. |
 | `read_memory_body_sections`  | Return the parsed section tree of the body (heading path ids, levels, line ranges). FR-026. |
 | `edit_memory_body`           | Apply an ordered list of semantic body ops: UpsertSection / DeleteSection / InsertSectionBefore / InsertSectionAfter / MoveSectionBefore / MoveSectionAfter / ReplaceSectionBody, plus line-level escape hatches. Transactional. FR-026. |
@@ -437,7 +439,7 @@ Tools exposed by `mmcp-client` to the AI. Every memory-addressed tool accepts an
 | ----------------- | ----------------------------------------------------------------------- |
 | `add_feature`     | Create a feature. `number` auto-assigns per group; `depends_on` / `blocks` accept UUID strings. |
 | `read_feature`    | Typed FR record (slug, title, status, number, depends_on, blocks, body). |
-| `update_feature`  | Partial mutator. `depends_on` / `blocks` are full-list replacements; `number` re-numbers. |
+| `update_feature`  | Partial mutator. `depends_on` / `blocks` are full-list replacements. `number` is server-managed and not editable (FR-37). |
 | `delete_feature`  | Guarded delete — refuses `not_a_feature` for non-FR memories.           |
 | `list_features`   | List features sorted by `number` ascending. Default returns only `open` features; `all: true` includes every status, and `status: "<variant>"` pins a single lifecycle state (explicit selector wins over the default hide). |
 | `rename_feature`  | Atomic rename of every memory under `memories/<old_slug>/` to `memories/<new_slug>/`. UUIDs stay stable so cross-refs keep resolving. FR-027. |
@@ -446,9 +448,11 @@ Tools exposed by `mmcp-client` to the AI. Every memory-addressed tool accepts an
 
 | Tool            | Purpose                                                                  |
 | --------------- | ------------------------------------------------------------------------ |
+| `sync_fetch`    | Read each in-scope group's remote head into a local remote-tracking ref without advancing `main`. Mirrors `git fetch`. |
 | `sync_pull`     | Pull every configured group from the sync server.                        |
 | `sync_push`     | Push every local change back.                                            |
 | `sync`          | Pull-then-push convenience.                                              |
+| `create_group`  | Bootstrap a standalone `~/.mmcp/repos/<uuid>.git` with a manifest. Use `init_project` instead when the group is the project's own backing store. |
 | `init_project`  | Create or adopt `.mmcp.toml` + bare repo for the project's group.        |
 | `init_claude`   | Manage the fenced mmcp block in `CLAUDE.md`.                             |
 | `check_health`  | Surface-level validation (manifest readable, memories parse).            |
@@ -463,6 +467,14 @@ Tools exposed by `mmcp-client` to the AI. Every memory-addressed tool accepts an
 | `debug_write_file`  | Write raw bytes to a group repo.                                 |
 | `debug_list_tree`   | List a tree prefix at a rev.                                     |
 | `debug_git_log`     | Walk commit history for an arbitrary path.                       |
+
+**Cross-cutting fields** (apply to multiple tools)
+
+| Field                   | Tools                                                  | Purpose |
+| ----------------------- | ------------------------------------------------------ | ------- |
+| `notes: Vec<Note>`      | every successful response                              | FR-45 standard advisory channel. Each note carries `level` (info / warning / error), a stable `code` (e.g. `id_mismatch_accepted`, `dangling_ref`, `malformed_frontmatter`, `sync_partial_failure`), a human `message`, and a `context` blob. Errors stay in `McpError`; notes are success-path only. |
+| `force: bool`           | `write_memory` / `edit_memory` / `edit_memory_body` / `delete_memory` / `import_memory` | FR-28 / D4 bypass for the filename-vs-frontmatter id mismatch rejection on a `ByFilename` write. Defaults to `false` so drift is caught loudly. `delete_memory` and `import_memory` carry the flag for parity but treat it as a no-op on the happy path. |
+| `project: String?`      | every project-scoped tool (FR-44)                      | Explicit group selector (UUID or slug). When omitted, the server walks `cwd` for `.mmcp.toml`. Memory-CRUD tools that target a specific group use the `group` field instead — `project` is reserved for tools whose semantics depend on the project's `.mmcp.toml`. |
 
 Tool descriptions include explicit instructions about session-specific expectations (e.g. "after compaction, re-read mandatory memories before using this tool"), since MCP descriptions are the primary channel for nudging model behavior.
 
@@ -617,7 +629,7 @@ Recorded here so subsequent design changes have a reference point. See `docs/STA
 | Async runtime          | `tokio`                                                                |
 | HTTP framework         | `axum`                                                                 |
 | MCP SDK                | `rmcp` (official Rust MCP SDK)                                         |
-| WebUI framework        | Leptos (fullstack Rust, fine-grained reactivity, SSR + hydration)      |
+| WebUI framework        | SvelteKit 2 + Svelte 5 + Tailwind v4 (pure SPA via `@sveltejs/adapter-static`) |
 | ORM                    | SeaORM (multi-backend: Postgres on server, SQLite on client mirror)    |
 | Git library            | `gix` (gitoxide)                                                       |
 | Git backend default    | Native in-process (bare repos + smart HTTP served by `mmcp-server`)    |

@@ -24,13 +24,13 @@ Rust workspace, edition 2024. All crates live under `crates/` except the web fro
 | Crate         | Role                                                                                                                    | Depends on                                                                                     |
 | ------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | `mmcp-server` | `axum`-based HTTP/SSE daemon. Hosts MCP-over-HTTP, WebUI REST API, git smart HTTP, auth endpoints. Owns the Postgres DB and the bare git repos on disk (when using `NativeBackend`). | `mmcp-core`, `mmcp-git`, `mmcp-db`, `mmcp-auth`, `mmcp-proto`, `mmcp-session`, `mmcp-sync`     |
-| `mmcp-client` | Binary plus library target. Runs as the MCP stdio server, the sync engine, the hook command, and the user-facing CLI. Delegates every memory operation to `mmcp-store` so the CLI, the MCP tool bodies, and any third-party consumer converge on one programmatic surface. Ships one-shot migration example binaries (`migrate_uuidify`, `migrate_fr_slugs`). **Does not depend on `mmcp-db`.** | `mmcp-core`, `mmcp-git`, `mmcp-auth`, `mmcp-proto`, `mmcp-session`, `mmcp-store`, `mmcp-sync`  |
+| `mmcp-client` | Binary plus library target. Runs as the MCP stdio server, the sync engine, the hook command, and the user-facing CLI. Delegates every memory operation to `mmcp-store` so the CLI, the MCP tool bodies, and any third-party consumer converge on one programmatic surface. Ships a one-shot migration example binary (`migrate_uuidify`). **Does not depend on `mmcp-db`.** | `mmcp-core`, `mmcp-git`, `mmcp-auth`, `mmcp-proto`, `mmcp-session`, `mmcp-store`, `mmcp-sync`  |
 
 ### 1.3 Frontends
 
 | Directory | Role                                                                                                                   | Depends on      |
 | --------- | ---------------------------------------------------------------------------------------------------------------------- | --------------- |
-| `webui/`  | Leptos fullstack frontend (SSR + hydration). GitHub-style UI for end users and administrators. Talks to `mmcp-server` via REST. Not in the main Cargo workspace; built and deployed separately. | `mmcp-core` (type sharing) |
+| `webui/`  | SvelteKit 2 + Svelte 5 + Tailwind v4 single-page app (`@sveltejs/adapter-static`). GitHub-style UI for end users and administrators. Talks to `mmcp-server` via REST. Not in the Cargo workspace at all — pure JS/TS toolchain (`bun`). | (none — JSON over the wire) |
 | `gui/`    | Desktop visual client. Tauri 2 shell (Rust backend under `gui/src-tauri/`) + SvelteKit + Tailwind v4 + Svelte 5 runes frontend. Talks to `mmcp-store` directly over Tauri IPC — no HTTP, no MCP round-trip. The Rust backend uses path deps into `crates/mmcp-*` and is excluded from the workspace. Node toolchain: `bun`. | `mmcp-core`, `mmcp-git`, `mmcp-store`, `mmcp-sync` (path deps from `gui/src-tauri/`) |
 
 ## 2. External Crates
@@ -88,16 +88,6 @@ Grouped by concern. "Consumers" lists which mmcp crates use the dependency direc
 | `notify`                          | Cross-platform filesystem watcher. The client uses it to rebuild its in-memory group index when `~/.mmcp/repos/` or the project `.mmcp/config.toml` changes. | `mmcp-client`              |
 | `sha2`                            | SHA-256 digest used by `mmcp-session::compute_signature` for transcript fingerprints.        | `mmcp-session`             |
 
-### 2.5 Frontend (Leptos)
-
-| Crate                | Purpose                                                                | Consumers |
-| -------------------- | ---------------------------------------------------------------------- | --------- |
-| `leptos`             | Core fullstack Rust web framework. Fine-grained reactivity, SSR + hydration, server functions. | `webui`   |
-| `leptos_axum`        | `axum` integration for Leptos server functions.                        | `webui`   |
-| `leptos_meta`        | HTML head metadata management.                                         | `webui`   |
-| `leptos_router`      | Client-side and server-side routing.                                   | `webui`   |
-| `cargo-leptos`       | Build tool. Handles WASM compilation, SSR bundling, asset pipeline.    | build-time |
-
 ### 2.6 Testing
 
 | Crate        | Purpose                                                                 | Consumers       |
@@ -117,18 +107,17 @@ Not Rust crates, but required by the project.
 | **SQLite**         | Default local database for `mmcp-client`'s offline cache and session state mirror.        | `mmcp-client`  |
 | **cargo-nextest**  | Fast test runner with better output than `cargo test`. Recommended but optional.          | dev            |
 | **cargo-deny**     | Dependency policy enforcement (licenses, advisories, bans).                                | dev, CI        |
-| **cargo-leptos**   | Leptos build tool (see §2.5).                                                              | `webui` build  |
+| **bun**            | JS runtime + package manager + bundler driver for `webui/` and `gui/`'s SvelteKit frontend. | `webui` build, `gui` build |
 | **rustfmt**        | Formatter. Enforced in CI.                                                                 | dev, CI        |
 | **clippy**         | Linter. `-D warnings` in CI per Rust coding rules.                                         | dev, CI        |
 
 ## 4. Rationale for Key Choices
 
-### 4.1 Why Leptos over a JS framework
+### 4.1 Why SvelteKit for both frontends
 
-- Fullstack Rust: types from `mmcp-core` flow into the frontend without a code-generator step.
-- Performance: fine-grained reactivity puts Leptos among the fastest web frameworks in the js-framework-benchmark - faster than React, Vue, and Svelte in DOM operations. Perf is not a tradeoff here.
-- SSR + hydration out of the box, which is required for a GitHub-style administrative UI with server-rendered page shells.
-- Tradeoff accepted: larger initial WASM bundle than a minimal JS SPA, and a smaller ecosystem of pre-built components. Both are manageable for a project that renders forms, lists, and diff views rather than complex data viz.
+- Single frontend stack across `webui/` (server-facing admin UI) and `gui/` (Tauri-served desktop client). Reusing SvelteKit + Svelte 5 + Tailwind v4 keeps the toolchain (`bun`, Vite, the same component primitives) consistent between the two apps.
+- Both apps ship as pure SPAs via `@sveltejs/adapter-static`. The desktop client serves its bundle in-process through the Tauri webview; the webui ships through `mmcp-server`'s static-asset routes. Neither app needs SSR.
+- Tradeoff accepted: type sharing with `mmcp-core` happens via JSON over the REST and IPC layers rather than a compiled-in Rust-WASM dependency. Per-endpoint serde mapping replaces a unified Rust-WASM stack; in exchange the frontend bundle stays small and the JS ecosystem of pre-built components is available without a wrapper.
 
 ### 4.2 Why SeaORM over raw `sqlx` or Diesel
 
