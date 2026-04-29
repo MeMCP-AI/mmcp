@@ -150,6 +150,12 @@ enum Command {
     /// Subcommands: `add`, `read`, `update`, `delete`, `list`.
     /// Running `mmcp feature` with no subcommand prints this help.
     Feature(commands::feature::FeatureArgs),
+
+    /// Read / list / search memories.
+    /// Subcommands: `list`, `read`, `versions`, `sections`,
+    /// `search`. Running `mmcp memory` with no subcommand prints
+    /// this help.
+    Memory(commands::memory::MemoryArgs),
 }
 
 #[derive(Subcommand)]
@@ -233,6 +239,7 @@ async fn main() -> Result<()> {
             HookCommand::UserPrompt => commands::hook::user_prompt().await?,
         },
         Command::Feature(args) => commands::feature::run(args).await?,
+        Command::Memory(args) => commands::memory::run(args).await?,
     }
 
     Ok(())
