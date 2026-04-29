@@ -47,14 +47,20 @@ use mmcp_store::sessions::SessionStore;
 
 
 /// Run the MCP stdio server loop until the client disconnects.
-pub async fn run(debug_mode: bool) -> Result<()> {
+pub async fn run(debug_mode: bool, serve_mode: ServeMode) -> Result<()> {
     if debug_mode {
-        tracing::info!("mmcp stdio MCP server starting (debug tools enabled)");
+        tracing::info!(
+            "mmcp stdio MCP server starting (debug tools enabled, mode={})",
+            serve_mode.as_label(),
+        );
     } else {
-        tracing::info!("mmcp stdio MCP server starting");
+        tracing::info!(
+            "mmcp stdio MCP server starting (mode={})",
+            serve_mode.as_label(),
+        );
     }
     let state = ClientState::initialize(debug_mode).await?;
-    let server = McpServer::new(state);
+    let server = McpServer::new(state, serve_mode);
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
@@ -134,11 +140,75 @@ fn find_current_project_config() -> Option<PathBuf> {
     Some(root.join(PROJECT_MANIFEST))
 }
 
+/// Restrict the registered tool surface to a subset of the FR-029
+/// annotation matrix, mirroring Serena's read-only / edit / full
+/// posture. The check happens once at `McpServer::new` time so a
+/// disabled tool is not announced through `tools/list` at all — a
+/// stronger guarantee than the advisory-only annotation hints.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum ServeMode {
+    /// Only tools whose `read_only_hint == Some(true)`.
+    Readonly,
+    /// Read-only tools plus mutators that are not flagged
+    /// `destructive_hint = Some(true)`. Additive writes
+    /// (`write_memory`, `import_memory`, `add_feature`, …) and
+    /// non-destructive sync (`sync_fetch`, `sync_push`) stay
+    /// available; deletes, rewrites, and replay-style sync
+    /// (`sync_pull`, `sync`) are filtered out.
+    Edit,
+    /// Every registered tool. Default.
+    #[default]
+    Full,
+}
+
+impl ServeMode {
+    /// Lower-case label round-tripped to clap, the `status` tool
+    /// response, and the FR-031 catalogue. Picked to match the clap
+    /// `ValueEnum` derived names so the CLI surface and the wire
+    /// surface read identically.
+    pub fn as_label(self) -> &'static str {
+        match self {
+            Self::Readonly => "readonly",
+            Self::Edit => "edit",
+            Self::Full => "full",
+        }
+    }
+
+    /// Decide whether `tool` is allowed under this mode using only
+    /// its FR-029 annotations. Tools that lack annotations
+    /// (which the FR-29 conformance test forbids on the production
+    /// surface) get the conservative answer `false` for narrower
+    /// modes — better to drop a tool than expose it under a stricter
+    /// label than its annotations promise.
+    fn allows(self, tool: &rmcp::model::Tool) -> bool {
+        match self {
+            Self::Full => true,
+            other => {
+                let ann = match tool.annotations.as_ref() {
+                    Some(a) => a,
+                    None => return false,
+                };
+                let read_only = ann.read_only_hint.unwrap_or(false);
+                let destructive = ann.destructive_hint.unwrap_or(false);
+                match other {
+                    Self::Readonly => read_only,
+                    Self::Edit => read_only || !destructive,
+                    Self::Full => unreachable!(),
+                }
+            }
+        }
+    }
+}
+
 /// MCP server exposing the stateless mmcp tools that can be served
 /// purely from local git repos.
 #[derive(Clone)]
 struct McpServer {
     state: ClientState,
+    /// Active filter from the `--mode` flag. Stored so `status`
+    /// and `get_info` can echo the running posture; the actual
+    /// filtering happens once during `new`.
+    mode: ServeMode,
     // NOTE: `tool_router` is read through the `#[tool_handler]`
     // macro's generated plumbing, not from our own code.
     #[allow(dead_code)]
@@ -1241,10 +1311,19 @@ struct ListFeaturesArgs {
 
 #[tool_router]
 impl McpServer {
-    fn new(state: ClientState) -> Self {
+    fn new(state: ClientState, mode: ServeMode) -> Self {
+        let mut tool_router = Self::tool_router();
+        if !matches!(mode, ServeMode::Full) {
+            // ToolRouter's `map` is `pub`; filtering at construction
+            // time means dropped tools never appear on `tools/list`,
+            // closing the gap between the advisory FR-029 hints and
+            // hard registration-level enforcement.
+            tool_router.map.retain(|_, route| mode.allows(&route.attr));
+        }
         Self {
             state,
-            tool_router: Self::tool_router(),
+            mode,
+            tool_router,
         }
     }
 
@@ -3087,10 +3166,18 @@ impl McpServer {
                 "project_uuid": entry.manifest.group_id.to_string(),
                 "project_slug": entry.manifest.slug,
                 "groups": groups,
+                "mode": self.mode.as_label(),
             })));
         }
 
-        Ok(ok_json(compose_status(&cwd, groups)?))
+        let mut payload = compose_status(&cwd, groups)?;
+        if let serde_json::Value::Object(map) = &mut payload {
+            map.insert(
+                "mode".to_string(),
+                serde_json::Value::from(self.mode.as_label()),
+            );
+        }
+        Ok(ok_json(payload))
     }
 
     #[tool(
@@ -4663,10 +4750,22 @@ fn map_memory_edit_error_to_mcp(err: mmcp_store::MemoryEditError) -> McpError {
 #[tool_handler]
 impl ServerHandler for McpServer {
     fn get_info(&self) -> ServerInfo {
+        let mut instructions = SESSION_INSTRUCTIONS.to_string();
+        if !matches!(self.mode, ServeMode::Full) {
+            // Filtered modes drop tools at registration time, so an
+            // assistant that calls a missing tool gets a generic
+            // "method not found"; the suffix tells it up front
+            // which surface is reachable on this connection.
+            instructions.push_str(&format!(
+                "\n\n## Active mode: {label}\n\nThis server was started with `--mode {label}`. \
+                 Mutating tools may be unavailable; call `describe_tools` for the live catalogue.",
+                label = self.mode.as_label(),
+            ));
+        }
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
-            .with_instructions(SESSION_INSTRUCTIONS.to_string())
+            .with_instructions(instructions)
     }
 }
 
@@ -5127,7 +5226,7 @@ mod tests {
     async fn list_memories_returns_real_entries_from_git() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let res = server
             .list_memories(Parameters(ListMemoriesArgs {
@@ -5182,7 +5281,7 @@ mod tests {
         }
         state.groups.refresh().await.expect("refresh");
 
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
         let res = server
             .list_features(Parameters(ListFeaturesArgs {
                 project: Some(group.to_string()),
@@ -5235,7 +5334,7 @@ mod tests {
         // returned `{memories: []}` indistinguishable from an empty
         // mirrored group, silently masking missed checkpoint reads.
         let (state, _tmp) = test_state().await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
         let phantom_uuid = Uuid::now_v7().to_string();
 
         let res = server
@@ -5269,7 +5368,7 @@ mod tests {
         let (state, _tmp) = test_state().await;
         seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
         seed_group_with_memory(&state, "team-rust-2", "other", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let res = server
             .list_groups(Parameters(ListGroupsArgs::default()))
@@ -5318,7 +5417,7 @@ mod tests {
     async fn read_memory_returns_frontmatter_and_body() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let res = server
             .read_memory(Parameters(ReadMemoryArgs {
@@ -5349,7 +5448,7 @@ mod tests {
     async fn read_memory_rejects_unknown_slug() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let err = server
             .read_memory(Parameters(ReadMemoryArgs {
@@ -5370,7 +5469,7 @@ mod tests {
     async fn group_info_reports_manifest_and_memory_count() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let res = server
             .group_info(Parameters(GroupInfoArgs {
@@ -5399,7 +5498,7 @@ mod tests {
         let (state, _tmp) = test_state().await;
         seed_group_with_memory(&state, "team-rust", "coding-rules", SAMPLE_MEMORY).await;
         seed_group_with_memory(&state, "team-python", "coding-habits", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let res = server
             .search_memories(Parameters(SearchMemoriesArgs {
@@ -5445,7 +5544,7 @@ mod tests {
             mmcp_core::manifest::GroupScope::Project,
         )
         .await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let res = server
             .search_memories(Parameters(SearchMemoriesArgs {
@@ -5473,7 +5572,7 @@ mod tests {
         let (state, _tmp) = test_state().await;
         seed_group_with_memory(&state, "team-rust", "coding-rules", SAMPLE_MEMORY).await;
         seed_group_with_memory(&state, "team-python", "style-guide", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let res = server
             .search_memories(Parameters(SearchMemoriesArgs {
@@ -5500,7 +5599,7 @@ mod tests {
     async fn list_versions_returns_commit_history_for_memory() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let res = server
             .list_versions(Parameters(ListVersionsArgs {
@@ -5525,7 +5624,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_group_id_returns_empty_list_or_invalid_params() {
         let (state, _tmp) = test_state().await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
         let unknown = Uuid::now_v7();
 
         let res = server
@@ -5573,7 +5672,7 @@ mod tests {
         )
         .await;
         seed_group_with_memory(&state, "globals2", "optional-note", OPTIONAL_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         // Pass `path` to a tempdir with no `.mmcp.toml` so the
         // resolver does not pick up the workspace config and skew
@@ -5663,7 +5762,7 @@ mod tests {
         .await;
         let unrelated_project =
             seed_group_with_memory(&state, "team-project", "optional", OPTIONAL_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let res = server
             .bootstrap_context(Parameters(BootstrapContextArgs {
@@ -5718,7 +5817,7 @@ mod tests {
             mmcp_core::manifest::GroupScope::Project,
         )
         .await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let res = server
             .bootstrap_context(Parameters(BootstrapContextArgs {
@@ -5762,7 +5861,7 @@ mod tests {
             mmcp_core::manifest::GroupScope::Shared,
         )
         .await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         // No project config in the project root → Shared group is
         // not in scope. Pass `path` explicitly to avoid racing on
@@ -5926,7 +6025,7 @@ mod tests {
     #[tokio::test]
     async fn init_claude_dry_run_override_against_missing_file_reports_plan() {
         let (state, tmp) = test_state().await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
         let target = tmp.path().join("CLAUDE.md");
 
         let res = server
@@ -5956,7 +6055,7 @@ mod tests {
     #[tokio::test]
     async fn init_claude_refuses_dirty_file_without_on_conflict_with_structured_error() {
         let (state, tmp) = test_state().await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
         let target = tmp.path().join("CLAUDE.md");
         std::fs::write(&target, "# existing\n").expect("write fixture");
 
@@ -5987,7 +6086,7 @@ mod tests {
     #[tokio::test]
     async fn init_claude_writes_stub_when_file_is_missing() {
         let (state, tmp) = test_state().await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
         let target = tmp.path().join("CLAUDE.md");
 
         let res = server
@@ -6183,7 +6282,7 @@ mod tests {
             mmcp_core::manifest::GroupScope::Project,
         )
         .await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let res = server
             .bootstrap_context(Parameters(BootstrapContextArgs {
@@ -6203,7 +6302,7 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_context_unknown_project_returns_structured_code() {
         let (state, _tmp) = test_state().await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let err = server
             .bootstrap_context(Parameters(BootstrapContextArgs {
@@ -6233,7 +6332,7 @@ mod tests {
         use crate::commands::subscribe::{SubscribeMcpArgs, SubscriptionKind};
 
         let (state, tmp) = test_state().await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let project_root = tmp.path().join("project");
         std::fs::create_dir_all(&project_root).expect("project root");
@@ -6308,7 +6407,7 @@ mod tests {
         use crate::commands::subscribe::{SubscribeMcpArgs, SubscriptionKind};
 
         let (state, tmp) = test_state().await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let project_root = tmp.path().join("project");
         std::fs::create_dir_all(&project_root).expect("project root");
@@ -6359,7 +6458,7 @@ mod tests {
         use crate::commands::subscribe::{SubscribeMcpArgs, SubscriptionKind};
 
         let (state, tmp) = test_state().await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let empty = tmp.path().join("empty");
         std::fs::create_dir_all(&empty).expect("empty dir");
@@ -6388,7 +6487,7 @@ mod tests {
         let (state, _tmp) = test_state().await;
         let project =
             seed_group_with_memory(&state, "explicit-target", "dummy", OPTIONAL_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let res = server
             .status(Parameters(StatusArgs {
@@ -6530,7 +6629,7 @@ mod tests {
     async fn status_tool_lists_groups_with_memory_counts() {
         let (state, _tmp) = test_state().await;
         seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
         let res = server
             .status(Parameters(StatusArgs::default()))
             .await
@@ -6654,7 +6753,7 @@ mod tests {
     #[tokio::test]
     async fn create_group_tool_writes_group_and_returns_wire_payload() {
         let (state, _tmp) = test_state().await;
-        let server = McpServer::new(state.clone());
+        let server = McpServer::new(state.clone(), ServeMode::Full);
         let res = server
             .create_group(Parameters(CreateGroupArgs {
                 slug: "shared-rules".to_string(),
@@ -6808,7 +6907,7 @@ mod tests {
         // Seed one memory so the group repo exists; the write
         // targets a different slug.
         let group = seed_group_with_memory(&state, "rules", "existing", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
         let res = server
             .write_memory_unguarded(write_memory_args(&group, "fresh", false))
             .await
@@ -6829,7 +6928,7 @@ mod tests {
         // existing-exists code so callers don't silently overwrite.
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "rules", "seed", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
         let first = server
             .write_memory_unguarded(write_memory_args(&group, "taken", false))
             .await
@@ -6860,7 +6959,7 @@ mod tests {
         // ids are a valid coexistence. No override needed.
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "rules", "seed", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
         let first = server
             .write_memory_unguarded(write_memory_args(&group, "twins", false))
             .await
@@ -6886,7 +6985,7 @@ mod tests {
     async fn write_memory_accepts_existing_id_when_override_is_true() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "rules", "seed", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
         let first = server
             .write_memory_unguarded(write_memory_args(&group, "replaced", false))
             .await
@@ -6915,7 +7014,7 @@ mod tests {
         // toward `mcp:edit_memory` for partial updates.
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "rules", "seed", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         // First create so the id exists.
         let first = server
@@ -6962,7 +7061,7 @@ mod tests {
         // nothing triggered a populator.
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "rules", "seed", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let res = server
             .write_memory_unguarded(write_memory_args(&group, "clean", false))
@@ -7024,7 +7123,7 @@ mod tests {
     async fn import_memory_markdown_body_with_synth_fields_round_trips() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "rules", "seed", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let res = server
             .import_memory_unguarded(import_memory_args(
@@ -7057,7 +7156,7 @@ mod tests {
     async fn import_memory_adoc_body_is_converted_before_storage() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "rules", "seed", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state.clone());
+        let server = McpServer::new(state.clone(), ServeMode::Full);
 
         let adoc = "= Imported Heading\n\nParagraph from an adoc source.\n";
         let res = server
@@ -7127,7 +7226,7 @@ mod tests {
     async fn import_memory_rejects_partial_synth_frontmatter() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "rules", "seed", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let mut args = import_memory_args(&group, "partial", "Body\n", None);
         args.description = None;
@@ -7148,7 +7247,7 @@ mod tests {
     async fn edit_memory_replaces_body_leaving_frontmatter_intact() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "rules", "first", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state.clone());
+        let server = McpServer::new(state.clone(), ServeMode::Full);
         let res = server
             .edit_memory_unguarded(EditMemoryArgs {
                 group: group.to_string(),
@@ -7189,7 +7288,7 @@ mod tests {
     async fn edit_memory_tag_operators_compose_with_dedup() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "rules", "taggy", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state.clone());
+        let server = McpServer::new(state.clone(), ServeMode::Full);
         server
             .edit_memory_unguarded(EditMemoryArgs {
                 group: group.to_string(),
@@ -7235,7 +7334,7 @@ mod tests {
     async fn edit_memory_returns_memory_not_found_when_slug_absent() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "rules", "existing", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
         let err = server
             .edit_memory_unguarded(EditMemoryArgs {
                 group: group.to_string(),
@@ -7260,7 +7359,7 @@ mod tests {
     async fn delete_memory_removes_slug_from_listing() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "rules", "doomed", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
         server
             .delete_memory_unguarded(DeleteMemoryArgs {
                 group: group.to_string(),
@@ -7297,7 +7396,7 @@ mod tests {
     async fn delete_memory_errors_when_slug_absent() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "rules", "present", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
         let err = server
             .delete_memory_unguarded(DeleteMemoryArgs {
                 group: group.to_string(),
@@ -7406,7 +7505,7 @@ mod tests {
         let _protected =
             seed_protected_group_with_memory(&state, "global", "anchored", SAMPLE_MEMORY).await;
         let sibling = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
         server
             .write_memory_unguarded(write_memory_args(&sibling, "added", false))
             .await
@@ -7421,7 +7520,7 @@ mod tests {
     async fn read_memory_body_sections_returns_addressable_tree() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "team-rust", "rules", SECTIONED_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let res = server
             .read_memory_body_sections_inner(ReadMemoryBodySectionsArgs {
@@ -7447,7 +7546,7 @@ mod tests {
     async fn edit_memory_body_upsert_replaces_section() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "team-rust", "rules", SECTIONED_MEMORY).await;
-        let server = McpServer::new(state.clone());
+        let server = McpServer::new(state.clone(), ServeMode::Full);
 
         server
             .edit_memory_body_unguarded(EditMemoryBodyArgs {
@@ -7492,7 +7591,7 @@ mod tests {
     async fn edit_memory_body_section_not_found_errors_with_structured_code() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "team-rust", "rules", SECTIONED_MEMORY).await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
 
         let err = server
             .edit_memory_body_unguarded(EditMemoryBodyArgs {
@@ -7671,6 +7770,88 @@ mod tests {
         check_bits(McpServer::sync_tool_attr(), sw_pull);
     }
 
+    /// FR-30: `mmcp serve --mode readonly` filters destructive and
+    /// additive mutators out of the registered tool surface so a
+    /// harness bug or prompt-injection cannot reach them. The check
+    /// runs against the in-memory `tool_router.map` so it does not
+    /// need a full stdio loop.
+    #[tokio::test]
+    async fn serve_mode_readonly_excludes_mutating_tools() {
+        let (state, _tmp) = test_state().await;
+        let server = McpServer::new(state, ServeMode::Readonly);
+        let names: std::collections::HashSet<String> = server
+            .tool_router
+            .map
+            .keys()
+            .map(|k| k.to_string())
+            .collect();
+
+        assert!(names.contains("read_memory"));
+        assert!(names.contains("list_groups"));
+        assert!(names.contains("describe_tools"));
+        assert!(!names.contains("write_memory"));
+        assert!(!names.contains("delete_memory"));
+        assert!(!names.contains("edit_memory"));
+        assert!(!names.contains("sync_pull"));
+        assert!(!names.contains("sync_push"));
+    }
+
+    /// FR-30: `--mode edit` keeps additive mutators (`write_memory`,
+    /// `import_memory`, `add_feature`) but still drops destructive
+    /// rewrites and replay-style sync.
+    #[tokio::test]
+    async fn serve_mode_edit_keeps_additive_drops_destructive() {
+        let (state, _tmp) = test_state().await;
+        let server = McpServer::new(state, ServeMode::Edit);
+        let names: std::collections::HashSet<String> = server
+            .tool_router
+            .map
+            .keys()
+            .map(|k| k.to_string())
+            .collect();
+
+        assert!(names.contains("write_memory"));
+        assert!(names.contains("import_memory"));
+        assert!(names.contains("add_feature"));
+        assert!(names.contains("sync_fetch"));
+        assert!(names.contains("sync_push"));
+        assert!(!names.contains("delete_memory"));
+        assert!(!names.contains("edit_memory"));
+        assert!(!names.contains("update_feature"));
+        assert!(!names.contains("sync_pull"));
+        assert!(!names.contains("sync"));
+    }
+
+    /// FR-30: `--mode full` keeps every registered tool. Cross-checks
+    /// against `registered_tool_attrs()` so any future tool addition
+    /// is exercised here without an explicit name list.
+    #[tokio::test]
+    async fn serve_mode_full_registers_every_tool() {
+        let (state, _tmp) = test_state().await;
+        let server = McpServer::new(state, ServeMode::Full);
+        let live_count = server.tool_router.map.len();
+        let canonical = McpServer::registered_tool_attrs().len();
+        assert_eq!(live_count, canonical);
+    }
+
+    /// FR-30: the `status` MCP tool echoes the active mode so an
+    /// operator probing a running server can tell which posture it
+    /// was launched with without restarting it.
+    #[tokio::test]
+    async fn status_tool_reports_active_mode() {
+        let (state, _tmp) = test_state().await;
+        let server = McpServer::new(state, ServeMode::Readonly);
+        let res = server
+            .status(Parameters(StatusArgs::default()))
+            .await
+            .expect("status");
+        let parsed = parse_ok_json(res);
+        assert_eq!(
+            parsed.get("mode").and_then(|v| v.as_str()),
+            Some("readonly"),
+        );
+    }
+
     /// FR-31: `describe_tools` returns one entry per registered tool
     /// with the four annotation hint bits intact. The list mirrors
     /// FR-29's matrix; if a new tool ships without being added to
@@ -7678,7 +7859,7 @@ mod tests {
     #[tokio::test]
     async fn describe_tools_lists_every_registered_tool() {
         let (state, _tmp) = test_state().await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
         let res = server
             .describe_tools(Parameters(DescribeToolsArgs::default()))
             .await
@@ -7723,7 +7904,7 @@ mod tests {
     #[tokio::test]
     async fn describe_tools_includes_describe_tools_itself() {
         let (state, _tmp) = test_state().await;
-        let server = McpServer::new(state);
+        let server = McpServer::new(state, ServeMode::Full);
         let res = server
             .describe_tools(Parameters(DescribeToolsArgs::default()))
             .await

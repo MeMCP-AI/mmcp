@@ -34,6 +34,12 @@ enum Command {
         /// Enable debug tools for raw git access.
         #[arg(long, default_value_t = false)]
         debug: bool,
+
+        /// Restrict the registered tool surface. `readonly` exposes
+        /// only read-only tools; `edit` adds non-destructive
+        /// mutators; `full` exposes every tool. Default `full`.
+        #[arg(long, value_enum, default_value_t = commands::serve::ServeMode::Full)]
+        mode: commands::serve::ServeMode,
     },
 
     /// Initialize mmcp-managed files for the current directory.
@@ -222,7 +228,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Serve { debug } => commands::serve::run(debug).await?,
+        Command::Serve { debug, mode } => commands::serve::run(debug, mode).await?,
         Command::Check { group } => commands::health::run_check(group).await?,
         Command::Diagnose { group } => commands::health::run_diagnose(group).await?,
         Command::Init(InitArgs { cmd }) => match cmd {
