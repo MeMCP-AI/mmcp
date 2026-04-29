@@ -167,6 +167,12 @@ enum Command {
     /// to mandatory or project; `--project` to override the
     /// cwd-walked project group.
     Bootstrap(commands::bootstrap::BootstrapArgs),
+
+    /// Raw git access into a group's bare repository. Mirrors
+    /// the `mcp:debug_*` MCP tools. Subcommands: `git-log`,
+    /// `list-tree`, `read-file`, `write-file`. Use the typed
+    /// `mmcp memory` / `mmcp group` surfaces first.
+    Debug(commands::debug::DebugArgs),
 }
 
 #[derive(Subcommand)]
@@ -253,6 +259,7 @@ async fn main() -> Result<()> {
         Command::Memory(args) => commands::memory::run(args).await?,
         Command::Group(args) => commands::group::run(args).await?,
         Command::Bootstrap(args) => commands::bootstrap::run(args).await?,
+        Command::Debug(args) => commands::debug::run(args).await?,
     }
 
     Ok(())
