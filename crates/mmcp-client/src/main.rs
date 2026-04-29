@@ -168,6 +168,17 @@ enum Command {
     /// cwd-walked project group.
     Bootstrap(commands::bootstrap::BootstrapArgs),
 
+    /// Subscribe the current project to a tag, memory, group, or
+    /// language. Edits `[subscriptions]` in `.mmcp/config.toml`.
+    /// Mirrors the `subscribe` MCP tool. Idempotent: re-subscribing
+    /// to the same value is a no-op.
+    Subscribe(commands::subscribe::SubscribeCliArgs),
+
+    /// Remove a subscription previously written by `mmcp subscribe`
+    /// or the `subscribe` MCP tool. Idempotent: unsubscribing from
+    /// a value the project never subscribed to is a no-op.
+    Unsubscribe(commands::subscribe::SubscribeCliArgs),
+
     /// Raw git access into a group's bare repository. Mirrors
     /// the `mcp:debug_*` MCP tools. Subcommands: `git-log`,
     /// `list-tree`, `read-file`, `write-file`. Use the typed
@@ -259,6 +270,8 @@ async fn main() -> Result<()> {
         Command::Memory(args) => commands::memory::run(args).await?,
         Command::Group(args) => commands::group::run(args).await?,
         Command::Bootstrap(args) => commands::bootstrap::run(args).await?,
+        Command::Subscribe(args) => commands::subscribe::run_subscribe(args).await?,
+        Command::Unsubscribe(args) => commands::subscribe::run_unsubscribe(args).await?,
         Command::Debug(args) => commands::debug::run(args).await?,
     }
 

@@ -12,4 +12,5 @@ pub mod init;
 pub mod memory;
 pub mod serve;
 pub mod status;
+pub mod subscribe;
 pub mod sync;

@@ -9,7 +9,7 @@
 //! wired through so they can land without touching initialization.
 
 use std::borrow::Cow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -2891,6 +2891,45 @@ impl McpServer {
     }
 
     #[tool(
+        description = "Add an entry to the project's `[subscriptions]` table in `.mmcp/config.toml`. `kind` selects the axis (tag / memory / group / language) and `value` is the target. Memory targets must be `<group_uuid>:<slug>` and resolve to an existing memory; group targets must resolve to a mirrored group. Tags and languages skip validation. Idempotent: subscribing twice is a no-op. Returns `changed=false` when the entry was already present.",
+        annotations(
+            title = "Subscribe to a tag / memory / group / language",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn subscribe(
+        &self,
+        Parameters(args): Parameters<crate::commands::subscribe::SubscribeMcpArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.apply_subscription_mcp(args, crate::commands::subscribe::SubscriptionAction::Subscribe)
+            .await
+    }
+
+    #[tool(
+        description = "Remove an entry from the project's `[subscriptions]` table in `.mmcp/config.toml`. `kind` and `value` mirror `subscribe`. Idempotent: unsubscribing from a value the project never subscribed to is a no-op. Returns `changed=false` in that case.",
+        annotations(
+            title = "Unsubscribe from a tag / memory / group / language",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn unsubscribe(
+        &self,
+        Parameters(args): Parameters<crate::commands::subscribe::SubscribeMcpArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.apply_subscription_mcp(
+            args,
+            crate::commands::subscribe::SubscriptionAction::Unsubscribe,
+        )
+        .await
+    }
+
+    #[tool(
         description = "Read each in-scope group's remote HEAD into a local remote-tracking ref without advancing the group's `main` branch. Git-symmetric with `fetch`: use this to inspect what `sync_pull` would fast-forward before committing to it. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block, and the usual `selector_required` / `selector_conflict` / `unknown_group` for arg validation.",
         annotations(
             title = "Fetch remote-tracking refs",
@@ -3609,6 +3648,55 @@ impl McpServer {
         })
     }
 
+    /// Shared body for `subscribe` and `unsubscribe`. Resolves the
+    /// project root, validates the target against the local mirror,
+    /// applies the in-memory mutation, and persists the config when
+    /// anything actually changed. The two MCP tool methods are
+    /// one-liners around this helper so the audit-trail commit
+    /// boundaries (subscribe vs unsubscribe) stay distinct without
+    /// duplicating the body.
+    async fn apply_subscription_mcp(
+        &self,
+        args: crate::commands::subscribe::SubscribeMcpArgs,
+        action: crate::commands::subscribe::SubscriptionAction,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::commands::subscribe::{
+            apply_subscription, resolve_project_root, validate_subscription_target,
+        };
+
+        let cwd = current_dir_for_mcp()?;
+        let explicit = args.path.as_deref().map(Path::new);
+        let project_root = resolve_project_root(explicit, Some(&cwd))
+            .map_err(map_subscribe_error_to_mcp)?;
+
+        validate_subscription_target(
+            &self.state.backend,
+            &self.state.groups,
+            args.kind,
+            &args.value,
+        )
+        .await
+        .map_err(map_subscribe_error_to_mcp)?;
+
+        let mut cfg = load_project_config(&project_root).map_err(|e| {
+            McpError::internal_error(format!("loading project config: {e}"), None)
+        })?;
+        let changed = apply_subscription(&mut cfg, args.kind, &args.value, action);
+        if changed {
+            mmcp_store::config::save(&project_root, &cfg).map_err(|e| {
+                McpError::internal_error(format!("saving project config: {e}"), None)
+            })?;
+        }
+        Ok(ok_json(json!({
+            "kind": args.kind.as_str(),
+            "value": args.value,
+            "action": action.as_str(),
+            "changed": changed,
+            "project_root": project_root.to_string_lossy().into_owned(),
+            "project_uuid": cfg.project_uuid.to_string(),
+        })))
+    }
+
     /// Resolve the group entry **and** a specific memory within it
     /// in one call. Every read / edit / delete / body tool runs
     /// this exact chain post-FR-028: parse the group, look up the
@@ -4044,6 +4132,36 @@ fn map_init_project_error_to_mcp(err: crate::commands::init::InitProjectError) -
 /// a structured `code` payload. Used by the `import_memory` tool
 /// when the caller requested adoc source handling and the `acdc`
 /// bridge refused to produce markdown.
+/// Map a [`crate::commands::subscribe::SubscribeError`] to an
+/// [`McpError`] with a structured `code` payload.
+fn map_subscribe_error_to_mcp(
+    err: crate::commands::subscribe::SubscribeError,
+) -> McpError {
+    use crate::commands::subscribe::SubscribeError;
+    let message = err.to_string();
+    let payload = match &err {
+        SubscribeError::NotInProject => json!({ "code": "not_in_project" }),
+        SubscribeError::MalformedMemoryValue(value) => json!({
+            "code": "malformed_memory_value",
+            "value": value,
+        }),
+        SubscribeError::InvalidGroupUuid(value) => json!({
+            "code": "invalid_group_uuid",
+            "value": value,
+        }),
+        SubscribeError::UnknownGroup(group) => json!({
+            "code": "unknown_group",
+            "group": group,
+        }),
+        SubscribeError::UnknownMemory { group, slug } => json!({
+            "code": "unknown_memory",
+            "group": group,
+            "slug": slug,
+        }),
+    };
+    McpError::invalid_params(message, Some(payload))
+}
+
 fn map_adoc_convert_error_to_mcp(err: mmcp_store::AdocConvertError) -> McpError {
     use mmcp_store::AdocConvertError;
     let message = err.to_string();
@@ -5823,6 +5941,162 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn subscribe_tag_round_trips_through_config() {
+        // subscribe(kind=tag, value=rust) writes the entry into
+        // .mmcp.toml. A second identical call is a no-op
+        // (`changed=false`); unsubscribe drops it back out.
+        // Pass `path` explicitly so the test does not race against
+        // sibling tests on the process-global cwd.
+        use crate::commands::subscribe::{SubscribeMcpArgs, SubscriptionKind};
+
+        let (state, tmp) = test_state().await;
+        let server = McpServer::new(state);
+
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).expect("project root");
+        let project_uuid = Uuid::now_v7();
+        std::fs::write(
+            project_root.join(".mmcp.toml"),
+            format!("project_uuid = \"{project_uuid}\"\n"),
+        )
+        .expect("seed config");
+        let path_str = project_root.to_string_lossy().into_owned();
+
+        let res = server
+            .subscribe(Parameters(SubscribeMcpArgs {
+                kind: SubscriptionKind::Tag,
+                value: "rust".into(),
+                path: Some(path_str.clone()),
+            }))
+            .await
+            .expect("subscribe tag rust");
+        let body = parse_ok_json(res);
+        assert_eq!(body.get("changed").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(body.get("kind").and_then(|v| v.as_str()), Some("tag"));
+        assert_eq!(body.get("value").and_then(|v| v.as_str()), Some("rust"));
+
+        let cfg = mmcp_store::config::load(&project_root).expect("reload");
+        assert_eq!(cfg.subscriptions.tags, vec!["rust".to_string()]);
+
+        // Idempotent re-subscribe.
+        let res = server
+            .subscribe(Parameters(SubscribeMcpArgs {
+                kind: SubscriptionKind::Tag,
+                value: "rust".into(),
+                path: Some(path_str.clone()),
+            }))
+            .await
+            .expect("subscribe rust again");
+        let body = parse_ok_json(res);
+        assert_eq!(body.get("changed").and_then(|v| v.as_bool()), Some(false));
+
+        // Unsubscribe drops the entry.
+        let res = server
+            .unsubscribe(Parameters(SubscribeMcpArgs {
+                kind: SubscriptionKind::Tag,
+                value: "rust".into(),
+                path: Some(path_str.clone()),
+            }))
+            .await
+            .expect("unsubscribe tag rust");
+        let body = parse_ok_json(res);
+        assert_eq!(body.get("changed").and_then(|v| v.as_bool()), Some(true));
+        let cfg = mmcp_store::config::load(&project_root).expect("reload");
+        assert!(cfg.subscriptions.tags.is_empty());
+
+        // Unsubscribe again is a no-op.
+        let res = server
+            .unsubscribe(Parameters(SubscribeMcpArgs {
+                kind: SubscriptionKind::Tag,
+                value: "rust".into(),
+                path: Some(path_str),
+            }))
+            .await
+            .expect("unsubscribe again");
+        let body = parse_ok_json(res);
+        assert_eq!(body.get("changed").and_then(|v| v.as_bool()), Some(false));
+    }
+
+    #[tokio::test]
+    async fn subscribe_memory_validates_target_exists() {
+        // subscribe(kind=memory, value=<bad>) must error with
+        // structured code instead of silently writing. Uses an
+        // explicit `path` to avoid racing on cwd.
+        use crate::commands::subscribe::{SubscribeMcpArgs, SubscriptionKind};
+
+        let (state, tmp) = test_state().await;
+        let server = McpServer::new(state);
+
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).expect("project root");
+        std::fs::write(
+            project_root.join(".mmcp.toml"),
+            format!("project_uuid = \"{}\"\n", Uuid::now_v7()),
+        )
+        .expect("seed config");
+        let path_str = project_root.to_string_lossy().into_owned();
+
+        // Malformed value (no colon).
+        let err = server
+            .subscribe(Parameters(SubscribeMcpArgs {
+                kind: SubscriptionKind::Memory,
+                value: "not-a-memory-value".into(),
+                path: Some(path_str.clone()),
+            }))
+            .await
+            .expect_err("malformed memory must error");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("malformed_memory_value"),
+        );
+
+        // Well-formed but non-existent group UUID.
+        let bogus = format!("{}:slug", Uuid::now_v7());
+        let err = server
+            .subscribe(Parameters(SubscribeMcpArgs {
+                kind: SubscriptionKind::Memory,
+                value: bogus,
+                path: Some(path_str),
+            }))
+            .await
+            .expect_err("unknown group must error");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("unknown_group"),
+        );
+    }
+
+    #[tokio::test]
+    async fn subscribe_without_project_config_errors() {
+        // subscribe with no `.mmcp.toml` discoverable from the
+        // explicit path must surface `not_in_project` rather than
+        // an opaque I/O error.
+        use crate::commands::subscribe::{SubscribeMcpArgs, SubscriptionKind};
+
+        let (state, tmp) = test_state().await;
+        let server = McpServer::new(state);
+
+        let empty = tmp.path().join("empty");
+        std::fs::create_dir_all(&empty).expect("empty dir");
+
+        let err = server
+            .subscribe(Parameters(SubscribeMcpArgs {
+                kind: SubscriptionKind::Tag,
+                value: "rust".into(),
+                path: Some(empty.to_string_lossy().into_owned()),
+            }))
+            .await
+            .expect_err("missing config must error");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("not_in_project"),
+        );
+    }
+
+    #[tokio::test]
     async fn status_project_selector_returns_minimal_shape() {
         // FR-44: `status(project=<uuid>)` returns the filesystem-
         // free minimal response shape; project_root and sync are
@@ -7092,6 +7366,8 @@ mod tests {
         check_bits(McpServer::debug_toggle_tool_attr(), iden);
         check_bits(McpServer::init_project_tool_attr(), iden);
         check_bits(McpServer::rename_feature_tool_attr(), iden);
+        check_bits(McpServer::subscribe_tool_attr(), iden);
+        check_bits(McpServer::unsubscribe_tool_attr(), iden);
 
         // Non-destructive + non-idempotent (create_group, add_feature).
         let cre = (Some(false), Some(false), Some(false), Some(false));
