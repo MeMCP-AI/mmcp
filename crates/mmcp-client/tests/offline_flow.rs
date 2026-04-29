@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use mmcp_core::config::{GroupsConfig, LanguagesConfig, ProjectConfig};
+use mmcp_core::config::{ProjectConfig, SubscriptionsConfig};
 use mmcp_core::id::{GroupId, ProjectUuid};
 use mmcp_core::manifest::GroupManifest;
 use mmcp_core::memory::MemoryKind;
@@ -32,8 +32,7 @@ async fn import_list_read_health_and_diagnose_run_without_any_remote() {
         project_uuid: ProjectUuid::new(),
         project_slug: None,
         sync: None,
-        groups: GroupsConfig::default(),
-        languages: LanguagesConfig::default(),
+        subscriptions: SubscriptionsConfig::default(),
     };
     assert!(
         project_cfg.sync.is_none(),

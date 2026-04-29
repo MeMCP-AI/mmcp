@@ -309,8 +309,7 @@ fn load_or_mint_config(
         project_uuid,
         project_slug: None,
         sync: None,
-        groups: Default::default(),
-        languages: Default::default(),
+        subscriptions: Default::default(),
     };
     Ok((cfg, cwd.to_path_buf(), true))
 }
@@ -485,8 +484,7 @@ mod tests {
             project_uuid: stored_uuid,
             project_slug: None,
             sync: None,
-            groups: Default::default(),
-            languages: Default::default(),
+            subscriptions: Default::default(),
         };
         save(&project_root, &cfg).expect("seed config");
 
@@ -518,8 +516,7 @@ mod tests {
             project_uuid: ProjectUuid::new(),
             project_slug: Some("team-rust".into()),
             sync: None,
-            groups: Default::default(),
-            languages: Default::default(),
+            subscriptions: Default::default(),
         };
         save(&project_root, &cfg).expect("seed config");
 
@@ -543,8 +540,7 @@ mod tests {
             project_uuid: stored_uuid,
             project_slug: Some("team-rust".into()),
             sync: None,
-            groups: Default::default(),
-            languages: Default::default(),
+            subscriptions: Default::default(),
         };
         save(&project_root, &cfg).expect("seed config");
 

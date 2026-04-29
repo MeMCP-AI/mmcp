@@ -169,10 +169,10 @@ struct Row {
 /// enough to inline; planned to hoist into `mmcp_store::config`
 /// in the Slice 4 refactor pass.
 fn is_group_adopted(slug: &str, cfg: &ProjectConfig) -> bool {
-    cfg.groups.additional.iter().any(|s| s == slug)
+    cfg.subscriptions.groups.iter().any(|s| s == slug)
         || cfg
+            .subscriptions
             .languages
-            .use_
             .iter()
             .any(|lang| slug == format!("lang/{lang}"))
 }

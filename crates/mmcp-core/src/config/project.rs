@@ -32,13 +32,11 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub sync: Option<SyncConfig>,
 
-    /// Extra group loading configuration beyond the built-in defaults.
+    /// Single subscription engine: which extra groups, languages,
+    /// memories, and tags this project pulls into scope. Replaces
+    /// the older `[groups]` + `[languages]` sections.
     #[serde(default)]
-    pub groups: GroupsConfig,
-
-    /// Language convention groups to auto-load.
-    #[serde(default)]
-    pub languages: LanguagesConfig,
+    pub subscriptions: SubscriptionsConfig,
 }
 
 impl ProjectConfig {
@@ -61,40 +59,56 @@ pub struct SyncConfig {
     pub server_url: String,
 }
 
-/// Group loading configuration.
+/// Unified opt-in surface for which groups and memories the project
+/// pulls into scope.
 ///
-/// Default values load the `global` group and the project's own
-/// group, with no additional groups and no extra exclusions.
+/// `languages` and `groups` answer "fully subscribe to this
+/// group" — every memory in the named group surfaces (mandatory or
+/// not). `memories` and `tags` are finer-grained: pull a specific
+/// memory by `<group_uuid>:<slug>`, or pull every non-mandatory
+/// memory whose tags overlap the listed set from any in-scope group.
+///
+/// `no_default_global` and `auto_detect_languages` are the legacy
+/// toggles, kept under the same section so the config has a single
+/// source of truth for "what does this project subscribe to."
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct GroupsConfig {
+pub struct SubscriptionsConfig {
     /// Skip auto-loading the `global` group. The project's own group
     /// is always loaded regardless.
     #[serde(default)]
-    pub no_default: bool,
+    pub no_default_global: bool,
 
-    /// Extra groups to pull beyond the defaults.
+    /// If true, scan the project for known language marker files
+    /// (`Cargo.toml`, `pyproject.toml`, ...) and add the detected
+    /// languages to the load set.
     #[serde(default)]
-    pub additional: Vec<String>,
-}
+    pub auto_detect_languages: bool,
 
-/// Language convention configuration.
-///
-/// Resolves against the `lang/` namespace. `use = ["rust"]` pulls the
-/// `lang/rust` group. `auto_detect = true` scans the project for
-/// marker files (`Cargo.toml`, `pyproject.toml`, ...) and adds any
-/// matches to the load set.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LanguagesConfig {
-    /// Language convention groups to explicitly load.
-    #[serde(default, rename = "use")]
-    pub use_: Vec<String>,
-
-    /// If true, scan the project for known language marker files and
-    /// add the detected languages to the load set.
+    /// Language convention groups to explicitly load. Each entry
+    /// resolves to `lang/<name>` and pulls every memory in that
+    /// group into scope.
     #[serde(default)]
-    pub auto_detect: bool,
+    pub languages: Vec<String>,
+
+    /// Extra groups to fully subscribe to beyond the defaults.
+    /// Entries may be UUIDs or slugs; the resolver matches against
+    /// the local mirror.
+    #[serde(default)]
+    pub groups: Vec<String>,
+
+    /// Individual non-mandatory memory pins, formatted as
+    /// `<group_uuid>:<slug>`. The targeted memory surfaces in
+    /// `bootstrap_context` regardless of whether its owning group
+    /// is otherwise in scope.
+    #[serde(default)]
+    pub memories: Vec<String>,
+
+    /// Tag filter. Non-mandatory memories from in-scope groups
+    /// whose frontmatter tags overlap this set surface in
+    /// `bootstrap_context`.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[cfg(test)]
@@ -109,10 +123,12 @@ mod tests {
         let cfg = ProjectConfig::from_toml(source).expect("parse minimal config");
         assert!(cfg.project_slug.is_none());
         assert!(cfg.sync.is_none());
-        assert!(!cfg.groups.no_default);
-        assert!(cfg.groups.additional.is_empty());
-        assert!(!cfg.languages.auto_detect);
-        assert!(cfg.languages.use_.is_empty());
+        assert!(!cfg.subscriptions.no_default_global);
+        assert!(!cfg.subscriptions.auto_detect_languages);
+        assert!(cfg.subscriptions.languages.is_empty());
+        assert!(cfg.subscriptions.groups.is_empty());
+        assert!(cfg.subscriptions.memories.is_empty());
+        assert!(cfg.subscriptions.tags.is_empty());
     }
 
     #[test]
@@ -138,13 +154,13 @@ project_slug = "team-acme"
 [sync]
 server_url = "https://mmcp.example.com"
 
-[groups]
-no_default = false
-additional = ["team-acme/shared"]
-
-[languages]
-use = ["rust"]
-auto_detect = true
+[subscriptions]
+no_default_global = false
+auto_detect_languages = true
+languages = ["rust"]
+groups = ["team-acme/shared"]
+memories = ["019d955d-4cce-77f2-a0b3-0b79ed394612:supersede-convention"]
+tags = ["git", "testing"]
 "#;
         let cfg = ProjectConfig::from_toml(source).expect("parse full config");
         assert_eq!(cfg.project_slug.as_deref(), Some("team-acme"));
@@ -152,9 +168,20 @@ auto_detect = true
             cfg.sync.as_ref().expect("sync present").server_url,
             "https://mmcp.example.com"
         );
-        assert_eq!(cfg.groups.additional, vec!["team-acme/shared".to_string()]);
-        assert_eq!(cfg.languages.use_, vec!["rust".to_string()]);
-        assert!(cfg.languages.auto_detect);
+        assert_eq!(
+            cfg.subscriptions.groups,
+            vec!["team-acme/shared".to_string()]
+        );
+        assert_eq!(cfg.subscriptions.languages, vec!["rust".to_string()]);
+        assert!(cfg.subscriptions.auto_detect_languages);
+        assert_eq!(
+            cfg.subscriptions.memories,
+            vec!["019d955d-4cce-77f2-a0b3-0b79ed394612:supersede-convention".to_string()]
+        );
+        assert_eq!(
+            cfg.subscriptions.tags,
+            vec!["git".to_string(), "testing".to_string()]
+        );
 
         let rendered = cfg.to_toml().expect("render full config");
         let reparsed = ProjectConfig::from_toml(&rendered).expect("reparse rendered config");
@@ -172,8 +199,7 @@ auto_detect = true
             ),
             project_slug: None,
             sync: None,
-            groups: GroupsConfig::default(),
-            languages: LanguagesConfig::default(),
+            subscriptions: SubscriptionsConfig::default(),
         };
         let rendered = cfg.to_toml().expect("render");
         assert!(
@@ -188,6 +214,20 @@ auto_detect = true
             project_uuid = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
             rogue_field = true
         "#;
+        assert!(ProjectConfig::from_toml(source).is_err());
+    }
+
+    #[test]
+    fn legacy_groups_and_languages_sections_are_rejected() {
+        // Hard cut: pre-rebase `.mmcp.toml` files using the old
+        // `[groups]` / `[languages]` sections must fail loudly so
+        // operators rewrite to `[subscriptions]`.
+        let source = r#"
+project_uuid = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
+
+[groups]
+no_default = false
+"#;
         assert!(ProjectConfig::from_toml(source).is_err());
     }
 }

@@ -3806,15 +3806,15 @@ async fn resolve_sync_filter(
 /// tools share it and an inline expression would drift between
 /// variants.
 /// FR-025: does `cfg` adopt the given group slug? Checks both the
-/// explicit `groups.additional` list and the `lang/<name>` mapping
-/// implied by `languages.use_`. Bare string equality for now —
-/// namespace-aware resolution is a follow-up when the adoption
-/// format stabilises.
+/// explicit `subscriptions.groups` list and the `lang/<name>` mapping
+/// implied by `subscriptions.languages`. Bare string equality for
+/// now — namespace-aware resolution is a follow-up when the
+/// adoption format stabilises.
 fn is_group_adopted(slug: &str, cfg: &mmcp_core::config::ProjectConfig) -> bool {
-    cfg.groups.additional.iter().any(|s| s == slug)
+    cfg.subscriptions.groups.iter().any(|s| s == slug)
         || cfg
+            .subscriptions
             .languages
-            .use_
             .iter()
             .any(|lang| slug == format!("lang/{lang}"))
 }
@@ -5347,7 +5347,7 @@ mod tests {
     async fn shared_mandatory_memory_surfaces_only_when_project_adopts() {
         // FR-025: a Shared-scoped group's mandatory memory reaches
         // the session only if the project's `.mmcp.toml` adopts the
-        // group via `groups.additional`. Without adoption the
+        // group via `subscriptions.groups`. Without adoption the
         // memory must stay hidden — same class of leak-prevention
         // as the unrelated-project test, but for Shared groups.
         let (state, tmp) = test_state().await;
@@ -5382,10 +5382,10 @@ mod tests {
             "Shared mandatory memory must not leak pre-adoption; saw: {memories:?}",
         );
 
-        // Now write `.mmcp.toml` with `groups.additional = ["team/house-rules"]`
+        // Now write `.mmcp.toml` with `subscriptions.groups = ["team/house-rules"]`
         // and confirm the mandatory memory surfaces.
         let toml_body = format!(
-            "project_uuid = \"{}\"\n\n[groups]\nadditional = [\"team/house-rules\"]\n",
+            "project_uuid = \"{}\"\n\n[subscriptions]\ngroups = [\"team/house-rules\"]\n",
             Uuid::now_v7()
         );
         std::fs::write(project_root.join(".mmcp.toml"), toml_body)
@@ -6208,8 +6208,7 @@ mod tests {
             project_uuid: mmcp_core::id::ProjectUuid::new(),
             project_slug: None,
             sync: None,
-            groups: Default::default(),
-            languages: Default::default(),
+            subscriptions: Default::default(),
         };
         mmcp_store::config::save(&project_root, &cfg).expect("seed config");
 

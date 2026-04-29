@@ -13,5 +13,5 @@ mod project;
 pub mod user;
 
 pub use error::ConfigError;
-pub use project::{GroupsConfig, LanguagesConfig, ProjectConfig, SyncConfig};
+pub use project::{ProjectConfig, SubscriptionsConfig, SyncConfig};
 pub use user::{AuthorConfig, DefaultsConfig, UserConfig};

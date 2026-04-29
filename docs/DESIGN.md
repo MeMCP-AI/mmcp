@@ -353,24 +353,30 @@ project_uuid = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
 # mmcp server to sync with. Omit the whole [sync] table for local-only mode.
 server_url = "https://mmcp.example.com"
 
-[groups]
+[subscriptions]
+# Single opt-in surface. Replaces the older [groups] + [languages] sections.
+
 # If true, skip auto-loading the `global` group.
 # The project's own group (keyed by project_uuid) is always loaded regardless.
-no_default = false
-
-# Extra groups to pull beyond the defaults.
-additional = [
-    "team-acme/shared",
-]
-
-[languages]
-# Language convention groups to auto-load.
-# Resolved against the `lang/` namespace (e.g. lang/rust).
-use = ["rust"]
+no_default_global = false
 
 # If true, client scans project files (Cargo.toml, package.json, etc.)
 # and adds detected languages to the load set.
-auto_detect = true
+auto_detect_languages = true
+
+# Language convention groups to auto-load. Each entry resolves to
+# `lang/<name>` and pulls every memory in that group into scope.
+languages = ["rust"]
+
+# Extra groups to fully subscribe to beyond the defaults.
+groups = ["team-acme/shared"]
+
+# Individual non-mandatory memory pins, formatted `<group_uuid>:<slug>`.
+memories = []
+
+# Tag filter — non-mandatory memories from in-scope groups whose
+# frontmatter tags overlap this set surface in `bootstrap_context`.
+tags = ["git", "testing"]
 ```
 
 ### 9.3 Resolution rules
@@ -378,10 +384,10 @@ auto_detect = true
 On session start, the client computes the effective group load set:
 
 1. Always load `<project_uuid>`.
-2. If `groups.no_default = false`, load `global`.
-3. Load every entry in `languages.use` as `lang/<name>`.
-4. If `languages.auto_detect = true`, detect project languages and add matching `lang/*` groups.
-5. Load every entry in `groups.additional`.
+2. If `subscriptions.no_default_global = false`, load `global`.
+3. Load every entry in `subscriptions.languages` as `lang/<name>`.
+4. If `subscriptions.auto_detect_languages = true`, detect project languages and add matching `lang/*` groups.
+5. Load every entry in `subscriptions.groups`.
 
 Load set is the union; permission failures produce a warning, not a hard error.
 

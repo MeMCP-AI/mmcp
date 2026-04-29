@@ -17,27 +17,34 @@ pub async fn run() -> Result<()> {
         Some(sync) => println!("server        : {}", sync.server_url),
         None => println!("server        : (local-only)"),
     }
+    let subs = &cfg.subscriptions;
     println!(
         "default group : {}",
-        if cfg.groups.no_default {
+        if subs.no_default_global {
             "disabled"
         } else {
             "global"
         }
     );
-    if !cfg.groups.additional.is_empty() {
-        println!("extra groups  : {}", cfg.groups.additional.join(", "));
+    if !subs.groups.is_empty() {
+        println!("subs groups   : {}", subs.groups.join(", "));
     }
-    if !cfg.languages.use_.is_empty() || cfg.languages.auto_detect {
+    if !subs.languages.is_empty() || subs.auto_detect_languages {
         println!(
-            "languages     : use={}, auto_detect={}",
-            if cfg.languages.use_.is_empty() {
+            "subs langs    : use={}, auto_detect={}",
+            if subs.languages.is_empty() {
                 "(none)".to_string()
             } else {
-                cfg.languages.use_.join(",")
+                subs.languages.join(",")
             },
-            cfg.languages.auto_detect
+            subs.auto_detect_languages
         );
+    }
+    if !subs.memories.is_empty() {
+        println!("subs memories : {}", subs.memories.join(", "));
+    }
+    if !subs.tags.is_empty() {
+        println!("subs tags     : {}", subs.tags.join(", "));
     }
     Ok(())
 }

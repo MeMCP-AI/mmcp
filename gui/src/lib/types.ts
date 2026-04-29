@@ -189,23 +189,20 @@ export interface ProjectSyncConfig {
   server_url: string;
 }
 
-export interface ProjectGroupsConfig {
-  no_default: boolean;
-  additional: string[];
-}
-
-export interface ProjectLanguagesConfig {
-  /** Serde renames `use_` to `use` — the field name on the wire. */
-  use: string[];
-  auto_detect: boolean;
+export interface ProjectSubscriptionsConfig {
+  no_default_global: boolean;
+  auto_detect_languages: boolean;
+  languages: string[];
+  groups: string[];
+  memories: string[];
+  tags: string[];
 }
 
 export interface ProjectConfig {
   project_uuid: string;
   project_slug: string | null;
   sync: ProjectSyncConfig | null;
-  groups: ProjectGroupsConfig;
-  languages: ProjectLanguagesConfig;
+  subscriptions: ProjectSubscriptionsConfig;
 }
 
 export interface LoadedProjectConfig {

@@ -11,10 +11,12 @@ use crate::loadset::GroupRef;
 /// precedence when the same memory name appears in multiple groups:
 ///
 /// 1. The project's own group (keyed by `project_uuid`).
-/// 2. The `global` group, unless disabled by `groups.no_default`.
-/// 3. Language convention groups from `languages.use` and, if
-///    `languages.auto_detect` is enabled, the auto-detected set.
-/// 4. Additional groups listed in `groups.additional`.
+/// 2. The `global` group, unless disabled by
+///    `subscriptions.no_default_global`.
+/// 3. Language convention groups from `subscriptions.languages` and,
+///    if `subscriptions.auto_detect_languages` is enabled, the
+///    auto-detected set.
+/// 4. Additional groups listed in `subscriptions.groups`.
 ///
 /// Duplicate entries across these buckets are removed while
 /// preserving the first occurrence.
@@ -51,28 +53,29 @@ impl LoadSet {
 /// `config` is the project's parsed `.mmcp/config.toml`. `detected`
 /// is the list of languages discovered by scanning the project tree,
 /// which the caller passes in as strings (e.g. `["rust", "python"]`).
-/// When `languages.auto_detect` is `false`, `detected` is ignored.
+/// When `subscriptions.auto_detect_languages` is `false`, `detected`
+/// is ignored.
 #[must_use]
 pub fn resolve_load_set(config: &ProjectConfig, detected: &[String]) -> LoadSet {
     let mut groups: Vec<GroupRef> = Vec::new();
 
     groups.push(GroupRef::Project(config.project_uuid));
 
-    if !config.groups.no_default {
+    if !config.subscriptions.no_default_global {
         push_unique(&mut groups, GroupRef::Global);
     }
 
-    for lang in &config.languages.use_ {
+    for lang in &config.subscriptions.languages {
         push_unique(&mut groups, GroupRef::Language(lang.clone()));
     }
 
-    if config.languages.auto_detect {
+    if config.subscriptions.auto_detect_languages {
         for lang in detected {
             push_unique(&mut groups, GroupRef::Language(lang.clone()));
         }
     }
 
-    for extra in &config.groups.additional {
+    for extra in &config.subscriptions.groups {
         push_unique(&mut groups, GroupRef::Named(extra.clone()));
     }
 
@@ -88,26 +91,21 @@ fn push_unique(groups: &mut Vec<GroupRef>, candidate: GroupRef) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{GroupsConfig, LanguagesConfig, ProjectConfig, SyncConfig};
+    use crate::config::{ProjectConfig, SubscriptionsConfig, SyncConfig};
     use crate::id::ProjectUuid;
 
-    fn cfg(
-        sync: Option<SyncConfig>,
-        groups: GroupsConfig,
-        languages: LanguagesConfig,
-    ) -> ProjectConfig {
+    fn cfg(sync: Option<SyncConfig>, subscriptions: SubscriptionsConfig) -> ProjectConfig {
         ProjectConfig {
             project_uuid: ProjectUuid::new(),
             project_slug: None,
             sync,
-            groups,
-            languages,
+            subscriptions,
         }
     }
 
     #[test]
     fn minimal_config_loads_project_and_global() {
-        let config = cfg(None, GroupsConfig::default(), LanguagesConfig::default());
+        let config = cfg(None, SubscriptionsConfig::default());
         let set = resolve_load_set(&config, &[]);
         assert_eq!(set.len(), 2);
         assert_eq!(set.groups[0], GroupRef::Project(config.project_uuid));
@@ -116,11 +114,11 @@ mod tests {
 
     #[test]
     fn no_default_skips_global() {
-        let groups = GroupsConfig {
-            no_default: true,
-            additional: vec![],
+        let subs = SubscriptionsConfig {
+            no_default_global: true,
+            ..Default::default()
         };
-        let config = cfg(None, groups, LanguagesConfig::default());
+        let config = cfg(None, subs);
         let set = resolve_load_set(&config, &[]);
         assert_eq!(set.len(), 1);
         assert_eq!(set.groups[0], GroupRef::Project(config.project_uuid));
@@ -128,11 +126,11 @@ mod tests {
 
     #[test]
     fn explicit_languages_are_loaded_in_order() {
-        let languages = LanguagesConfig {
-            use_: vec!["rust".into(), "python".into()],
-            auto_detect: false,
+        let subs = SubscriptionsConfig {
+            languages: vec!["rust".into(), "python".into()],
+            ..Default::default()
         };
-        let config = cfg(None, GroupsConfig::default(), languages);
+        let config = cfg(None, subs);
         let set = resolve_load_set(&config, &[]);
         assert_eq!(
             set.groups[2..],
@@ -145,33 +143,29 @@ mod tests {
 
     #[test]
     fn auto_detect_adds_detected_languages() {
-        let languages = LanguagesConfig {
-            use_: vec![],
-            auto_detect: true,
+        let subs = SubscriptionsConfig {
+            auto_detect_languages: true,
+            ..Default::default()
         };
-        let config = cfg(None, GroupsConfig::default(), languages);
+        let config = cfg(None, subs);
         let set = resolve_load_set(&config, &["rust".into()]);
         assert_eq!(set.groups[2], GroupRef::Language("rust".into()));
     }
 
     #[test]
     fn auto_detect_disabled_ignores_detected_list() {
-        let languages = LanguagesConfig {
-            use_: vec![],
-            auto_detect: false,
-        };
-        let config = cfg(None, GroupsConfig::default(), languages);
+        let config = cfg(None, SubscriptionsConfig::default());
         let set = resolve_load_set(&config, &["rust".into()]);
         assert_eq!(set.len(), 2);
     }
 
     #[test]
     fn additional_groups_are_appended_last() {
-        let groups = GroupsConfig {
-            no_default: false,
-            additional: vec!["team/shared".into()],
+        let subs = SubscriptionsConfig {
+            groups: vec!["team/shared".into()],
+            ..Default::default()
         };
-        let config = cfg(None, groups, LanguagesConfig::default());
+        let config = cfg(None, subs);
         let set = resolve_load_set(&config, &[]);
         assert_eq!(
             set.groups.last(),
@@ -181,11 +175,12 @@ mod tests {
 
     #[test]
     fn duplicates_are_deduplicated_preserving_first_occurrence() {
-        let languages = LanguagesConfig {
-            use_: vec!["rust".into()],
-            auto_detect: true,
+        let subs = SubscriptionsConfig {
+            languages: vec!["rust".into()],
+            auto_detect_languages: true,
+            ..Default::default()
         };
-        let config = cfg(None, GroupsConfig::default(), languages);
+        let config = cfg(None, subs);
         let set = resolve_load_set(&config, &["rust".into(), "rust".into()]);
         let rust_count = set
             .groups
