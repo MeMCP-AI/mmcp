@@ -183,6 +183,57 @@ pub fn sync_push_partial_failure_notes(report: &PushReport, server_url: &str) ->
         .collect()
 }
 
+/// Map a [`mmcp_store::IdValidation`] outcome onto FR-45 notes.
+/// Returns an empty vector for the silent `Match` case so no note
+/// is emitted; the two mismatch variants surface as
+/// `id_mismatch_accepted` (frontmatter wins) and
+/// `id_mismatch_forced` (caller bypassed the filename rejection).
+///
+/// Shared by the MCP write tool bodies in `commands::serve` and
+/// the `mmcp memory write / edit / edit-body` CLI subcommands so
+/// both surfaces emit the same code with the same context shape.
+#[must_use]
+pub fn id_validation_to_notes(
+    validation: &mmcp_store::IdValidation,
+    slug: &str,
+) -> Vec<Note> {
+    match validation {
+        mmcp_store::IdValidation::Match => Vec::new(),
+        mmcp_store::IdValidation::MismatchAccepted {
+            filename,
+            frontmatter,
+        } => vec![
+            Note::warn(
+                "id_mismatch_accepted",
+                format!(
+                    "memory `{slug}` filename id {filename} disagrees with frontmatter id {frontmatter}; frontmatter is source of truth, write accepted"
+                ),
+            )
+            .with_context(json!({
+                "slug": slug,
+                "filename": filename.to_string(),
+                "frontmatter": frontmatter.to_string(),
+            })),
+        ],
+        mmcp_store::IdValidation::MismatchForced {
+            filename,
+            frontmatter,
+        } => vec![
+            Note::warn(
+                "id_mismatch_forced",
+                format!(
+                    "memory `{slug}` filename id {filename} disagrees with frontmatter id {frontmatter}; write forced past the rejection rule"
+                ),
+            )
+            .with_context(json!({
+                "slug": slug,
+                "filename": filename.to_string(),
+                "frontmatter": frontmatter.to_string(),
+            })),
+        ],
+    }
+}
+
 /// FR-45 populator helper: inspect a successfully-parsed
 /// `MemoryFile` for soft integrity issues and emit a note per
 /// issue. Hard parse errors already bail out upstream as a

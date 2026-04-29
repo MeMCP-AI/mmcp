@@ -33,7 +33,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::notes::{
-    dangling_ref_notes_for, issues_to_notes, malformed_frontmatter_notes,
+    dangling_ref_notes_for, id_validation_to_notes, issues_to_notes, malformed_frontmatter_notes,
 };
 use crate::state::{WatcherHandle, spawn_watcher};
 use mmcp_store::config::{PROJECT_MANIFEST, find_project_root, load as load_project_config};
@@ -4678,51 +4678,9 @@ fn ok_json_with_notes(
 }
 
 
-/// Map a [`mmcp_store::IdValidation`] outcome onto FR-45 notes.
-/// Returns an empty vector for the silent `Match` case so no note
-/// is emitted; the two mismatch variants surface as
-/// `id_mismatch_accepted` (frontmatter wins) and
-/// `id_mismatch_forced` (caller bypassed the filename rejection).
-fn id_validation_to_notes(
-    validation: &mmcp_store::IdValidation,
-    slug: &str,
-) -> Vec<mmcp_proto::Note> {
-    match validation {
-        mmcp_store::IdValidation::Match => Vec::new(),
-        mmcp_store::IdValidation::MismatchAccepted {
-            filename,
-            frontmatter,
-        } => vec![
-            mmcp_proto::Note::warn(
-                "id_mismatch_accepted",
-                format!(
-                    "memory `{slug}` filename id {filename} disagrees with frontmatter id {frontmatter}; frontmatter is source of truth, write accepted"
-                ),
-            )
-            .with_context(json!({
-                "slug": slug,
-                "filename": filename.to_string(),
-                "frontmatter": frontmatter.to_string(),
-            })),
-        ],
-        mmcp_store::IdValidation::MismatchForced {
-            filename,
-            frontmatter,
-        } => vec![
-            mmcp_proto::Note::warn(
-                "id_mismatch_forced",
-                format!(
-                    "memory `{slug}` filename id {filename} disagrees with frontmatter id {frontmatter}; write forced past the rejection rule"
-                ),
-            )
-            .with_context(json!({
-                "slug": slug,
-                "filename": filename.to_string(),
-                "frontmatter": frontmatter.to_string(),
-            })),
-        ],
-    }
-}
+// `id_validation_to_notes` was hoisted to `crate::notes` so
+// the CLI memory subcommands can reuse the same FR-45 codes.
+// See `notes::id_validation_to_notes`.
 
 #[cfg(test)]
 mod tests {
