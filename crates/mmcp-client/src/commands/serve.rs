@@ -717,39 +717,24 @@ struct DebugWriteFileArgs {
     pub message: Option<String>,
 }
 
-/// Which memories `bootstrap_context` should return. Defaults to
-/// `all` (union of mandatory and project). Callers pick `mandatory`
-/// or `project` when they want to reload only one side without
-/// re-paying the cost of the other.
-#[derive(Debug, Default, Clone, Copy, Deserialize, JsonSchema)]
-#[schemars(crate = "rmcp::schemars")]
-#[serde(rename_all = "snake_case")]
-enum BootstrapScope {
-    /// Memories with `frontmatter.mandatory == true`, across every
-    /// group the local mirror knows about.
-    Mandatory,
-    /// Memories inside the group whose UUID matches the project's
-    /// `project_uuid` from `.mmcp.toml`.
-    Project,
-    /// Union of mandatory and project.
-    #[default]
-    All,
-}
-
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct BootstrapContextArgs {
-    /// Which memories to include. Defaults to `all`.
-    #[serde(default)]
-    pub scope: Option<BootstrapScope>,
-
-    /// Target project group (UUID or slug). When omitted, the
-    /// server falls back to walking `cwd` for a `.mmcp.toml`. Lets
-    /// callers running from a different cwd (MCP harnesses that
-    /// spawn the server under `$HOME`, agents working across
-    /// multiple projects) pin the project explicitly. FR-44.
+    /// Target project group (UUID or slug). When set, resolves
+    /// against the local mirror without touching the filesystem;
+    /// the response carries no `project_root` and no
+    /// subscription resolution (no `.mmcp.toml` is loaded). Use
+    /// `path` instead when you want subscriptions honored. FR-44.
     #[serde(default)]
     pub project: Option<String>,
+
+    /// Project root override. When set, the server walks this
+    /// path for `.mmcp.toml` instead of the process cwd. Lets
+    /// MCP harnesses launched outside the project dir bootstrap
+    /// against an explicit root, and lets parallel tests avoid
+    /// racing on the process-global cwd.
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 /// Action for `init_claude`. Matches the CLI's mutually-exclusive flag
@@ -2533,17 +2518,12 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<BootstrapContextArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let scope = args.scope.unwrap_or_default();
-
-        // FR-44: when the caller passes an explicit `project`
-        // selector, resolve it against the local mirror and skip
-        // the cwd walk. Otherwise fall back to the historical
-        // `.mmcp.toml` lookup under `cwd`. The selector branch
-        // leaves `project_cfg` as `None` because an explicit
-        // selector does not guarantee the project has a local
-        // filesystem root (the MCP server may be launched far
-        // from any project directory); FR-025 adoption lookup
-        // therefore only fires on the cwd-walk branch.
+        // FR-44: explicit selector wins; `path` walks an explicit
+        // root for `.mmcp.toml`; otherwise walk cwd. The selector
+        // branch leaves `project_cfg` as `None` because a UUID
+        // carries no filesystem guarantees — Shared-group adoption
+        // and subscriptions resolution therefore only fire on the
+        // path / cwd branches.
         let (project_uuid, project_cfg, project_root) = match args.project.as_deref() {
             Some(query) => {
                 let entry = mmcp_store::memory::resolve_group(&self.state.groups, query)
@@ -2560,9 +2540,12 @@ impl McpServer {
                 (Some(*entry.manifest.group_id.as_uuid()), None, None)
             }
             None => {
-                let project_root = std::env::current_dir()
-                    .ok()
-                    .and_then(|cwd| find_project_root(&cwd));
+                let starting_dir: Option<std::path::PathBuf> = match args.path.as_deref() {
+                    Some(p) => Some(std::path::PathBuf::from(p)),
+                    None => std::env::current_dir().ok(),
+                };
+                let project_root =
+                    starting_dir.and_then(|dir| find_project_root(&dir));
                 let project_cfg = project_root
                     .as_ref()
                     .and_then(|root| load_project_config(root).ok());
@@ -2571,20 +2554,14 @@ impl McpServer {
             }
         };
 
-        let wants_project = matches!(scope, BootstrapScope::Project | BootstrapScope::All);
-        let wants_mandatory = matches!(scope, BootstrapScope::Mandatory | BootstrapScope::All);
-
-        // FR-025: precompute the set of Shared-scoped groups the
-        // current project has opted into via `.mmcp.toml`. Resolved
-        // once up front so the per-memory loop doesn't re-match the
-        // adoption strings against every group.
+        // FR-025: which Shared-scoped groups does this project pull
+        // into scope? The same adoption test that gates mandatory
+        // memory visibility is also the predicate for "fully
+        // subscribed" groups under the new subscriptions engine.
+        let entries = self.state.groups.list().await;
         let adopted_shared: std::collections::HashSet<Uuid> = match project_cfg.as_ref() {
             None => std::collections::HashSet::new(),
-            Some(cfg) => self
-                .state
-                .groups
-                .list()
-                .await
+            Some(cfg) => entries
                 .iter()
                 .filter(|entry| entry.manifest.scope == mmcp_core::manifest::GroupScope::Shared)
                 .filter(|entry| is_group_adopted(&entry.manifest.slug, cfg))
@@ -2592,78 +2569,61 @@ impl McpServer {
                 .collect(),
         };
 
-        // Walk every local group, collecting matching memory
-        // metadata. Bodies are deliberately NOT read or returned -
-        // the response stays small enough to fit under client
-        // tool-output caps, and AI callers fetch each body on
-        // demand via `read_memory`. We still parse the frontmatter
-        // because the wire shape exposes `name` / `description` /
-        // `kind` / `tags` / `mandatory`.
-        let mut memories: Vec<serde_json::Value> = Vec::new();
-        for entry in self.state.groups.list().await {
+        // Build `groups_in_scope`: every group the AI is allowed to
+        // enumerate via `list_memories`. Project group (if any),
+        // Global, plus every adopted Shared group.
+        let mut groups_in_scope: Vec<serde_json::Value> = Vec::new();
+        for entry in &entries {
             let entry_uuid = *entry.manifest.group_id.as_uuid();
-            let is_project = project_uuid == Some(entry_uuid);
-            // FR-025: mandatory memories only fan out when their
-            // owning group is in scope for the current session.
-            let mandatory_applies = match entry.manifest.scope {
+            let in_scope = match entry.manifest.scope {
                 mmcp_core::manifest::GroupScope::Global => true,
                 mmcp_core::manifest::GroupScope::Shared => adopted_shared.contains(&entry_uuid),
-                mmcp_core::manifest::GroupScope::Project => is_project,
+                mmcp_core::manifest::GroupScope::Project => project_uuid == Some(entry_uuid),
             };
-            let files = list_memory_files(&self.state.backend, &entry)
-                .await
-                .unwrap_or_default();
-            for file_ref in files {
-                let bytes = match self
-                    .state
-                    .backend
-                    .read_file(&entry.handle, &file_ref.path, &Rev::head())
-                    .await
-                {
-                    Ok(b) => b,
-                    Err(err) => {
-                        tracing::warn!(
-                            slug = %file_ref.slug,
-                            group = %entry_uuid,
-                            error = %err,
-                            "bootstrap_context: skipping unreadable memory"
-                        );
-                        continue;
-                    }
-                };
-                let Ok(text) = std::str::from_utf8(&bytes) else {
-                    continue;
-                };
-                let Ok(file) = MemoryFile::parse(text) else {
-                    continue;
-                };
-                let is_mandatory = file.frontmatter.mandatory;
-
-                let include = (wants_mandatory && is_mandatory && mandatory_applies)
-                    || (wants_project && is_project);
-                if !include {
-                    continue;
-                }
-                let qualifies_mandatory = wants_mandatory && is_mandatory && mandatory_applies;
-                let reason = match (qualifies_mandatory, wants_project && is_project) {
-                    (true, true) => "mandatory,project",
-                    (true, false) => "mandatory",
-                    (false, true) => "project",
-                    (false, false) => unreachable!("include guard above"),
-                };
-                memories.push(json!({
-                    "group": entry_uuid,
-                    "slug": file_ref.slug,
-                    "id": file_ref.id.to_string(),
-                    "name": file.frontmatter.name,
-                    "description": file.frontmatter.description,
-                    "kind": file.frontmatter.kind.as_str(),
-                    "tags": file.frontmatter.tags,
-                    "mandatory": is_mandatory,
-                    "reason": reason,
-                }));
+            if !in_scope {
+                continue;
             }
+            groups_in_scope.push(json!({
+                "uuid": entry_uuid.to_string(),
+                "slug": entry.manifest.slug,
+                "scope": match entry.manifest.scope {
+                    mmcp_core::manifest::GroupScope::Global => "global",
+                    mmcp_core::manifest::GroupScope::Shared => "shared",
+                    mmcp_core::manifest::GroupScope::Project => "project",
+                },
+            }));
         }
+
+        // Resolve subscribed reads from the four axes. Returns
+        // (group_uuid, slug) addresses only — no metadata.
+        let subscribed_reads = match project_cfg.as_ref() {
+            None => Vec::new(),
+            Some(cfg) => {
+                resolve_subscribed_reads(
+                    &self.state.backend,
+                    &entries,
+                    cfg,
+                    &adopted_shared,
+                    project_uuid,
+                )
+                .await
+            }
+        };
+
+        let subscriptions_summary = match project_cfg.as_ref() {
+            Some(cfg) => json!({
+                "tags": cfg.subscriptions.tags,
+                "memories": cfg.subscriptions.memories,
+                "groups": cfg.subscriptions.groups,
+                "languages": cfg.subscriptions.languages,
+            }),
+            None => json!({
+                "tags": [],
+                "memories": [],
+                "groups": [],
+                "languages": [],
+            }),
+        };
 
         // FR-45: advisory CLAUDE.md signals flow through the
         // standard notes channel; no bespoke `diagnostics` field.
@@ -2671,34 +2631,16 @@ impl McpServer {
         // context points callers at it.
         let notes = claude_md_notes(project_root.as_deref());
 
-        // Imperative checklist: callers commonly skip the body
-        // fetches and proceed on the manifest alone. Surfacing the
-        // required (group, slug) reads as a structured field — not
-        // just prose — gives JSON-shape-driven clients a concrete
-        // list to drain before any other action.
-        let required_reads: Vec<serde_json::Value> = memories
-            .iter()
-            .filter(|m| {
-                m.get("mandatory")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-            })
-            .map(|m| {
-                json!({
-                    "group": m.get("group"),
-                    "slug": m.get("slug"),
-                })
-            })
-            .collect();
-
         Ok(ok_json_with_notes(
             json!({
                 "instructions": SESSION_INSTRUCTIONS,
                 "next_action": {
-                    "imperative": "Call read_memory(group, slug) for each entry in required_reads before any other action. The bodies are NOT in this response.",
-                    "required_reads": required_reads,
+                    "imperative_mandatory": "For each entry in `groups_in_scope`, call list_memories(group=<uuid>) and read every memory whose `mandatory == true`. The bodies are NOT in this response — read_memory(group, slug) fetches each one.",
+                    "imperative_optional": "Inspect the same `list_memories` results for non-mandatory entries that match this task. Use subscribe(kind='memory'|'tag'|'group'|'language', value=...) to pin the ones relevant to this project; subscribed entries appear in `subscribed_reads` next bootstrap.",
+                    "groups_in_scope": groups_in_scope,
+                    "subscribed_reads": subscribed_reads,
+                    "subscriptions_summary": subscriptions_summary,
                 },
-                "memories": memories,
                 "project_root": project_root.as_ref().map(|p| p.to_string_lossy().into_owned()),
                 "project_uuid": project_uuid.map(|u| u.to_string()),
             }),
@@ -3893,6 +3835,114 @@ async fn resolve_sync_filter(
 /// surfaces the failure identically. Factored out because five
 /// tools share it and an inline expression would drift between
 /// variants.
+/// Resolve `bootstrap_context.next_action.subscribed_reads` from the
+/// four subscription axes:
+///
+/// - `groups` + `languages` → every memory address from the named
+///   group surfaces (mandatory + non-mandatory). Project group and
+///   Global are also treated as "fully subscribed" so the AI sees
+///   all their addresses without paying per-group `list_memories`.
+/// - `memories` → literal `<group_uuid>:<slug>` pins.
+/// - `tags` → scan every group the local mirror knows about (not
+///   only in-scope ones — the whole point of tag pins is to reach
+///   memories from groups the project hasn't fully adopted) and
+///   include any non-mandatory memory whose tags overlap.
+///
+/// Returns `(group_uuid, slug)` JSON entries with no metadata.
+/// Deduplicated across axes so a tag-pinned memory in a fully
+/// subscribed group only appears once.
+async fn resolve_subscribed_reads(
+    backend: &NativeBackend,
+    entries: &[GroupEntry],
+    cfg: &mmcp_core::config::ProjectConfig,
+    adopted_shared: &std::collections::HashSet<Uuid>,
+    project_uuid: Option<Uuid>,
+) -> Vec<serde_json::Value> {
+    let mut seen: std::collections::HashSet<(Uuid, String)> = std::collections::HashSet::new();
+    let mut out: Vec<serde_json::Value> = Vec::new();
+
+    let want_tags: std::collections::HashSet<String> =
+        cfg.subscriptions.tags.iter().cloned().collect();
+    let want_memories: std::collections::HashSet<String> =
+        cfg.subscriptions.memories.iter().cloned().collect();
+
+    let push_addr = |seen: &mut std::collections::HashSet<(Uuid, String)>,
+                     out: &mut Vec<serde_json::Value>,
+                     group: Uuid,
+                     slug: &str| {
+        if seen.insert((group, slug.to_string())) {
+            out.push(json!({
+                "group": group.to_string(),
+                "slug": slug,
+            }));
+        }
+    };
+
+    for entry in entries {
+        let entry_uuid = *entry.manifest.group_id.as_uuid();
+        let fully_subscribed = match entry.manifest.scope {
+            mmcp_core::manifest::GroupScope::Global => true,
+            mmcp_core::manifest::GroupScope::Project => project_uuid == Some(entry_uuid),
+            mmcp_core::manifest::GroupScope::Shared => adopted_shared.contains(&entry_uuid),
+        };
+
+        // Memory pins target a specific (group, slug); we always
+        // need to walk every group's file list so the resolver
+        // surfaces pins from groups that aren't fully subscribed.
+        let need_listing = fully_subscribed || !want_tags.is_empty() || !want_memories.is_empty();
+        if !need_listing {
+            continue;
+        }
+
+        let files = match list_memory_files(backend, entry).await {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+
+        for file_ref in files {
+            let pin_key = format!("{}:{}", entry_uuid, file_ref.slug);
+            let pinned_individually = want_memories.contains(&pin_key);
+
+            if fully_subscribed {
+                push_addr(&mut seen, &mut out, entry_uuid, &file_ref.slug);
+                continue;
+            }
+            if pinned_individually {
+                push_addr(&mut seen, &mut out, entry_uuid, &file_ref.slug);
+                continue;
+            }
+            if !want_tags.is_empty() {
+                // Tag matching needs to peek at the frontmatter.
+                let bytes = match backend
+                    .read_file(&entry.handle, &file_ref.path, &Rev::head())
+                    .await
+                {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+                let Ok(text) = std::str::from_utf8(&bytes) else {
+                    continue;
+                };
+                let Ok(file) = MemoryFile::parse(text) else {
+                    continue;
+                };
+                if file.frontmatter.mandatory {
+                    // Tag-based subscription is intentionally about
+                    // non-mandatory memories — mandatory entries
+                    // already surface through `list_memories` on
+                    // every in-scope group.
+                    continue;
+                }
+                if file.frontmatter.tags.iter().any(|t| want_tags.contains(t)) {
+                    push_addr(&mut seen, &mut out, entry_uuid, &file_ref.slug);
+                }
+            }
+        }
+    }
+
+    out
+}
+
 /// FR-025: does `cfg` adopt the given group slug? Checks both the
 /// explicit `subscriptions.groups` list and the `lang/<name>` mapping
 /// implied by `subscriptions.languages`. Bare string equality for
@@ -4495,14 +4545,29 @@ const SESSION_INSTRUCTIONS: &str = concat!(
     "mmcp memory server — the project's single source of truth for coding rules, ",
     "conventions, and project notes. Memories live in git repositories under ",
     "~/.mmcp/repos and are surfaced through typed MCP tools; never hand-edit TOML.\n\n",
-    "## STOP — the manifest is NOT the rules\n\n",
-    "This response gives you ONLY metadata (name/description/tags). The actual ",
-    "rule text is NOT in this payload. Acknowledging the manifest is not reading ",
-    "the rules. You MUST now call `read_memory(group, slug)` once per entry in ",
-    "the `memories` array before taking any other action. Do not write code, do ",
-    "not commit, do not answer the user's task until every mandatory entry's ",
-    "BODY has been fetched. The `next_action` field in the response payload ",
-    "lists exactly which reads are required.\n\n",
+    "## STOP — bootstrap returns instructions, not rules\n\n",
+    "`bootstrap_context` carries NO memory metadata and NO bodies. It returns the ",
+    "groups you are allowed to enumerate (`groups_in_scope`), the addresses your ",
+    "project has subscribed to (`subscribed_reads`), and your current ",
+    "subscriptions (`subscriptions_summary`). To find rules, call ",
+    "`list_memories(group)` for every entry in `groups_in_scope`, decide which ",
+    "entries are relevant — mandatory rules ALWAYS, plus context-relevant ",
+    "non-mandatory ones — and call `read_memory(group, slug)` for each. Do not ",
+    "write code, do not commit, do not answer the user's task until every ",
+    "mandatory entry's BODY has been fetched.\n\n",
+    "## Subscriptions: opt into non-mandatory memories per project\n\n",
+    "Non-mandatory rules from in-scope groups are visible through ",
+    "`list_memories` but the AI typically should not read them all. Instead, ",
+    "when you find a non-mandatory memory that is relevant to this project, ",
+    "subscribe to it once via `subscribe(kind=..., value=...)`. Subscribed ",
+    "entries surface in `subscribed_reads` on the next bootstrap, so future ",
+    "sessions skip the discovery step. Four axes:\n",
+    "- `kind=tag`: any non-mandatory memory whose tags overlap surfaces.\n",
+    "- `kind=memory`: a specific `<group_uuid>:<slug>` pin.\n",
+    "- `kind=group`: every memory in the named group, even if the group ",
+    "is otherwise out of scope (`mmcp` Shared groups).\n",
+    "- `kind=language`: every memory in the matching `lang/<name>` group.\n",
+    "Use `unsubscribe(kind=..., value=...)` to remove a pin.\n\n",
     "## Session-start protocol (MANDATORY)\n\n",
     "Call `bootstrap_context` at the start of every session and again at EACH of ",
     "the following checkpoints. These are not suggestions; skipping any of them ",
@@ -4515,12 +4580,6 @@ const SESSION_INSTRUCTIONS: &str = concat!(
     "- After a commit cycle (re-align before picking up the next step).\n",
     "- Any time a rule is corrected, added, or discussed — the memory may have ",
     "been updated; re-read it.\n\n",
-    "`bootstrap_context` returns a metadata manifest (group, slug, id, name, ",
-    "description, kind, tags, mandatory, reason) of the mandatory and ",
-    "project-scoped memories plus this session protocol. Memory BODIES are NOT ",
-    "inlined; fetch each you need with `read_memory(group, slug|id)` on demand. ",
-    "Call with no args for `scope=all`; pass `scope=mandatory` or ",
-    "`scope=project` to reload one side.\n\n",
     "## On-demand lookups\n\n",
     "Outside the mandatory set, use `search_memories(query)` for cross-group ",
     "substring matches, `list_memories(group)` to enumerate a group, and ",
@@ -5285,14 +5344,16 @@ mod tests {
     const OPTIONAL_MEMORY: &str = "+++\nname = \"Optional Note\"\ndescription = \"Nice to read but not required\"\nkind = \"reference\"\nmandatory = false\ntags = [\"reference\"]\n+++\n\nSome background.\n";
 
     #[tokio::test]
-    async fn bootstrap_context_mandatory_scope_returns_metadata_manifest_without_bodies() {
-        let (state, _tmp) = test_state().await;
-        // FR-025: the mandatory memory must live in a Global-scoped
-        // group to surface when no `.mmcp.toml` is in cwd. The
-        // optional memory stays Project-scoped; it would be filtered
-        // by the new predicate anyway, but the wants_mandatory path
-        // is what this test cares about.
-        seed_scoped_group_with_memory(
+    async fn bootstrap_context_returns_instruction_only_no_memory_metadata() {
+        // The post-slice-2c shape carries NO `memories` field and
+        // NO per-entry metadata. It surfaces only:
+        //   - `instructions`: SESSION_INSTRUCTIONS preamble.
+        //   - `next_action.groups_in_scope`: addresses to enumerate.
+        //   - `next_action.subscribed_reads`: pinned addresses.
+        //   - `next_action.subscriptions_summary`: current subs.
+        // The AI fetches metadata via `list_memories(group)`.
+        let (state, tmp) = test_state().await;
+        let global = seed_scoped_group_with_memory(
             &state,
             "global",
             "mandatory-rule",
@@ -5303,40 +5364,60 @@ mod tests {
         seed_group_with_memory(&state, "globals2", "optional-note", OPTIONAL_MEMORY).await;
         let server = McpServer::new(state);
 
+        // Pass `path` to a tempdir with no `.mmcp.toml` so the
+        // resolver does not pick up the workspace config and skew
+        // `subscribed_reads`.
+        let no_project_dir = tmp.path().join("scratch");
+        std::fs::create_dir_all(&no_project_dir).expect("scratch");
         let res = server
             .bootstrap_context(Parameters(BootstrapContextArgs {
-                scope: Some(BootstrapScope::Mandatory),
                 project: None,
+                path: Some(no_project_dir.to_string_lossy().into_owned()),
             }))
             .await
             .expect("bootstrap_context");
         let parsed = parse_ok_json(res);
-        let memories = parsed
-            .get("memories")
+
+        // No metadata leakage at the top level.
+        assert!(
+            parsed.get("memories").is_none(),
+            "bootstrap response must not carry a `memories` array",
+        );
+
+        let next_action = parsed
+            .get("next_action")
+            .expect("next_action field present");
+        let groups_in_scope = next_action
+            .get("groups_in_scope")
             .and_then(|v| v.as_array())
-            .expect("memories array");
-        assert_eq!(
-            memories.len(),
-            1,
-            "only the mandatory memory should qualify"
-        );
-        let m = &memories[0];
-        assert_eq!(
-            m.get("slug").and_then(|v| v.as_str()),
-            Some("mandatory-rule")
-        );
-        assert_eq!(m.get("mandatory").and_then(|v| v.as_bool()), Some(true));
-        assert_eq!(m.get("reason").and_then(|v| v.as_str()), Some("mandatory"));
-        // Metadata-only: the body is deliberately absent; AI clients
-        // pull it via `read_memory(group, slug|id)` on demand.
+            .expect("groups_in_scope array");
         assert!(
-            m.get("body").is_none(),
-            "memory bodies must not be inlined in bootstrap_context; got: {m:?}"
+            groups_in_scope
+                .iter()
+                .any(|g| g.get("uuid").and_then(|v| v.as_str()) == Some(&global.to_string())),
+            "Global-scoped seed must appear in groups_in_scope; saw: {groups_in_scope:?}",
         );
-        assert!(
-            m.get("id").and_then(|v| v.as_str()).is_some(),
-            "memory id must be surfaced so callers can address without slug ambiguity",
-        );
+        for entry in groups_in_scope {
+            // Each entry is addresses + scope only — no name, no
+            // mandatory flag, no tags. Discovery happens via
+            // list_memories.
+            assert!(entry.get("name").is_none());
+            assert!(entry.get("mandatory").is_none());
+            assert!(entry.get("tags").is_none());
+        }
+
+        // No project config → no subscriptions to honor.
+        let subscribed = next_action
+            .get("subscribed_reads")
+            .and_then(|v| v.as_array())
+            .expect("subscribed_reads array");
+        assert!(subscribed.is_empty());
+
+        // Imperatives present so AIs cannot mistake the response
+        // for a manifest.
+        assert!(next_action.get("imperative_mandatory").is_some());
+        assert!(next_action.get("imperative_optional").is_some());
+
         let instructions = parsed
             .get("instructions")
             .and_then(|v| v.as_str())
@@ -5349,36 +5430,19 @@ mod tests {
             instructions.contains("STOP"),
             "instructions must lead with the STOP imperative so callers can't skim past it",
         );
-        let next_action = parsed
-            .get("next_action")
-            .expect("next_action field surfaces the imperative checklist");
-        let required_reads = next_action
-            .get("required_reads")
-            .and_then(|v| v.as_array())
-            .expect("required_reads array");
-        assert_eq!(
-            required_reads.len(),
-            1,
-            "required_reads must mirror mandatory memories one-for-one",
-        );
-        assert_eq!(
-            required_reads[0].get("slug").and_then(|v| v.as_str()),
-            Some("mandatory-rule"),
-        );
         assert!(
-            required_reads[0].get("group").is_some(),
-            "required_reads entries must carry the group uuid for read_memory",
+            instructions.contains("Subscriptions:"),
+            "instructions must document the subscriptions opt-in surface",
         );
     }
 
     #[tokio::test]
-    async fn bootstrap_context_all_scope_includes_mandatory_when_no_project_configured() {
+    async fn bootstrap_context_groups_in_scope_includes_global_when_no_project_configured() {
+        // Global is always in scope, regardless of whether a
+        // .mmcp.toml is present. A Project-scoped seed for an
+        // unrelated project must NOT leak into groups_in_scope.
         let (state, _tmp) = test_state().await;
-        // FR-025: the mandatory memory sits in a Global-scoped group
-        // so it surfaces through the `All` scope even without a
-        // project in cwd. A second project-scoped seed proves its
-        // own memory does NOT leak.
-        seed_scoped_group_with_memory(
+        let global = seed_scoped_group_with_memory(
             &state,
             "global",
             "rule-one",
@@ -5386,41 +5450,48 @@ mod tests {
             mmcp_core::manifest::GroupScope::Global,
         )
         .await;
-        seed_group_with_memory(&state, "team-project", "optional", OPTIONAL_MEMORY).await;
+        let unrelated_project =
+            seed_group_with_memory(&state, "team-project", "optional", OPTIONAL_MEMORY).await;
         let server = McpServer::new(state);
 
-        // No project config reachable from cwd → `All` collapses to mandatory-only.
         let res = server
             .bootstrap_context(Parameters(BootstrapContextArgs {
-                scope: None,
                 project: None,
+                path: None,
             }))
             .await
             .expect("bootstrap_context");
         let parsed = parse_ok_json(res);
-        let memories = parsed
-            .get("memories")
+        let groups_in_scope = parsed
+            .pointer("/next_action/groups_in_scope")
             .and_then(|v| v.as_array())
-            .expect("memories array");
-        let mandatory_count = memories
+            .expect("groups_in_scope array");
+        let scoped_uuids: Vec<&str> = groups_in_scope
             .iter()
-            .filter(|m| m.get("mandatory").and_then(|v| v.as_bool()) == Some(true))
-            .count();
+            .filter_map(|g| g.get("uuid").and_then(|v| v.as_str()))
+            .collect();
         assert!(
-            mandatory_count >= 1,
-            "mandatory memories must flow through All scope; saw: {memories:?}"
+            scoped_uuids
+                .iter()
+                .any(|u| *u == global.to_string()),
+            "Global must always be in scope; saw: {scoped_uuids:?}",
+        );
+        assert!(
+            !scoped_uuids
+                .iter()
+                .any(|u| *u == unrelated_project.to_string()),
+            "unrelated Project-scoped group must NOT leak; saw: {scoped_uuids:?}",
         );
     }
 
     #[tokio::test]
-    async fn mandatory_memory_in_unrelated_project_group_does_not_leak() {
-        // FR-025 regression guard. A mandatory memory in a
-        // Project-scoped group must NOT surface when the session
-        // has no `.mmcp.toml` pointing at that group's UUID.
-        // Mirrors the real bug (gitoxide mandatory rules appearing
-        // in mmcp sessions) with a minimal two-group fixture.
+    async fn unrelated_project_group_stays_out_of_scope() {
+        // FR-025 regression guard. The unrelated project group's
+        // mandatory memories were the historical leak source; under
+        // the instruction-only shape the equivalent guard is that
+        // the group itself never appears in groups_in_scope.
         let (state, _tmp) = test_state().await;
-        seed_scoped_group_with_memory(
+        let global = seed_scoped_group_with_memory(
             &state,
             "global",
             "global-rule",
@@ -5428,7 +5499,7 @@ mod tests {
             mmcp_core::manifest::GroupScope::Global,
         )
         .await;
-        seed_scoped_group_with_memory(
+        let unrelated = seed_scoped_group_with_memory(
             &state,
             "gitoxide-like",
             "project-rule",
@@ -5440,34 +5511,37 @@ mod tests {
 
         let res = server
             .bootstrap_context(Parameters(BootstrapContextArgs {
-                scope: Some(BootstrapScope::Mandatory),
                 project: None,
+                path: None,
             }))
             .await
             .expect("bootstrap_context");
         let parsed = parse_ok_json(res);
-        let memories = parsed
-            .get("memories")
+        let scoped_uuids: Vec<&str> = parsed
+            .pointer("/next_action/groups_in_scope")
             .and_then(|v| v.as_array())
-            .expect("memories array");
-        let slugs: Vec<&str> = memories
+            .expect("groups_in_scope array")
             .iter()
-            .filter_map(|m| m.get("slug").and_then(|v| v.as_str()))
+            .filter_map(|g| g.get("uuid").and_then(|v| v.as_str()))
             .collect();
-        assert_eq!(
-            slugs,
-            vec!["global-rule"],
-            "only the Global-scoped mandatory memory should surface; saw: {slugs:?}",
+        assert!(
+            scoped_uuids.iter().any(|u| *u == global.to_string()),
+            "Global must be in scope",
+        );
+        assert!(
+            !scoped_uuids.iter().any(|u| *u == unrelated.to_string()),
+            "unrelated Project-scoped group must stay out of scope; saw: {scoped_uuids:?}",
         );
     }
 
     #[tokio::test]
-    async fn shared_mandatory_memory_surfaces_only_when_project_adopts() {
-        // FR-025: a Shared-scoped group's mandatory memory reaches
-        // the session only if the project's `.mmcp.toml` adopts the
-        // group via `subscriptions.groups`. Without adoption the
-        // memory must stay hidden — same class of leak-prevention
-        // as the unrelated-project test, but for Shared groups.
+    async fn shared_group_enters_scope_only_when_project_subscribes() {
+        // FR-025 + slice 2c: a Shared-scoped group reaches the
+        // session only when the project's `.mmcp.toml` lists it in
+        // `subscriptions.groups` (or via `subscriptions.languages`
+        // for `lang/<x>` groups). Pre-subscribe the group is
+        // absent from `groups_in_scope` AND from `subscribed_reads`;
+        // post-subscribe both fields surface it.
         let (state, tmp) = test_state().await;
         let shared_group = seed_scoped_group_with_memory(
             &state,
@@ -5479,29 +5553,33 @@ mod tests {
         .await;
         let server = McpServer::new(state);
 
-        // No project config in cwd → Shared group is not adopted → must not surface.
+        // No project config in the project root → Shared group is
+        // not in scope. Pass `path` explicitly to avoid racing on
+        // process cwd against parallel tests.
         let project_root = tmp.path().join("project");
         std::fs::create_dir_all(&project_root).expect("mkdir project root");
-        let cwd_guard = CwdGuard::push(&project_root);
+        let path_str = project_root.to_string_lossy().into_owned();
         let res = server
             .bootstrap_context(Parameters(BootstrapContextArgs {
-                scope: Some(BootstrapScope::Mandatory),
                 project: None,
+                path: Some(path_str.clone()),
             }))
             .await
-            .expect("bootstrap_context without adoption");
+            .expect("bootstrap_context without subscription");
         let parsed = parse_ok_json(res);
-        let memories = parsed
-            .get("memories")
+        let scoped_uuids: Vec<String> = parsed
+            .pointer("/next_action/groups_in_scope")
             .and_then(|v| v.as_array())
-            .expect("memories array");
+            .expect("groups_in_scope")
+            .iter()
+            .filter_map(|g| g.get("uuid").and_then(|v| v.as_str()).map(str::to_string))
+            .collect();
         assert!(
-            memories.is_empty(),
-            "Shared mandatory memory must not leak pre-adoption; saw: {memories:?}",
+            !scoped_uuids.contains(&shared_group.to_string()),
+            "Shared group must not be in scope pre-subscribe; saw: {scoped_uuids:?}",
         );
 
-        // Now write `.mmcp.toml` with `subscriptions.groups = ["team/house-rules"]`
-        // and confirm the mandatory memory surfaces.
+        // Subscribe the project to the Shared group and reconfirm.
         let toml_body = format!(
             "project_uuid = \"{}\"\n\n[subscriptions]\ngroups = [\"team/house-rules\"]\n",
             Uuid::now_v7()
@@ -5510,48 +5588,42 @@ mod tests {
             .expect("seed project .mmcp.toml");
         let res = server
             .bootstrap_context(Parameters(BootstrapContextArgs {
-                scope: Some(BootstrapScope::Mandatory),
                 project: None,
+                path: Some(path_str),
             }))
             .await
-            .expect("bootstrap_context after adoption");
+            .expect("bootstrap_context after subscription");
         let parsed = parse_ok_json(res);
-        let slugs: Vec<&str> = parsed
-            .get("memories")
+        let scoped_uuids: Vec<String> = parsed
+            .pointer("/next_action/groups_in_scope")
             .and_then(|v| v.as_array())
-            .expect("memories array")
+            .expect("groups_in_scope")
             .iter()
-            .filter_map(|m| m.get("slug").and_then(|v| v.as_str()))
+            .filter_map(|g| g.get("uuid").and_then(|v| v.as_str()).map(str::to_string))
             .collect();
-        assert_eq!(
-            slugs,
-            vec!["team-rule"],
-            "adopted Shared mandatory memory must surface; saw: {slugs:?}",
+        assert!(
+            scoped_uuids.contains(&shared_group.to_string()),
+            "subscribed Shared group must enter scope; saw: {scoped_uuids:?}",
         );
-        drop(cwd_guard);
-        let _ = shared_group;
-    }
-
-    /// Process-scoped cwd override used by
-    /// `shared_mandatory_memory_surfaces_only_when_project_adopts`.
-    /// Restores the previous cwd on drop so follow-up tests in the
-    /// same process see a deterministic working directory.
-    struct CwdGuard {
-        previous: std::path::PathBuf,
-    }
-
-    impl CwdGuard {
-        fn push(new_cwd: &std::path::Path) -> Self {
-            let previous = std::env::current_dir().expect("read cwd");
-            std::env::set_current_dir(new_cwd).expect("set cwd");
-            Self { previous }
-        }
-    }
-
-    impl Drop for CwdGuard {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.previous);
-        }
+        // Full-group subscriptions surface every memory address in
+        // `subscribed_reads`. The Shared group's `team-rule` must
+        // appear there.
+        let subscribed: Vec<(String, String)> = parsed
+            .pointer("/next_action/subscribed_reads")
+            .and_then(|v| v.as_array())
+            .expect("subscribed_reads")
+            .iter()
+            .filter_map(|s| {
+                Some((
+                    s.get("group").and_then(|v| v.as_str())?.to_string(),
+                    s.get("slug").and_then(|v| v.as_str())?.to_string(),
+                ))
+            })
+            .collect();
+        assert!(
+            subscribed.contains(&(shared_group.to_string(), "team-rule".to_string())),
+            "subscribed group's memory must appear in subscribed_reads; saw: {subscribed:?}",
+        );
     }
 
     #[test]
@@ -5904,8 +5976,8 @@ mod tests {
 
         let res = server
             .bootstrap_context(Parameters(BootstrapContextArgs {
-                scope: Some(BootstrapScope::Project),
                 project: Some(project.to_string()),
+                path: None,
             }))
             .await
             .expect("bootstrap_context with explicit project");
@@ -5924,8 +5996,8 @@ mod tests {
 
         let err = server
             .bootstrap_context(Parameters(BootstrapContextArgs {
-                scope: Some(BootstrapScope::Project),
                 project: Some("no-such-group".into()),
+                path: None,
             }))
             .await
             .expect_err("unknown project must error");
