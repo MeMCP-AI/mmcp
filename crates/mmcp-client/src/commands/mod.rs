@@ -1,5 +1,6 @@
 //! Client subcommands.
 
+pub mod bootstrap;
 pub mod claude;
 pub mod feature;
 pub mod group;

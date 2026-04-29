@@ -161,6 +161,12 @@ enum Command {
     /// Subcommands: `list`, `info`, `create`. Running `mmcp
     /// group` with no subcommand prints this help.
     Group(commands::group::GroupArgs),
+
+    /// List mandatory and project-scoped memories. Mirrors the
+    /// `bootstrap_context` MCP tool. Use `--scope` to restrict
+    /// to mandatory or project; `--project` to override the
+    /// cwd-walked project group.
+    Bootstrap(commands::bootstrap::BootstrapArgs),
 }
 
 #[derive(Subcommand)]
@@ -246,6 +252,7 @@ async fn main() -> Result<()> {
         Command::Feature(args) => commands::feature::run(args).await?,
         Command::Memory(args) => commands::memory::run(args).await?,
         Command::Group(args) => commands::group::run(args).await?,
+        Command::Bootstrap(args) => commands::bootstrap::run(args).await?,
     }
 
     Ok(())
