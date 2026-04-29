@@ -514,6 +514,77 @@ async fn resolve_by_id(
     })
 }
 
+/// Result entry from [`read_frontmatters_in_group`]. Carries the
+/// file reference (slug, id, repo path) alongside the frontmatter
+/// parse outcome so a single corrupt file does not abort the whole
+/// listing — the caller can choose to ignore, log, or propagate
+/// per-entry errors.
+#[derive(Debug)]
+pub struct MemoryFrontmatterEntry {
+    pub file: MemoryFileRef,
+    pub frontmatter: Result<MemoryFrontmatter, ImportError>,
+}
+
+/// Read just the frontmatter of a memory by slug and/or id.
+///
+/// Resolves the memory via [`resolve_memory`] and parses the
+/// on-disk file via [`MemoryFile::parse`], discarding the body
+/// before return. Use this when the caller only needs frontmatter
+/// fields (kind, name, description, tags, mandatory) and has many
+/// memories to scan — e.g. a GUI memory-list panel rendering kind
+/// prefixes for every slug, or a feature summariser collapsing
+/// records onto a metadata-only wire shape. Single reads where
+/// the body is also needed should keep using the full read path.
+///
+/// Today this still allocates the body internally (parses through
+/// `MemoryFile::parse` and drops the result); a future fence-slice
+/// optimisation can land separately to skip the body String entirely
+/// without changing the public signature.
+pub async fn read_frontmatter(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    slug: Option<&str>,
+    id: Option<Uuid>,
+) -> Result<(ResolvedMemory, MemoryFrontmatter), ImportError> {
+    let resolved = resolve_memory(backend, handle, slug, id).await?;
+    let frontmatter = read_frontmatter_at(backend, handle, &Rev::head(), &resolved.path).await?;
+    Ok((resolved, frontmatter))
+}
+
+/// Read every memory's frontmatter in a group at `rev`.
+///
+/// Wraps [`list_all_memory_files`] + per-file frontmatter parse
+/// into one fan-out call. Per-file errors land inside each entry's
+/// `frontmatter` field rather than aborting the iteration, so one
+/// malformed file in a 100-memory group does not blank the whole
+/// listing. Top-level git errors (the directory walk itself) still
+/// surface as `Err`.
+pub async fn read_frontmatters_in_group(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    rev: &Rev,
+) -> Result<Vec<MemoryFrontmatterEntry>, GitError> {
+    let files = list_all_memory_files(backend, handle, rev).await?;
+    let mut out = Vec::with_capacity(files.len());
+    for file in files {
+        let frontmatter = read_frontmatter_at(backend, handle, rev, &file.path).await;
+        out.push(MemoryFrontmatterEntry { file, frontmatter });
+    }
+    Ok(out)
+}
+
+async fn read_frontmatter_at(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    rev: &Rev,
+    path: &str,
+) -> Result<MemoryFrontmatter, ImportError> {
+    let bytes = backend.read_file(handle, path, rev).await?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let file = MemoryFile::parse(&text)?;
+    Ok(file.frontmatter)
+}
+
 fn verify_id_match(slug: &str, bytes: &[u8], expected: Uuid) -> Result<(), ImportError> {
     let Some(actual) = parse_frontmatter_id(bytes) else {
         return Err(ImportError::MemoryNotFound {
@@ -1165,6 +1236,153 @@ mod tests {
             err,
             ImportError::MemoryNotFound { slug: Some(s), id: None } if s == "missing"
         ));
+    }
+
+    #[tokio::test]
+    async fn read_frontmatter_returns_metadata_for_existing_memory() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let content = "+++\nname = \"fm\"\ndescription = \"frontmatter only\"\nkind = \"rule\"\nmandatory = true\ntags = [\"test\", \"fm\"]\n+++\n\nA much longer body block that should not influence the frontmatter\nread path. Allocating this body is the cost we want to skip in the\nfollow-up fence-slice optimisation.\n";
+        let result = import_memory(&backend, &handle, "fm-test", content, None, &author, false)
+            .await
+            .expect("import");
+        let id = result.id;
+
+        let (resolved, fm) = read_frontmatter(&backend, &handle, Some("fm-test"), None)
+            .await
+            .expect("read frontmatter");
+        assert_eq!(resolved.slug, "fm-test");
+        assert_eq!(resolved.id, id);
+        assert_eq!(fm.id, Some(id));
+        assert_eq!(fm.name, "fm");
+        assert_eq!(fm.description, "frontmatter only");
+        assert_eq!(fm.kind, MemoryKind::Rule);
+        assert!(fm.mandatory);
+        assert_eq!(fm.tags, vec!["test", "fm"]);
+    }
+
+    #[tokio::test]
+    async fn read_frontmatter_propagates_resolve_errors() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let err = read_frontmatter(&backend, &handle, Some("missing"), None)
+            .await
+            .expect_err("missing");
+        assert!(matches!(
+            err,
+            ImportError::MemoryNotFound { slug: Some(s), id: None } if s == "missing"
+        ));
+    }
+
+    #[tokio::test]
+    async fn read_frontmatter_matches_full_read_for_yaml_fenced_files() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let id = Uuid::now_v7();
+        // Seed a YAML-fenced memory directly so the parser's `---`
+        // branch is exercised end-to-end. FR-006 (universal frontmatter)
+        // means YAML must round-trip through the same primitive.
+        let yaml_body = format!(
+            "---\nid: \"{id}\"\nname: yam\ndescription: yaml fenced\nkind: rule\n---\nBody after yaml fence.\n"
+        );
+        backend
+            .write_commit(
+                &handle,
+                CommitSpec::mmcp_commit(
+                    format!("seed yam/{id}"),
+                    vec![(
+                        mmcp_core::conventions::memory_path("yam", id),
+                        Some(yaml_body.into_bytes()),
+                    )],
+                    &author.name,
+                    &author.email,
+                ),
+            )
+            .await
+            .expect("seed");
+
+        let (_, fm) = read_frontmatter(&backend, &handle, Some("yam"), Some(id))
+            .await
+            .expect("read");
+        assert_eq!(fm.id, Some(id));
+        assert_eq!(fm.name, "yam");
+        assert_eq!(fm.description, "yaml fenced");
+        assert_eq!(fm.kind, MemoryKind::Rule);
+    }
+
+    #[tokio::test]
+    async fn read_frontmatters_in_group_returns_all_files() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let id_a = Uuid::now_v7();
+        let id_b = Uuid::now_v7();
+        seed_two_level_memory(&backend, &handle, "alpha", id_a, &author).await;
+        seed_two_level_memory(&backend, &handle, "beta", id_b, &author).await;
+
+        let entries = read_frontmatters_in_group(&backend, &handle, &Rev::head())
+            .await
+            .expect("batch read");
+        assert_eq!(entries.len(), 2);
+        let mut by_slug: std::collections::HashMap<String, &MemoryFrontmatterEntry> =
+            std::collections::HashMap::new();
+        for entry in &entries {
+            by_slug.insert(entry.file.slug.clone(), entry);
+        }
+        let alpha = by_slug.get("alpha").expect("alpha entry");
+        let beta = by_slug.get("beta").expect("beta entry");
+        assert_eq!(alpha.file.id, id_a);
+        assert_eq!(beta.file.id, id_b);
+        let alpha_fm = alpha.frontmatter.as_ref().expect("alpha frontmatter");
+        let beta_fm = beta.frontmatter.as_ref().expect("beta frontmatter");
+        assert_eq!(alpha_fm.id, Some(id_a));
+        assert_eq!(beta_fm.id, Some(id_b));
+    }
+
+    #[tokio::test]
+    async fn read_frontmatters_in_group_isolates_per_file_parse_errors() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let good_id = Uuid::now_v7();
+        let bad_id = Uuid::now_v7();
+        seed_two_level_memory(&backend, &handle, "good", good_id, &author).await;
+        // Seed a malformed file: no frontmatter fences, just plain text.
+        // The fan-out helper must surface the parse error per-entry
+        // rather than aborting the whole listing.
+        backend
+            .write_commit(
+                &handle,
+                CommitSpec::mmcp_commit(
+                    format!("seed bad/{bad_id}"),
+                    vec![(
+                        mmcp_core::conventions::memory_path("bad", bad_id),
+                        Some(b"plain text without frontmatter\n".to_vec()),
+                    )],
+                    &author.name,
+                    &author.email,
+                ),
+            )
+            .await
+            .expect("seed bad");
+
+        let entries = read_frontmatters_in_group(&backend, &handle, &Rev::head())
+            .await
+            .expect("batch read");
+        assert_eq!(entries.len(), 2);
+        for entry in &entries {
+            match entry.file.slug.as_str() {
+                "good" => {
+                    let fm = entry.frontmatter.as_ref().expect("good parses");
+                    assert_eq!(fm.id, Some(good_id));
+                }
+                "bad" => {
+                    let err = entry
+                        .frontmatter
+                        .as_ref()
+                        .expect_err("bad surfaces parse error");
+                    assert!(matches!(err, ImportError::Parse(_)));
+                }
+                other => panic!("unexpected slug {other}"),
+            }
+        }
     }
 
     #[tokio::test]
