@@ -302,6 +302,60 @@ pub struct FeatureRecord {
     pub commit_id: String,
 }
 
+/// Body-free projection of a [`FeatureRecord`] for list-style
+/// surfaces.
+///
+/// Mirrors every frontmatter-derived field of `FeatureRecord` and
+/// drops `body`. Listings (`list_feature_summaries`, the MCP
+/// `list_features` tool, the `mmcp feature list` CLI subcommand)
+/// only need metadata to triage / sort / display — keeping bodies
+/// out of the wire shape stops a 47-FR group from blowing past the
+/// MCP client's response token cap.
+#[derive(Debug, Clone)]
+pub struct FeatureSummary {
+    pub slug: String,
+    pub title: String,
+    pub description: String,
+    pub status: FeatureStatus,
+    pub number: Option<u32>,
+    pub depends_on: Vec<Uuid>,
+    pub blocks: Vec<Uuid>,
+    pub superseded_by: Option<MemoryRef>,
+    pub commit_id: String,
+}
+
+impl FeatureSummary {
+    /// Project a full record onto its body-free summary view.
+    /// Used by the interim `list_feature_summaries` impl that still
+    /// reads bodies; the FR-049 frontmatter-only primitive will
+    /// build summaries directly without ever materialising a body.
+    fn from_record(record: FeatureRecord) -> Self {
+        let FeatureRecord {
+            slug,
+            title,
+            description,
+            body: _,
+            status,
+            number,
+            depends_on,
+            blocks,
+            superseded_by,
+            commit_id,
+        } = record;
+        Self {
+            slug,
+            title,
+            description,
+            status,
+            number,
+            depends_on,
+            blocks,
+            superseded_by,
+            commit_id,
+        }
+    }
+}
+
 /// Create a new FR in the group. Errors with
 /// `FeatureError::Memory(ImportError::MemoryAlreadyExists)` when
 /// the slug already points at something on disk, mirroring the
@@ -1059,6 +1113,32 @@ pub async fn list_features(
     Ok(out)
 }
 
+/// Body-free counterpart to [`list_features`] for listing surfaces
+/// (MCP `list_features` tool, `mmcp feature list` CLI). Returns
+/// per-FR metadata only; callers that need a body fetch the
+/// individual record via [`read_feature`].
+///
+/// Filter precedence and sort order match [`list_features`]
+/// exactly — this is a wire-shape change, not a semantics change.
+///
+/// Interim implementation reads full records and projects them
+/// onto [`FeatureSummary`], discarding bodies. When the
+/// frontmatter-only read primitive (`feature:frontmatter-only-read-
+/// primitive-in-mmcp-store`) lands, this function swaps to it
+/// without changing its signature.
+pub async fn list_feature_summaries(
+    backend: &NativeBackend,
+    entry: &GroupEntry,
+    status_filter: Option<FeatureStatus>,
+    show_all: bool,
+) -> Result<Vec<FeatureSummary>, FeatureError> {
+    let records = list_features(backend, entry, status_filter, show_all).await?;
+    Ok(records
+        .into_iter()
+        .map(FeatureSummary::from_record)
+        .collect())
+}
+
 /// Resolve the group whose UUID is stored in the project's
 /// `.mmcp.toml`, starting from `cwd` and walking ancestors the same
 /// way the generic `find_project_root` does.
@@ -1733,6 +1813,61 @@ mod tests {
             .expect("list");
         let slugs: Vec<_> = records.iter().map(|r| r.slug.as_str()).collect();
         assert_eq!(slugs, vec!["first", "second", "third"]);
+    }
+
+    #[tokio::test]
+    async fn list_feature_summaries_drops_bodies_and_preserves_metadata() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        // Bodies large enough that any accidental inclusion in the
+        // listing surface would be obvious in a wire-size assertion.
+        let big_body = "x".repeat(8_192);
+        for (slug, number) in [("alpha", 2), ("beta", 1)] {
+            add_feature(
+                scratch.backend(),
+                &entry,
+                AddSpec {
+                    slug: Some(slug.into()),
+                    title: slug.into(),
+                    description: format!("desc-{slug}"),
+                    body: big_body.clone(),
+                    number: Some(number),
+                    ..AddSpec::default()
+                },
+                scratch.author(),
+            )
+            .await
+            .expect("seed");
+        }
+
+        let summaries = list_feature_summaries(scratch.backend(), &entry, None, true)
+            .await
+            .expect("list summaries");
+
+        // Sort + status filter come from list_features and stay
+        // unchanged: ascending by number, then slug.
+        let slugs: Vec<_> = summaries.iter().map(|s| s.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["beta", "alpha"]);
+
+        // Frontmatter-derived fields survive the projection.
+        assert_eq!(summaries[0].title, "beta");
+        assert_eq!(summaries[0].description, "desc-beta");
+        assert_eq!(summaries[0].number, Some(1));
+        assert_eq!(summaries[1].number, Some(2));
+
+        // Compile-time guarantee: FeatureSummary has no `body`
+        // field, so the wire shape can never regress to inlining
+        // bodies. The runtime check is the size proxy below.
+        let serialized_size: usize = summaries
+            .iter()
+            .map(|s| s.title.len() + s.description.len() + s.slug.len() + s.commit_id.len())
+            .sum();
+        assert!(
+            serialized_size < big_body.len(),
+            "summary payload must be much smaller than a single body",
+        );
     }
 
     #[tokio::test]
