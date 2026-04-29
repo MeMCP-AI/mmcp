@@ -231,9 +231,9 @@ fn description_list_rewrite(
 ) -> Option<DescriptionListRewrite> {
     let line = lines[start];
     let trimmed = line.trim_end_matches([' ', '\t']);
-    let idx = find_dlist_marker(trimmed)?;
+    let (idx, marker_len) = find_dlist_marker(trimmed)?;
     let label = &trimmed[..idx];
-    let rest = &trimmed[idx + 2..];
+    let rest = &trimmed[idx + marker_len..];
     let label_t = label.trim();
     if label_t.is_empty() || is_attribute_line(label) {
         return None;
@@ -347,12 +347,15 @@ fn description_list_rewrite(
     Some(DescriptionListRewrite { rewritten, consumed })
 }
 
-/// Find the position of a `::` description-list marker, ignoring `::`
+/// Find the position and length of a description-list marker, ignoring
 /// occurrences inside backtick-delimited literal spans (so `\`a::b\``
-/// stays untouched). Returns `None` if no marker is present or the
-/// marker is preceded by another colon (`:::` is a different
-/// AsciiDoc construct).
-fn find_dlist_marker(line: &str) -> Option<usize> {
+/// stays untouched). AsciiDoc supports `::`, `:::`, and `::::` as
+/// progressively-nested dlist markers; we collapse all of them into
+/// the same `**label**\n\nbody` rewrite (the hierarchy is lossy but
+/// the content survives, which is the priority). Returns `None`
+/// when no marker is present or the line starts with the marker
+/// (a bare `::` is not a label).
+fn find_dlist_marker(line: &str) -> Option<(usize, usize)> {
     let bytes = line.as_bytes();
     let mut in_backtick = false;
     let mut i = 0;
@@ -364,16 +367,15 @@ fn find_dlist_marker(line: &str) -> Option<usize> {
             continue;
         }
         if !in_backtick && c == b':' && bytes[i + 1] == b':' {
-            // Reject `:::` — that's a labeled list with description.
-            if bytes.get(i + 2) == Some(&b':') {
-                return None;
-            }
-            // Reject a marker at the very start of the line
-            // (`::` alone is not a label).
             if i == 0 {
                 return None;
             }
-            return Some(i);
+            // Detect run length: `::`, `:::`, or `::::`.
+            let mut len = 2;
+            while bytes.get(i + len) == Some(&b':') && len < 4 {
+                len += 1;
+            }
+            return Some((i, len));
         }
         i += 1;
     }
