@@ -140,7 +140,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # alongside markdown. The Markdown converter is not yet published
 # on crates.io; the parser is (0.8.0) but we pull both from the
 # same git revision for API compatibility.
-acdc-parser = { git = "https://github.com/nlopes/acdc.git", branch = "main" }
+acdc-parser = { git = "https://github.com/nlopes/acdc.git", branch = "main", features = ["setext"] }
 acdc-converters-core = { git = "https://github.com/nlopes/acdc.git", branch = "main" }
 acdc-converters-markdown = { git = "https://github.com/nlopes/acdc.git", branch = "main" }
 
