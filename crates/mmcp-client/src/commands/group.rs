@@ -167,6 +167,207 @@ pub async fn create_standalone_group(
     })
 }
 
+// ── CLI surface ─────────────────────────────────────────────────
+//
+// `mmcp group <verb>` mirrors the `mcp:list_groups`,
+// `mcp:group_info`, `mcp:create_group` MCP tools so the CLI
+// catches up on FR-cli-mcp-parity for group management.
+
+use anyhow::{Context, Result};
+use clap::{Args, Subcommand};
+use mmcp_store::config::{find_project_root, load as load_project_config};
+use mmcp_store::home::MmcpHome;
+use mmcp_store::memory::{list_all_memory_files, resolve_group};
+use mmcp_git::Rev;
+
+#[derive(Debug, Args)]
+#[command(arg_required_else_help = true)]
+pub struct GroupArgs {
+    #[command(subcommand)]
+    pub cmd: Option<GroupCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GroupCommand {
+    /// List every group present in the local mirror.
+    List,
+    /// Show manifest metadata for a single group.
+    Info(InfoArgs),
+    /// Bootstrap a fresh standalone group under ~/.mmcp/repos.
+    Create(CreateArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct InfoArgs {
+    /// Group UUID or slug.
+    pub group: String,
+}
+
+#[derive(Debug, Args)]
+pub struct CreateArgs {
+    /// Group slug (kebab-case, 1-128 chars). Must be unique
+    /// across the local mirror.
+    pub slug: String,
+
+    /// Cross-project reach: `global`, `shared` (default), or
+    /// `project`.
+    #[arg(long)]
+    pub scope: Option<String>,
+
+    /// Optional human-readable display name.
+    #[arg(long = "display-name")]
+    pub display_name: Option<String>,
+
+    /// Mark the group as protected so every subsequent mutation
+    /// goes through the FR-019 confirmation guard.
+    #[arg(long)]
+    pub protected: bool,
+}
+
+pub async fn run(args: GroupArgs) -> Result<()> {
+    match args.cmd {
+        // `arg_required_else_help` prints help before this branch
+        // when no subcommand is supplied; this arm exists to catch
+        // future variants added without a dispatch update.
+        None => unreachable!("clap enforces subcommand presence"),
+        Some(GroupCommand::List) => run_list().await,
+        Some(GroupCommand::Info(a)) => run_info(a).await,
+        Some(GroupCommand::Create(a)) => run_create(a).await,
+    }
+}
+
+async fn run_list() -> Result<()> {
+    let home = MmcpHome::discover()?;
+    let (backend, groups) = home.init_backend().await?;
+
+    // Match `mcp:list_groups`'s `is_project` flag by walking cwd
+    // for a `.mmcp.toml`. Missing / unreadable config → no row
+    // gets flagged.
+    let project_uuid = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| find_project_root(&cwd))
+        .and_then(|root| load_project_config(&root).ok())
+        .map(|cfg| *cfg.project_uuid.as_uuid());
+
+    let entries = groups.list().await;
+    if entries.is_empty() {
+        println!("no groups in the local mirror");
+        return Ok(());
+    }
+    for entry in &entries {
+        let files = list_all_memory_files(&backend, &entry.handle, &Rev::head())
+            .await
+            .context("listing memory files")?;
+        let is_project = project_uuid == Some(*entry.manifest.group_id.as_uuid());
+        let mut tags: Vec<&'static str> = Vec::new();
+        if entry.manifest.protected {
+            tags.push("protected");
+        }
+        if is_project {
+            tags.push("project");
+        }
+        let tag_str = if tags.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", tags.join(","))
+        };
+        println!(
+            "{slug} ({uuid})  {count} memor{plural}{tags}",
+            slug = entry.manifest.slug,
+            uuid = entry.manifest.group_id,
+            count = files.len(),
+            plural = if files.len() == 1 { "y" } else { "ies" },
+            tags = tag_str,
+        );
+    }
+    println!("\n{} group(s)", entries.len());
+    Ok(())
+}
+
+async fn run_info(args: InfoArgs) -> Result<()> {
+    let home = MmcpHome::discover()?;
+    let (backend, groups) = home.init_backend().await?;
+    let entry = resolve_group(&groups, &args.group)
+        .await
+        .map_err(anyhow::Error::from)?;
+    let files = list_all_memory_files(&backend, &entry.handle, &Rev::head())
+        .await
+        .context("listing memory files")?;
+
+    println!("group_id       : {}", entry.manifest.group_id);
+    println!("slug           : {}", entry.manifest.slug);
+    if let Some(name) = &entry.manifest.display_name {
+        println!("display_name   : {name}");
+    }
+    println!("scope          : {}", scope_str(&entry.manifest.scope));
+    println!("protected      : {}", entry.manifest.protected);
+    println!("schema_version : {}", entry.manifest.schema_version);
+    println!("created_at     : {}", entry.manifest.created_at);
+    println!("memory_count   : {}", files.len());
+    println!(
+        "owner          : {} {}",
+        owner_kind_str(&entry.manifest.owner),
+        owner_id_str(&entry.manifest.owner),
+    );
+    Ok(())
+}
+
+async fn run_create(args: CreateArgs) -> Result<()> {
+    let scope = match args.scope.as_deref() {
+        None => GroupScope::Shared,
+        Some("global") => GroupScope::Global,
+        Some("shared") => GroupScope::Shared,
+        Some("project") => GroupScope::Project,
+        Some(other) => {
+            anyhow::bail!("unknown scope `{other}` (expected global / shared / project)")
+        }
+    };
+
+    let home = MmcpHome::discover()?;
+    let (backend, groups) = home.init_backend().await?;
+    let opts = CreateGroupOptions {
+        slug: args.slug.clone(),
+        display_name: args.display_name,
+        scope,
+        protected: args.protected,
+    };
+    let report = create_standalone_group(&backend, &groups, &opts)
+        .await
+        .map_err(anyhow::Error::from)?;
+    println!(
+        "created group `{}` ({})\n  scope: {}\n  protected: {}\n  repo: {}",
+        report.slug,
+        report.group_id,
+        scope_str(&report.scope),
+        report.protected,
+        report.repo_path.display(),
+    );
+    Ok(())
+}
+
+fn scope_str(s: &GroupScope) -> &'static str {
+    match s {
+        GroupScope::Global => "global",
+        GroupScope::Shared => "shared",
+        GroupScope::Project => "project",
+    }
+}
+
+fn owner_kind_str(owner: &mmcp_core::manifest::GroupOwnerHint) -> &'static str {
+    use mmcp_core::manifest::GroupOwnerHint;
+    match owner {
+        GroupOwnerHint::User(_) => "user",
+        GroupOwnerHint::Org(_) => "org",
+    }
+}
+
+fn owner_id_str(owner: &mmcp_core::manifest::GroupOwnerHint) -> String {
+    use mmcp_core::manifest::GroupOwnerHint;
+    match owner {
+        GroupOwnerHint::User(uuid) | GroupOwnerHint::Org(uuid) => uuid.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

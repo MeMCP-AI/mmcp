@@ -156,6 +156,11 @@ enum Command {
     /// `search`. Running `mmcp memory` with no subcommand prints
     /// this help.
     Memory(commands::memory::MemoryArgs),
+
+    /// Manage groups in the local mirror.
+    /// Subcommands: `list`, `info`, `create`. Running `mmcp
+    /// group` with no subcommand prints this help.
+    Group(commands::group::GroupArgs),
 }
 
 #[derive(Subcommand)]
@@ -240,6 +245,7 @@ async fn main() -> Result<()> {
         },
         Command::Feature(args) => commands::feature::run(args).await?,
         Command::Memory(args) => commands::memory::run(args).await?,
+        Command::Group(args) => commands::group::run(args).await?,
     }
 
     Ok(())
