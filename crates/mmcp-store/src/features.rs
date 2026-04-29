@@ -587,17 +587,12 @@ async fn resolve_supersede_target(
     })
 }
 
-/// Compute the next auto-assigned feature number in the group:
-/// `max(existing_numbers) + 1`, or `1` when no feature has a
-/// number yet. Pre-FR-027 legacy features with no `number`
-/// metadata do not contribute; the migration binary backfills
-/// them from their slug prefix before new creates run.
 async fn next_feature_number(
     backend: &NativeBackend,
     entry: &GroupEntry,
 ) -> Result<u32, FeatureError> {
-    let records = list_features(backend, entry, None, true).await?;
-    let max = records.iter().filter_map(|r| r.number).max();
+    let summaries = list_feature_summaries(backend, entry, None, true).await?;
+    let max = summaries.iter().filter_map(|s| s.number).max();
     Ok(max.map_or(1, |n| n + 1))
 }
 
@@ -1398,13 +1393,18 @@ mod tests {
         // Explicit status selector wins over the default filter —
         // even with `show_all=false` the caller receives every FR
         // matching the requested status.
-        let opens = list_features(scratch.backend(), &entry, Some(FeatureStatus::Open), false)
-            .await
-            .expect("list open");
-        let open_slugs: Vec<_> = opens.into_iter().map(|r| r.slug).collect();
+        let opens = list_feature_summaries(
+            scratch.backend(),
+            &entry,
+            Some(FeatureStatus::Open),
+            false,
+        )
+        .await
+        .expect("list open");
+        let open_slugs: Vec<_> = opens.into_iter().map(|s| s.slug).collect();
         assert_eq!(open_slugs, vec!["fr-a".to_string()]);
 
-        let resolved = list_features(
+        let resolved = list_feature_summaries(
             scratch.backend(),
             &entry,
             Some(FeatureStatus::Resolved),
@@ -1418,7 +1418,7 @@ mod tests {
             "explicit status filter wins over the default hide",
         );
 
-        let duplicate = list_features(
+        let duplicate = list_feature_summaries(
             scratch.backend(),
             &entry,
             Some(FeatureStatus::Duplicate),
@@ -1439,10 +1439,10 @@ mod tests {
         let scratch = ScratchHome::new().await.expect("scratch home");
         let entry = seed_mixed_status_fixture(&scratch).await;
 
-        let visible = list_features(scratch.backend(), &entry, None, false)
+        let visible = list_feature_summaries(scratch.backend(), &entry, None, false)
             .await
             .expect("default list");
-        let mut slugs: Vec<_> = visible.into_iter().map(|r| r.slug).collect();
+        let mut slugs: Vec<_> = visible.into_iter().map(|s| s.slug).collect();
         slugs.sort();
         assert_eq!(
             slugs,
@@ -1487,17 +1487,17 @@ mod tests {
         .await
         .expect("add with supersedes");
 
-        let visible = list_features(scratch.backend(), &entry, None, false)
+        let visible = list_feature_summaries(scratch.backend(), &entry, None, false)
             .await
             .expect("default list");
-        let slugs: Vec<_> = visible.into_iter().map(|r| r.slug).collect();
+        let slugs: Vec<_> = visible.into_iter().map(|s| s.slug).collect();
         assert_eq!(
             slugs,
             vec!["new".to_string()],
             "Superseded FR must drop out of the default listing",
         );
 
-        let all = list_features(scratch.backend(), &entry, None, true)
+        let all = list_feature_summaries(scratch.backend(), &entry, None, true)
             .await
             .expect("show_all");
         assert_eq!(
@@ -1507,7 +1507,7 @@ mod tests {
         );
 
         // Explicit status filter also surfaces it.
-        let superseded_only = list_features(
+        let superseded_only = list_feature_summaries(
             scratch.backend(),
             &entry,
             Some(FeatureStatus::Superseded),
@@ -1526,7 +1526,7 @@ mod tests {
         let scratch = ScratchHome::new().await.expect("scratch home");
         let entry = seed_mixed_status_fixture(&scratch).await;
 
-        let all = list_features(scratch.backend(), &entry, None, true)
+        let all = list_feature_summaries(scratch.backend(), &entry, None, true)
             .await
             .expect("list show_all");
         assert_eq!(
