@@ -1,198 +1,163 @@
 //! CLI surface for `mmcp bootstrap` — the human-readable
-//! counterpart to the `mcp:bootstrap_context` MCP tool. Walks every
-//! mirrored group, parses each memory's frontmatter, classifies
-//! entries as mandatory / project-scoped, and prints a metadata
-//! block.
+//! counterpart to the `mcp:bootstrap_context` MCP tool. Mirrors the
+//! post-slice-2c instruction-only shape: prints the groups the
+//! current project is allowed to enumerate (`groups_in_scope`),
+//! the addresses pinned by `[subscriptions]`
+//! (`subscribed_reads`), and the four-axis subscription summary.
 //!
-//! Bodies are deliberately not rendered. Operators reach for
-//! `mmcp memory read <group> <slug>` after spotting an interesting
-//! entry; the bootstrap output is the index, not the content.
-//!
-//! Scope semantics mirror the MCP tool:
-//! - `mandatory` — `frontmatter.mandatory == true` on every group
-//!   that's in scope for the current project (FR-025 adoption rule
-//!   on Shared-scoped groups is not yet replicated here; the MCP
-//!   tool remains canonical for that nuance).
-//! - `project` — every memory in the project group.
-//! - `all` (default) — union of mandatory + project.
+//! Memory bodies and metadata are deliberately not rendered.
+//! Operators reach for `mmcp memory list <group>` to enumerate a
+//! group, then `mmcp memory read <group> <slug>` to fetch a body.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Args;
-use mmcp_core::config::ProjectConfig;
-use mmcp_core::manifest::GroupScope;
-use mmcp_core::memory::MemoryFile;
-use mmcp_git::{GitBackend, Rev};
 use mmcp_store::config::{find_project_root, load as load_project_config};
 use mmcp_store::home::MmcpHome;
-use mmcp_store::memory::{list_all_memory_files, resolve_group};
+use mmcp_store::memory::resolve_group;
+use uuid::Uuid;
+
+use crate::commands::serve::{is_group_adopted, resolve_subscribed_reads};
 
 #[derive(Debug, Args)]
 pub struct BootstrapArgs {
-    /// Restrict the listing: `mandatory`, `project`, or `all`
-    /// (default).
-    #[arg(long, default_value = "all")]
-    pub scope: String,
-
-    /// Explicit project group selector (UUID or slug). Without
-    /// this flag the command walks `cwd` for `.mmcp.toml`.
+    /// Explicit project group selector (UUID or slug). When set,
+    /// resolves against the local mirror without touching the
+    /// filesystem; the printed report omits `subscribed_reads` and
+    /// the subscriptions summary.
     #[arg(long)]
     pub project: Option<String>,
-}
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Scope {
-    Mandatory,
-    Project,
-    All,
-}
-
-fn parse_scope(raw: &str) -> Result<Scope> {
-    match raw {
-        "mandatory" => Ok(Scope::Mandatory),
-        "project" => Ok(Scope::Project),
-        "all" => Ok(Scope::All),
-        other => anyhow::bail!("unknown --scope `{other}` (expected mandatory / project / all)"),
-    }
+    /// Project root override. When set, walks this path for
+    /// `.mmcp.toml` instead of cwd. Mirrors the MCP tool's `path`
+    /// arg.
+    #[arg(long)]
+    pub path: Option<std::path::PathBuf>,
 }
 
 pub async fn run(args: BootstrapArgs) -> Result<()> {
-    let scope = parse_scope(&args.scope)?;
-    let want_mandatory = matches!(scope, Scope::Mandatory | Scope::All);
-    let want_project = matches!(scope, Scope::Project | Scope::All);
-
     let home = MmcpHome::discover()?;
     let (backend, groups) = home.init_backend().await?;
 
     // Resolve the project group + config. Explicit selector wins;
-    // otherwise walk cwd for .mmcp.toml. Mirrors FR-44. The
-    // selector branch leaves `project_cfg` as None because an
-    // explicit selector does not guarantee the project has a
-    // local filesystem root (FR-025 adoption lookup therefore
-    // only fires on the cwd-walk branch).
-    let (project_uuid, project_cfg) = match args.project.as_deref() {
+    // `path` walks the supplied directory; otherwise walk cwd.
+    let (project_uuid, project_cfg, project_root) = match args.project.as_deref() {
         Some(query) => {
             let entry = resolve_group(&groups, query)
                 .await
                 .map_err(anyhow::Error::from)?;
-            (Some(*entry.manifest.group_id.as_uuid()), None)
+            (Some(*entry.manifest.group_id.as_uuid()), None, None)
         }
         None => {
-            let project_cfg = std::env::current_dir()
-                .ok()
-                .and_then(|cwd| find_project_root(&cwd))
-                .and_then(|root| load_project_config(&root).ok());
+            let starting = match args.path.as_deref() {
+                Some(p) => Some(p.to_path_buf()),
+                None => std::env::current_dir().ok(),
+            };
+            let project_root = starting.and_then(|dir| find_project_root(&dir));
+            let project_cfg = project_root
+                .as_ref()
+                .and_then(|root| load_project_config(root).ok());
             let project_uuid = project_cfg.as_ref().map(|cfg| *cfg.project_uuid.as_uuid());
-            (project_uuid, project_cfg)
+            (project_uuid, project_cfg, project_root)
         }
     };
 
-    let mut mandatory_rows: Vec<Row> = Vec::new();
-    let mut project_rows: Vec<Row> = Vec::new();
+    let entries = groups.list().await;
 
-    for entry in groups.list().await {
-        let entry_uuid = *entry.manifest.group_id.as_uuid();
-        let is_project = project_uuid == Some(entry_uuid);
-        // FR-025: a `mandatory` flag only applies when the
-        // owning group is in scope for the current session.
-        // Global → always; Shared → only when the project's
-        // `.mmcp.toml` lists this group via `groups.additional`
-        // or `languages.use`; Project → only the matching group.
-        let mandatory_applies = match entry.manifest.scope {
-            GroupScope::Global => true,
-            GroupScope::Shared => match project_cfg.as_ref() {
-                Some(cfg) => is_group_adopted(&entry.manifest.slug, cfg),
-                None => false,
-            },
-            GroupScope::Project => is_project,
-        };
-        let files = list_all_memory_files(&backend, &entry.handle, &Rev::head())
-            .await
-            .context("listing memory files")?;
-        for file_ref in &files {
-            let Ok(bytes) = backend
-                .read_file(&entry.handle, &file_ref.path, &Rev::head())
-                .await
-            else {
-                continue;
-            };
-            let Ok(text) = std::str::from_utf8(&bytes) else {
-                continue;
-            };
-            let Ok(file) = MemoryFile::parse(text) else {
-                continue;
-            };
-            let row = Row {
-                group: entry.manifest.slug.clone(),
-                slug: file_ref.slug.clone(),
-                kind: file.frontmatter.kind.as_str().to_string(),
-                name: file.frontmatter.name.clone(),
-                description: file.frontmatter.description.clone(),
-            };
-            if want_mandatory && file.frontmatter.mandatory && mandatory_applies {
-                mandatory_rows.push(row.clone());
-            }
-            if want_project && is_project {
-                project_rows.push(row);
-            }
-        }
-    }
-
-    if matches!(scope, Scope::Mandatory | Scope::All) {
-        print_section("Mandatory", &mandatory_rows);
-    }
-    if matches!(scope, Scope::Project | Scope::All) {
-        print_section("Project", &project_rows);
-    }
-
-    if mandatory_rows.is_empty() && project_rows.is_empty() {
-        println!("(no memories matched the selected scope)");
-    } else {
-        println!(
-            "\nuse `mmcp memory read <group> <slug>` to fetch any body."
-        );
-    }
-    Ok(())
-}
-
-#[derive(Clone)]
-struct Row {
-    group: String,
-    slug: String,
-    kind: String,
-    name: String,
-    description: String,
-}
-
-/// FR-025 adoption test: is this Shared-scoped group brought into
-/// scope by the current project's `.mmcp.toml`? Mirrors the
-/// equivalent helper in `commands::serve` which is private. Tiny
-/// enough to inline; planned to hoist into `mmcp_store::config`
-/// in the Slice 4 refactor pass.
-fn is_group_adopted(slug: &str, cfg: &ProjectConfig) -> bool {
-    cfg.subscriptions.groups.iter().any(|s| s == slug)
-        || cfg
-            .subscriptions
-            .languages
+    // FR-025: which Shared groups has this project subscribed to?
+    let adopted_shared: std::collections::HashSet<Uuid> = match project_cfg.as_ref() {
+        None => std::collections::HashSet::new(),
+        Some(cfg) => entries
             .iter()
-            .any(|lang| slug == format!("lang/{lang}"))
-}
+            .filter(|entry| {
+                entry.manifest.scope == mmcp_core::manifest::GroupScope::Shared
+            })
+            .filter(|entry| is_group_adopted(&entry.manifest.slug, cfg))
+            .map(|entry| *entry.manifest.group_id.as_uuid())
+            .collect(),
+    };
 
-fn print_section(title: &str, rows: &[Row]) {
-    if rows.is_empty() {
-        println!("{title}: (none)");
-        return;
+    let mut groups_in_scope: Vec<(Uuid, String, &'static str)> = Vec::new();
+    for entry in &entries {
+        let entry_uuid = *entry.manifest.group_id.as_uuid();
+        let scope_label: &'static str = match entry.manifest.scope {
+            mmcp_core::manifest::GroupScope::Global => "global",
+            mmcp_core::manifest::GroupScope::Shared => "shared",
+            mmcp_core::manifest::GroupScope::Project => "project",
+        };
+        let in_scope = match entry.manifest.scope {
+            mmcp_core::manifest::GroupScope::Global => true,
+            mmcp_core::manifest::GroupScope::Shared => adopted_shared.contains(&entry_uuid),
+            mmcp_core::manifest::GroupScope::Project => project_uuid == Some(entry_uuid),
+        };
+        if !in_scope {
+            continue;
+        }
+        groups_in_scope.push((entry_uuid, entry.manifest.slug.clone(), scope_label));
     }
-    println!("{title}:");
-    for row in rows {
-        println!(
-            "  {group}/{slug}  [{kind}]  {name}",
-            group = row.group,
-            slug = row.slug,
-            kind = row.kind,
-            name = row.name,
-        );
-        if !row.description.is_empty() {
-            println!("      {}", row.description);
+
+    if let Some(root) = project_root.as_ref() {
+        println!("project root  : {}", root.display());
+    }
+    if let Some(uuid) = project_uuid {
+        println!("project uuid  : {uuid}");
+    }
+    println!();
+
+    println!("Groups in scope:");
+    if groups_in_scope.is_empty() {
+        println!("  (none)");
+    } else {
+        for (uuid, slug, scope) in &groups_in_scope {
+            println!("  {slug}  [{scope}]  {uuid}");
         }
     }
+
+    let subscribed_reads = match project_cfg.as_ref() {
+        None => Vec::new(),
+        Some(cfg) => {
+            resolve_subscribed_reads(&backend, &entries, cfg, &adopted_shared, project_uuid).await
+        }
+    };
+    println!();
+    println!("Subscribed reads:");
+    if subscribed_reads.is_empty() {
+        println!("  (none)");
+    } else {
+        for entry in &subscribed_reads {
+            let group = entry.get("group").and_then(|v| v.as_str()).unwrap_or("?");
+            let slug = entry.get("slug").and_then(|v| v.as_str()).unwrap_or("?");
+            println!("  {group}/{slug}");
+        }
+    }
+
+    if let Some(cfg) = project_cfg.as_ref() {
+        println!();
+        println!("Subscriptions:");
+        let s = &cfg.subscriptions;
+        if !s.tags.is_empty() {
+            println!("  tags      : {}", s.tags.join(", "));
+        }
+        if !s.memories.is_empty() {
+            println!("  memories  : {}", s.memories.join(", "));
+        }
+        if !s.groups.is_empty() {
+            println!("  groups    : {}", s.groups.join(", "));
+        }
+        if !s.languages.is_empty() {
+            println!("  languages : {}", s.languages.join(", "));
+        }
+        if s.tags.is_empty()
+            && s.memories.is_empty()
+            && s.groups.is_empty()
+            && s.languages.is_empty()
+        {
+            println!("  (none — use `mmcp subscribe <kind> <value>` to add)");
+        }
+    }
+
+    println!();
+    println!(
+        "Next: `mmcp memory list <group>` to enumerate, `mmcp subscribe <kind> <value>` to pin."
+    );
+    Ok(())
 }

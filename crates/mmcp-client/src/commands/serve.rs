@@ -3851,7 +3851,7 @@ async fn resolve_sync_filter(
 /// Returns `(group_uuid, slug)` JSON entries with no metadata.
 /// Deduplicated across axes so a tag-pinned memory in a fully
 /// subscribed group only appears once.
-async fn resolve_subscribed_reads(
+pub(crate) async fn resolve_subscribed_reads(
     backend: &NativeBackend,
     entries: &[GroupEntry],
     cfg: &mmcp_core::config::ProjectConfig,
@@ -3948,7 +3948,7 @@ async fn resolve_subscribed_reads(
 /// implied by `subscriptions.languages`. Bare string equality for
 /// now — namespace-aware resolution is a follow-up when the
 /// adoption format stabilises.
-fn is_group_adopted(slug: &str, cfg: &mmcp_core::config::ProjectConfig) -> bool {
+pub(crate) fn is_group_adopted(slug: &str, cfg: &mmcp_core::config::ProjectConfig) -> bool {
     cfg.subscriptions.groups.iter().any(|s| s == slug)
         || cfg
             .subscriptions
