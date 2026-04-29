@@ -16,11 +16,10 @@
 //! corresponding MCP tool thread the same detection logic without
 //! duplicating code.
 
-use mmcp_core::memory::MemoryFile;
+use mmcp_core::memory::{MemoryFile, MemoryRef};
 use mmcp_git::{NativeBackend, Rev};
 use mmcp_proto::{Note, NoteLevel};
 use mmcp_store::diagnostics::Issue;
-use mmcp_store::features::FeatureRecord;
 use mmcp_store::groups::GroupEntry;
 use mmcp_store::memory::list_all_memory_files;
 use mmcp_sync::PushReport;
@@ -79,19 +78,13 @@ pub fn issues_to_notes(issues: &[Issue]) -> Vec<Note> {
     issues.iter().map(issue_to_note).collect()
 }
 
-/// FR-45 populator helper: scan a feature record's typed UUID
-/// references (`depends_on`, `blocks`, `superseded_by.target`)
-/// against the group's local memory index and emit a
-/// `dangling_ref` note for each target that does not resolve.
-///
-/// Pure-local check — only verifies the uuid appears as a filename
-/// under `memories/<slug>/<uuid>.md` somewhere in the group.
-/// Cross-group refs always show up as dangling here until the
-/// resolver learns to look across mirrored groups (separate FR).
 pub async fn dangling_ref_notes_for(
     backend: &NativeBackend,
     entry: &GroupEntry,
-    record: &FeatureRecord,
+    slug: &str,
+    depends_on: &[Uuid],
+    blocks: &[Uuid],
+    superseded_by: Option<&MemoryRef>,
 ) -> Vec<Note> {
     let files = match list_all_memory_files(backend, &entry.handle, &Rev::head()).await {
         Ok(files) => files,
@@ -104,23 +97,19 @@ pub async fn dangling_ref_notes_for(
     let known: std::collections::HashSet<Uuid> = files.iter().map(|f| f.id).collect();
 
     let mut notes = Vec::new();
-    for (field, uuid) in record
-        .depends_on
+    for (field, uuid) in depends_on
         .iter()
         .map(|u| ("depends_on", *u))
-        .chain(record.blocks.iter().map(|u| ("blocks", *u)))
+        .chain(blocks.iter().map(|u| ("blocks", *u)))
     {
         if !known.contains(&uuid) {
             notes.push(
                 Note::warn(
                     "dangling_ref",
-                    format!(
-                        "feature `{}` references unresolved target in `{field}`",
-                        record.slug
-                    ),
+                    format!("feature `{slug}` references unresolved target in `{field}`"),
                 )
                 .with_context(json!({
-                    "slug": record.slug,
+                    "slug": slug,
                     "field": field,
                     "target": uuid.to_string(),
                     "group": entry.manifest.group_id.to_string(),
@@ -128,18 +117,15 @@ pub async fn dangling_ref_notes_for(
             );
         }
     }
-    if let Some(link) = record.superseded_by.as_ref() {
+    if let Some(link) = superseded_by {
         if !known.contains(&link.target) {
             notes.push(
                 Note::warn(
                     "dangling_ref",
-                    format!(
-                        "feature `{}` superseded_by target does not resolve locally",
-                        record.slug
-                    ),
+                    format!("feature `{slug}` superseded_by target does not resolve locally"),
                 )
                 .with_context(json!({
-                    "slug": record.slug,
+                    "slug": slug,
                     "field": "superseded_by",
                     "target": link.target.to_string(),
                     "commit": link.commit,

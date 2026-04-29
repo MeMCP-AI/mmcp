@@ -3293,7 +3293,15 @@ impl McpServer {
         // depends_on / blocks / superseded_by targets against the
         // group's memory index and flag any UUID that does not
         // resolve locally.
-        let notes = dangling_ref_notes_for(&self.state.backend, &entry, &record).await;
+        let notes = dangling_ref_notes_for(
+            &self.state.backend,
+            &entry,
+            &record.slug,
+            &record.depends_on,
+            &record.blocks,
+            record.superseded_by.as_ref(),
+        )
+        .await;
         Ok(ok_json_with_notes(feature_record_to_json(&entry, &record), notes))
     }
 
@@ -3500,27 +3508,45 @@ impl McpServer {
             .map_err(map_feature_error_to_mcp)?;
         let status = parse_status_arg(args.status.as_deref())?;
         let show_all = args.all.unwrap_or(false);
-        let records =
-            mmcp_store::features::list_features(&self.state.backend, &entry, status, show_all)
-                .await
-                .map_err(map_feature_error_to_mcp)?;
+        // FR-048: list-style surfaces return body-free summaries.
+        // Bodies fly back through `read_feature` only, keeping the
+        // response well under the MCP client token cap on populated
+        // FR groups.
+        let summaries = mmcp_store::features::list_feature_summaries(
+            &self.state.backend,
+            &entry,
+            status,
+            show_all,
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
         // FR-45 `dangling_ref`: aggregate dangling-ref notes
         // across every record in the listing so callers see a
         // single pane of reference-integrity warnings alongside
         // the listing itself.
         let mut notes = Vec::new();
-        for record in &records {
-            notes.extend(dangling_ref_notes_for(&self.state.backend, &entry, record).await);
+        for summary in &summaries {
+            notes.extend(
+                dangling_ref_notes_for(
+                    &self.state.backend,
+                    &entry,
+                    &summary.slug,
+                    &summary.depends_on,
+                    &summary.blocks,
+                    summary.superseded_by.as_ref(),
+                )
+                .await,
+            );
         }
-        let features: Vec<_> = records
+        let features: Vec<_> = summaries
             .iter()
-            .map(|record| feature_record_to_json(&entry, record))
+            .map(|summary| feature_summary_to_json(&entry, summary))
             .collect();
         Ok(ok_json_with_notes(
             json!({
                 "group":    entry.manifest.group_id.to_string(),
                 "features": features,
-                "count":    records.len(),
+                "count":    summaries.len(),
             }),
             notes,
         ))
@@ -4005,6 +4031,28 @@ fn feature_record_to_json(
         "blocks":        record.blocks,
         "superseded_by": record.superseded_by.as_ref().map(memory_ref_to_json),
         "commit_id":     record.commit_id,
+    })
+}
+
+/// Serialize a [`FeatureSummary`] to the body-free JSON shape used
+/// by `list_features`. Same fields as `feature_record_to_json` minus
+/// `body` — listings stay metadata-only so populated FR groups
+/// don't blow past the MCP client token cap.
+fn feature_summary_to_json(
+    entry: &GroupEntry,
+    summary: &mmcp_store::features::FeatureSummary,
+) -> serde_json::Value {
+    json!({
+        "group":         entry.manifest.group_id.to_string(),
+        "slug":          summary.slug,
+        "title":         summary.title,
+        "description":   summary.description,
+        "status":        summary.status.as_str(),
+        "number":        summary.number,
+        "depends_on":    summary.depends_on,
+        "blocks":        summary.blocks,
+        "superseded_by": summary.superseded_by.as_ref().map(memory_ref_to_json),
+        "commit_id":     summary.commit_id,
     })
 }
 
@@ -5012,6 +5060,77 @@ mod tests {
             parsed.get("mirrored").and_then(|v| v.as_bool()),
             Some(true),
             "mirrored should be true for a group that exists in the local mirror",
+        );
+    }
+
+    #[tokio::test]
+    async fn list_features_response_omits_body() {
+        // FR-048: list-style surfaces return body-free summaries.
+        // Seed two FRs with bodies large enough that any accidental
+        // inlining would balloon the response, then assert the
+        // wire response carries metadata-only entries and stays
+        // well under the body size used as a token-cap proxy.
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "fr-listing", "seed-only", SAMPLE_MEMORY).await;
+        let entry = state.groups.get(&group).await.expect("group entry");
+
+        let big_body = "x".repeat(4_096);
+        for (slug, number) in [("alpha", 1u32), ("beta", 2u32)] {
+            let spec = mmcp_store::features::AddSpec {
+                slug: Some(slug.into()),
+                title: format!("Title {slug}"),
+                description: format!("Desc {slug}"),
+                body: big_body.clone(),
+                number: Some(number),
+                ..mmcp_store::features::AddSpec::default()
+            };
+            mmcp_store::features::add_feature(&state.backend, &entry, spec, &state.author)
+                .await
+                .expect("seed feature");
+        }
+        state.groups.refresh().await.expect("refresh");
+
+        let server = McpServer::new(state);
+        let res = server
+            .list_features(Parameters(ListFeaturesArgs {
+                project: Some(group.to_string()),
+                status: None,
+                all: Some(true),
+            }))
+            .await
+            .expect("list_features");
+        let parsed = parse_ok_json(res);
+
+        let features = parsed
+            .get("features")
+            .and_then(|v| v.as_array())
+            .expect("features array");
+        assert_eq!(features.len(), 2);
+
+        for feature in features {
+            assert!(
+                feature.get("body").is_none(),
+                "list_features must not inline bodies; found body on {feature:?}",
+            );
+            assert!(feature.get("slug").and_then(|v| v.as_str()).is_some());
+            assert!(feature.get("title").and_then(|v| v.as_str()).is_some());
+            assert!(
+                feature
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .is_some()
+            );
+            assert!(feature.get("status").and_then(|v| v.as_str()).is_some());
+            assert!(feature.get("number").is_some());
+            assert!(feature.get("commit_id").is_some());
+        }
+
+        let serialized = serde_json::to_string(&parsed).expect("serialize");
+        assert!(
+            serialized.len() < big_body.len(),
+            "list_features response ({} bytes) must stay much smaller than a single FR body ({} bytes)",
+            serialized.len(),
+            big_body.len(),
         );
     }
 

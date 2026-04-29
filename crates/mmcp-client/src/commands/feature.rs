@@ -12,8 +12,8 @@ use clap::{Args, Subcommand};
 use mmcp_core::memory::FeatureStatus;
 use mmcp_proto::Note;
 use mmcp_store::features::{
-    AddSpec, FeatureRecord, UpdateSpec, add_feature, delete_feature, list_features, read_feature,
-    resolve_project_group, update_feature,
+    AddSpec, FeatureRecord, FeatureSummary, UpdateSpec, add_feature, delete_feature,
+    list_feature_summaries, read_feature, resolve_project_group, update_feature,
 };
 use mmcp_store::home::MmcpHome;
 
@@ -281,7 +281,15 @@ async fn run_read(args: ReadArgs) -> Result<()> {
         .await
         .map_err(anyhow::Error::from)?;
     print_record_full(&record);
-    let notes = dangling_ref_notes_for(&backend, &entry, &record).await;
+    let notes = dangling_ref_notes_for(
+        &backend,
+        &entry,
+        &record.slug,
+        &record.depends_on,
+        &record.blocks,
+        record.superseded_by.as_ref(),
+    )
+    .await;
     render_notes_tail(&notes);
     Ok(())
 }
@@ -373,11 +381,11 @@ async fn run_list(args: ListArgs) -> Result<()> {
         .map_err(anyhow::Error::from)?;
 
     let status_filter = parse_status_cli(args.status.as_deref())?;
-    let records = list_features(&backend, &entry, status_filter, args.all)
+    let summaries = list_feature_summaries(&backend, &entry, status_filter, args.all)
         .await
         .map_err(anyhow::Error::from)?;
 
-    if records.is_empty() {
+    if summaries.is_empty() {
         match (status_filter, args.all) {
             (Some(s), _) => println!("no feature requests with status `{}`", s.as_str()),
             (None, true) => println!("no feature requests filed in this project yet"),
@@ -388,14 +396,24 @@ async fn run_list(args: ListArgs) -> Result<()> {
         return Ok(());
     }
 
-    for record in &records {
-        print_record_summary(record);
+    for summary in &summaries {
+        print_summary_line(summary);
     }
-    println!("\n{} feature(s)", records.len());
+    println!("\n{} feature(s)", summaries.len());
 
     let mut notes: Vec<Note> = Vec::new();
-    for record in &records {
-        notes.extend(dangling_ref_notes_for(&backend, &entry, record).await);
+    for summary in &summaries {
+        notes.extend(
+            dangling_ref_notes_for(
+                &backend,
+                &entry,
+                &summary.slug,
+                &summary.depends_on,
+                &summary.blocks,
+                summary.superseded_by.as_ref(),
+            )
+            .await,
+        );
     }
     render_notes_tail(&notes);
     Ok(())
@@ -403,26 +421,39 @@ async fn run_list(args: ListArgs) -> Result<()> {
 
 // ── Output helpers ──────────────────────────────────────────────
 
-fn print_record_summary(record: &FeatureRecord) {
-    let title = if record.title.is_empty() {
-        "(untitled)"
-    } else {
-        record.title.as_str()
-    };
-    let number = record
-        .number
-        .map(|n| format!("#{n} "))
-        .unwrap_or_default();
-    println!(
-        "[{}] {}{} — {}",
-        record.status.as_str(),
-        number,
-        record.slug,
-        title
-    );
-    if !record.description.is_empty() {
-        println!("    {}", record.description);
+fn print_listing_row(
+    slug: &str,
+    title: &str,
+    description: &str,
+    status: FeatureStatus,
+    number: Option<u32>,
+) {
+    let title = if title.is_empty() { "(untitled)" } else { title };
+    let number = number.map(|n| format!("#{n} ")).unwrap_or_default();
+    println!("[{}] {}{} — {}", status.as_str(), number, slug, title);
+    if !description.is_empty() {
+        println!("    {description}");
     }
+}
+
+fn print_record_summary(record: &FeatureRecord) {
+    print_listing_row(
+        &record.slug,
+        &record.title,
+        &record.description,
+        record.status,
+        record.number,
+    );
+}
+
+fn print_summary_line(summary: &FeatureSummary) {
+    print_listing_row(
+        &summary.slug,
+        &summary.title,
+        &summary.description,
+        summary.status,
+        summary.number,
+    );
 }
 
 fn print_record_full(record: &FeatureRecord) {
