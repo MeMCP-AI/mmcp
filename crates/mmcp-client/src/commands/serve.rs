@@ -2521,7 +2521,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Initialize the AI's context for this session. Returns the session protocol as `instructions` plus a metadata manifest of the mandatory and project-scoped memories the caller should plan to read. Memory BODIES are not inlined; fetch each with `read_memory(group, slug|id)` as needed. Call at session start, after context compaction, before starting a new phase or task, and before/after each commit cycle. This tool never writes files - CLAUDE.md advice appears in `diagnostics` and must be acted on by calling `init_claude` explicitly.",
+        description = "CALL FIRST IN EVERY SESSION, before answering the user or invoking any other tool. Initializes the AI's context. Returns the session protocol as `instructions` plus a metadata manifest of the mandatory and project-scoped memories the caller should plan to read. Memory BODIES are not inlined; fetch each with `read_memory(group, slug|id)` as needed. Call at session start, after context compaction, before starting a new phase or task, and before/after each commit cycle. This tool never writes files - CLAUDE.md advice appears in `diagnostics` and must be acted on by calling `init_claude` explicitly.",
         annotations(
             title = "Bootstrap session context",
             read_only_hint = true,
@@ -2671,9 +2671,33 @@ impl McpServer {
         // context points callers at it.
         let notes = claude_md_notes(project_root.as_deref());
 
+        // Imperative checklist: callers commonly skip the body
+        // fetches and proceed on the manifest alone. Surfacing the
+        // required (group, slug) reads as a structured field — not
+        // just prose — gives JSON-shape-driven clients a concrete
+        // list to drain before any other action.
+        let required_reads: Vec<serde_json::Value> = memories
+            .iter()
+            .filter(|m| {
+                m.get("mandatory")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            })
+            .map(|m| {
+                json!({
+                    "group": m.get("group"),
+                    "slug": m.get("slug"),
+                })
+            })
+            .collect();
+
         Ok(ok_json_with_notes(
             json!({
                 "instructions": SESSION_INSTRUCTIONS,
+                "next_action": {
+                    "imperative": "Call read_memory(group, slug) for each entry in required_reads before any other action. The bodies are NOT in this response.",
+                    "required_reads": required_reads,
+                },
                 "memories": memories,
                 "project_root": project_root.as_ref().map(|p| p.to_string_lossy().into_owned()),
                 "project_uuid": project_uuid.map(|u| u.to_string()),
@@ -4345,9 +4369,22 @@ impl ServerHandler for McpServer {
 /// usage changes, update this constant; no other surface repeats the
 /// protocol.
 const SESSION_INSTRUCTIONS: &str = concat!(
+    "REQUIRED FIRST ACTION: call `bootstrap_context` before answering the user ",
+    "or invoking any other tool. The rules for this project live in mmcp ",
+    "memories, NOT in this prompt and NOT in CLAUDE.md. Skipping this step ",
+    "means working against stale rules. This directive runs on cold boot, ",
+    "before any manifest has been fetched.\n\n",
     "mmcp memory server — the project's single source of truth for coding rules, ",
     "conventions, and project notes. Memories live in git repositories under ",
     "~/.mmcp/repos and are surfaced through typed MCP tools; never hand-edit TOML.\n\n",
+    "## STOP — the manifest is NOT the rules\n\n",
+    "This response gives you ONLY metadata (name/description/tags). The actual ",
+    "rule text is NOT in this payload. Acknowledging the manifest is not reading ",
+    "the rules. You MUST now call `read_memory(group, slug)` once per entry in ",
+    "the `memories` array before taking any other action. Do not write code, do ",
+    "not commit, do not answer the user's task until every mandatory entry's ",
+    "BODY has been fetched. The `next_action` field in the response payload ",
+    "lists exactly which reads are required.\n\n",
     "## Session-start protocol (MANDATORY)\n\n",
     "Call `bootstrap_context` at the start of every session and again at EACH of ",
     "the following checkpoints. These are not suggestions; skipping any of them ",
@@ -5231,6 +5268,30 @@ mod tests {
         assert!(
             instructions.contains("Session-start protocol"),
             "instructions must carry the session protocol preamble",
+        );
+        assert!(
+            instructions.contains("STOP"),
+            "instructions must lead with the STOP imperative so callers can't skim past it",
+        );
+        let next_action = parsed
+            .get("next_action")
+            .expect("next_action field surfaces the imperative checklist");
+        let required_reads = next_action
+            .get("required_reads")
+            .and_then(|v| v.as_array())
+            .expect("required_reads array");
+        assert_eq!(
+            required_reads.len(),
+            1,
+            "required_reads must mirror mandatory memories one-for-one",
+        );
+        assert_eq!(
+            required_reads[0].get("slug").and_then(|v| v.as_str()),
+            Some("mandatory-rule"),
+        );
+        assert!(
+            required_reads[0].get("group").is_some(),
+            "required_reads entries must carry the group uuid for read_memory",
         );
     }
 
