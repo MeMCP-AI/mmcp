@@ -821,6 +821,10 @@ struct StatusArgs {
 #[schemars(crate = "rmcp::schemars")]
 struct ListGroupsArgs {}
 
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct DescribeToolsArgs {}
+
 // ── Elicitation payload shapes (FR-011) ──────────────────────────
 //
 // Each struct defines the JSON schema the server sends in the
@@ -3090,6 +3094,40 @@ impl McpServer {
     }
 
     #[tool(
+        description = "Return the annotated tool surface in one read-only call. Each entry carries name, description, title, plus the four MCP annotation hints (read_only, destructive, idempotent, open_world). Use this when a harness needs a deterministic catalogue of safe-tool subsets without parsing per-client `tools/list` quirks. Pure-local introspection; no group, no I/O.",
+        annotations(
+            title = "Describe registered MCP tools",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn describe_tools(
+        &self,
+        Parameters(_args): Parameters<DescribeToolsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let tools: Vec<serde_json::Value> = Self::registered_tool_attrs()
+            .into_iter()
+            .map(|tool| {
+                let ann = tool.annotations.as_ref();
+                json!({
+                    "name":        tool.name,
+                    "description": tool.description,
+                    "title":       ann.and_then(|a| a.title.clone()),
+                    "read_only":   ann.and_then(|a| a.read_only_hint),
+                    "destructive": ann.and_then(|a| a.destructive_hint),
+                    "idempotent":  ann.and_then(|a| a.idempotent_hint),
+                    "open_world":  ann.and_then(|a| a.open_world_hint),
+                })
+            })
+            .collect();
+        Ok(ok_json(json!({
+            "count": tools.len(),
+            "tools": tools,
+        })))
+    }
+
+    #[tool(
         description = "Bootstrap the project's `.mmcp.toml` and backing group repo. Idempotent and never-overwrite: a second call returns `created_config: false` / `created_repo: false` without rewriting either artifact. Errors with code `invalid_slug` when the slug does not satisfy the memory-slug contract, `slug_required` when no slug is available (arg missing and no `project_slug` in `.mmcp.toml`), `slug_mismatch` / `project_uuid_mismatch` when args disagree with an existing config, and `repo_without_config` if the bare repo exists but the config has been deleted.",
         annotations(
             title = "Initialize mmcp project",
@@ -3599,6 +3637,60 @@ impl McpServer {
                 None,
             ))
         }
+    }
+
+    /// Canonical list of every registered MCP tool's static
+    /// `Tool` descriptor.
+    ///
+    /// Single source of truth for `describe_tools` (FR-31), the
+    /// `mmcp tools` CLI (FR-33), and the `diagnose` annotation-
+    /// coverage check (FR-34). The FR-29 conformance test keeps its
+    /// own hard-coded matrix so a new tool appearing here without a
+    /// matching matrix entry still trips the test, preserving the
+    /// double-entry safeguard.
+    fn registered_tool_attrs() -> Vec<rmcp::model::Tool> {
+        vec![
+            // Read-only tools.
+            Self::list_groups_tool_attr(),
+            Self::list_memories_tool_attr(),
+            Self::read_memory_tool_attr(),
+            Self::list_versions_tool_attr(),
+            Self::group_info_tool_attr(),
+            Self::search_memories_tool_attr(),
+            Self::read_memory_body_sections_tool_attr(),
+            Self::check_health_tool_attr(),
+            Self::diagnose_tool_attr(),
+            Self::debug_read_file_tool_attr(),
+            Self::debug_list_tree_tool_attr(),
+            Self::debug_git_log_tool_attr(),
+            Self::bootstrap_context_tool_attr(),
+            Self::status_tool_attr(),
+            Self::read_feature_tool_attr(),
+            Self::list_features_tool_attr(),
+            Self::describe_tools_tool_attr(),
+            // Local mutators (open_world = false).
+            Self::write_memory_tool_attr(),
+            Self::import_memory_tool_attr(),
+            Self::edit_memory_tool_attr(),
+            Self::edit_memory_body_tool_attr(),
+            Self::debug_write_file_tool_attr(),
+            Self::update_feature_tool_attr(),
+            Self::delete_memory_tool_attr(),
+            Self::init_claude_tool_attr(),
+            Self::delete_feature_tool_attr(),
+            Self::debug_toggle_tool_attr(),
+            Self::init_project_tool_attr(),
+            Self::rename_feature_tool_attr(),
+            Self::subscribe_tool_attr(),
+            Self::unsubscribe_tool_attr(),
+            Self::create_group_tool_attr(),
+            Self::add_feature_tool_attr(),
+            // Sync tools (open_world = true).
+            Self::sync_fetch_tool_attr(),
+            Self::sync_push_tool_attr(),
+            Self::sync_pull_tool_attr(),
+            Self::sync_tool_attr(),
+        ]
     }
 
     /// Parse the wire `group` string into a `GroupId` and look up
@@ -7532,6 +7624,7 @@ mod tests {
         check_bits(McpServer::status_tool_attr(), ro);
         check_bits(McpServer::read_feature_tool_attr(), ro);
         check_bits(McpServer::list_features_tool_attr(), ro);
+        check_bits(McpServer::describe_tools_tool_attr(), ro);
 
         // ── Local mutation tools (open_world = false) ───────────
         // write_memory / import_memory: additive, not idempotent.
@@ -7576,5 +7669,77 @@ mod tests {
         let sw_pull = (Some(false), Some(true), Some(true), Some(true));
         check_bits(McpServer::sync_pull_tool_attr(), sw_pull);
         check_bits(McpServer::sync_tool_attr(), sw_pull);
+    }
+
+    /// FR-31: `describe_tools` returns one entry per registered tool
+    /// with the four annotation hint bits intact. The list mirrors
+    /// FR-29's matrix; if a new tool ships without being added to
+    /// `registered_tool_attrs`, this assertion catches the gap.
+    #[tokio::test]
+    async fn describe_tools_lists_every_registered_tool() {
+        let (state, _tmp) = test_state().await;
+        let server = McpServer::new(state);
+        let res = server
+            .describe_tools(Parameters(DescribeToolsArgs::default()))
+            .await
+            .expect("describe_tools");
+        let parsed = parse_ok_json(res);
+
+        // Count must match the canonical helper list. If this drifts,
+        // either a new tool was added without a registered_tool_attrs
+        // entry, or a tool was removed without dropping its entry.
+        let helper_count = McpServer::registered_tool_attrs().len();
+        let count = parsed.get("count").and_then(|v| v.as_u64()).expect("count");
+        assert_eq!(count as usize, helper_count);
+
+        let tools = parsed
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .expect("tools array");
+        assert_eq!(tools.len(), helper_count);
+
+        // Every entry surfaces a non-empty name + title and the four
+        // hint bits (some may be JSON `null` for tools where the bit
+        // is intentionally unset, e.g. read-only tools omit
+        // destructive_hint per FR-29).
+        for entry in tools {
+            let name = entry
+                .get("name")
+                .and_then(|v| v.as_str())
+                .expect("name str");
+            assert!(!name.is_empty(), "tool name must not be empty");
+            let title = entry
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or_else(|| panic!("{name}: title must be present"));
+            assert!(!title.is_empty(), "{name}: title must not be empty");
+            assert!(entry.get("read_only").is_some(), "{name}: read_only key");
+            assert!(entry.get("destructive").is_some(), "{name}: destructive key");
+            assert!(entry.get("idempotent").is_some(), "{name}: idempotent key");
+            assert!(entry.get("open_world").is_some(), "{name}: open_world key");
+        }
+    }
+
+    #[tokio::test]
+    async fn describe_tools_includes_describe_tools_itself() {
+        let (state, _tmp) = test_state().await;
+        let server = McpServer::new(state);
+        let res = server
+            .describe_tools(Parameters(DescribeToolsArgs::default()))
+            .await
+            .expect("describe_tools");
+        let parsed = parse_ok_json(res);
+        let tools = parsed
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .expect("tools array");
+        let names: Vec<&str> = tools
+            .iter()
+            .filter_map(|t| t.get("name").and_then(|v| v.as_str()))
+            .collect();
+        assert!(
+            names.contains(&"describe_tools"),
+            "describe_tools must appear in its own listing; got: {names:?}",
+        );
     }
 }
