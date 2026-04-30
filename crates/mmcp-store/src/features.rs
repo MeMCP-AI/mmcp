@@ -231,6 +231,12 @@ pub struct AddSpec {
     /// `status = Superseded` and `superseded_by` pointing at the
     /// new FR's commit A.
     pub supersedes: Option<String>,
+    /// FR-38 provenance. When set, this FR was filed by an agent
+    /// acting on behalf of the named owner — group UUID for
+    /// federated workflows, memory UUID when promoted from an
+    /// existing reference memory. Stamped into the frontmatter at
+    /// commit time and never re-resolved.
+    pub source: Option<Uuid>,
     /// Optional override for the git commit message; when absent,
     /// defaults to `create feature <slug>` so history stays
     /// self-describing.
@@ -453,7 +459,12 @@ pub async fn add_feature(
         spec.body.clone(),
         metadata,
     );
-    file.frontmatter = file.frontmatter.clone().with_id(id).with_refs(refs.clone());
+    file.frontmatter = file
+        .frontmatter
+        .clone()
+        .with_id(id)
+        .with_refs(refs.clone())
+        .with_source(spec.source);
     let rendered = file
         .to_string()
         .map_err(|e| FeatureError::Memory(ImportError::Render(e.to_string())))?;

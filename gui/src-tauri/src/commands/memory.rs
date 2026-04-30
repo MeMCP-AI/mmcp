@@ -204,6 +204,11 @@ fn to_memory_file(dto: MemoryFileDto) -> GuiResult<MemoryFile> {
                 commit: r.commit,
             })
             .collect(),
+        // FR-38: GUI does not yet expose source authoring; the
+        // round-trip preserves whatever was on disk only when the
+        // DTO grows the field. Default-None for now keeps the
+        // existing GUI surface unchanged.
+        source: None,
     };
     Ok(MemoryFile {
         frontmatter: fm,

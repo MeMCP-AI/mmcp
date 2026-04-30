@@ -343,6 +343,14 @@ struct WriteMemoryArgs {
     /// server stores absent as "no refs".
     #[serde(default)]
     pub refs: Vec<MemoryRefArg>,
+    /// FR-38 provenance UUID. When set, this memory was filed by
+    /// an agent acting on behalf of the named owner (group UUID
+    /// for federated workflows; memory UUID when chaining a
+    /// promoted copy). Absent means the owning group authored the
+    /// memory itself. The string is parsed as a UUID; bad input
+    /// errors with `code: invalid_source`.
+    #[serde(default)]
+    pub source: Option<String>,
     /// Opt into replacing an already-existing memory at this slug.
     /// `false` (default) makes the tool a strict CREATE — the wire
     /// name is `override` via serde rename; the Rust field uses a
@@ -1169,6 +1177,16 @@ struct AddFeatureArgs {
     #[serde(default)]
     pub supersedes: Option<String>,
 
+    /// FR-38 provenance UUID. When set, this FR was filed by an
+    /// agent acting on behalf of the named owner — group UUID for
+    /// federated workflows where one project files an FR against
+    /// another, or memory UUID when the FR was promoted from an
+    /// existing reference memory. Absent means the project group
+    /// authored the FR directly. Errors with `code: invalid_source`
+    /// when not parseable as a UUID.
+    #[serde(default)]
+    pub source: Option<String>,
+
     /// Optional override for the git commit message.
     #[serde(default)]
     pub message: Option<String>,
@@ -1770,13 +1788,20 @@ impl McpServer {
         let id = supplied_id.unwrap_or_else(Uuid::now_v7);
 
         let refs = parse_wire_refs(args.refs, "refs")?;
+        // FR-38: round-trip the optional source UUID into the
+        // frontmatter. Bad input fails fast with `invalid_source`
+        // so callers see the contract — group UUID for federated
+        // workflows, memory UUID for chained promotions; either
+        // way it's a parseable UUID.
+        let source = parse_optional_source(args.source.as_deref())?;
         use mmcp_core::memory::{FrontmatterFormat, MemoryFile, MemoryFrontmatter};
         let file = MemoryFile {
             frontmatter: MemoryFrontmatter::new(args.name, args.description, kind)
                 .with_id(id)
                 .with_mandatory(args.mandatory)
                 .with_tags(args.tags)
-                .with_refs(refs),
+                .with_refs(refs)
+                .with_source(source),
             body: args.body,
             format: FrontmatterFormat::TomlPlus,
         };
@@ -3436,6 +3461,7 @@ impl McpServer {
         let blocks = mmcp_store::parse_cross_refs(&args.blocks, "blocks")
             .map_err(map_feature_error_to_mcp)?;
         let refs = parse_wire_refs(args.refs, "refs")?;
+        let source = parse_optional_source(args.source.as_deref())?;
         let spec = mmcp_store::features::AddSpec {
             slug: args.slug,
             title: args.title,
@@ -3446,6 +3472,7 @@ impl McpServer {
             blocks,
             refs,
             supersedes: args.supersedes,
+            source,
             message: args.message,
             // FR-37: `number` is server-assigned only, never
             // accepted from the wire. Leaving default None lets
@@ -5074,17 +5101,27 @@ async fn read_memory_descriptor(
     let rev = parse_rev(version);
     let bytes = backend.read_file(&entry.handle, path, &rev).await?;
     let text = String::from_utf8_lossy(&bytes).into_owned();
-    let (name, description, kind, mandatory, version_str, tags) = match MemoryFile::parse(&text) {
-        Ok(file) => (
-            Some(file.frontmatter.name),
-            Some(file.frontmatter.description),
-            file.frontmatter.kind.as_str().to_string(),
-            file.frontmatter.mandatory,
-            file.frontmatter.version.map(|v| v.to_string()),
-            file.frontmatter.tags,
-        ),
-        Err(_) => (None, None, "rule".to_string(), false, None, Vec::new()),
-    };
+    let (name, description, kind, mandatory, version_str, tags, source) =
+        match MemoryFile::parse(&text) {
+            Ok(file) => (
+                Some(file.frontmatter.name),
+                Some(file.frontmatter.description),
+                file.frontmatter.kind.as_str().to_string(),
+                file.frontmatter.mandatory,
+                file.frontmatter.version.map(|v| v.to_string()),
+                file.frontmatter.tags,
+                file.frontmatter.source,
+            ),
+            Err(_) => (
+                None,
+                None,
+                "rule".to_string(),
+                false,
+                None,
+                Vec::new(),
+                None,
+            ),
+        };
     Ok(json!({
         "group": entry.manifest.group_id,
         "slug": slug,
@@ -5094,6 +5131,7 @@ async fn read_memory_descriptor(
         "mandatory": mandatory,
         "latest_version": version_str,
         "tags": tags,
+        "source": source,
     }))
 }
 
@@ -5125,6 +5163,21 @@ fn parse_optional_uuid(value: Option<&str>) -> Result<Option<Uuid>, McpError> {
             McpError::invalid_params(
                 "memory id is not a valid UUID",
                 Some(json!({ "code": "invalid_memory_id", "id": s })),
+            )
+        }),
+    }
+}
+
+/// FR-38: parse the `source` arg into a UUID. Disambiguation
+/// between group UUID and memory UUID is the caller's concern at
+/// lookup time — the wire shape is opaque.
+fn parse_optional_source(value: Option<&str>) -> Result<Option<Uuid>, McpError> {
+    match value {
+        None => Ok(None),
+        Some(s) => Uuid::parse_str(s).map(Some).map_err(|_| {
+            McpError::invalid_params(
+                "source is not a valid UUID",
+                Some(json!({ "code": "invalid_source", "source": s })),
             )
         }),
     }
@@ -5240,6 +5293,9 @@ fn frontmatter_to_json(fm: &MemoryFrontmatter) -> serde_json::Value {
         "tags": fm.tags,
         "bump_intent": fm.bump_intent,
         "refs": fm.refs.iter().map(memory_ref_to_json).collect::<Vec<_>>(),
+        // FR-38: surface the provenance UUID on read so callers can
+        // see who filed a memory without parsing the body.
+        "source": fm.source,
     })
 }
 
@@ -7237,6 +7293,7 @@ mod tests {
             tags: Vec::new(),
             mandatory: false,
             refs: Vec::new(),
+            source: None,
             override_,
             force: false,
         }
@@ -7258,6 +7315,64 @@ mod tests {
         assert_eq!(
             parsed.get("replaced").and_then(|v| v.as_bool()),
             Some(false)
+        );
+    }
+
+    /// FR-38: a write that supplies `source` round-trips through
+    /// the on-disk frontmatter and surfaces on the read response.
+    #[tokio::test]
+    async fn write_memory_source_round_trips_through_read() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "existing", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state.clone(), ServeMode::Full);
+        let source_uuid = Uuid::now_v7();
+        let mut args = write_memory_args(&group, "with-source", false);
+        args.source = Some(source_uuid.to_string());
+        let written = server
+            .write_memory_unguarded(args)
+            .await
+            .expect("write with source");
+        let written_id = parse_ok_json(written)
+            .get("id")
+            .and_then(|v| v.as_str())
+            .expect("id echoed")
+            .to_string();
+
+        let res = server
+            .read_memory(Parameters(ReadMemoryArgs {
+                group: group.to_string(),
+                slug: Some("with-source".into()),
+                id: Some(written_id),
+                version: None,
+            }))
+            .await
+            .expect("read back");
+        let parsed = parse_ok_json(res);
+        let fm = parsed.get("frontmatter").expect("frontmatter");
+        assert_eq!(
+            fm.get("source").and_then(|v| v.as_str()),
+            Some(source_uuid.to_string().as_str()),
+        );
+    }
+
+    /// FR-38: a malformed source string is rejected with the typed
+    /// `invalid_source` code rather than being stamped into the
+    /// frontmatter as garbage.
+    #[tokio::test]
+    async fn write_memory_rejects_non_uuid_source() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "existing", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+        let mut args = write_memory_args(&group, "bad-source", false);
+        args.source = Some("not-a-uuid".into());
+        let err = server
+            .write_memory_unguarded(args)
+            .await
+            .expect_err("must refuse non-UUID source");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("invalid_source"),
         );
     }
 

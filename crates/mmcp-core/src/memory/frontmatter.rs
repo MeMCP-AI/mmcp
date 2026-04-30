@@ -70,6 +70,18 @@ pub struct MemoryFrontmatter {
     /// their existing wire shape.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refs: Vec<MemoryRef>,
+
+    /// FR-38 provenance. When set, this memory was filed by an
+    /// agent acting on behalf of an external owner. The UUID
+    /// disambiguates by namespace at lookup time: a group UUID
+    /// names the source project, a memory UUID names a specific
+    /// source memory (preserving the chain when `move_memory`
+    /// carries provenance forward). Absent on the common case
+    /// where the owning group authored the memory itself; the
+    /// serializer skips the field when unset so existing memories
+    /// keep their wire shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<Uuid>,
 }
 
 impl MemoryFrontmatter {
@@ -98,6 +110,7 @@ impl MemoryFrontmatter {
             bump_intent: None,
             feature: None,
             refs: Vec::new(),
+            source: None,
         }
     }
 
@@ -106,6 +119,15 @@ impl MemoryFrontmatter {
     #[must_use]
     pub fn with_refs(mut self, refs: Vec<MemoryRef>) -> Self {
         self.refs = refs;
+        self
+    }
+
+    /// Set the FR-38 provenance UUID. Use a group UUID to mark
+    /// "filed by an agent acting on behalf of group X"; use a
+    /// memory UUID to chain a promoted copy back to its source.
+    #[must_use]
+    pub fn with_source(mut self, source: Option<uuid::Uuid>) -> Self {
+        self.source = source;
         self
     }
 

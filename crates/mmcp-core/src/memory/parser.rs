@@ -250,6 +250,37 @@ mod tests {
         assert_eq!(reparsed.format, FrontmatterFormat::TomlPlus);
     }
 
+    /// FR-38: a memory carrying `source = "<uuid>"` round-trips
+    /// through parse + render without losing or coercing the field.
+    /// Unset stays unset (the serializer skips); set survives.
+    #[test]
+    fn source_field_round_trips_through_toml() {
+        use uuid::Uuid;
+        let id: Uuid = "019d9d93-7fa9-7e91-acf8-61b16a8ee986".parse().unwrap();
+        let with_source = format!(
+            "+++\nname = \"src\"\ndescription = \"with source\"\nkind = \"rule\"\nsource = \"{id}\"\n+++\nbody\n"
+        );
+        let parsed = MemoryFile::parse(&with_source).expect("parse");
+        assert_eq!(parsed.frontmatter.source, Some(id));
+        let rendered = parsed.to_string().expect("render");
+        let reparsed = MemoryFile::parse(&rendered).expect("reparse");
+        assert_eq!(reparsed.frontmatter.source, Some(id));
+
+        let without_source =
+            "+++\nname = \"plain\"\ndescription = \"plain memory\"\nkind = \"rule\"\n+++\nbody\n";
+        let parsed = MemoryFile::parse(without_source).expect("parse plain");
+        assert_eq!(parsed.frontmatter.source, None);
+        let rendered = parsed.to_string().expect("render plain");
+        // The serializer skips the field when None — checking for
+        // the literal `source =` key is the precise assertion (a
+        // bare "source" substring would false-match prose in
+        // `description`).
+        assert!(
+            !rendered.contains("source ="),
+            "absent source must stay absent on render; got:\n{rendered}",
+        );
+    }
+
     #[test]
     fn yaml_round_trip_preserves_format() {
         let parsed = MemoryFile::parse(YAML_SAMPLE).expect("parse yaml");
