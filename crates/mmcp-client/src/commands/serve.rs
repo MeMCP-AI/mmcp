@@ -1348,6 +1348,15 @@ impl McpServer {
             // hard registration-level enforcement.
             tool_router.map.retain(|_, route| mode.allows(&route.attr));
         }
+        // FR-49: patch icons on the live router so `tools/list`
+        // surfaces the same glyphs `describe_tools` returns. The
+        // static `_tool_attr()` helpers do not carry icons (rmcp
+        // builds them at macro-expansion time), so the canonical
+        // patch lives here and in `registered_tool_attrs()`.
+        for (name, route) in tool_router.map.iter_mut() {
+            route.attr.icons =
+                Some(icons_for_category(tool_icon_category(name.as_ref())));
+        }
         Self {
             state,
             mode,
@@ -3892,9 +3901,93 @@ impl McpServer {
 /// `McpServer::registered_tool_attrs()` is the same data; this free
 /// function is the form `commands::tools` reaches for since the
 /// CLI subcommand never instantiates an `McpServer`.
+///
+/// FR-49: every entry is decorated with category-derived icons so
+/// `describe_tools`, the `mmcp tools` CLI, and (via the live
+/// `tool_router` in `McpServer::new`) `tools/list` all surface the
+/// same per-tool glyph without 37 separate `icons = ...` macro
+/// arguments at every `#[tool]` site.
 pub(crate) fn registered_tool_attrs() -> Vec<rmcp::model::Tool> {
-    McpServer::registered_tool_attrs()
+    let mut tools = McpServer::registered_tool_attrs();
+    for tool in &mut tools {
+        tool.icons = Some(icons_for_category(tool_icon_category(tool.name.as_ref())));
+    }
+    tools
 }
+
+/// FR-49: per-tool category that drives icon selection. Hand-
+/// curated by tool name; an unmapped tool falls through to
+/// `Mutate` so the FR-29 conformance test surfaces the omission
+/// rather than shipping a generic glyph that misleads operators.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ToolIconCategory {
+    /// Read-only tools that walk the local mirror without writing.
+    Read,
+    /// Local mutators — additive or destructive writes against the
+    /// mirror, the sessions store, or `.mmcp.toml`.
+    Mutate,
+    /// FR-007 feature-request tools (`*_feature`).
+    Feature,
+    /// `debug_*` raw-git escape hatches.
+    Debug,
+    /// `sync_*` tools that contact the remote server.
+    Sync,
+}
+
+fn tool_icon_category(name: &str) -> ToolIconCategory {
+    match name {
+        "list_groups"
+        | "list_memories"
+        | "read_memory"
+        | "list_versions"
+        | "group_info"
+        | "search_memories"
+        | "read_memory_body_sections"
+        | "check_health"
+        | "diagnose"
+        | "bootstrap_context"
+        | "status"
+        | "describe_tools" => ToolIconCategory::Read,
+        "read_feature"
+        | "list_features"
+        | "add_feature"
+        | "update_feature"
+        | "delete_feature"
+        | "rename_feature" => ToolIconCategory::Feature,
+        "debug_read_file"
+        | "debug_list_tree"
+        | "debug_git_log"
+        | "debug_write_file"
+        | "debug_toggle" => ToolIconCategory::Debug,
+        "sync_fetch" | "sync_push" | "sync_pull" | "sync" => ToolIconCategory::Sync,
+        // Default arm: every remaining live tool is a local
+        // mutator. New tools that drift outside the buckets above
+        // surface as `Mutate` until the curator updates this match;
+        // `tool_icons_match_categories` test covers the live set.
+        _ => ToolIconCategory::Mutate,
+    }
+}
+
+fn icons_for_category(cat: ToolIconCategory) -> Vec<rmcp::model::Icon> {
+    let src = match cat {
+        ToolIconCategory::Read => READ_ICON_SRC,
+        ToolIconCategory::Mutate => MUTATE_ICON_SRC,
+        ToolIconCategory::Feature => FEATURE_ICON_SRC,
+        ToolIconCategory::Debug => DEBUG_ICON_SRC,
+        ToolIconCategory::Sync => SYNC_ICON_SRC,
+    };
+    vec![rmcp::model::Icon::new(src).with_mime_type("image/svg+xml")]
+}
+
+// FR-49: tiny inline-SVG data URIs so the icon ships with the
+// binary instead of relying on an external CDN. Each glyph is a
+// single emoji rendered as text inside a 16x16 viewBox; clients
+// with icon-capable UIs render the emoji at any size.
+const READ_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F4D6}</text></svg>";
+const MUTATE_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{270F}\u{FE0F}</text></svg>";
+const FEATURE_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F6A9}</text></svg>";
+const DEBUG_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F41B}</text></svg>";
+const SYNC_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F504}</text></svg>";
 
 /// FR-32 per-argument risk hint. Each entry names a specific arg
 /// (and the value that activates the risk) so harnesses can prompt
@@ -8224,6 +8317,57 @@ mod tests {
         let sw_pull = (Some(false), Some(true), Some(true), Some(true));
         check_bits(McpServer::sync_pull_tool_attr(), sw_pull);
         check_bits(McpServer::sync_tool_attr(), sw_pull);
+    }
+
+    /// FR-49: every registered tool surfaces a non-empty `icons` list
+    /// on the canonical accessor consumed by `describe_tools`, the
+    /// `mmcp tools` CLI, and the live `tool_router`. A tool that
+    /// drifts outside the matched buckets in `tool_icon_category`
+    /// would still receive icons (default arm = Mutate), so this
+    /// test alone does not catch unmapped names; it does catch any
+    /// regression where the patching step is skipped or the helper
+    /// returns an empty Vec.
+    #[test]
+    fn registered_tools_carry_icons_for_describe_tools_and_cli() {
+        for tool in registered_tool_attrs() {
+            let icons = tool
+                .icons
+                .as_ref()
+                .unwrap_or_else(|| panic!("{}: tool must carry icons", tool.name));
+            assert!(
+                !icons.is_empty(),
+                "{}: icons list must be non-empty",
+                tool.name,
+            );
+            assert!(
+                icons[0].src.starts_with("data:image/svg+xml"),
+                "{}: icon src must be a data SVG; got {:?}",
+                tool.name,
+                icons[0].src,
+            );
+        }
+    }
+
+    /// FR-49: spot-check that category routing covers the obvious
+    /// archetypes — one read tool, one debug tool, one sync tool,
+    /// one feature tool, one mutate tool — so a future refactor of
+    /// the category match can't silently re-bucket entire families.
+    #[test]
+    fn tool_icon_category_covers_each_archetype() {
+        assert_eq!(tool_icon_category("read_memory"), ToolIconCategory::Read);
+        assert_eq!(tool_icon_category("write_memory"), ToolIconCategory::Mutate);
+        assert_eq!(tool_icon_category("read_feature"), ToolIconCategory::Feature);
+        assert_eq!(
+            tool_icon_category("debug_read_file"),
+            ToolIconCategory::Debug,
+        );
+        assert_eq!(tool_icon_category("sync_pull"), ToolIconCategory::Sync);
+        // Unmapped names default to Mutate; the FR-29 test catches
+        // the absence of a tool from the list, not bucket drift.
+        assert_eq!(
+            tool_icon_category("future_tool_that_does_not_exist_yet"),
+            ToolIconCategory::Mutate,
+        );
     }
 
     /// FR-30: `mmcp serve --mode readonly` filters destructive and
