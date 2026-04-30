@@ -564,8 +564,16 @@ async fn resolve_supersede_target(
         Err(other) => return Err(other),
     };
 
+    // FR-51: Resolved targets are now allowed so a redesign that
+    // replaces a landed feature can capture the relationship as a
+    // typed `superseded_by` chain instead of prose-only references.
+    // Duplicate keeps its own redirect semantics; Superseded already
+    // carries a back-link the caller should chase to the tip.
     match record.status {
-        FeatureStatus::Open | FeatureStatus::Blocked | FeatureStatus::Deferred => {}
+        FeatureStatus::Open
+        | FeatureStatus::Blocked
+        | FeatureStatus::Deferred
+        | FeatureStatus::Resolved => {}
         FeatureStatus::Superseded => {
             return Err(FeatureError::SupersedesInvalidStatus {
                 slug: record.slug,
@@ -2051,8 +2059,15 @@ mod tests {
         }
     }
 
+    /// FR-51: superseding a Resolved FR captures the redesign-
+    /// replaces-landed-design relationship as a typed
+    /// `superseded_by` chain. The two-commit flow runs and the
+    /// back-link symmetry holds — old FR flips to `Superseded`,
+    /// new FR carries a ref pointing at the old FR's pre-supersede
+    /// commit. Duplicate and Superseded targets stay rejected (see
+    /// `add_feature_supersedes_already_superseded_fr_chains_the_link`).
     #[tokio::test]
-    async fn add_feature_supersedes_resolved_fr_errors() {
+    async fn add_feature_can_supersede_resolved_target() {
         let scratch = ScratchHome::new().await.expect("scratch home");
         let seeded = scratch.seed_group("fr-group").await.expect("seed");
         let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
@@ -2071,7 +2086,7 @@ mod tests {
         .await
         .expect("seed resolved FR");
 
-        let err = add_feature(
+        let new_record = add_feature(
             scratch.backend(),
             &entry,
             AddSpec {
@@ -2083,13 +2098,35 @@ mod tests {
             scratch.author(),
         )
         .await
-        .expect_err("resolved FR must reject supersede");
-        match err {
-            FeatureError::SupersedesInvalidStatus { status, .. } => {
-                assert_eq!(status, FeatureStatus::Resolved)
-            }
-            other => panic!("expected SupersedesInvalidStatus, got {other:?}"),
-        }
+        .expect("supersede flow against Resolved target succeeds");
+
+        let old_after = read_feature(scratch.backend(), &entry, "old-resolved", None)
+            .await
+            .expect("re-read old after supersede");
+        assert_eq!(old_after.status, FeatureStatus::Superseded);
+        let link = old_after.superseded_by.expect("back-link set");
+        assert_eq!(link.commit, new_record.commit_id);
+
+        let new_refs = read_memory_refs(
+            scratch.backend(),
+            &entry.handle,
+            &resolve_memory(
+                scratch.backend(),
+                &entry.handle,
+                Some(&new_record.slug),
+                None,
+            )
+            .await
+            .expect("resolve new")
+            .path,
+        )
+        .await
+        .expect("refs");
+        assert_eq!(
+            new_refs.len(),
+            1,
+            "new FR must carry exactly one auto-populated ref pinned at old FR's pre-supersede commit",
+        );
     }
 
     #[tokio::test]
