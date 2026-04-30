@@ -2361,6 +2361,12 @@ impl McpServer {
                 "memory_count": report.memory_count,
             }));
         }
+        // FR-34: surface any registered tool whose `annotations` slot
+        // is `None`. The FR-29 conformance test catches this in CI
+        // but operators running a stale build still want a runtime
+        // hint — `mmcp diagnose` (CLI) / `diagnose` (MCP) is the
+        // single place every install can probe.
+        notes.extend(collect_missing_annotation_notes(&registered_tool_attrs()));
         let healthy = !notes
             .iter()
             .any(|n| n.level == mmcp_proto::NoteLevel::Error);
@@ -3789,6 +3795,25 @@ impl McpServer {
 /// CLI subcommand never instantiates an `McpServer`.
 pub(crate) fn registered_tool_attrs() -> Vec<rmcp::model::Tool> {
     McpServer::registered_tool_attrs()
+}
+
+/// FR-34 helper: emit one `missing_tool_annotations` warn note per
+/// tool whose `annotations` slot is `None`. Extracted so the
+/// diagnose body stays a single fan-out and so unit tests can
+/// exercise the loop against synthetic tools without standing up a
+/// full server.
+fn collect_missing_annotation_notes(tools: &[rmcp::model::Tool]) -> Vec<mmcp_proto::Note> {
+    tools
+        .iter()
+        .filter(|tool| tool.annotations.is_none())
+        .map(|tool| {
+            mmcp_proto::Note::warn(
+                "missing_tool_annotations",
+                format!("MCP tool '{}' has no annotations", tool.name),
+            )
+            .with_context(json!({ "tool": tool.name.to_string() }))
+        })
+        .collect()
 }
 
 impl McpServer {
@@ -7933,6 +7958,73 @@ mod tests {
         assert!(
             names.contains(&"describe_tools"),
             "describe_tools must appear in its own listing; got: {names:?}",
+        );
+    }
+
+    /// FR-34: when every registered tool carries annotations (the
+    /// real surface after FR-29), the diagnose helper emits zero
+    /// `missing_tool_annotations` notes.
+    #[test]
+    fn collect_missing_annotation_notes_is_empty_on_real_surface() {
+        let tools = registered_tool_attrs();
+        let notes = collect_missing_annotation_notes(&tools);
+        assert!(
+            notes.is_empty(),
+            "real tool surface must have no missing annotations; got: {notes:?}",
+        );
+    }
+
+    /// FR-34: a synthetic tool with no `annotations` slot surfaces
+    /// as a `missing_tool_annotations` warn note.
+    #[test]
+    fn collect_missing_annotation_notes_flags_unannotated_tool() {
+        // Take one real tool, blank its annotations to simulate a
+        // future-tool slip-through. The FR-29 build-time test
+        // prevents this on the live surface; this test guards the
+        // runtime check itself.
+        let mut tools = registered_tool_attrs();
+        let mut victim = tools.remove(0);
+        victim.annotations = None;
+        let victim_name = victim.name.to_string();
+        tools.insert(0, victim);
+
+        let notes = collect_missing_annotation_notes(&tools);
+        assert_eq!(notes.len(), 1, "exactly one missing-annotations note");
+        let note = &notes[0];
+        assert_eq!(note.level, mmcp_proto::NoteLevel::Warn);
+        assert_eq!(note.code, "missing_tool_annotations");
+        let context = note.context.as_ref().expect("context payload");
+        assert_eq!(
+            context.get("tool").and_then(|v| v.as_str()),
+            Some(victim_name.as_str()),
+        );
+    }
+
+    /// FR-34: diagnose surfaces the annotation-coverage check on the
+    /// notes channel. With the real tool surface this stays clean,
+    /// so no `missing_tool_annotations` codes appear in the output.
+    #[tokio::test]
+    async fn diagnose_does_not_flag_annotations_on_clean_surface() {
+        let (state, _tmp) = test_state().await;
+        let server = McpServer::new(state, ServeMode::Full);
+        let res = server
+            .diagnose(Parameters(CheckHealthArgs { group: None }))
+            .await
+            .expect("diagnose");
+        let parsed = parse_ok_json(res);
+        let codes: Vec<String> = parsed
+            .get("notes")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|n| n.get("code").and_then(|c| c.as_str()))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            !codes.iter().any(|c| c == "missing_tool_annotations"),
+            "real surface should not surface missing_tool_annotations; got: {codes:?}",
         );
     }
 }
