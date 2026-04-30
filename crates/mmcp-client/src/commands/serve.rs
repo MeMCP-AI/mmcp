@@ -1348,14 +1348,17 @@ impl McpServer {
             // hard registration-level enforcement.
             tool_router.map.retain(|_, route| mode.allows(&route.attr));
         }
-        // FR-49: patch icons on the live router so `tools/list`
-        // surfaces the same glyphs `describe_tools` returns. The
-        // static `_tool_attr()` helpers do not carry icons (rmcp
-        // builds them at macro-expansion time), so the canonical
-        // patch lives here and in `registered_tool_attrs()`.
+        // FR-49 / FR-50: patch icons + meta on the live router so
+        // `tools/list` surfaces the same glyphs and advisory hints
+        // `describe_tools` returns. The static `_tool_attr()`
+        // helpers do not carry these fields (rmcp builds them at
+        // macro-expansion time), so the canonical patch lives here
+        // and in `registered_tool_attrs()`.
         for (name, route) in tool_router.map.iter_mut() {
+            let name_str = name.as_ref();
             route.attr.icons =
-                Some(icons_for_category(tool_icon_category(name.as_ref())));
+                Some(icons_for_category(tool_icon_category(name_str)));
+            route.attr.meta = meta_for_tool(name_str);
         }
         Self {
             state,
@@ -3911,6 +3914,9 @@ pub(crate) fn registered_tool_attrs() -> Vec<rmcp::model::Tool> {
     let mut tools = McpServer::registered_tool_attrs();
     for tool in &mut tools {
         tool.icons = Some(icons_for_category(tool_icon_category(tool.name.as_ref())));
+        // FR-50: meta lands on the same patching seam as icons so
+        // describe_tools and the CLI surface match the live router.
+        tool.meta = meta_for_tool(tool.name.as_ref());
     }
     tools
 }
@@ -3988,6 +3994,91 @@ const MUTATE_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3
 const FEATURE_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F6A9}</text></svg>";
 const DEBUG_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F41B}</text></svg>";
 const SYNC_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F504}</text></svg>";
+
+/// FR-50: build the per-tool `_meta` map carrying mmcp-specific
+/// advisory hints that complement the FR-29 `ToolAnnotations` bits.
+/// Returns `None` for tools that need none of the bits so the wire
+/// shape stays absent rather than `{}` for unrelated tools.
+///
+/// Every key is namespaced under `mmcp.` per the FR spec. Today's
+/// vocabulary:
+///
+/// - `mmcp.requires_project` — tool errors without a discovered
+///   `.mmcp.toml` (every FR tool plus `subscribe` / `unsubscribe`).
+/// - `mmcp.requires_sync` — tool errors without a configured
+///   `[sync]` block in `.mmcp.toml` (every `sync_*` tool).
+/// - `mmcp.debug_gated` — tool refuses unless `debug_toggle(true)`
+///   has been called this session (every `debug_*` tool).
+/// - `mmcp.protected_group_gated` — tool fires the FR-019
+///   `confirm_protected_write` elicitation when targeting a
+///   protected group (write / edit / delete / debug_write_file /
+///   init_claude).
+/// - `mmcp.network` — tool reaches outside the local mirror.
+///   Today only the `sync_*` tools set this, mirroring
+///   `open_world_hint` but kept distinct so future open-world
+///   tools that don't sync (e.g. a future fetch-from-URL)
+///   classify cleanly.
+fn meta_for_tool(name: &str) -> Option<rmcp::model::Meta> {
+    let mut keys: Vec<(&'static str, bool)> = Vec::new();
+
+    // Tools that auto-resolve a project from cwd and error out
+    // when no `.mmcp.toml` is in scope. The `project` selector
+    // arg lets callers point at a specific group, but the bit
+    // still flags "needs project context" for harness pre-flight.
+    if matches!(
+        name,
+        "read_feature"
+            | "list_features"
+            | "add_feature"
+            | "update_feature"
+            | "delete_feature"
+            | "rename_feature"
+            | "subscribe"
+            | "unsubscribe"
+    ) {
+        keys.push(("mmcp.requires_project", true));
+    }
+
+    // Sync tools need a configured `[sync] server_url` and they
+    // touch the network. Two bits flag both axes so harnesses
+    // targeting offline-only mirrors can mask them out.
+    if matches!(name, "sync_fetch" | "sync_push" | "sync_pull" | "sync") {
+        keys.push(("mmcp.requires_sync", true));
+        keys.push(("mmcp.network", true));
+    }
+
+    if matches!(
+        name,
+        "debug_read_file"
+            | "debug_list_tree"
+            | "debug_git_log"
+            | "debug_write_file"
+            | "debug_toggle"
+    ) {
+        keys.push(("mmcp.debug_gated", true));
+    }
+
+    if matches!(
+        name,
+        "write_memory"
+            | "edit_memory"
+            | "edit_memory_body"
+            | "delete_memory"
+            | "debug_write_file"
+            | "init_claude"
+    ) {
+        keys.push(("mmcp.protected_group_gated", true));
+    }
+
+    if keys.is_empty() {
+        return None;
+    }
+    let mut meta = rmcp::model::Meta::new();
+    for (k, v) in keys {
+        meta.0.insert(k.to_string(), serde_json::Value::Bool(v));
+    }
+    Some(meta)
+}
 
 /// FR-32 per-argument risk hint. Each entry names a specific arg
 /// (and the value that activates the risk) so harnesses can prompt
@@ -8367,6 +8458,78 @@ mod tests {
         assert_eq!(
             tool_icon_category("future_tool_that_does_not_exist_yet"),
             ToolIconCategory::Mutate,
+        );
+    }
+
+    /// FR-50: the patching seam decorates each tool with its
+    /// mmcp.* advisory bits. Spot-check the four buckets — sync
+    /// (network + requires_sync), debug (debug_gated), protected-
+    /// group (write_memory hits the FR-019 guard), feature
+    /// (requires_project) — so a refactor of `meta_for_tool`
+    /// cannot silently strip the wire-visible hints.
+    #[test]
+    fn meta_for_tool_covers_each_namespace_bucket() {
+        let sync = meta_for_tool("sync_pull").expect("sync_pull has meta");
+        assert_eq!(
+            sync.0.get("mmcp.requires_sync"),
+            Some(&serde_json::Value::Bool(true)),
+        );
+        assert_eq!(
+            sync.0.get("mmcp.network"),
+            Some(&serde_json::Value::Bool(true)),
+        );
+
+        let debug = meta_for_tool("debug_read_file").expect("debug has meta");
+        assert_eq!(
+            debug.0.get("mmcp.debug_gated"),
+            Some(&serde_json::Value::Bool(true)),
+        );
+
+        let protected = meta_for_tool("write_memory").expect("write_memory has meta");
+        assert_eq!(
+            protected.0.get("mmcp.protected_group_gated"),
+            Some(&serde_json::Value::Bool(true)),
+        );
+
+        let feature = meta_for_tool("read_feature").expect("read_feature has meta");
+        assert_eq!(
+            feature.0.get("mmcp.requires_project"),
+            Some(&serde_json::Value::Bool(true)),
+        );
+
+        // A tool with no advisory bits returns `None` so the wire
+        // stays absent, not `{}`. `list_groups` is a pure-local
+        // read with no preconditions.
+        assert!(meta_for_tool("list_groups").is_none());
+    }
+
+    /// FR-50: the patching seam decorates `registered_tool_attrs()`
+    /// (consumed by `describe_tools` and the CLI) with the same
+    /// meta the live router sees, so harnesses pre-flighting via
+    /// either path get matching results.
+    #[test]
+    fn registered_tools_carry_meta_for_describe_tools() {
+        let tools = registered_tool_attrs();
+        let sync_pull = tools
+            .iter()
+            .find(|t| t.name.as_ref() == "sync_pull")
+            .expect("sync_pull present");
+        let meta = sync_pull
+            .meta
+            .as_ref()
+            .expect("sync_pull surface must carry meta");
+        assert_eq!(
+            meta.0.get("mmcp.network"),
+            Some(&serde_json::Value::Bool(true)),
+        );
+
+        let list_groups = tools
+            .iter()
+            .find(|t| t.name.as_ref() == "list_groups")
+            .expect("list_groups present");
+        assert!(
+            list_groups.meta.is_none(),
+            "list_groups has no advisory bits; meta must stay None",
         );
     }
 
