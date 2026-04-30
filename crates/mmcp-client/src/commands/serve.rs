@@ -1348,17 +1348,19 @@ impl McpServer {
             // hard registration-level enforcement.
             tool_router.map.retain(|_, route| mode.allows(&route.attr));
         }
-        // FR-49 / FR-50: patch icons + meta on the live router so
-        // `tools/list` surfaces the same glyphs and advisory hints
-        // `describe_tools` returns. The static `_tool_attr()`
-        // helpers do not carry these fields (rmcp builds them at
-        // macro-expansion time), so the canonical patch lives here
-        // and in `registered_tool_attrs()`.
+        // FR-49 / FR-50 / FR-45: patch icons, meta, and the shared
+        // output schema on the live router so `tools/list` surfaces
+        // the same fields `describe_tools` returns. The static
+        // `_tool_attr()` helpers do not carry these (rmcp builds
+        // them at macro-expansion time), so the canonical patch
+        // lives here and in `registered_tool_attrs()`.
+        let output_schema = shared_output_schema();
         for (name, route) in tool_router.map.iter_mut() {
             let name_str = name.as_ref();
             route.attr.icons =
                 Some(icons_for_category(tool_icon_category(name_str)));
             route.attr.meta = meta_for_tool(name_str);
+            route.attr.output_schema = Some(output_schema.clone());
         }
         Self {
             state,
@@ -3917,6 +3919,10 @@ pub(crate) fn registered_tool_attrs() -> Vec<rmcp::model::Tool> {
         // FR-50: meta lands on the same patching seam as icons so
         // describe_tools and the CLI surface match the live router.
         tool.meta = meta_for_tool(tool.name.as_ref());
+        // FR-45: every tool gets a permissive object output schema
+        // so clients can validate. Per-tool typed schemas defer to
+        // a follow-up FR.
+        tool.output_schema = Some(shared_output_schema());
     }
     tools
 }
@@ -4078,6 +4084,62 @@ fn meta_for_tool(name: &str) -> Option<rmcp::model::Meta> {
         meta.0.insert(k.to_string(), serde_json::Value::Bool(v));
     }
     Some(meta)
+}
+
+/// FR-45: every registered tool receives a permissive object
+/// `output_schema` so MCP clients can validate that responses are
+/// JSON objects (with optional `notes` channel) and surface the
+/// shape in autocomplete UIs. Per-tool typed schemas — the FR's
+/// stretch goal — are deferred to a follow-up: replacing the
+/// `json!({...})` payloads with typed structs deriving `JsonSchema`
+/// is a 37-tool refactor of its own that doesn't compose cleanly
+/// inside this metadata-sweep streak.
+///
+/// Cached behind a `OnceLock` so the same `Arc<JsonObject>` reaches
+/// every tool. Cheap to clone; cheaper than rebuilding the map per
+/// tool on every `tools/list` round-trip.
+fn shared_output_schema() -> std::sync::Arc<rmcp::model::JsonObject> {
+    use std::sync::OnceLock;
+    static SCHEMA: OnceLock<std::sync::Arc<rmcp::model::JsonObject>> = OnceLock::new();
+    SCHEMA
+        .get_or_init(|| {
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "type".to_string(),
+                serde_json::Value::String("object".to_string()),
+            );
+            obj.insert(
+                "additionalProperties".to_string(),
+                serde_json::Value::Bool(true),
+            );
+            // Surface the shared `notes` field shape so harnesses
+            // know to look there for FR-45 dangling-ref / parse-
+            // warning notes; absent on tools that never emit any.
+            let mut props = serde_json::Map::new();
+            let mut notes_schema = serde_json::Map::new();
+            notes_schema
+                .insert("type".to_string(), serde_json::Value::String("array".to_string()));
+            notes_schema.insert(
+                "description".to_string(),
+                serde_json::Value::String(
+                    "FR-45 notes channel. Optional warnings emitted alongside the \
+                     tool's primary payload."
+                        .to_string(),
+                ),
+            );
+            props.insert("notes".to_string(), serde_json::Value::Object(notes_schema));
+            obj.insert("properties".to_string(), serde_json::Value::Object(props));
+            obj.insert(
+                "description".to_string(),
+                serde_json::Value::String(
+                    "Tool response. Permissive object shape — per-tool typed schemas \
+                     land in a follow-up FR."
+                        .to_string(),
+                ),
+            );
+            std::sync::Arc::new(obj)
+        })
+        .clone()
 }
 
 /// FR-32 per-argument risk hint. Each entry names a specific arg
@@ -8501,6 +8563,47 @@ mod tests {
         // stays absent, not `{}`. `list_groups` is a pure-local
         // read with no preconditions.
         assert!(meta_for_tool("list_groups").is_none());
+    }
+
+    /// FR-45: every registered tool surfaces a permissive object
+    /// `output_schema` so MCP clients can validate that the
+    /// response is a JSON object without 37 separate typed
+    /// response structs landing in this commit.
+    #[test]
+    fn registered_tools_carry_output_schema() {
+        for tool in registered_tool_attrs() {
+            let schema = tool
+                .output_schema
+                .as_ref()
+                .unwrap_or_else(|| panic!("{}: tool must carry output_schema", tool.name));
+            assert_eq!(
+                schema.get("type").and_then(|v| v.as_str()),
+                Some("object"),
+                "{}: schema must declare type=object",
+                tool.name,
+            );
+            assert_eq!(
+                schema
+                    .get("additionalProperties")
+                    .and_then(|v| v.as_bool()),
+                Some(true),
+                "{}: schema must allow additional properties",
+                tool.name,
+            );
+        }
+    }
+
+    /// FR-45: the schema is shared (same `Arc`) across all tools so
+    /// the per-tool patch is cheap. Cloning the Arc bumps the
+    /// reference count rather than rebuilding the JsonObject.
+    #[test]
+    fn shared_output_schema_returns_same_arc() {
+        let a = shared_output_schema();
+        let b = shared_output_schema();
+        assert!(
+            std::sync::Arc::ptr_eq(&a, &b),
+            "shared_output_schema must hand out the same Arc on repeat calls",
+        );
     }
 
     /// FR-50: the patching seam decorates `registered_tool_attrs()`
