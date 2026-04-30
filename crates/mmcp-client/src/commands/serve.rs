@@ -3269,14 +3269,20 @@ impl McpServer {
             .into_iter()
             .map(|tool| {
                 let ann = tool.annotations.as_ref();
+                // FR-32: surface per-arg risk hints alongside the
+                // tool-level annotations so a harness that trusts
+                // `destructive_hint = false` for write_memory still
+                // sees that `override: true` carries its own risk.
+                let arg_risk_hints = arg_risk_hints_for(tool.name.as_ref());
                 json!({
-                    "name":        tool.name,
-                    "description": tool.description,
-                    "title":       ann.and_then(|a| a.title.clone()),
-                    "read_only":   ann.and_then(|a| a.read_only_hint),
-                    "destructive": ann.and_then(|a| a.destructive_hint),
-                    "idempotent":  ann.and_then(|a| a.idempotent_hint),
-                    "open_world":  ann.and_then(|a| a.open_world_hint),
+                    "name":            tool.name,
+                    "description":     tool.description,
+                    "title":           ann.and_then(|a| a.title.clone()),
+                    "read_only":       ann.and_then(|a| a.read_only_hint),
+                    "destructive":     ann.and_then(|a| a.destructive_hint),
+                    "idempotent":      ann.and_then(|a| a.idempotent_hint),
+                    "open_world":      ann.and_then(|a| a.open_world_hint),
+                    "arg_risk_hints":  arg_risk_hints,
                 })
             })
             .collect();
@@ -3861,6 +3867,83 @@ impl McpServer {
 /// CLI subcommand never instantiates an `McpServer`.
 pub(crate) fn registered_tool_attrs() -> Vec<rmcp::model::Tool> {
     McpServer::registered_tool_attrs()
+}
+
+/// FR-32 per-argument risk hint. Each entry names a specific arg
+/// (and the value that activates the risk) so harnesses can prompt
+/// even when the tool itself is not flagged destructive at the
+/// FR-29 level. Serialised into `describe_tools` and the
+/// `mmcp tools` CLI.
+///
+/// Today only boolean-true triggers are modelled — the existing
+/// risky args (`override`, `force`) are all flag-shaped. Enum or
+/// numeric value triggers can extend the `risk_when` field later
+/// without breaking the wire shape.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct ArgRiskHint {
+    /// Name of the argument as it appears in the tool's input
+    /// schema.
+    pub arg: &'static str,
+    /// Value condition that makes the arg risky. Today always
+    /// `"true"` since every existing risky arg is boolean.
+    pub risk_when: &'static str,
+    /// Stable code matching the tool-level `destructive_hint`
+    /// vocabulary so harnesses can re-use the same prompt text.
+    pub kind: &'static str,
+    /// Human-readable one-line explanation. Suitable for direct
+    /// display in a confirmation prompt.
+    pub reason: &'static str,
+}
+
+/// FR-32 curated hint registry. Tool name → risky-arg entries.
+///
+/// Entries are hand-maintained — there is no derive macro that
+/// inspects the args struct. The trade-off is honest: most tool
+/// args are not risk-bearing, so the registry stays short, and the
+/// FR-31 `describe_tools` consumer wants explicit reasons that a
+/// macro could not generate.
+pub(crate) fn arg_risk_hints_for(tool_name: &str) -> &'static [ArgRiskHint] {
+    match tool_name {
+        "write_memory" => &[
+            ArgRiskHint {
+                arg: "override",
+                risk_when: "true",
+                kind: "destructive",
+                reason: "override: true overwrites the existing file silently; prefer edit_memory for partial updates",
+            },
+            ArgRiskHint {
+                arg: "force",
+                risk_when: "true",
+                kind: "destructive",
+                reason: "force: true bypasses the FR-28 filename/frontmatter id-mismatch guard",
+            },
+        ],
+        "import_memory" => &[
+            ArgRiskHint {
+                arg: "override",
+                risk_when: "true",
+                kind: "destructive",
+                reason: "override: true replaces the colliding-id memory in place",
+            },
+        ],
+        "edit_memory" => &[
+            ArgRiskHint {
+                arg: "force",
+                risk_when: "true",
+                kind: "destructive",
+                reason: "force: true bypasses the FR-28 filename/frontmatter id-mismatch guard on a ByFilename write",
+            },
+        ],
+        "edit_memory_body" => &[
+            ArgRiskHint {
+                arg: "force",
+                risk_when: "true",
+                kind: "destructive",
+                reason: "force: true bypasses the FR-28 filename/frontmatter id-mismatch guard",
+            },
+        ],
+        _ => &[],
+    }
 }
 
 /// FR-34 helper: emit one `missing_tool_annotations` warn note per
@@ -8180,6 +8263,81 @@ mod tests {
             names.contains(&"describe_tools"),
             "describe_tools must appear in its own listing; got: {names:?}",
         );
+    }
+
+    /// FR-32: write_memory's `override` arg surfaces as a destructive
+    /// hint via `describe_tools`, even though the tool itself is
+    /// flagged `destructive_hint = false` (additive in the common
+    /// case). Harnesses that match on the tool-level bit alone would
+    /// miss the silent overwrite — the per-arg hint closes the gap.
+    #[tokio::test]
+    async fn describe_tools_surfaces_arg_risk_hints_for_write_memory_override() {
+        let (state, _tmp) = test_state().await;
+        let server = McpServer::new(state, ServeMode::Full);
+        let res = server
+            .describe_tools(Parameters(DescribeToolsArgs::default()))
+            .await
+            .expect("describe_tools");
+        let parsed = parse_ok_json(res);
+        let tools = parsed
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .expect("tools array");
+        let write_memory = tools
+            .iter()
+            .find(|t| t.get("name").and_then(|v| v.as_str()) == Some("write_memory"))
+            .expect("write_memory entry");
+        let hints = write_memory
+            .get("arg_risk_hints")
+            .and_then(|v| v.as_array())
+            .expect("arg_risk_hints array");
+        let override_hint = hints
+            .iter()
+            .find(|h| h.get("arg").and_then(|v| v.as_str()) == Some("override"))
+            .expect("override hint");
+        assert_eq!(
+            override_hint.get("kind").and_then(|v| v.as_str()),
+            Some("destructive"),
+        );
+        assert_eq!(
+            override_hint.get("risk_when").and_then(|v| v.as_str()),
+            Some("true"),
+        );
+        assert!(
+            override_hint
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false),
+            "reason must be non-empty",
+        );
+    }
+
+    /// FR-32: read-only tools have no risky args; the field still
+    /// appears as an empty array so callers can match on shape
+    /// without an `Option` branch.
+    #[tokio::test]
+    async fn describe_tools_arg_risk_hints_empty_for_read_only_tools() {
+        let (state, _tmp) = test_state().await;
+        let server = McpServer::new(state, ServeMode::Full);
+        let res = server
+            .describe_tools(Parameters(DescribeToolsArgs::default()))
+            .await
+            .expect("describe_tools");
+        let parsed = parse_ok_json(res);
+        let tools = parsed
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .expect("tools array");
+        let read_memory = tools
+            .iter()
+            .find(|t| t.get("name").and_then(|v| v.as_str()) == Some("read_memory"))
+            .expect("read_memory entry");
+        let hints = read_memory
+            .get("arg_risk_hints")
+            .and_then(|v| v.as_array())
+            .expect("arg_risk_hints array even for read-only tools");
+        assert!(hints.is_empty(), "read_memory must have no risky args");
     }
 
     /// FR-34: when every registered tool carries annotations (the

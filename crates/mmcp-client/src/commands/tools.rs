@@ -11,7 +11,7 @@ use anyhow::Result;
 use clap::ValueEnum;
 use serde::Serialize;
 
-use crate::commands::serve::registered_tool_attrs;
+use crate::commands::serve::{ArgRiskHint, arg_risk_hints_for, registered_tool_attrs};
 
 /// Output format selector for `mmcp tools`.
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -35,6 +35,7 @@ struct ToolRow {
     destructive: Option<bool>,
     idempotent: Option<bool>,
     open_world: Option<bool>,
+    arg_risk_hints: &'static [ArgRiskHint],
 }
 
 /// Print the tool catalogue to stdout in the requested format.
@@ -43,6 +44,7 @@ pub fn run(format: ToolsFormat) -> Result<()> {
         .into_iter()
         .map(|tool| {
             let ann = tool.annotations.as_ref();
+            let arg_risk_hints = arg_risk_hints_for(tool.name.as_ref());
             ToolRow {
                 name: tool.name.to_string(),
                 title: ann.and_then(|a| a.title.clone()),
@@ -55,6 +57,7 @@ pub fn run(format: ToolsFormat) -> Result<()> {
                 destructive: ann.and_then(|a| a.destructive_hint),
                 idempotent: ann.and_then(|a| a.idempotent_hint),
                 open_world: ann.and_then(|a| a.open_world_hint),
+                arg_risk_hints,
             }
         })
         .collect();
@@ -151,6 +154,7 @@ mod tests {
             .into_iter()
             .map(|tool| {
                 let ann = tool.annotations.as_ref();
+                let arg_risk_hints = arg_risk_hints_for(tool.name.as_ref());
                 ToolRow {
                     name: tool.name.to_string(),
                     title: ann.and_then(|a| a.title.clone()),
@@ -163,6 +167,7 @@ mod tests {
                     destructive: ann.and_then(|a| a.destructive_hint),
                     idempotent: ann.and_then(|a| a.idempotent_hint),
                     open_world: ann.and_then(|a| a.open_world_hint),
+                    arg_risk_hints,
                 }
             })
             .collect();
@@ -187,6 +192,20 @@ mod tests {
         assert_eq!(read_memory.read_only, Some(true));
         assert_eq!(read_memory.idempotent, Some(true));
         assert_eq!(read_memory.open_world, Some(false));
+        // FR-32: read_memory has no risky args; write_memory has
+        // an `override` hint.
+        assert!(read_memory.arg_risk_hints.is_empty());
+        let write_memory = rows
+            .iter()
+            .find(|r| r.name == "write_memory")
+            .expect("write_memory present");
+        assert!(
+            write_memory
+                .arg_risk_hints
+                .iter()
+                .any(|h| h.arg == "override"),
+            "write_memory must surface an `override` arg_risk_hint",
+        );
     }
 
     #[test]
