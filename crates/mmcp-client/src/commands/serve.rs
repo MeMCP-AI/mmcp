@@ -3780,6 +3780,18 @@ impl McpServer {
         ]
     }
 
+}
+
+/// Module-level pub(crate) accessor for the canonical tool list.
+///
+/// `McpServer::registered_tool_attrs()` is the same data; this free
+/// function is the form `commands::tools` reaches for since the
+/// CLI subcommand never instantiates an `McpServer`.
+pub(crate) fn registered_tool_attrs() -> Vec<rmcp::model::Tool> {
+    McpServer::registered_tool_attrs()
+}
+
+impl McpServer {
     /// Parse the wire `group` string into a `GroupId` and look up
     /// the entry from the local mirror. Every memory-addressing
     /// tool starts with the same two lines; keeping them here

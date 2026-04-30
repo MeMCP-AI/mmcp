@@ -190,6 +190,17 @@ enum Command {
     /// `list-tree`, `read-file`, `write-file`. Use the typed
     /// `mmcp memory` / `mmcp group` surfaces first.
     Debug(commands::debug::DebugArgs),
+
+    /// Print the registered MCP tool catalogue with FR-029 annotation
+    /// hints. Same data the `describe_tools` MCP tool returns, but
+    /// callable without booting the stdio server. Useful for hook
+    /// scripts and ad-hoc audits picking which tools to allow.
+    Tools {
+        /// Output format. `table` is the default; `json` feeds
+        /// scripts piping into jq.
+        #[arg(long, value_enum, default_value_t = commands::tools::ToolsFormat::Table)]
+        format: commands::tools::ToolsFormat,
+    },
 }
 
 #[derive(Subcommand)]
@@ -279,6 +290,7 @@ async fn main() -> Result<()> {
         Command::Subscribe(args) => commands::subscribe::run_subscribe(args).await?,
         Command::Unsubscribe(args) => commands::subscribe::run_unsubscribe(args).await?,
         Command::Debug(args) => commands::debug::run(args).await?,
+        Command::Tools { format } => commands::tools::run(format)?,
     }
 
     Ok(())
