@@ -699,10 +699,20 @@ impl From<ToolMemoryEditOp> for mmcp_store::MemoryEditOp {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct SearchMemoriesArgs {
-    /// Substring matched against memory slug and frontmatter name,
-    /// case-insensitive.
-    pub query: String,
-    /// Optional maximum number of hits. Defaults to 50.
+    /// Single substring matched against memory slug and frontmatter
+    /// `name`, case-insensitive. Mutually exclusive with `queries`;
+    /// passing both errors with `code: invalid_search_args`.
+    #[serde(default)]
+    pub query: Option<String>,
+    /// Multi-substring form of `query`. Each entry is matched
+    /// independently; results are deduped by memory UUID so a memory
+    /// hit by N queries appears exactly once. Each hit carries a
+    /// `matched_queries` list naming every supplied entry that
+    /// matched it. Mutually exclusive with `query`.
+    #[serde(default)]
+    pub queries: Option<Vec<String>>,
+    /// Optional maximum number of hits. Defaults to 50. Caps total
+    /// deduped hits across all queries — not per query.
     #[serde(default)]
     pub limit: Option<u32>,
     /// Optional group filter (UUID or slug). When set, only
@@ -1564,7 +1574,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Case-insensitive substring search across the local mirror. Matches against the memory slug and the frontmatter `name` field. Optional `group` (UUID or slug) and `scope` (`global`/`shared`/`project`) filter the search set; absent means whole-mirror search, which stays the default because the tool is read-only. Returns up to `limit` hits (default 50).",
+        description = "Case-insensitive substring search across the local mirror. Matches against the memory slug and the frontmatter `name` field. Pass `query: String` for the single-substring form (legacy shape, hits returned bare) OR `queries: Vec<String>` for multi-substring novelty checks (each hit wraps the descriptor under `memory` and carries a `matched_queries` array; results dedupe by memory UUID across the whole query set). Passing both errors with `invalid_search_args`. Optional `group` (UUID or slug) and `scope` (`global`/`shared`/`project`) filter the search set; absent means whole-mirror search, which stays the default because the tool is read-only. Returns up to `limit` hits (default 50, total cap across all queries).",
         annotations(
             title = "Search memories",
             read_only_hint = true,
@@ -1576,10 +1586,52 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<SearchMemoriesArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let needle = args.query.trim().to_lowercase();
-        if needle.is_empty() {
-            return Err(McpError::invalid_params("query must not be empty", None));
-        }
+        // FR-43: accept either `query` (legacy single-string form,
+        // unchanged shape) or `queries` (Vec<String>, deduped output
+        // with `matched_queries` per hit). Passing both is rejected
+        // up front so callers cannot half-fall-back to the legacy
+        // shape mid-flight.
+        let (needles, originals, multi_mode) = match (args.query, args.queries) {
+            (Some(_), Some(_)) => {
+                return Err(McpError::invalid_params(
+                    "pass exactly one of `query` or `queries`",
+                    Some(json!({ "code": "invalid_search_args" })),
+                ));
+            }
+            (None, None) => {
+                return Err(McpError::invalid_params(
+                    "either `query` or `queries` must be set",
+                    Some(json!({ "code": "invalid_search_args" })),
+                ));
+            }
+            (Some(q), None) => {
+                let needle = q.trim().to_lowercase();
+                if needle.is_empty() {
+                    return Err(McpError::invalid_params("query must not be empty", None));
+                }
+                (vec![needle], vec![q], false)
+            }
+            (None, Some(qs)) => {
+                if qs.is_empty() {
+                    return Err(McpError::invalid_params(
+                        "queries must contain at least one entry",
+                        Some(json!({ "code": "invalid_search_args" })),
+                    ));
+                }
+                let mut needles = Vec::with_capacity(qs.len());
+                for q in &qs {
+                    let n = q.trim().to_lowercase();
+                    if n.is_empty() {
+                        return Err(McpError::invalid_params(
+                            "queries entries must not be empty",
+                            Some(json!({ "code": "invalid_search_args" })),
+                        ));
+                    }
+                    needles.push(n);
+                }
+                (needles, qs, true)
+            }
+        };
         let limit = args.limit.unwrap_or(50).max(1) as usize;
         // Resolve the optional group filter once up front so the
         // per-entry loop is a straight UUID compare, mirroring how
@@ -1623,7 +1675,7 @@ impl McpServer {
                 if hits.len() >= limit {
                     break;
                 }
-                let matches_slug = file.slug.to_lowercase().contains(&needle);
+                let slug_lower = file.slug.to_lowercase();
                 let descriptor = match read_memory_descriptor(
                     &self.state.backend,
                     &entry,
@@ -1639,12 +1691,26 @@ impl McpServer {
                         continue;
                     }
                 };
-                let matches_name = descriptor
+                let name_lower = descriptor
                     .get("name")
                     .and_then(|v| v.as_str())
-                    .map(|n| n.to_lowercase().contains(&needle))
-                    .unwrap_or(false);
-                if matches_slug || matches_name {
+                    .map(str::to_lowercase)
+                    .unwrap_or_default();
+                let mut matched: Vec<String> = Vec::new();
+                for (needle, original) in needles.iter().zip(originals.iter()) {
+                    if slug_lower.contains(needle) || name_lower.contains(needle) {
+                        matched.push(original.clone());
+                    }
+                }
+                if matched.is_empty() {
+                    continue;
+                }
+                if multi_mode {
+                    hits.push(json!({
+                        "memory": descriptor,
+                        "matched_queries": matched,
+                    }));
+                } else {
                     hits.push(descriptor);
                 }
             }
@@ -5539,7 +5605,8 @@ mod tests {
 
         let res = server
             .search_memories(Parameters(SearchMemoriesArgs {
-                query: "coding".into(),
+                query: Some("coding".into()),
+                queries: None,
                 limit: None,
                 group: Some("team-rust".into()),
                 scope: None,
@@ -5585,7 +5652,8 @@ mod tests {
 
         let res = server
             .search_memories(Parameters(SearchMemoriesArgs {
-                query: "coding".into(),
+                query: Some("coding".into()),
+                queries: None,
                 limit: None,
                 group: None,
                 scope: Some(ToolGroupScope::Global),
@@ -5613,7 +5681,8 @@ mod tests {
 
         let res = server
             .search_memories(Parameters(SearchMemoriesArgs {
-                query: "coding".into(),
+                query: Some("coding".into()),
+                queries: None,
                 limit: None,
                 group: None,
                 scope: None,
@@ -5630,6 +5699,158 @@ mod tests {
             hits[0].get("slug").and_then(|v| v.as_str()),
             Some("coding-rules")
         );
+    }
+
+    /// FR-43: multi-query form. Two overlapping queries hit the
+    /// same memory; assert dedup-by-UUID (one row, not two) and the
+    /// `matched_queries` list captures every input that hit it in
+    /// caller order.
+    #[tokio::test]
+    async fn search_memories_multi_query_dedupes_by_memory() {
+        let (state, _tmp) = test_state().await;
+        seed_group_with_memory(&state, "team-rust", "coding-rules", SAMPLE_MEMORY).await;
+        seed_group_with_memory(&state, "team-python", "style-guide", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let res = server
+            .search_memories(Parameters(SearchMemoriesArgs {
+                query: None,
+                queries: Some(vec!["coding".into(), "rules".into()]),
+                limit: None,
+                group: None,
+                scope: None,
+            }))
+            .await
+            .expect("multi-query search");
+        let parsed = parse_ok_json(res);
+        let hits = parsed
+            .get("hits")
+            .and_then(|v| v.as_array())
+            .expect("hits array");
+        assert_eq!(
+            hits.len(),
+            1,
+            "two overlapping queries must dedupe to one row; got: {hits:?}",
+        );
+        let entry = &hits[0];
+        let memory = entry.get("memory").expect("multi-mode wraps under `memory`");
+        assert_eq!(
+            memory.get("slug").and_then(|v| v.as_str()),
+            Some("coding-rules")
+        );
+        let matched: Vec<&str> = entry
+            .get("matched_queries")
+            .and_then(|v| v.as_array())
+            .expect("matched_queries array")
+            .iter()
+            .filter_map(|s| s.as_str())
+            .collect();
+        assert_eq!(matched, vec!["coding", "rules"]);
+    }
+
+    /// FR-43: a non-matching needle does not pollute `matched_queries`
+    /// for hits surfaced by other needles.
+    #[tokio::test]
+    async fn search_memories_multi_query_lists_only_actual_matches() {
+        let (state, _tmp) = test_state().await;
+        seed_group_with_memory(&state, "team-rust", "coding-rules", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let res = server
+            .search_memories(Parameters(SearchMemoriesArgs {
+                query: None,
+                queries: Some(vec!["coding".into(), "no-such-thing".into()]),
+                limit: None,
+                group: None,
+                scope: None,
+            }))
+            .await
+            .expect("multi-query search");
+        let parsed = parse_ok_json(res);
+        let hits = parsed.get("hits").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(hits.len(), 1);
+        let matched: Vec<&str> = hits[0]
+            .get("matched_queries")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .iter()
+            .filter_map(|s| s.as_str())
+            .collect();
+        assert_eq!(matched, vec!["coding"]);
+    }
+
+    /// FR-43: passing both `query` and `queries` must fail up front
+    /// with a structured `invalid_search_args` code rather than
+    /// silently picking one shape.
+    #[tokio::test]
+    async fn search_memories_rejects_both_query_and_queries() {
+        let (state, _tmp) = test_state().await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let err = server
+            .search_memories(Parameters(SearchMemoriesArgs {
+                query: Some("a".into()),
+                queries: Some(vec!["b".into()]),
+                limit: None,
+                group: None,
+                scope: None,
+            }))
+            .await
+            .expect_err("both forms must error");
+        let payload = err.data.as_ref().expect("error payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("invalid_search_args"),
+        );
+    }
+
+    /// FR-43: passing neither errors with the same structured code.
+    #[tokio::test]
+    async fn search_memories_requires_at_least_one_query_form() {
+        let (state, _tmp) = test_state().await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let err = server
+            .search_memories(Parameters(SearchMemoriesArgs {
+                query: None,
+                queries: None,
+                limit: None,
+                group: None,
+                scope: None,
+            }))
+            .await
+            .expect_err("no query must error");
+        let payload = err.data.as_ref().expect("error payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("invalid_search_args"),
+        );
+    }
+
+    /// FR-43: `limit` caps total deduped hits across all queries,
+    /// not per-query. Three memories, two queries that all match,
+    /// limit 2 → exactly two rows.
+    #[tokio::test]
+    async fn search_memories_multi_query_limit_caps_total() {
+        let (state, _tmp) = test_state().await;
+        seed_group_with_memory(&state, "team-rust", "coding-rules-a", SAMPLE_MEMORY).await;
+        seed_group_with_memory(&state, "team-rust", "coding-rules-b", SAMPLE_MEMORY).await;
+        seed_group_with_memory(&state, "team-rust", "coding-rules-c", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let res = server
+            .search_memories(Parameters(SearchMemoriesArgs {
+                query: None,
+                queries: Some(vec!["coding".into(), "rules".into()]),
+                limit: Some(2),
+                group: None,
+                scope: None,
+            }))
+            .await
+            .expect("multi-query search");
+        let parsed = parse_ok_json(res);
+        let hits = parsed.get("hits").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(hits.len(), 2);
     }
 
     #[tokio::test]

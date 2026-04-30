@@ -261,9 +261,14 @@ pub struct DeleteArgs {
 
 #[derive(Debug, Args)]
 pub struct SearchArgs {
-    /// Substring (case-insensitive) matched against slug and
-    /// `name` in frontmatter.
-    pub query: String,
+    /// One or more case-insensitive substrings matched against slug
+    /// and `name` in frontmatter. Pass multiple positional values
+    /// for the multi-query form (FR-43): each positional is a
+    /// separate query, results dedupe by memory UUID, and the
+    /// rendered table grows a `matched` column listing which
+    /// queries hit each row.
+    #[arg(num_args = 1..)]
+    pub query: Vec<String>,
 
     /// Restrict to a single group (UUID or slug).
     #[arg(long)]
@@ -274,7 +279,8 @@ pub struct SearchArgs {
     #[arg(long)]
     pub scope: Option<String>,
 
-    /// Maximum number of hits. Default 50.
+    /// Maximum number of hits. Default 50. Caps total deduped hits
+    /// across all queries, not per query.
     #[arg(long)]
     pub limit: Option<usize>,
 }
@@ -443,10 +449,20 @@ async fn run_sections(args: SectionsArgs) -> Result<()> {
 }
 
 async fn run_search(args: SearchArgs) -> Result<()> {
-    let needle = args.query.trim().to_lowercase();
-    if needle.is_empty() {
+    if args.query.is_empty() {
         anyhow::bail!("search query must not be empty");
     }
+    let mut needles = Vec::with_capacity(args.query.len());
+    let mut originals = Vec::with_capacity(args.query.len());
+    for q in &args.query {
+        let n = q.trim().to_lowercase();
+        if n.is_empty() {
+            anyhow::bail!("search query must not be empty");
+        }
+        needles.push(n);
+        originals.push(q.clone());
+    }
+    let multi_mode = needles.len() > 1;
     let limit = args.limit.unwrap_or(50).max(1);
 
     let home = MmcpHome::discover()?;
@@ -489,21 +505,38 @@ async fn run_search(args: SearchArgs) -> Result<()> {
             if hits >= limit {
                 break;
             }
-            let slug_match = file.slug.to_lowercase().contains(&needle);
+            let slug_lower = file.slug.to_lowercase();
             // Reading the title gives `name` matching plus a
             // useful display string. Tolerate read failures so a
             // single broken file doesn't kill the whole search.
             let title = read_title(&backend, &entry, &file.path).await;
-            let name_match = title.to_lowercase().contains(&needle);
-            if slug_match || name_match {
+            let name_lower = title.to_lowercase();
+            let mut matched: Vec<&str> = Vec::new();
+            for (needle, original) in needles.iter().zip(originals.iter()) {
+                if slug_lower.contains(needle) || name_lower.contains(needle) {
+                    matched.push(original);
+                }
+            }
+            if matched.is_empty() {
+                continue;
+            }
+            if multi_mode {
+                println!(
+                    "{group}/{slug} {short}  {title}  [matched: {matched}]",
+                    group = entry.manifest.slug,
+                    slug = file.slug,
+                    short = short_id(&file.id),
+                    matched = matched.join(", "),
+                );
+            } else {
                 println!(
                     "{group}/{slug} {short}  {title}",
                     group = entry.manifest.slug,
                     slug = file.slug,
                     short = short_id(&file.id),
                 );
-                hits += 1;
             }
+            hits += 1;
         }
     }
     if hits == 0 {
