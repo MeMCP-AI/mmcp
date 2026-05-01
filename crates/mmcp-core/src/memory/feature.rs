@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::memory::MemoryRef;
+use crate::memory::{MemoryRef, Status};
 
 /// Lifecycle state of a feature request.
 ///
@@ -125,6 +125,31 @@ impl FeatureStatus {
 pub struct FeatureStatusParseError {
     /// The offending input string, echoed back for user-facing errors.
     pub input: String,
+}
+
+/// `Status` trait impl forwards to the inherent methods so generic
+/// code over `T: Status` sees the same wire form, default-hidden
+/// classifier, and parse round-trip as direct callers. Variants
+/// stay in the inherent declaration; the trait is the contract,
+/// not the storage.
+impl Status for FeatureStatus {
+    type ParseError = FeatureStatusParseError;
+
+    fn as_str(self) -> &'static str {
+        FeatureStatus::as_str(self)
+    }
+
+    fn is_default_hidden(self) -> bool {
+        FeatureStatus::is_default_hidden(self)
+    }
+
+    fn all() -> &'static [Self] {
+        FeatureStatus::all()
+    }
+
+    fn parse(raw: &str) -> Result<Self, Self::ParseError> {
+        FeatureStatus::parse(raw)
+    }
 }
 
 /// Structured block describing a feature request, carried inside

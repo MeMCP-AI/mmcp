@@ -17,6 +17,7 @@ mod frontmatter;
 mod kind;
 mod parser;
 mod refs;
+mod status;
 mod version;
 mod xrefs;
 
@@ -28,5 +29,6 @@ pub use frontmatter::MemoryFrontmatter;
 pub use kind::MemoryKind;
 pub use parser::{FrontmatterFormat, MemoryFile, MemoryParseError};
 pub use refs::{InvalidCommit, MemoryRef};
+pub use status::Status;
 pub use version::Version;
 pub use xrefs::{MemoryRefInput, XrefError, parse_cross_refs, parse_memory_refs};
