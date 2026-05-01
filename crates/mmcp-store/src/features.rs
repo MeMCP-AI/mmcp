@@ -538,13 +538,17 @@ async fn resolve_supersede_target(
     })
 }
 
+/// Internal alias delegating to the shared tracker counter so the
+/// feature surface keeps the historical name at its call sites.
+/// The real logic lives in `mmcp_store::tracker::next_ticket_number`
+/// per global-coding-rules section 13.
 async fn next_feature_number(
     backend: &NativeBackend,
     entry: &GroupEntry,
 ) -> Result<u32, FeatureError> {
-    let summaries = list_feature_summaries(backend, entry, None, true).await?;
-    let max = summaries.iter().filter_map(|s| s.number).max();
-    Ok(max.map_or(1, |n| n + 1))
+    crate::tracker::next_ticket_number(backend, entry)
+        .await
+        .map_err(FeatureError::Memory)
 }
 
 /// Read an FR by slug. When `rev` is `None`, reads the group's

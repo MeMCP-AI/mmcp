@@ -50,8 +50,10 @@ pub mod import_adoc;
 pub mod lock;
 pub mod memory;
 pub mod memory_ops;
+pub mod issues;
 pub mod sessions;
 pub mod sync;
+pub mod tracker;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
