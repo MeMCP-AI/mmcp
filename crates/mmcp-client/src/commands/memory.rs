@@ -577,14 +577,16 @@ async fn run_write(args: WriteArgs) -> Result<()> {
         .to_string()
         .map_err(|e| anyhow::anyhow!("render: {e}"))?;
 
-    // FR-39 v2: kind-level create chain.
+    // FR-39 v2: group-level create chain (Process-Shared +
+    // Group-Exclusive). Kind discrimination dropped from the lock
+    // layer so the shared ticket counter and slug-uniqueness
+    // invariant both serialise on one scope.
     let _lock_guards =
         mmcp_store::lock::acquire_chain(&mmcp_store::lock::create_chain(
             *entry.manifest.group_id.as_uuid(),
-            kind,
-            None,
         ))
         .await;
+    let _ = kind;
 
     let author = home.resolve_author();
     let (commit_id, validation) = write_memory_by_id(
@@ -684,8 +686,6 @@ async fn run_edit(args: EditArgs) -> Result<()> {
 
     let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::memory_chain(
         *entry.manifest.group_id.as_uuid(),
-        file.frontmatter.kind,
-        None,
         resolved.id,
         mmcp_store::lock::LockMode::Exclusive,
     ))
@@ -751,8 +751,6 @@ async fn run_edit_body(args: EditBodyArgs) -> Result<()> {
 
     let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::memory_chain(
         *entry.manifest.group_id.as_uuid(),
-        file.frontmatter.kind,
-        None,
         resolved.id,
         mmcp_store::lock::LockMode::Exclusive,
     ))
@@ -811,12 +809,11 @@ async fn run_delete(args: DeleteArgs) -> Result<()> {
 
     let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::memory_chain(
         *entry.manifest.group_id.as_uuid(),
-        kind,
-        None,
         resolved.id,
         mmcp_store::lock::LockMode::Exclusive,
     ))
     .await;
+    let _ = kind;
 
     // `--force` is accepted on the wire for parity with the other
     // write tools; on delete it has nothing to bypass since we

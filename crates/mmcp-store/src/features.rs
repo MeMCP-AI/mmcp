@@ -390,21 +390,16 @@ pub async fn add_feature(
     spec: AddSpec,
     author: &ResolvedAuthor,
 ) -> Result<FeatureRecord, FeatureError> {
-    // FR-39 v2: kind-level create — Exclusive on the
-    // GroupKind(group, Feature, None) scope serialises
-    // `next_feature_number` against concurrent creates while
-    // letting other kinds (e.g. concurrent `mcp:write_memory`
-    // for `kind = "rule"`) proceed in parallel. The supersede
+    // FR-39 v2: group-level create — Exclusive on Group(g)
+    // serialises `next_feature_number` against every concurrent
+    // create in the same group regardless of kind. The supersede
     // flow's `update_feature_unlocked` call below stays inside
-    // this guard; Exclusive GroupKind covers every nested
-    // Memory-leaf write in the same kind.
+    // this guard; the group-exclusive ancestor blocks every
+    // nested Memory-leaf write under the same group until we
+    // release.
     let group = *entry.manifest.group_id.as_uuid();
-    let _guards = crate::lock::acquire_chain(&crate::lock::create_chain(
-        group,
-        mmcp_core::memory::MemoryKind::Feature,
-        None,
-    ))
-    .await;
+    let _guards =
+        crate::lock::acquire_chain(&crate::lock::create_chain(group)).await;
 
     if spec.title.trim().is_empty() && spec.slug.is_none() {
         return Err(FeatureError::TitleRequired);
@@ -687,14 +682,6 @@ pub async fn update_feature(
         (crate::lock::LockScope::Process, crate::lock::LockMode::Shared),
         (
             crate::lock::LockScope::Group(group),
-            crate::lock::LockMode::Shared,
-        ),
-        (
-            crate::lock::LockScope::GroupKind {
-                group,
-                kind: mmcp_core::memory::MemoryKind::Feature,
-                subdir: None,
-            },
             crate::lock::LockMode::Shared,
         ),
     ])
@@ -1008,14 +995,6 @@ pub async fn delete_feature(
         (crate::lock::LockScope::Process, crate::lock::LockMode::Shared),
         (
             crate::lock::LockScope::Group(group),
-            crate::lock::LockMode::Shared,
-        ),
-        (
-            crate::lock::LockScope::GroupKind {
-                group,
-                kind: mmcp_core::memory::MemoryKind::Feature,
-                subdir: None,
-            },
             crate::lock::LockMode::Shared,
         ),
     ])

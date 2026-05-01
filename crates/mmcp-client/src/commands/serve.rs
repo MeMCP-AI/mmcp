@@ -1823,18 +1823,16 @@ impl McpServer {
             .to_string()
             .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
 
-        // FR-39 v2: kind-level create chain — Shared Process +
-        // Shared Group + Exclusive GroupKind(group, kind, None).
-        // A concurrent rename on the same group (Exclusive Group)
-        // waits for this Shared Group ancestor to drop; concurrent
-        // creates on a *different* kind in the same group don't
-        // contend.
+        // FR-39 v2: group-level create chain — Shared Process +
+        // Exclusive Group(g). The kind-partitioned scope is gone;
+        // every create in the group serialises on Group(g) so the
+        // shared ticket counter and slug-uniqueness invariant
+        // both run against a stable view.
         let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::create_chain(
             *entry.manifest.group_id.as_uuid(),
-            kind,
-            None,
         ))
         .await;
+        let _ = kind;
 
         // FR-28 / D4: write_memory mints / pins `id` and stamps it
         // into frontmatter on the lines above, so filename and
@@ -2090,8 +2088,6 @@ impl McpServer {
         // Shared Group ancestor to drop.
         let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::memory_chain(
             *entry.manifest.group_id.as_uuid(),
-            file.frontmatter.kind,
-            None,
             resolved.id,
             mmcp_store::lock::LockMode::Exclusive,
         ))
@@ -2160,30 +2156,12 @@ impl McpServer {
             .resolve_memory_address(&args.group, args.slug.as_deref(), args.id.as_deref())
             .await?;
 
-        // FR-39 v2: read the file once to learn its kind, which
-        // the GroupKind ancestor scope keys on. The read is
-        // unlocked but races only against another delete or rename
-        // — both of which subsequently re-take stricter scopes
-        // through the chain below.
-        let bytes = self
-            .state
-            .backend
-            .read_file(&entry.handle, &resolved.path, &Rev::head())
-            .await
-            .map_err(git_error)?;
-        let text = String::from_utf8_lossy(&bytes).into_owned();
-        let kind = mmcp_core::memory::MemoryFile::parse(&text)
-            .map(|file| file.frontmatter.kind)
-            .unwrap_or(mmcp_core::memory::MemoryKind::Reference);
-
         // Memory-modify chain — Shared on every ancestor, Exclusive
         // on the per-memory leaf. Concurrent deletes of *different*
         // memories proceed in parallel; a coarsening rename
         // (Exclusive Group) waits for the Shared Group ancestor.
         let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::memory_chain(
             *entry.manifest.group_id.as_uuid(),
-            kind,
-            None,
             resolved.id,
             mmcp_store::lock::LockMode::Exclusive,
         ))
@@ -2324,8 +2302,6 @@ impl McpServer {
         // FR-39 v2: same memory-modify chain as `edit_memory`.
         let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::memory_chain(
             *entry.manifest.group_id.as_uuid(),
-            file.frontmatter.kind,
-            None,
             resolved.id,
             mmcp_store::lock::LockMode::Exclusive,
         ))

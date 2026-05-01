@@ -1,13 +1,12 @@
 //! Hierarchical scoped lock registry (FR-39 v2).
 //!
 //! Replaces the v1 per-group `Mutex` with `RwLock`-backed scopes
-//! arranged in a parent-child hierarchy:
+//! arranged in a flat parent-child hierarchy:
 //!
 //! ```text
 //! Process
 //! └── Group(g)
-//!     └── GroupKind { group, kind, subdir }
-//!         └── Memory(uuid)
+//!     └── Memory(uuid)
 //! ```
 //!
 //! Concurrent agents that read different memories under the same
@@ -26,14 +25,17 @@
 //!
 //! - **Memory-scoped read or write** (e.g. `mcp:read_memory`,
 //!   `mcp:edit_memory`): `Shared Process` + `Shared Group(g)` +
-//!   `Shared GroupKind(g, kind, subdir)` + `(Shared|Exclusive)
-//!   Memory(uuid)`.
-//! - **Kind-scoped create** (e.g. `code:add_feature`,
-//!   `code:import_memory` when writing a new slug):
-//!   `Shared Process` + `Shared Group(g)` +
-//!   `Exclusive GroupKind(g, kind, subdir)`.
-//! - **Group-scoped coarsening write** (`mcp:rename_feature`):
-//!   `Shared Process` + `Exclusive Group(g)`.
+//!   `(Shared|Exclusive) Memory(uuid)`.
+//! - **Group-scoped create** (e.g. `code:add_feature`,
+//!   `code:add_issue`, `code:import_memory` when writing a new
+//!   slug): `Shared Process` + `Exclusive Group(g)`. The exclusive
+//!   group lock gives the create flow a stable view of every
+//!   existing memory regardless of kind, which the shared
+//!   ticket-counter (`feature` + `issue` mint from one monotonic
+//!   sequence) and the slug-uniqueness invariant both rely on.
+//! - **Group-scoped coarsening write** (`mcp:rename_feature`,
+//!   `mcp:rename_issue`): same chain as create — `Shared Process`
+//!   + `Exclusive Group(g)`.
 //! - **Process-scoped coarsening write** (`mcp:create_group`,
 //!   `mcp:init_project`): `Exclusive Process`.
 //!
@@ -57,7 +59,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 
-use mmcp_core::memory::MemoryKind;
 use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use uuid::Uuid;
 
@@ -66,9 +67,13 @@ use uuid::Uuid;
 /// `Process` is the singleton root used by group-creation paths
 /// that mutate the local mirror's directory layout.
 /// `Group(uuid)` covers everything inside one group repo.
-/// `GroupKind` partitions a group by the memory kind (and an
-/// optional subdir, reserved for the FR-`memory-paths-sub-grouping`
-/// follow-up). `Memory(uuid)` is the per-memory leaf.
+/// `Memory(uuid)` is the per-memory leaf.
+///
+/// The kind-partitioned `GroupKind` scope was retired when the
+/// tracker chain (`feature` + `issue`) collapsed onto a single
+/// per-group monotonic counter: serialising creates per-kind no
+/// longer matches the invariant we need to protect, so the layer
+/// went away.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LockScope {
     /// Whole-process root. Held `Shared` by every per-group op,
@@ -76,22 +81,14 @@ pub enum LockScope {
     /// mutations.
     Process,
     /// Whole-group scope. Held `Shared` by every per-memory op,
-    /// `Exclusive` only by group-coarsening writes (rename).
+    /// `Exclusive` by group-coarsening writes (rename) and by
+    /// kind-agnostic create paths that need a stable view of every
+    /// existing memory in the group (ticket-counter mint).
     Group(Uuid),
-    /// One slice of a group: `kind` (rule, feature, …) plus the
-    /// optional sub-directory that the future `memory-paths`
-    /// feature will surface. Held `Shared` for memory-level reads
-    /// or writes, `Exclusive` for create-new-slug operations
-    /// (which need a stable view of the existing UUIDs).
-    GroupKind {
-        group: Uuid,
-        kind: MemoryKind,
-        subdir: Option<String>,
-    },
     /// One memory's leaf scope. Held `Shared` by reads and
     /// `Exclusive` by writes; the ancestor chain ensures that a
-    /// kind-level create or a group-level coarsen blocks every
-    /// in-flight Memory-scoped op via the prefix.
+    /// group-level coarsen blocks every in-flight Memory-scoped op
+    /// via the prefix.
     Memory(Uuid),
 }
 
@@ -156,52 +153,27 @@ pub async fn acquire_chain(chain: &[(LockScope, LockMode)]) -> Vec<ScopeGuard> {
 }
 
 /// Convenience: build the canonical chain for a memory-leaf
-/// operation. `mode` is the leaf mode (`Shared` for reads,
+/// operation. `leaf_mode` is the leaf mode (`Shared` for reads,
 /// `Exclusive` for writes); ancestors always ride `Shared`.
 #[must_use]
-pub fn memory_chain(
-    group: Uuid,
-    kind: MemoryKind,
-    subdir: Option<String>,
-    memory: Uuid,
-    leaf_mode: LockMode,
-) -> Vec<(LockScope, LockMode)> {
+pub fn memory_chain(group: Uuid, memory: Uuid, leaf_mode: LockMode) -> Vec<(LockScope, LockMode)> {
     vec![
         (LockScope::Process, LockMode::Shared),
         (LockScope::Group(group), LockMode::Shared),
-        (
-            LockScope::GroupKind {
-                group,
-                kind,
-                subdir,
-            },
-            LockMode::Shared,
-        ),
         (LockScope::Memory(memory), leaf_mode),
     ]
 }
 
-/// Convenience: chain for a kind-level create. The leaf is
-/// `Exclusive GroupKind` because the create needs a stable view
-/// of every existing UUID under that kind to mint the next
-/// sibling without colliding.
+/// Convenience: chain for a group-level create. The leaf is
+/// `Exclusive Group(g)` because the create needs a stable view
+/// of every existing memory under the group to mint the next
+/// monotonic ticket number and to enforce slug uniqueness without
+/// racing a sibling write.
 #[must_use]
-pub fn create_chain(
-    group: Uuid,
-    kind: MemoryKind,
-    subdir: Option<String>,
-) -> Vec<(LockScope, LockMode)> {
+pub fn create_chain(group: Uuid) -> Vec<(LockScope, LockMode)> {
     vec![
         (LockScope::Process, LockMode::Shared),
-        (LockScope::Group(group), LockMode::Shared),
-        (
-            LockScope::GroupKind {
-                group,
-                kind,
-                subdir,
-            },
-            LockMode::Exclusive,
-        ),
+        (LockScope::Group(group), LockMode::Exclusive),
     ]
 }
 
@@ -345,13 +317,26 @@ mod tests {
     fn memory_chain_sets_ancestors_shared_and_leaf_mode() {
         let g = Uuid::now_v7();
         let m = Uuid::now_v7();
-        let chain = memory_chain(g, MemoryKind::Rule, None, m, LockMode::Exclusive);
-        assert_eq!(chain.len(), 4);
+        let chain = memory_chain(g, m, LockMode::Exclusive);
+        assert_eq!(chain.len(), 3);
         assert_eq!(chain[0], (LockScope::Process, LockMode::Shared));
         assert_eq!(chain[1], (LockScope::Group(g), LockMode::Shared));
-        assert!(matches!(chain[2].0, LockScope::GroupKind { .. }));
-        assert_eq!(chain[2].1, LockMode::Shared);
-        assert_eq!(chain[3], (LockScope::Memory(m), LockMode::Exclusive));
+        assert_eq!(chain[2], (LockScope::Memory(m), LockMode::Exclusive));
+    }
+
+    /// Group-creation helper produces the two-entry chain that
+    /// the tracker create flows rely on.
+    #[test]
+    fn create_chain_is_process_shared_plus_group_exclusive() {
+        let g = Uuid::now_v7();
+        let chain = create_chain(g);
+        assert_eq!(
+            chain,
+            vec![
+                (process_root(), LockMode::Shared),
+                (LockScope::Group(g), LockMode::Exclusive),
+            ]
+        );
     }
 
     /// Group-coarsening helper produces the two-entry chain that
@@ -383,16 +368,10 @@ mod tests {
     async fn coarsen_group_blocks_narrower_memory_chain_via_ancestor_prefix() {
         let g = Uuid::now_v7();
         let m = Uuid::now_v7();
-        // Acquire a memory-modify chain (Shared on Group, Shared on
-        // GroupKind, Exclusive on Memory).
-        let _memory_guards = acquire_chain(&memory_chain(
-            g,
-            MemoryKind::Rule,
-            None,
-            m,
-            LockMode::Exclusive,
-        ))
-        .await;
+        // Acquire a memory-modify chain (Shared on Group, Exclusive
+        // on Memory).
+        let _memory_guards =
+            acquire_chain(&memory_chain(g, m, LockMode::Exclusive)).await;
         // A coarsening rename now wants Exclusive Group; it must wait.
         let coarsen_attempt = tokio::time::timeout(
             Duration::from_millis(100),
