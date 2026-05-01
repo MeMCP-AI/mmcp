@@ -57,7 +57,7 @@ pub mod sync;
 pub mod testing;
 
 pub use diagnostics::{
-    DiagReport, GroupReport, Issue, diagnose_all, diagnose_group, health_check_all,
+    DiagReport, Finding, GroupReport, diagnose_all, diagnose_group, health_check_all,
     health_check_group,
 };
 pub use error::StoreError;

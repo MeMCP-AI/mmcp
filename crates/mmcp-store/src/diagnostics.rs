@@ -16,6 +16,10 @@
 //! (`run_check`, `run_diagnose`, `print_reports`) stay in the
 //! client crate because they carry exit-code + stdout shaping that
 //! belong in the binary.
+//!
+//! Naming: `Finding` (formerly `Issue`) is the per-check record.
+//! Renamed when the tracker `Issue` kind landed so the lexical
+//! collision with `MemoryKind::Issue` does not bite code review.
 
 use mmcp_core::manifest::{GroupScope, MANIFEST_SCHEMA_VERSION};
 use mmcp_core::memory::{MemoryFile, MemoryKind, parse_sections};
@@ -29,13 +33,13 @@ use crate::memory::slugify_filename;
 
 // ── Shared types ────────────────────────────────────────────
 
-/// One issue found during check. `code` is a stable slug-style
+/// One finding emitted by a check. `code` is a stable slug-style
 /// identifier (e.g. `manifest_unreadable`, `memory_body_empty`)
 /// that lets consumers branch without parsing the free-form
-/// `message`. FR-45 maps each issue onto a [`mmcp_proto::Note`]
+/// `message`. FR-45 maps each finding onto a [`mmcp_proto::Note`]
 /// at the MCP tool boundary using this code.
 #[derive(Debug, Clone, Serialize)]
-pub struct Issue {
+pub struct Finding {
     pub group: String,
     pub slug: Option<String>,
     pub severity: &'static str,
@@ -50,13 +54,13 @@ pub struct GroupReport {
     pub slug: String,
     pub manifest_ok: bool,
     pub memory_count: usize,
-    pub issues: Vec<Issue>,
+    pub findings: Vec<Finding>,
 }
 
-/// Full diagnostic report including project-level issues.
+/// Full diagnostic report including project-level findings.
 #[derive(Debug, Clone, Serialize)]
 pub struct DiagReport {
-    pub project_issues: Vec<Issue>,
+    pub project_findings: Vec<Finding>,
     pub groups: Vec<GroupReport>,
 }
 
@@ -67,13 +71,13 @@ pub struct DiagReport {
 pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> GroupReport {
     let gid = entry.manifest.group_id.as_uuid().to_string();
     let slug = entry.manifest.slug.clone();
-    let mut issues = Vec::new();
+    let mut findings = Vec::new();
 
     // Manifest
     let manifest_ok = match backend.read_manifest(&entry.handle).await {
         Ok(m) => {
             if m.schema_version > MANIFEST_SCHEMA_VERSION {
-                issues.push(Issue {
+                findings.push(Finding {
                     group: gid.clone(),
                     slug: None,
                     severity: "error",
@@ -85,7 +89,7 @@ pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> 
                 });
             }
             if m.slug.is_empty() {
-                issues.push(Issue {
+                findings.push(Finding {
                     group: gid.clone(),
                     slug: None,
                     severity: "error",
@@ -96,7 +100,7 @@ pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> 
             true
         }
         Err(err) => {
-            issues.push(Issue {
+            findings.push(Finding {
                 group: gid.clone(),
                 slug: None,
                 severity: "error",
@@ -112,7 +116,7 @@ pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> 
     let files = match crate::memory::list_all_memory_files(backend, &entry.handle, &rev).await {
         Ok(f) => f,
         Err(err) => {
-            issues.push(Issue {
+            findings.push(Finding {
                 group: gid.clone(),
                 slug: None,
                 severity: "warning",
@@ -124,7 +128,7 @@ pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> 
                 slug,
                 manifest_ok,
                 memory_count: 0,
-                issues,
+                findings,
             };
         }
     };
@@ -137,7 +141,7 @@ pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> 
         match backend.read_file(&entry.handle, &file.path, &rev).await {
             Ok(bytes) => {
                 let Ok(text) = std::str::from_utf8(&bytes) else {
-                    issues.push(Issue {
+                    findings.push(Finding {
                         group: gid.clone(),
                         slug: Some(mem_slug.to_string()),
                         severity: "error",
@@ -147,7 +151,7 @@ pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> 
                     continue;
                 };
                 if let Err(err) = MemoryFile::parse(text) {
-                    issues.push(Issue {
+                    findings.push(Finding {
                         group: gid.clone(),
                         slug: Some(mem_slug.to_string()),
                         severity: "error",
@@ -157,7 +161,7 @@ pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> 
                 }
             }
             Err(err) => {
-                issues.push(Issue {
+                findings.push(Finding {
                     group: gid.clone(),
                     slug: Some(mem_slug.to_string()),
                     severity: "error",
@@ -173,7 +177,7 @@ pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> 
         slug,
         manifest_ok,
         memory_count,
-        issues,
+        findings,
     }
 }
 
@@ -230,7 +234,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
         let dir_uuid = entry.handle.group_id.to_string();
         let manifest_uuid = m.group_id.as_uuid().to_string();
         if dir_uuid != manifest_uuid {
-            report.issues.push(Issue {
+            report.findings.push(Finding {
                 group: gid.clone(),
                 slug: None,
                 severity: "error",
@@ -243,7 +247,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
 
         // created_at sanity
         if m.created_at <= 0 {
-            report.issues.push(Issue {
+            report.findings.push(Finding {
                 group: gid.clone(),
                 slug: None,
                 severity: "warning",
@@ -257,7 +261,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
 
         // display_name hint
         if m.display_name.is_none() {
-            report.issues.push(Issue {
+            report.findings.push(Finding {
                 group: gid.clone(),
                 slug: None,
                 severity: "info",
@@ -269,7 +273,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
 
     // Empty group
     if report.memory_count == 0 {
-        report.issues.push(Issue {
+        report.findings.push(Finding {
             group: gid.clone(),
             slug: None,
             severity: "info",
@@ -298,7 +302,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
 
         // Required field quality
         if fm.name.is_empty() {
-            report.issues.push(Issue {
+            report.findings.push(Finding {
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "error",
@@ -307,7 +311,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
             });
         }
         if fm.description.is_empty() {
-            report.issues.push(Issue {
+            report.findings.push(Finding {
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "error",
@@ -318,7 +322,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
 
         // Body quality
         if file.body.trim().is_empty() {
-            report.issues.push(Issue {
+            report.findings.push(Finding {
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "warning",
@@ -329,7 +333,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
 
         // Tags hint
         if fm.tags.is_empty() {
-            report.issues.push(Issue {
+            report.findings.push(Finding {
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "info",
@@ -342,7 +346,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
         if let Some(ref v) = fm.version {
             // Already parsed as semver by serde, but check it's reasonable
             if v.major == 0 && v.minor == 0 && v.patch == 0 {
-                report.issues.push(Issue {
+                report.findings.push(Finding {
                     group: gid.clone(),
                     slug: Some(mem_slug.to_string()),
                     severity: "info",
@@ -362,7 +366,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
         // rotating.
         let name_slug = slugify_filename(&fm.name);
         if !name_slug.is_empty() && name_slug != mem_slug && !tokens_overlap(mem_slug, &name_slug) {
-            report.issues.push(Issue {
+            report.findings.push(Finding {
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "info",
@@ -376,7 +380,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
 
         // FR-028: frontmatter `id` must match the filename UUID.
         match fm.id {
-            None => report.issues.push(Issue {
+            None => report.findings.push(Finding {
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "error",
@@ -386,7 +390,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                     file_ref.id
                 ),
             }),
-            Some(fid) if fid != file_ref.id => report.issues.push(Issue {
+            Some(fid) if fid != file_ref.id => report.findings.push(Finding {
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "error",
@@ -404,7 +408,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
         if fm.kind == MemoryKind::Feature
             && fm.feature.as_ref().and_then(|f| f.number).is_none()
         {
-            report.issues.push(Issue {
+            report.findings.push(Finding {
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "info",
@@ -417,7 +421,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
         // Kind vs `[feature]` subtable consistency. A `feature`
         // kind must carry a `[feature]` block; no other kind may.
         match (fm.kind, fm.feature.as_ref()) {
-            (MemoryKind::Feature, None) => report.issues.push(Issue {
+            (MemoryKind::Feature, None) => report.findings.push(Finding {
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "error",
@@ -426,7 +430,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                     .to_string(),
             }),
             (other, Some(_)) if other != MemoryKind::Feature => {
-                report.issues.push(Issue {
+                report.findings.push(Finding {
                     group: gid.clone(),
                     slug: Some(mem_slug.to_string()),
                     severity: "error",
@@ -450,7 +454,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                 ("blocks", &feat.blocks),
             ] {
                 if refs.iter().any(|u| *u == self_id) {
-                    report.issues.push(Issue {
+                    report.findings.push(Finding {
                         group: gid.clone(),
                         slug: Some(mem_slug.to_string()),
                         severity: "info",
@@ -481,7 +485,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
         // explicitly adopt the group, which is rarely what authors
         // intend for mandatory-read rules.
         if fm.mandatory && group_scope != GroupScope::Global {
-            report.issues.push(Issue {
+            report.findings.push(Finding {
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "info",
@@ -497,7 +501,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
         // body that `edit_memory_body` would choke on is visible in
         // diagnostics.
         if let Err(err) = parse_sections(&file.body) {
-            report.issues.push(Issue {
+            report.findings.push(Finding {
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
                 severity: "warning",
@@ -518,7 +522,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
     for (old_slug, old_uuid, link) in &supersede_links {
         match features_by_id.get(&link.target) {
             None => {
-                report.issues.push(Issue {
+                report.findings.push(Finding {
                     group: gid.clone(),
                     slug: Some(old_slug.clone()),
                     severity: "warning",
@@ -531,7 +535,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
             }
             Some((new_slug, _status, new_refs)) => {
                 if !new_refs.iter().any(|r| r.target == *old_uuid) {
-                    report.issues.push(Issue {
+                    report.findings.push(Finding {
                         group: gid.clone(),
                         slug: Some(old_slug.clone()),
                         severity: "warning",
@@ -549,7 +553,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
     for (number, slugs) in feature_numbers {
         if slugs.len() > 1 {
             for slug in &slugs {
-                report.issues.push(Issue {
+                report.findings.push(Finding {
                     group: gid.clone(),
                     slug: Some(slug.clone()),
                     severity: "warning",
@@ -589,7 +593,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                 let Some(stem) =
                     filename.strip_suffix(mmcp_core::conventions::MEMORY_EXTENSION)
                 else {
-                    report.issues.push(Issue {
+                    report.findings.push(Finding {
                         group: gid.clone(),
                         slug: Some(slug.clone()),
                         severity: "warning",
@@ -601,7 +605,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                     continue;
                 };
                 if Uuid::parse_str(stem).is_err() {
-                    report.issues.push(Issue {
+                    report.findings.push(Finding {
                         group: gid.clone(),
                         slug: Some(slug.clone()),
                         severity: "error",
@@ -615,7 +619,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                 valid_memory_files += 1;
             }
             if valid_memory_files == 0 {
-                report.issues.push(Issue {
+                report.findings.push(Finding {
                     group: gid.clone(),
                     slug: Some(slug.clone()),
                     severity: "info",
@@ -643,10 +647,10 @@ fn scope_str(scope: GroupScope) -> &'static str {
 }
 
 pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagReport {
-    let mut project_issues = Vec::new();
+    let mut project_findings = Vec::new();
 
     // Project-level: check if a sync server is configured
-    check_project_config(&mut project_issues);
+    check_project_config(&mut project_findings);
 
     let entries = groups.list().await;
     let mut reports = Vec::with_capacity(entries.len());
@@ -683,7 +687,7 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
         if group_ids.len() > 1 {
             for report in &mut reports {
                 if group_ids.contains(&report.group_id) {
-                    report.issues.push(Issue {
+                    report.findings.push(Finding {
                         group: report.group_id.clone(),
                         slug: Some(dup_slug.clone()),
                         severity: "info",
@@ -750,7 +754,7 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
                 if let Some(report) =
                     reports.iter_mut().find(|r| r.group_id == record.group_id)
                 {
-                    report.issues.push(Issue {
+                    report.findings.push(Finding {
                         group: record.group_id.clone(),
                         slug: Some(record.slug.clone()),
                         severity: "error",
@@ -806,7 +810,7 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
             ] {
                 for uuid in refs {
                     match by_id.get(uuid) {
-                        None => report.issues.push(Issue {
+                        None => report.findings.push(Finding {
                             group: gid.clone(),
                             slug: Some(file_ref.slug.clone()),
                             severity: "warning",
@@ -821,7 +825,7 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
                             if let Some(record) = records.first()
                                 && record.kind != MemoryKind::Feature
                             {
-                                report.issues.push(Issue {
+                                report.findings.push(Finding {
                                     group: gid.clone(),
                                     slug: Some(file_ref.slug.clone()),
                                     severity: "warning",
@@ -840,13 +844,13 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
     }
 
     DiagReport {
-        project_issues,
+        project_findings,
         groups: reports,
     }
 }
 
-/// Check project-level and user-level configuration for issues.
-fn check_project_config(issues: &mut Vec<Issue>) {
+/// Check project-level and user-level configuration for findings.
+fn check_project_config(findings: &mut Vec<Finding>) {
     // User-level config
     let home = MmcpHome::discover().ok();
     let user_cfg = home
@@ -855,7 +859,7 @@ fn check_project_config(issues: &mut Vec<Issue>) {
         .unwrap_or_default();
 
     if home.as_ref().is_none_or(|h| !h.user_config_path().exists()) {
-        issues.push(Issue {
+        findings.push(Finding {
             group: "(user)".to_string(),
             slug: None,
             severity: "warning",
@@ -866,7 +870,7 @@ fn check_project_config(issues: &mut Vec<Issue>) {
         // Check author config
         match user_cfg.author.as_ref() {
             None => {
-                issues.push(Issue {
+                findings.push(Finding {
                     group: "(user)".to_string(),
                     slug: None,
                     severity: "warning",
@@ -877,7 +881,7 @@ fn check_project_config(issues: &mut Vec<Issue>) {
             Some(author) => {
                 match author.git_fallback {
                     None => {
-                        issues.push(Issue {
+                        findings.push(Finding {
                             group: "(user)".to_string(),
                             slug: None,
                             severity: "warning",
@@ -890,7 +894,7 @@ fn check_project_config(issues: &mut Vec<Issue>) {
                         // Uses the same gix-based reader as author resolution so the two
                         // views can never disagree.
                         if author.name.is_none() && read_git_global("user.name").is_none() {
-                            issues.push(Issue {
+                            findings.push(Finding {
                                 group: "(user)".to_string(),
                                 slug: None,
                                 severity: "warning",
@@ -916,7 +920,7 @@ fn check_project_config(issues: &mut Vec<Issue>) {
         Ok(d) => d,
         Err(_) => {
             if !user_has_sync {
-                issues.push(Issue {
+                findings.push(Finding {
                     group: "(project)".to_string(),
                     slug: None,
                     severity: "warning",
@@ -930,7 +934,7 @@ fn check_project_config(issues: &mut Vec<Issue>) {
 
     match crate::config::find_project_root(&cwd) {
         None => {
-            issues.push(Issue {
+            findings.push(Finding {
                 group: "(project)".to_string(),
                 slug: None,
                 severity: "warning",
@@ -939,7 +943,7 @@ fn check_project_config(issues: &mut Vec<Issue>) {
                     .to_string(),
             });
             if !user_has_sync {
-                issues.push(Issue {
+                findings.push(Finding {
                     group: "(project)".to_string(),
                     slug: None,
                     severity: "warning",
@@ -951,7 +955,7 @@ fn check_project_config(issues: &mut Vec<Issue>) {
         }
         Some(root) => match crate::config::load(&root) {
             Err(err) => {
-                issues.push(Issue {
+                findings.push(Finding {
                     group: "(project)".to_string(),
                     slug: None,
                     severity: "error",
@@ -961,7 +965,7 @@ fn check_project_config(issues: &mut Vec<Issue>) {
             }
             Ok(cfg) => {
                 if cfg.sync.is_none() && !user_has_sync {
-                    issues.push(Issue {
+                    findings.push(Finding {
                         group: "(project)".to_string(),
                         slug: None,
                         severity: "warning",

@@ -6,7 +6,7 @@
 //! The MCP path wraps responses with `ok_json_with_notes` (see
 //! `commands::serve`); the CLI path calls [`render_notes_tail`] at
 //! the foot of each subcommand's output. Mapping store-side
-//! diagnostic issues onto notes is handled by [`issues_to_notes`]
+//! diagnostic findings onto notes is handled by [`findings_to_notes`]
 //! so the two renderers stay in lockstep.
 //!
 //! The module also owns the [`dangling_ref_notes_for`] and
@@ -19,7 +19,7 @@
 use mmcp_core::memory::{MemoryFile, MemoryRef};
 use mmcp_git::{NativeBackend, Rev};
 use mmcp_proto::{Note, NoteLevel};
-use mmcp_store::diagnostics::Issue;
+use mmcp_store::diagnostics::Finding;
 use mmcp_store::groups::GroupEntry;
 use mmcp_store::memory::list_all_memory_files;
 use mmcp_sync::PushReport;
@@ -47,35 +47,35 @@ pub fn render_notes_tail(notes: &[Note]) {
     }
 }
 
-/// Convert a store-side [`Issue`] into a [`Note`] on the FR-45 wire.
+/// Convert a store-side [`Finding`] into a [`Note`] on the FR-45 wire.
 ///
 /// `severity` maps to `level`; `code` flows through unchanged;
 /// `group` + optional `slug` ride in `context` so callers can
 /// route or group notes without re-parsing the message.
 #[must_use]
-pub fn issue_to_note(issue: &Issue) -> Note {
-    let level = match issue.severity {
+pub fn finding_to_note(finding: &Finding) -> Note {
+    let level = match finding.severity {
         "error" => NoteLevel::Error,
         "warning" => NoteLevel::Warn,
         _ => NoteLevel::Info,
     };
     let mut ctx = serde_json::Map::new();
-    ctx.insert("group".to_string(), json!(issue.group));
-    if let Some(ref slug) = issue.slug {
+    ctx.insert("group".to_string(), json!(finding.group));
+    if let Some(ref slug) = finding.slug {
         ctx.insert("slug".to_string(), json!(slug));
     }
     Note {
         level,
-        code: issue.code.to_string(),
-        message: issue.message.clone(),
+        code: finding.code.to_string(),
+        message: finding.message.clone(),
         context: Some(serde_json::Value::Object(ctx)),
     }
 }
 
-/// Map a slice of diagnostic issues onto the FR-45 notes channel.
+/// Map a slice of diagnostic findings onto the FR-45 notes channel.
 #[must_use]
-pub fn issues_to_notes(issues: &[Issue]) -> Vec<Note> {
-    issues.iter().map(issue_to_note).collect()
+pub fn findings_to_notes(findings: &[Finding]) -> Vec<Note> {
+    findings.iter().map(finding_to_note).collect()
 }
 
 pub async fn dangling_ref_notes_for(
@@ -298,8 +298,8 @@ mod tests {
     }
 
     #[test]
-    fn issue_to_note_maps_error_severity() {
-        let n = issue_to_note(&Issue {
+    fn finding_to_note_maps_error_severity() {
+        let n = finding_to_note(&Finding {
             group: "g".to_string(),
             slug: Some("s".to_string()),
             severity: "error",
@@ -311,8 +311,8 @@ mod tests {
     }
 
     #[test]
-    fn issue_to_note_maps_warning_severity() {
-        let n = issue_to_note(&Issue {
+    fn finding_to_note_maps_warning_severity() {
+        let n = finding_to_note(&Finding {
             group: "g".to_string(),
             slug: None,
             severity: "warning",
@@ -323,8 +323,8 @@ mod tests {
     }
 
     #[test]
-    fn issue_to_note_defaults_unknown_severity_to_info() {
-        let n = issue_to_note(&Issue {
+    fn finding_to_note_defaults_unknown_severity_to_info() {
+        let n = finding_to_note(&Finding {
             group: "g".to_string(),
             slug: None,
             severity: "info",

@@ -33,7 +33,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::notes::{
-    dangling_ref_notes_for, id_validation_to_notes, issues_to_notes, malformed_frontmatter_notes,
+    dangling_ref_notes_for, findings_to_notes, id_validation_to_notes, malformed_frontmatter_notes,
 };
 use crate::state::{WatcherHandle, spawn_watcher};
 use mmcp_store::config::{PROJECT_MANIFEST, find_project_root, load as load_project_config};
@@ -2401,12 +2401,12 @@ impl McpServer {
         } else {
             health_check_all(&self.state.backend, &self.state.groups).await
         };
-        // FR-45: every issue becomes a note; wire response keeps
+        // FR-45: every finding becomes a note; wire response keeps
         // only the per-group structural summary.
         let mut notes: Vec<mmcp_proto::Note> = Vec::new();
         let mut groups_body: Vec<serde_json::Value> = Vec::with_capacity(reports.len());
         for report in &reports {
-            notes.extend(issues_to_notes(&report.issues));
+            notes.extend(findings_to_notes(&report.findings));
             groups_body.push(json!({
                 "group_id": report.group_id,
                 "slug": report.slug,
@@ -2446,19 +2446,19 @@ impl McpServer {
                 .await
                 .ok_or_else(|| McpError::invalid_params("group not found", None))?;
             DiagReport {
-                project_issues: Vec::new(),
+                project_findings: Vec::new(),
                 groups: vec![diagnose_group(&self.state.backend, &entry).await],
             }
         } else {
             diagnose_all(&self.state.backend, &self.state.groups).await
         };
-        // FR-45: collapse project_issues and every group's issues
+        // FR-45: collapse project_findings and every group's findings
         // onto the notes channel. Wire body keeps only the
         // per-group structural summary.
-        let mut notes: Vec<mmcp_proto::Note> = issues_to_notes(&diag.project_issues);
+        let mut notes: Vec<mmcp_proto::Note> = findings_to_notes(&diag.project_findings);
         let mut groups_body: Vec<serde_json::Value> = Vec::with_capacity(diag.groups.len());
         for report in &diag.groups {
-            notes.extend(issues_to_notes(&report.issues));
+            notes.extend(findings_to_notes(&report.findings));
             groups_body.push(json!({
                 "group_id": report.group_id,
                 "slug": report.slug,
@@ -6623,11 +6623,11 @@ mod tests {
     }
 
     #[test]
-    fn issue_to_note_maps_severity_and_carries_group_slug_context() {
-        use crate::notes::issue_to_note;
-        use mmcp_store::diagnostics::Issue;
+    fn finding_to_note_maps_severity_and_carries_group_slug_context() {
+        use crate::notes::finding_to_note;
+        use mmcp_store::diagnostics::Finding;
 
-        let warn = issue_to_note(&Issue {
+        let warn = finding_to_note(&Finding {
             group: "g-uuid".to_string(),
             slug: Some("rules".to_string()),
             severity: "warning",
@@ -6641,7 +6641,7 @@ mod tests {
         assert_eq!(ctx.get("group").and_then(|v| v.as_str()), Some("g-uuid"));
         assert_eq!(ctx.get("slug").and_then(|v| v.as_str()), Some("rules"));
 
-        let err = issue_to_note(&Issue {
+        let err = finding_to_note(&Finding {
             group: "g-uuid".to_string(),
             slug: None,
             severity: "error",
@@ -6652,10 +6652,10 @@ mod tests {
         let ctx = err.context.expect("err context present");
         assert!(
             ctx.get("slug").is_none(),
-            "slug field must be absent when Issue.slug is None; got: {ctx}",
+            "slug field must be absent when Finding.slug is None; got: {ctx}",
         );
 
-        let info = issue_to_note(&Issue {
+        let info = finding_to_note(&Finding {
             group: "(project)".to_string(),
             slug: None,
             severity: "info",

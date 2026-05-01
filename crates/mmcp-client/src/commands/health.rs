@@ -8,7 +8,7 @@
 //! `run_check` / `run_diagnose` entries (walk groups, assemble
 //! reports, map errors to `anyhow::Error`) and the `print_reports`
 //! formatter. Per FR-45 the formatter renders each group's summary
-//! line then hands the collected issues to `render_notes_tail` so
+//! line then hands the collected findings to `render_notes_tail` so
 //! the CLI tail mirrors the MCP `notes` channel verbatim.
 
 use anyhow::Result;
@@ -20,7 +20,7 @@ use mmcp_store::diagnostics::{
 use mmcp_store::home::MmcpHome;
 use mmcp_store::memory::resolve_group;
 
-use crate::notes::{issues_to_notes, render_notes_tail};
+use crate::notes::{findings_to_notes, render_notes_tail};
 
 // ── CLI entry points ────────────────────────────────────────
 
@@ -42,7 +42,7 @@ pub async fn run_check(group: Option<String>) -> Result<()> {
     if notes.iter().any(|n| n.level == NoteLevel::Error) {
         std::process::exit(1);
     }
-    // Any non-error note still counts as an issue on the
+    // Any non-error note still counts as a finding on the
     // surface-check gate. `mmcp check` is the quick
     // pass-or-fail, so warnings flip exit code 1 too (matches
     // the old total-issues behaviour).
@@ -62,30 +62,30 @@ pub async fn run_diagnose(group: Option<String>) -> Result<()> {
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         DiagReport {
-            project_issues: Vec::new(),
+            project_findings: Vec::new(),
             groups: vec![diagnose_group(&backend, &entry).await],
         }
     } else {
         diagnose_all(&backend, &groups).await
     };
 
-    let notes = print_reports(&diag.groups, &diag.project_issues);
+    let notes = print_reports(&diag.groups, &diag.project_findings);
     if notes.iter().any(|n| n.level == NoteLevel::Error) {
         std::process::exit(1);
     }
     Ok(())
 }
 
-/// Print the per-group structural summary then render every issue
+/// Print the per-group structural summary then render every finding
 /// on the FR-45 notes tail. Returns the assembled notes so the
-/// caller can branch on severity for its exit code. `project_issues`
+/// caller can branch on severity for its exit code. `project_findings`
 /// carries the project/user-level diagnostics that belong to the
 /// whole mirror rather than any one group (sync config, author
 /// identity, CLAUDE.md); an empty slice is fine.
-fn print_reports(reports: &[GroupReport], project_issues: &[mmcp_store::diagnostics::Issue]) -> Vec<Note> {
-    let mut notes: Vec<Note> = issues_to_notes(project_issues);
+fn print_reports(reports: &[GroupReport], project_findings: &[mmcp_store::diagnostics::Finding]) -> Vec<Note> {
+    let mut notes: Vec<Note> = findings_to_notes(project_findings);
     for report in reports {
-        notes.extend(issues_to_notes(&report.issues));
+        notes.extend(findings_to_notes(&report.findings));
         println!(
             "{} ({}): {} memories, manifest_ok={}",
             report.slug, report.group_id, report.memory_count, report.manifest_ok

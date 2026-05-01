@@ -74,16 +74,16 @@ async fn import_list_read_health_and_diagnose_run_without_any_remote() {
     assert_eq!(group_surface.memory_count, 1, "memory should be visible");
     assert!(
         group_surface.manifest_ok,
-        "manifest should parse offline; issues: {:?}",
-        group_surface.issues
+        "manifest should parse offline; findings: {:?}",
+        group_surface.findings
     );
     assert!(
-        group_surface.issues.iter().all(|i| i.severity != "error"),
+        group_surface.findings.iter().all(|i| i.severity != "error"),
         "surface check must not raise errors for a valid offline group; got {:?}",
-        group_surface.issues
+        group_surface.findings
     );
 
-    // Deep checks: same guarantee, plus the project-level issue
+    // Deep checks: same guarantee, plus the project-level finding
     // reporter is allowed to warn about missing sync config but
     // must not fail fast or raise a hard error.
     let diag = health::diagnose_all(scratch.backend(), scratch.groups()).await;
@@ -91,13 +91,13 @@ async fn import_list_read_health_and_diagnose_run_without_any_remote() {
     let has_error = diag
         .groups
         .iter()
-        .flat_map(|r| &r.issues)
-        .chain(diag.project_issues.iter())
+        .flat_map(|r| &r.findings)
+        .chain(diag.project_findings.iter())
         .any(|i| i.severity == "error");
     assert!(
         !has_error,
         "offline diagnose should produce warnings at most, not errors. project={:?}, group={:?}",
-        diag.project_issues, diag.groups[0].issues
+        diag.project_findings, diag.groups[0].findings
     );
 }
 
