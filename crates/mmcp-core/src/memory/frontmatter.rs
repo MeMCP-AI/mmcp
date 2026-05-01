@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::memory::{BumpIntent, FeatureMetadata, MemoryKind, MemoryRef};
+use crate::memory::{BumpIntent, FeatureMetadata, IssueMetadata, MemoryKind, MemoryRef};
 
 /// User-visible metadata written in the `+++`-delimited TOML block at
 /// the top of a memory file.
@@ -62,6 +62,14 @@ pub struct MemoryFrontmatter {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feature: Option<FeatureMetadata>,
 
+    /// Structured metadata for the issue tracker. Carried when
+    /// `kind == MemoryKind::Issue` and on hybrid memories that
+    /// also carry a `[feature]` block. Absent on every other
+    /// kind; the TOML serializer skips the field when unset so
+    /// unrelated memories keep their existing wire shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<IssueMetadata>,
+
     /// Typed cross-references to other memories (or features - the
     /// two share a UUID space). Each entry pins a commit so the
     /// reference survives later edits on the target side. Empty
@@ -109,6 +117,7 @@ impl MemoryFrontmatter {
             tags: Vec::new(),
             bump_intent: None,
             feature: None,
+            issue: None,
             refs: Vec::new(),
             source: None,
         }
@@ -157,6 +166,15 @@ impl MemoryFrontmatter {
     #[must_use]
     pub fn with_feature(mut self, feature: FeatureMetadata) -> Self {
         self.feature = Some(feature);
+        self
+    }
+
+    /// Attach the issue tracker metadata block. Used by the issue
+    /// tooling layer; on hybrid memories combine with
+    /// [`Self::with_feature`] to populate both blocks.
+    #[must_use]
+    pub fn with_issue(mut self, issue: IssueMetadata) -> Self {
+        self.issue = Some(issue);
         self
     }
 

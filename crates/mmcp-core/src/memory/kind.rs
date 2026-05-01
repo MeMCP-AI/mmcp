@@ -45,6 +45,13 @@ pub enum MemoryKind {
     /// auto-upgrades the on-disk wire form.
     #[serde(alias = "fr")]
     Feature,
+
+    /// Issue tracker entry. Sister kind to `Feature`. Carries a
+    /// structured [`IssueMetadata`](crate::memory::IssueMetadata)
+    /// block in frontmatter (status, depends_on, blocks). The
+    /// hybrid model permits a memory to carry both `[feature]`
+    /// and `[issue]` blocks; listings filter by block presence.
+    Issue,
 }
 
 impl MemoryKind {
@@ -61,6 +68,7 @@ impl MemoryKind {
             MemoryKind::Reference => "reference",
             MemoryKind::Scratch => "scratch",
             MemoryKind::Feature => "feature",
+            MemoryKind::Issue => "issue",
         }
     }
 
