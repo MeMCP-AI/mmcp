@@ -64,9 +64,15 @@ pub use error::StoreError;
 pub use features::{
     AddSpec as FeatureAddSpec, FeatureError, FeatureRecord, FeatureSummary,
     UpdateSpec as FeatureUpdateSpec, add_feature, delete_feature, list_feature_summaries,
-    list_features, parse_cross_refs, read_feature, rename_feature, resolve_project_group,
-    update_feature,
+    list_features, read_feature, rename_feature, resolve_project_group, update_feature,
 };
+// Re-export the shared cross-reference parsers from their owner
+// module (`mmcp_core::memory::xrefs`) at the store crate root so
+// CLI and MCP consumers do not have to know the upstream path.
+// Per global-coding-rules section 13 this re-export lives at the
+// crate root (the only place a cross-crate re-export is allowed),
+// not on a peer module that would imply ownership.
+pub use mmcp_core::memory::{MemoryRefInput, XrefError, parse_cross_refs, parse_memory_refs};
 pub use groups::{GroupEntry, GroupIndex};
 pub use home::{MmcpHome, ResolvedAuthor, read_git_global};
 pub use import_adoc::{ADOC_EXTENSIONS, AdocConvertError, convert_adoc_to_markdown, is_adoc_filename};

@@ -88,25 +88,15 @@ pub enum FeatureError {
     #[error("failed to load project config at {path}: {detail}")]
     ProjectConfigBroken { path: String, detail: String },
 
-    /// A `depends_on` / `blocks` entry was not a valid UUID. Post-
-    /// FR-028 cross-refs are typed as UUIDs; the surface layer
-    /// (CLI + MCP) funnels every raw entry through
-    /// [`parse_cross_refs`] so this error is the single source of
-    /// truth for malformed cross-ref input.
-    #[error("feature cross-reference '{value}' on field `{field}` is not a valid UUID")]
-    InvalidCrossRef {
-        field: &'static str,
-        value: String,
-    },
-
-    /// A `refs` entry carried a malformed UUID or commit sha. Both
-    /// field positions funnel through [`parse_memory_refs`] so this
-    /// is the single source of truth for bad [`MemoryRef`] input.
-    #[error("memory reference on field `{field}`: {detail}")]
-    InvalidMemoryRef {
-        field: &'static str,
-        detail: String,
-    },
+    /// Malformed cross-reference input parsed through
+    /// [`mmcp_core::memory::xrefs`]. Surfaces both the
+    /// `InvalidCrossRef` and `InvalidMemoryRef` cases so
+    /// `map_feature_error_to_mcp` and the CLI handlers can
+    /// pattern-match through one variant on the feature side
+    /// without losing the field-attribution detail the parser
+    /// recorded.
+    #[error(transparent)]
+    Xref(#[from] mmcp_core::memory::XrefError),
 
     /// `supersedes` pointed at a slug / UUID the local mirror could
     /// not resolve in the caller's project group.
@@ -140,59 +130,6 @@ pub enum FeatureError {
     /// caller passed a UUID or slug that is not a mirrored group.
     #[error("project selector '{query}' does not resolve to a mirrored group")]
     UnknownProject { query: String },
-}
-
-/// Parse a list of raw cross-reference strings (as they arrive on
-/// the CLI `--depends-on` flag or the MCP `depends_on` JSON field)
-/// into the `Vec<Uuid>` shape that [`AddSpec`] / [`UpdateSpec`]
-/// expect. Keeps the parse / error-attribution logic in one place
-/// so both surfaces report malformed input identically.
-pub fn parse_cross_refs(values: &[String], field: &'static str) -> Result<Vec<Uuid>, FeatureError> {
-    values
-        .iter()
-        .map(|raw| {
-            Uuid::parse_str(raw).map_err(|_| FeatureError::InvalidCrossRef {
-                field,
-                value: raw.clone(),
-            })
-        })
-        .collect()
-}
-
-/// Raw MCP / CLI input shape for a single [`MemoryRef`]. Plain
-/// strings on the wire so both surfaces can funnel through
-/// [`parse_memory_refs`] without pre-parsing UUIDs themselves.
-#[derive(Debug, Clone)]
-pub struct MemoryRefInput {
-    pub target: String,
-    pub commit: String,
-}
-
-/// Parse a list of raw `(target, commit)` pairs into the
-/// [`MemoryRef`] shape that [`AddSpec`] / [`UpdateSpec`] expect.
-/// Validates UUID shape on the target and 40-char lowercase hex on
-/// the commit; rejects either with the canonical
-/// [`FeatureError::InvalidMemoryRef`] code.
-pub fn parse_memory_refs(
-    values: &[MemoryRefInput],
-    field: &'static str,
-) -> Result<Vec<MemoryRef>, FeatureError> {
-    values
-        .iter()
-        .map(|raw| {
-            let target = Uuid::parse_str(&raw.target).map_err(|_| FeatureError::InvalidMemoryRef {
-                field,
-                detail: format!("target '{}' is not a valid UUID", raw.target),
-            })?;
-            MemoryRef::validate_commit_shape(&raw.commit).map_err(|e| {
-                FeatureError::InvalidMemoryRef {
-                    field,
-                    detail: format!("{e}"),
-                }
-            })?;
-            Ok(MemoryRef::new(target, raw.commit.clone()))
-        })
-        .collect()
 }
 
 /// Input for [`add_feature`].

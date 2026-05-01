@@ -288,7 +288,7 @@ impl ToolMemoryKind {
 /// `edit_memory` / `add_feature` / `update_feature`). Plain-string
 /// fields so schemars generates the obvious JSON object; the tool
 /// methods funnel every entry through
-/// [`mmcp_store::features::parse_memory_refs`] for UUID / commit-sha
+/// [`mmcp_store::parse_memory_refs`] for UUID / commit-sha
 /// validation.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -301,8 +301,8 @@ struct MemoryRefArg {
 }
 
 impl MemoryRefArg {
-    fn into_store_input(self) -> mmcp_store::features::MemoryRefInput {
-        mmcp_store::features::MemoryRefInput {
+    fn into_store_input(self) -> mmcp_store::MemoryRefInput {
+        mmcp_store::MemoryRefInput {
             target: self.target,
             commit: self.commit,
         }
@@ -3447,9 +3447,9 @@ impl McpServer {
             .map_err(map_feature_error_to_mcp)?;
         let status = parse_status_arg(args.status.as_deref())?.unwrap_or_default();
         let depends_on =
-            mmcp_store::parse_cross_refs(&args.depends_on, "depends_on").map_err(map_feature_error_to_mcp)?;
+            mmcp_store::parse_cross_refs(&args.depends_on, "depends_on").map_err(map_xref_error_to_mcp)?;
         let blocks = mmcp_store::parse_cross_refs(&args.blocks, "blocks")
-            .map_err(map_feature_error_to_mcp)?;
+            .map_err(map_xref_error_to_mcp)?;
         let refs = parse_wire_refs(args.refs, "refs")?;
         let source = parse_optional_source(args.source.as_deref())?;
         let spec = mmcp_store::features::AddSpec {
@@ -3556,13 +3556,13 @@ impl McpServer {
             .as_deref()
             .map(|v| mmcp_store::parse_cross_refs(v, "depends_on"))
             .transpose()
-            .map_err(map_feature_error_to_mcp)?;
+            .map_err(map_xref_error_to_mcp)?;
         let blocks = args
             .blocks
             .as_deref()
             .map(|v| mmcp_store::parse_cross_refs(v, "blocks"))
             .transpose()
-            .map_err(map_feature_error_to_mcp)?;
+            .map_err(map_xref_error_to_mcp)?;
         let refs_add = if args.refs_add.is_empty() {
             None
         } else {
@@ -4683,7 +4683,7 @@ fn memory_ref_to_json(r: &mmcp_core::memory::MemoryRef) -> serde_json::Value {
 
 /// Parse a wire-form `Vec<MemoryRefArg>` (raw from the tool args)
 /// into the `Vec<MemoryRef>` the store layer expects. Funnels
-/// through [`mmcp_store::features::parse_memory_refs`] so UUID +
+/// through [`mmcp_store::parse_memory_refs`] so UUID +
 /// commit-sha validation lives in one place; the MCP boundary
 /// maps the resulting error to `invalid_memory_ref`.
 fn parse_wire_refs(
@@ -4691,7 +4691,38 @@ fn parse_wire_refs(
     field: &'static str,
 ) -> Result<Vec<mmcp_core::memory::MemoryRef>, McpError> {
     let inputs: Vec<_> = raw.into_iter().map(MemoryRefArg::into_store_input).collect();
-    mmcp_store::features::parse_memory_refs(&inputs, field).map_err(map_feature_error_to_mcp)
+    mmcp_store::parse_memory_refs(&inputs, field).map_err(map_xref_error_to_mcp)
+}
+
+/// Map a [`mmcp_store::XrefError`] onto an [`McpError`] for tool
+/// surfaces that take cross-reference input directly (the parsers
+/// in `mmcp_core::memory::xrefs` return `XrefError`, not
+/// `FeatureError`, so they need their own mapper without going
+/// through the feature-error envelope).
+fn map_xref_error_to_mcp(err: mmcp_store::XrefError) -> McpError {
+    let message = err.to_string();
+    match err {
+        mmcp_store::XrefError::InvalidCrossRef { field, value } => McpError::invalid_params(
+            message.clone(),
+            Some(json!({
+                "code": "invalid_feature_cross_reference",
+                "field": field,
+                "value": value,
+            })),
+        ),
+        mmcp_store::XrefError::InvalidMemoryRef { field, detail } => McpError::invalid_params(
+            message.clone(),
+            Some(json!({
+                "code": "invalid_memory_ref",
+                "field": field,
+                "detail": detail,
+            })),
+        ),
+        // XrefError is `#[non_exhaustive]`; a future variant
+        // surfaces here as a generic invalid_params rather than
+        // a panic.
+        _ => McpError::invalid_params(message, Some(json!({ "code": "invalid_xref" }))),
+    }
 }
 
 /// Map a [`features::FeatureError`] onto an [`McpError`] with a
@@ -4738,22 +4769,7 @@ fn map_feature_error_to_mcp(err: mmcp_store::features::FeatureError) -> McpError
                 "detail": detail,
             })),
         ),
-        FeatureError::InvalidCrossRef { field, value } => McpError::invalid_params(
-            message,
-            Some(json!({
-                "code": "invalid_feature_cross_reference",
-                "field": field,
-                "value": value,
-            })),
-        ),
-        FeatureError::InvalidMemoryRef { field, detail } => McpError::invalid_params(
-            message,
-            Some(json!({
-                "code": "invalid_memory_ref",
-                "field": field,
-                "detail": detail,
-            })),
-        ),
+        FeatureError::Xref(xref) => map_xref_error_to_mcp(xref),
         FeatureError::SupersedesUnknown { query } => McpError::invalid_params(
             message,
             Some(json!({
