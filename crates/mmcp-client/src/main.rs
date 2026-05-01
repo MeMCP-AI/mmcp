@@ -157,6 +157,12 @@ enum Command {
     /// Running `mmcp feature` with no subcommand prints this help.
     Feature(commands::feature::FeatureArgs),
 
+    /// Manage the project's issue tracker (sister surface to
+    /// `feature`). Subcommands: `add`, `read`, `update`,
+    /// `delete`, `list`, `rename`. Running `mmcp issue` with no
+    /// subcommand prints this help.
+    Issue(commands::issue::IssueArgs),
+
     /// Read / list / search memories.
     /// Subcommands: `list`, `read`, `versions`, `sections`,
     /// `search`. Running `mmcp memory` with no subcommand prints
@@ -284,6 +290,7 @@ async fn main() -> Result<()> {
             HookCommand::UserPrompt => commands::hook::user_prompt().await?,
         },
         Command::Feature(args) => commands::feature::run(args).await?,
+        Command::Issue(args) => commands::issue::run(args).await?,
         Command::Memory(args) => commands::memory::run(args).await?,
         Command::Group(args) => commands::group::run(args).await?,
         Command::Bootstrap(args) => commands::bootstrap::run(args).await?,
