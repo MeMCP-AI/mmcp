@@ -18,6 +18,7 @@ mod kind;
 mod parser;
 mod refs;
 mod version;
+mod xrefs;
 
 pub use body::{BodyParseError, Section, parse_sections, render_sections, slugify_heading};
 pub use bump::BumpIntent;
@@ -28,3 +29,4 @@ pub use kind::MemoryKind;
 pub use parser::{FrontmatterFormat, MemoryFile, MemoryParseError};
 pub use refs::{InvalidCommit, MemoryRef};
 pub use version::Version;
+pub use xrefs::{MemoryRefInput, XrefError, parse_cross_refs, parse_memory_refs};
