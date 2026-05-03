@@ -25,9 +25,11 @@
   <div
     class="relative mt-16 w-full {widthClass} overflow-hidden rounded-xl border border-line bg-surface-1 shadow-2xl"
     onclick={(e) => e.stopPropagation()}
+    onkeydown={(e) => e.stopPropagation()}
     role="dialog"
     aria-modal="true"
     aria-label={title}
+    tabindex={-1}
   >
     <header class="flex items-center justify-between border-b border-line px-5 py-3">
       <h2 class="text-sm font-semibold text-fg">{title}</h2>
