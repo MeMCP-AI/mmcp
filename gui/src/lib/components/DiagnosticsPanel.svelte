@@ -117,10 +117,10 @@
           </div>
         {/if}
 
-        {#if report.project_issues.length > 0}
+        {#if report.project_findings.length > 0}
           <DiagGroupCard
             title="Project"
-            issues={report.project_issues}
+            findings={report.project_findings}
             {filter}
             open={!collapsed[PROJECT_KEY]}
             onToggle={() => onToggleGroup(PROJECT_KEY)}
@@ -135,7 +135,7 @@
               statusOk={group.manifest_ok}
               statusOkLabel="manifest ok"
               statusBrokenLabel="manifest broken"
-              issues={group.issues}
+              findings={group.findings}
               {filter}
               open={!collapsed[group.slug]}
               onToggle={() => onToggleGroup(group.slug)}

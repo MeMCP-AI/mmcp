@@ -3,9 +3,8 @@
 // (store, panel, primitives) agrees on names, colours, and icons —
 // the "inconsistent" UX came from each call site redefining these.
 
-import type { ComponentType } from 'svelte';
-import { AlertTriangle, Info, XCircle, type IconProps } from 'lucide-svelte';
-import type { DiagReport, GroupReport, Issue } from '$lib/types';
+import { AlertTriangle, Info, XCircle } from 'lucide-svelte';
+import type { DiagReport, Finding, GroupReport } from '$lib/types';
 
 export type Severity = 'error' | 'warning' | 'info';
 export type SeverityFilter = 'all' | Severity;
@@ -15,7 +14,7 @@ export const SEVERITY_ORDER: Severity[] = ['error', 'warning', 'info'];
 /** Coerce anything Rust (or a stale client) might emit into the
  * canonical three-way severity. `'warn'`, `'err'`, and unknown
  * strings fall back cleanly so a single typo server-side doesn't
- * silently drop issues from the UI. */
+ * silently drop findings from the UI. */
 export function normalizeSeverity(raw: string): Severity {
   const s = raw.toLowerCase();
   if (s === 'error' || s === 'err') return 'error';
@@ -27,7 +26,7 @@ export interface SeverityMeta {
   label: string;
   plural: string;
   tone: 'rose' | 'amber' | 'sky';
-  Icon: ComponentType<IconProps>;
+  Icon: typeof XCircle;
   /** Tailwind text/bg/ring tuple so every renderer paints the same
    * pill — no more ad-hoc hex picks. */
   tile: string;
@@ -67,38 +66,38 @@ export const SEVERITY_META: Record<Severity, SeverityMeta> = {
 
 export type SeverityCounts = Record<Severity, number>;
 
-export function countBySeverity(issues: Issue[]): SeverityCounts {
+export function countBySeverity(findings: Finding[]): SeverityCounts {
   const acc: SeverityCounts = { error: 0, warning: 0, info: 0 };
-  for (const i of issues) acc[normalizeSeverity(i.severity)]++;
+  for (const f of findings) acc[normalizeSeverity(f.severity)]++;
   return acc;
 }
 
 export function reportTotals(report: DiagReport | null): SeverityCounts {
   if (!report) return { error: 0, warning: 0, info: 0 };
-  const all = [...report.project_issues, ...report.groups.flatMap((g) => g.issues)];
+  const all = [...report.project_findings, ...report.groups.flatMap((g) => g.findings)];
   return countBySeverity(all);
 }
 
-export function matchesFilter(issue: Issue, filter: SeverityFilter): boolean {
-  return filter === 'all' || normalizeSeverity(issue.severity) === filter;
+export function matchesFilter(finding: Finding, filter: SeverityFilter): boolean {
+  return filter === 'all' || normalizeSeverity(finding.severity) === filter;
 }
 
 /** Highest-severity accent a group should paint. Empty group →
  * emerald (clean bill of health), which lives outside the severity
  * scale so it isn't in SEVERITY_META. */
-export function accentFor(issues: Issue[]): string {
-  const counts = countBySeverity(issues);
+export function accentFor(findings: Finding[]): string {
+  const counts = countBySeverity(findings);
   if (counts.error) return SEVERITY_META.error.accent;
   if (counts.warning) return SEVERITY_META.warning.accent;
   if (counts.info) return SEVERITY_META.info.accent;
   return 'border-l-emerald-500';
 }
 
-export function filterIssues(issues: Issue[], filter: SeverityFilter): Issue[] {
-  if (filter === 'all') return issues;
-  return issues.filter((i) => matchesFilter(i, filter));
+export function filterFindings(findings: Finding[], filter: SeverityFilter): Finding[] {
+  if (filter === 'all') return findings;
+  return findings.filter((f) => matchesFilter(f, filter));
 }
 
-export function groupHasVisibleIssues(group: GroupReport, filter: SeverityFilter): boolean {
-  return filterIssues(group.issues, filter).length > 0;
+export function groupHasVisibleFindings(group: GroupReport, filter: SeverityFilter): boolean {
+  return filterFindings(group.findings, filter).length > 0;
 }

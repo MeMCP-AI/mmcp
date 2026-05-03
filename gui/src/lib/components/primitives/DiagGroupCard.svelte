@@ -3,19 +3,20 @@
   // "Project" section). Both consumers want the same chrome:
   // left-accent stripe coloured by worst severity, collapsible
   // header with name + status pill + per-severity chip counts,
-  // and a body that renders DiagIssueRow for every visible issue.
+  // and a body that renders DiagFindingBlock for every visible
+  // finding.
 
   import { AlertTriangle, ChevronDown, ChevronRight, Info, XCircle } from 'lucide-svelte';
-  import type { Issue } from '$lib/types';
+  import type { Finding } from '$lib/types';
   import {
     accentFor,
     countBySeverity,
-    filterIssues,
+    filterFindings,
     SEVERITY_META,
     SEVERITY_ORDER,
     type SeverityFilter
   } from '$lib/utils/diag';
-  import DiagIssueRow from './DiagIssueRow.svelte';
+  import DiagFindingBlock from './DiagFindingBlock.svelte';
 
   interface Props {
     title: string;
@@ -23,7 +24,7 @@
     statusOk?: boolean;
     statusOkLabel?: string;
     statusBrokenLabel?: string;
-    issues: Issue[];
+    findings: Finding[];
     filter: SeverityFilter;
     open: boolean;
     onToggle: () => void;
@@ -35,15 +36,15 @@
     statusOk,
     statusOkLabel,
     statusBrokenLabel,
-    issues,
+    findings,
     filter,
     open,
     onToggle
   }: Props = $props();
 
-  const counts = $derived(countBySeverity(issues));
-  const visible = $derived(filterIssues(issues, filter));
-  const accent = $derived(accentFor(issues));
+  const counts = $derived(countBySeverity(findings));
+  const visible = $derived(filterFindings(findings, filter));
+  const accent = $derived(accentFor(findings));
 </script>
 
 <section
@@ -98,11 +99,11 @@
   </header>
   {#if open}
     <div class="flex flex-col gap-2 px-3 pb-3">
-      {#each visible as issue, idx (idx)}
-        <DiagIssueRow {issue} />
+      {#each visible as finding, idx (idx)}
+        <DiagFindingBlock {finding} />
       {:else}
         <span class="text-xs text-fg-subtle">
-          {issues.length === 0 ? 'No issues found.' : 'No issues at current filter.'}
+          {findings.length === 0 ? 'No findings.' : 'No findings at current filter.'}
         </span>
       {/each}
     </div>

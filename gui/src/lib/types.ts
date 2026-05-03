@@ -77,12 +77,19 @@ export interface PushReport {
 /** Raw severity string as emitted by mmcp-store. Rust uses
  * `"error" | "warning" | "info"`; keep the TS type permissive
  * (string) and funnel everything through `normalizeSeverity` in
- * `$lib/utils/diag.ts` so a stale client never silently drops an
- * issue because of a spelling mismatch. */
-export interface Issue {
+ * `$lib/utils/diag.ts` so a stale client never silently drops a
+ * finding because of a spelling mismatch.
+ *
+ * Mirrors `mmcp_store::diagnostics::Finding`. The `code` field is
+ * a stable slug-style identifier (`manifest_unreadable`,
+ * `memory_body_empty`, …) FR-45 uses to map findings to MCP notes;
+ * the GUI exposes it for future grouping but doesn't depend on it
+ * yet. */
+export interface Finding {
   group: string;
   slug: string | null;
   severity: string;
+  code: string;
   message: string;
 }
 
@@ -91,11 +98,11 @@ export interface GroupReport {
   slug: string;
   manifest_ok: boolean;
   memory_count: number;
-  issues: Issue[];
+  findings: Finding[];
 }
 
 export interface DiagReport {
-  project_issues: Issue[];
+  project_findings: Finding[];
   groups: GroupReport[];
 }
 
