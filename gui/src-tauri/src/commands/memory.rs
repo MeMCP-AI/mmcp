@@ -34,6 +34,20 @@ pub struct FeatureMetadataDto {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct IssueMetadataDto {
+    /// Serde-snake-case: open, closed, wontfix, blocked, deferred,
+    /// duplicate, superseded. Kept as a String on the wire to
+    /// mirror `FeatureMetadataDto::status`.
+    pub status: String,
+    pub number: Option<u32>,
+    #[serde(default)]
+    pub depends_on: Vec<Uuid>,
+    #[serde(default)]
+    pub blocks: Vec<Uuid>,
+    pub superseded_by: Option<MemoryRefDto>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MemoryFrontmatterDto {
     pub id: Option<Uuid>,
     pub name: String,
@@ -49,6 +63,8 @@ pub struct MemoryFrontmatterDto {
     pub refs: Vec<MemoryRefDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feature: Option<FeatureMetadataDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<IssueMetadataDto>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -87,6 +103,16 @@ impl From<&MemoryFile> for MemoryFileDto {
                         commit: r.commit.clone(),
                     }),
                 }),
+                issue: f.frontmatter.issue.as_ref().map(|im| IssueMetadataDto {
+                    status: im.status.as_str().to_string(),
+                    number: im.number,
+                    depends_on: im.depends_on.clone(),
+                    blocks: im.blocks.clone(),
+                    superseded_by: im.superseded_by.as_ref().map(|r| MemoryRefDto {
+                        target: r.target,
+                        commit: r.commit.clone(),
+                    }),
+                }),
             },
             body: f.body.clone(),
         }
@@ -105,6 +131,19 @@ fn parse_feature_status(s: &str) -> mmcp_core::memory::FeatureStatus {
     }
 }
 
+fn parse_issue_status(s: &str) -> mmcp_core::memory::IssueStatus {
+    use mmcp_core::memory::IssueStatus;
+    match s {
+        "closed" => IssueStatus::Closed,
+        "wontfix" => IssueStatus::Wontfix,
+        "blocked" => IssueStatus::Blocked,
+        "deferred" => IssueStatus::Deferred,
+        "duplicate" => IssueStatus::Duplicate,
+        "superseded" => IssueStatus::Superseded,
+        _ => IssueStatus::Open,
+    }
+}
+
 fn parse_kind(s: &str) -> GuiResult<MemoryKind> {
     match s {
         "rule" => Ok(MemoryKind::Rule),
@@ -113,6 +152,7 @@ fn parse_kind(s: &str) -> GuiResult<MemoryKind> {
         "reference" => Ok(MemoryKind::Reference),
         "scratch" => Ok(MemoryKind::Scratch),
         "feature" | "fr" => Ok(MemoryKind::Feature),
+        "issue" => Ok(MemoryKind::Issue),
         other => Err(GuiError::Other(format!("unknown kind: {other}"))),
     }
 }
@@ -191,6 +231,16 @@ fn to_memory_file(dto: MemoryFileDto) -> GuiResult<MemoryFile> {
             depends_on: f.depends_on,
             blocks: f.blocks,
             superseded_by: f.superseded_by.map(|r| mmcp_core::memory::MemoryRef {
+                target: r.target,
+                commit: r.commit,
+            }),
+        }),
+        issue: dto.frontmatter.issue.map(|i| mmcp_core::memory::IssueMetadata {
+            status: parse_issue_status(&i.status),
+            number: i.number,
+            depends_on: i.depends_on,
+            blocks: i.blocks,
+            superseded_by: i.superseded_by.map(|r| mmcp_core::memory::MemoryRef {
                 target: r.target,
                 commit: r.commit,
             }),

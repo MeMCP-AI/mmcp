@@ -160,10 +160,10 @@
     if (!c) return;
     draftProjectSlug = c.project_slug ?? '';
     draftProjectSyncUrl = c.sync?.server_url ?? '';
-    draftProjectNoDefault = c.groups?.no_default ?? false;
-    draftProjectAdditional = (c.groups?.additional ?? []).join(', ');
-    draftProjectLangUse = (c.languages?.use ?? []).join(', ');
-    draftProjectAutoDetect = c.languages?.auto_detect ?? false;
+    draftProjectNoDefault = c.subscriptions.no_default_global;
+    draftProjectAdditional = c.subscriptions.groups.join(', ');
+    draftProjectLangUse = c.subscriptions.languages.join(', ');
+    draftProjectAutoDetect = c.subscriptions.auto_detect_languages;
   });
 
   function parseCsv(s: string): string[] {
@@ -183,13 +183,13 @@
       sync: draftProjectSyncUrl.trim().length > 0
         ? { server_url: draftProjectSyncUrl.trim() }
         : null,
-      groups: {
-        no_default: draftProjectNoDefault,
-        additional: parseCsv(draftProjectAdditional)
-      },
-      languages: {
-        use: parseCsv(draftProjectLangUse),
-        auto_detect: draftProjectAutoDetect
+      subscriptions: {
+        no_default_global: draftProjectNoDefault,
+        auto_detect_languages: draftProjectAutoDetect,
+        languages: parseCsv(draftProjectLangUse),
+        groups: parseCsv(draftProjectAdditional),
+        memories: current.subscriptions.memories,
+        tags: current.subscriptions.tags
       }
     };
     onSaveProject(root, cfg);
@@ -495,7 +495,7 @@
                 placeholder="(empty = local-only)"
               />
 
-              <label class="self-start pt-1.5 text-fg-muted">groups</label>
+              <span class="self-start pt-1.5 text-fg-muted">groups</span>
               <div class="flex flex-col gap-2">
                 <label class="flex items-center gap-2 text-fg">
                   <input type="checkbox" bind:checked={draftProjectNoDefault} />
@@ -511,7 +511,7 @@
                 />
               </div>
 
-              <label class="self-start pt-1.5 text-fg-muted">languages</label>
+              <span class="self-start pt-1.5 text-fg-muted">languages</span>
               <div class="flex flex-col gap-2">
                 <label class="flex items-center gap-2 text-fg">
                   <input type="checkbox" bind:checked={draftProjectAutoDetect} />
