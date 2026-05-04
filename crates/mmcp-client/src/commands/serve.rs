@@ -215,11 +215,24 @@ struct McpServer {
     tool_router: ToolRouter<McpServer>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
 struct ListMemoriesArgs {
     /// Group UUID to list memories from.
     pub group: String,
+    /// Optional FR-41 path prefix filter. When set, only memories
+    /// whose slug starts with `<path_prefix>/` (or equals it) are
+    /// returned. The prefix itself is matched literally — no
+    /// wildcards or regexes.
+    #[serde(default)]
+    pub path_prefix: Option<String>,
+    /// FR-41: when `false`, only memories whose slug has exactly
+    /// one segment beyond `path_prefix` (or one segment total when
+    /// no prefix is set) are returned. Defaults to `true` so the
+    /// pre-FR-41 default of "every memory in the group" is
+    /// preserved.
+    #[serde(default)]
+    pub recursive: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1291,6 +1304,34 @@ struct DeleteFeatureArgs {
     pub message: Option<String>,
 }
 
+/// Args for `move_memory` (FR-41).
+///
+/// Atomically rewrites a memory's slug path in a single commit.
+/// The memory id stays stable across the move, so cross-refs in
+/// other memories remain valid. In-group only — cross-group
+/// transfer is FR-36 territory and will extend this tool with an
+/// optional `target_group` later.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct MoveMemoryArgs {
+    /// Target group UUID.
+    pub group: String,
+    /// Source slug path. Optional when `id` is supplied; if both
+    /// are present they must address the same memory.
+    #[serde(default)]
+    pub slug: Option<String>,
+    /// Canonical UUID of the memory (FR-028).
+    #[serde(default)]
+    pub id: Option<String>,
+    /// New slug path. May be a single segment (`feedback`) or a
+    /// `/`-joined multi-segment path (`feedback/git/commit-phase`)
+    /// up to [`mmcp_store::MAX_SLUG_SEGMENTS`] segments.
+    pub new_slug: String,
+    /// Optional override for the git commit message.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
 /// Args for `rename_feature` (FR-027).
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
@@ -1412,7 +1453,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List memories that live in the specified group. The group argument is the group UUID. Returns `{group, memories, mirrored: bool}` — `mirrored: false` signals the group UUID is unknown to the local mirror (distinct from a mirrored-but-empty group, which returns `mirrored: true` with `memories: []`).",
+        description = "List memories that live in the specified group. The group argument is the group UUID. Returns `{group, memories, mirrored: bool}` — `mirrored: false` signals the group UUID is unknown to the local mirror (distinct from a mirrored-but-empty group, which returns `mirrored: true` with `memories: []`). FR-41: pass `path_prefix` to restrict to a slug subtree (literal prefix, no wildcards), and `recursive: false` to surface only the immediate children at that prefix level.",
         annotations(
             title = "List memories in a group",
             read_only_hint = true,
@@ -1439,8 +1480,13 @@ impl McpServer {
             })));
         };
         let files = list_memory_files(&self.state.backend, &entry).await?;
+        let recursive = args.recursive.unwrap_or(true);
+        let prefix = args.path_prefix.as_deref().map(|p| p.trim_end_matches('/'));
         let mut memories = Vec::with_capacity(files.len());
         for file in files {
+            if !slug_matches_filter(&file.slug, prefix, recursive) {
+                continue;
+            }
             let descriptor = read_memory_descriptor(
                 &self.state.backend,
                 &entry,
@@ -2119,6 +2165,79 @@ impl McpServer {
             }),
             notes,
         ))
+    }
+
+    #[tool(
+        description = "FR-41: atomically move a memory to a new slug path inside the same group. The memory id stays stable across the move, so cross-references in other memories keep resolving. The new slug may be a single segment (`feedback`) or a `/`-joined multi-segment path (`feedback/git/commit-phase`). Same-slug moves short-circuit as no-ops. Refuses to overwrite an existing memory at the destination with the same id; pick a different target or delete the existing entry first.",
+        annotations(
+            title = "Move memory to a new slug path",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn move_memory(
+        &self,
+        Parameters(args): Parameters<MoveMemoryArgs>,
+        peer: Peer<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let entry = self.resolve_group_entry(&args.group).await?;
+        let slug_for_guard = memory_label_for_guard(args.slug.as_deref(), args.id.as_deref());
+        confirm_protected_write(&peer, &entry, &slug_for_guard, "move").await?;
+        self.move_memory_unguarded(args).await
+    }
+
+    /// Peer-less test entry point for `move_memory`. Mirrors
+    /// `edit_memory_unguarded`.
+    async fn move_memory_unguarded(
+        &self,
+        args: MoveMemoryArgs,
+    ) -> Result<CallToolResult, McpError> {
+        let id_opt = match args.id.as_deref() {
+            Some(raw) => Some(Uuid::parse_str(raw).map_err(|e| {
+                McpError::invalid_params(
+                    Cow::Owned(format!("`id` is not a valid UUID: {e}")),
+                    Some(json!({ "code": "invalid_uuid", "id": raw })),
+                )
+            })?),
+            None => None,
+        };
+        if args.slug.is_none() && id_opt.is_none() {
+            return Err(McpError::invalid_params(
+                "move_memory requires at least one of `slug` or `id`",
+                Some(json!({ "code": "missing_address" })),
+            ));
+        }
+        let entry = self.resolve_group_entry(&args.group).await?;
+        // FR-39 v2: a slug-rewrite move spans the source and target
+        // slug directories, so we need the same coarsening lock the
+        // feature rename takes — Exclusive Group blocks every
+        // narrower in-flight memory edit and every new one.
+        let _lock_guards = mmcp_store::lock::acquire_chain(
+            &mmcp_store::lock::coarsen_group_chain(*entry.manifest.group_id.as_uuid()),
+        )
+        .await;
+        let outcome = mmcp_store::move_memory_path(
+            &self.state.backend,
+            &entry.handle,
+            args.slug.as_deref(),
+            id_opt,
+            &args.new_slug,
+            &self.state.author,
+            args.message.as_deref(),
+        )
+        .await
+        .map_err(map_memory_error_to_mcp)?;
+        Ok(ok_json(json!({
+            "group":     args.group,
+            "id":        outcome.id.to_string(),
+            "old_slug":  outcome.old_slug,
+            "new_slug":  outcome.new_slug,
+            "old_path":  outcome.old_path,
+            "new_path":  outcome.new_path,
+            "commit_id": outcome.commit_id,
+        })))
     }
 
     #[tool(
@@ -3855,6 +3974,7 @@ impl McpServer {
             Self::import_memory_tool_attr(),
             Self::edit_memory_tool_attr(),
             Self::edit_memory_body_tool_attr(),
+            Self::move_memory_tool_attr(),
             Self::debug_write_file_tool_attr(),
             Self::update_feature_tool_attr(),
             Self::delete_memory_tool_attr(),
@@ -4045,6 +4165,7 @@ fn meta_for_tool(name: &str) -> Option<rmcp::model::Meta> {
         "write_memory"
             | "edit_memory"
             | "edit_memory_body"
+            | "move_memory"
             | "delete_memory"
             | "debug_write_file"
             | "init_claude"
@@ -5322,6 +5443,43 @@ async fn list_memory_files(
         .map_err(git_error)
 }
 
+/// FR-41 path filter for `list_memories`. Returns `true` when
+/// `slug` (the full slash-joined memory slug) belongs in a
+/// listing constrained to `prefix` and the recursion mode.
+///
+/// `depth` is measured from the *anchor* — the prefix when one
+/// is set, or the implicit `memories/` root when not. The anchor
+/// itself sits at depth 0; a top-level slug like `feedback` is
+/// depth 1 from the root, and one level below a prefix is depth
+/// 1 from the prefix.
+///
+/// - `prefix = None, recursive = true` (default): every slug
+///   matches.
+/// - `prefix = None, recursive = false`: only top-level slugs
+///   (no `/` separator) match.
+/// - `prefix = Some("a/b"), recursive = true`: slugs that equal
+///   `"a/b"` or live underneath it match.
+/// - `prefix = Some("a/b"), recursive = false`: only the
+///   immediate children of the prefix and the prefix itself
+///   match (so `a/b`, `a/b/c` ok; `a/b/c/d` filtered out).
+fn slug_matches_filter(slug: &str, prefix: Option<&str>, recursive: bool) -> bool {
+    let depth = match prefix {
+        None | Some("") | Some("/") => slug.split('/').count(),
+        Some(p) => {
+            if slug == p {
+                0
+            } else if let Some(rest) = slug.strip_prefix(p)
+                && let Some(suffix) = rest.strip_prefix('/')
+            {
+                suffix.split('/').count()
+            } else {
+                return false;
+            }
+        }
+    };
+    if recursive { true } else { depth <= 1 }
+}
+
 /// Read one memory and return a compact descriptor including the
 /// slug, the parsed frontmatter fields, and a short summary.
 ///
@@ -5711,6 +5869,7 @@ mod tests {
         let res = server
             .list_memories(Parameters(ListMemoriesArgs {
                 group: group.to_string(),
+                ..Default::default()
             }))
             .await
             .expect("list_memories");
@@ -5820,6 +5979,7 @@ mod tests {
         let res = server
             .list_memories(Parameters(ListMemoriesArgs {
                 group: phantom_uuid.clone(),
+                ..Default::default()
             }))
             .await
             .expect("list_memories on unknown group should not error");
@@ -6265,6 +6425,7 @@ mod tests {
         let res = server
             .list_memories(Parameters(ListMemoriesArgs {
                 group: unknown.to_string(),
+                ..Default::default()
             }))
             .await
             .expect("list_memories");
@@ -8025,6 +8186,198 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn move_memory_relocates_to_nested_path() {
+        // FR-41: move a flat memory to a nested slug path. The id
+        // stays stable; resolving by id surfaces the new slug.
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "flat", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state.clone(), ServeMode::Full);
+        let res = server
+            .move_memory_unguarded(MoveMemoryArgs {
+                group: group.to_string(),
+                slug: Some("flat".into()),
+                new_slug: "nested/path/leaf".into(),
+                ..Default::default()
+            })
+            .await
+            .expect("move");
+        let parsed = parse_ok_json(res);
+        assert_eq!(
+            parsed.get("new_slug").and_then(|v| v.as_str()),
+            Some("nested/path/leaf")
+        );
+        assert!(
+            !parsed
+                .get("commit_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .is_empty()
+        );
+        // The new path is reachable via list_memories with the
+        // matching prefix; the old slug is gone.
+        let listed = server
+            .list_memories(Parameters(ListMemoriesArgs {
+                group: group.to_string(),
+                path_prefix: Some("nested".into()),
+                ..Default::default()
+            }))
+            .await
+            .expect("list");
+        let listed = parse_ok_json(listed);
+        let arr = listed
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .expect("memories");
+        assert!(
+            arr.iter()
+                .any(|m| m.get("slug").and_then(|v| v.as_str()) == Some("nested/path/leaf")),
+            "moved memory must surface under prefix filter; got {arr:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn move_memory_validates_new_slug() {
+        // FR-41: a `..` segment is rejected so callers can't
+        // escape `memories/` via the move tool.
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "src", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+        let err = server
+            .move_memory_unguarded(MoveMemoryArgs {
+                group: group.to_string(),
+                slug: Some("src".into()),
+                new_slug: "../escape".into(),
+                ..Default::default()
+            })
+            .await
+            .expect_err("invalid slug must error");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("invalid_slug")
+        );
+    }
+
+    #[tokio::test]
+    async fn list_memories_path_prefix_filters_to_subtree() {
+        // FR-41: path_prefix + recursive=false trims the listing
+        // to immediate children; recursive=true (default) walks
+        // the whole subtree.
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "top", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state.clone(), ServeMode::Full);
+        // Set up a nested layout via two moves.
+        server
+            .move_memory_unguarded(MoveMemoryArgs {
+                group: group.to_string(),
+                slug: Some("top".into()),
+                new_slug: "feedback/git/scope".into(),
+                ..Default::default()
+            })
+            .await
+            .expect("move");
+        // Add a sibling under feedback with a shallower path.
+        let entry = server
+            .state
+            .groups
+            .get(&group)
+            .await
+            .expect("group entry");
+        let sibling_id = Uuid::now_v7();
+        server
+            .state
+            .backend
+            .write_commit(
+                &entry.handle,
+                CommitSpec {
+                    branch: mmcp_core::conventions::MAIN_BRANCH.to_string(),
+                    author_name: "test".into(),
+                    author_email: "test@example.com".into(),
+                    message: "seed sibling".into(),
+                    files: vec![(
+                        mmcp_core::conventions::memory_path("feedback", sibling_id),
+                        Some(SAMPLE_MEMORY.as_bytes().to_vec()),
+                    )],
+                },
+            )
+            .await
+            .expect("seed sibling");
+
+        // Recursive (default): both surface.
+        let res = server
+            .list_memories(Parameters(ListMemoriesArgs {
+                group: group.to_string(),
+                path_prefix: Some("feedback".into()),
+                ..Default::default()
+            }))
+            .await
+            .expect("list");
+        let parsed = parse_ok_json(res);
+        let slugs: Vec<String> = parsed
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| m.get("slug").and_then(|s| s.as_str()).map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(slugs.contains(&"feedback".to_string()), "got: {slugs:?}");
+        assert!(
+            slugs.contains(&"feedback/git/scope".to_string()),
+            "got: {slugs:?}"
+        );
+
+        // Non-recursive: only immediate children of `feedback` (and
+        // `feedback` itself) match. `feedback/git/scope` is two
+        // levels deep, so it's filtered out.
+        let res = server
+            .list_memories(Parameters(ListMemoriesArgs {
+                group: group.to_string(),
+                path_prefix: Some("feedback".into()),
+                recursive: Some(false),
+            }))
+            .await
+            .expect("list");
+        let parsed = parse_ok_json(res);
+        let slugs: Vec<String> = parsed
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| m.get("slug").and_then(|s| s.as_str()).map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(slugs.contains(&"feedback".to_string()), "got: {slugs:?}");
+        assert!(
+            !slugs.contains(&"feedback/git/scope".to_string()),
+            "non-recursive must exclude deeper paths; got: {slugs:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn slug_matches_filter_truth_table() {
+        // No prefix, recursive=true: every slug matches.
+        assert!(slug_matches_filter("a", None, true));
+        assert!(slug_matches_filter("a/b/c", None, true));
+        // No prefix, recursive=false: only top-level slugs.
+        assert!(slug_matches_filter("a", None, false));
+        assert!(!slug_matches_filter("a/b", None, false));
+        // Prefix match, recursive=true.
+        assert!(slug_matches_filter("a/b", Some("a"), true));
+        assert!(slug_matches_filter("a/b/c/d", Some("a/b"), true));
+        // Prefix match, recursive=false: only depth ≤ 1 below
+        // prefix.
+        assert!(slug_matches_filter("a", Some("a"), false));
+        assert!(slug_matches_filter("a/b", Some("a"), false));
+        assert!(!slug_matches_filter("a/b/c", Some("a"), false));
+        // Prefix mismatch.
+        assert!(!slug_matches_filter("ab", Some("a"), true));
+        assert!(!slug_matches_filter("b/a", Some("a"), true));
+    }
+
+    #[tokio::test]
     async fn edit_memory_returns_memory_not_found_when_slug_absent() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "rules", "existing", SAMPLE_MEMORY).await;
@@ -8067,6 +8420,7 @@ mod tests {
         let list = server
             .list_memories(Parameters(ListMemoriesArgs {
                 group: group.to_string(),
+                ..Default::default()
             }))
             .await
             .expect("list");
@@ -8443,6 +8797,7 @@ mod tests {
         check_bits(McpServer::debug_toggle_tool_attr(), iden);
         check_bits(McpServer::init_project_tool_attr(), iden);
         check_bits(McpServer::rename_feature_tool_attr(), iden);
+        check_bits(McpServer::move_memory_tool_attr(), iden);
         check_bits(McpServer::subscribe_tool_attr(), iden);
         check_bits(McpServer::unsubscribe_tool_attr(), iden);
 
