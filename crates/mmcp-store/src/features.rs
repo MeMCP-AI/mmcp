@@ -1007,15 +1007,15 @@ pub async fn list_features(
     show_all: bool,
 ) -> Result<Vec<FeatureRecord>, FeatureError> {
     // Every memory lives at `memories/<slug>/<uuid>.md`, so slug
-    // directories are the enumeration surface.
-    let slugs = backend
-        .list_subtrees(&entry.handle, MEMORIES_DIR, &Rev::head())
+    // leaf directories are the enumeration surface. FR-41-aware:
+    // nested slug paths surface alongside flat ones.
+    let slug_dirs = crate::memory::list_memory_slug_dirs(backend, &entry.handle, &Rev::head())
         .await
         .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?;
 
     let mut out = Vec::new();
-    for slug in slugs {
-        match read_feature(backend, entry, &slug, None).await {
+    for slug_dir in slug_dirs {
+        match read_feature(backend, entry, &slug_dir.slug, None).await {
             Ok(record) => {
                 let keep = match status_filter {
                     Some(want) => record.status == want,

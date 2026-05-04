@@ -573,33 +573,28 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
         }
     }
 
-    // Walk every slug dir directly so stray non-UUID filenames
-    // and empty slug directories are surfaced.
+    // Walk every leaf slug dir so stray non-UUID filenames are
+    // surfaced. FR-41-aware: nested paths surface as separate leaf
+    // entries; intermediate path nodes are not "empty leaves".
     // `list_all_memory_files` silently skips non-UUID files, so
-    // without this pass a `memories/rules/scratch.md` or a
-    // `memories/leftover/` (empty after a rename) would never show
-    // up in diagnostics.
-    if let Ok(slug_dirs) = backend
-        .list_subtrees(&entry.handle, mmcp_core::conventions::MEMORIES_DIR, &rev)
-        .await
+    // without this pass a `memories/rules/scratch.md` would never
+    // show up in diagnostics.
+    if let Ok(slug_dirs) = crate::memory::list_memory_slug_dirs(backend, &entry.handle, &rev).await
     {
-        for slug in slug_dirs {
-            let dir = format!("{}/{slug}", mmcp_core::conventions::MEMORIES_DIR);
-            let Ok(filenames) = backend.list_tree(&entry.handle, &dir, &rev).await else {
-                continue;
-            };
+        for slug_dir in slug_dirs {
             let mut valid_memory_files = 0usize;
-            for filename in &filenames {
+            for filename in &slug_dir.filenames {
                 let Some(stem) =
                     filename.strip_suffix(mmcp_core::conventions::MEMORY_EXTENSION)
                 else {
                     report.findings.push(Finding {
                         group: gid.clone(),
-                        slug: Some(slug.clone()),
+                        slug: Some(slug_dir.slug.clone()),
                         severity: "warning",
                         code: "slug_dir_non_memory_file",
                         message: format!(
-                            "non-memory file '{filename}' under {dir}/ (expected `<uuid>.md`)"
+                            "non-memory file '{filename}' under {}/ (expected `<uuid>.md`)",
+                            slug_dir.dir
                         ),
                     });
                     continue;
@@ -607,11 +602,12 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
                 if Uuid::parse_str(stem).is_err() {
                     report.findings.push(Finding {
                         group: gid.clone(),
-                        slug: Some(slug.clone()),
+                        slug: Some(slug_dir.slug.clone()),
                         severity: "error",
                         code: "slug_dir_bad_filename",
                         message: format!(
-                            "memory filename '{filename}' under {dir}/ is not a valid UUID"
+                            "memory filename '{filename}' under {}/ is not a valid UUID",
+                            slug_dir.dir
                         ),
                     });
                     continue;
@@ -621,11 +617,12 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
             if valid_memory_files == 0 {
                 report.findings.push(Finding {
                     group: gid.clone(),
-                    slug: Some(slug.clone()),
+                    slug: Some(slug_dir.slug.clone()),
                     severity: "info",
                     code: "slug_dir_empty",
                     message: format!(
-                        "slug directory {dir}/ has no memory files (leftover from a rename or delete?)"
+                        "slug directory {}/ has no memory files (leftover from a rename or delete?)",
+                        slug_dir.dir
                     ),
                 });
             }

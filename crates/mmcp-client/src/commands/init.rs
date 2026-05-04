@@ -31,7 +31,7 @@ use uuid::Uuid;
 use mmcp_store::config::{find_project_root, load, save};
 use mmcp_store::groups::GroupIndex;
 use mmcp_store::home::MmcpHome;
-use mmcp_store::memory::validate_slug;
+use mmcp_store::memory::validate_slug_segment;
 
 // ── CLI args ─────────────────────────────────────────────────────────
 
@@ -187,7 +187,8 @@ async fn bootstrap_project(
         cwd,
         tty_slug_prompt,
     )?;
-    validate_slug(&slug).map_err(|_| InitProjectError::InvalidSlug { slug: slug.clone() })?;
+    validate_slug_segment(&slug)
+        .map_err(|_| InitProjectError::InvalidSlug { slug: slug.clone() })?;
 
     // 3. Backfill `project_slug` if the existing config lacked one.
     //    Any other disagreement already errored out in `resolve_slug`,

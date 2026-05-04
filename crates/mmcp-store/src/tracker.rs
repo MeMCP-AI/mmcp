@@ -11,19 +11,19 @@
 //! Gaps from deletes stay gaps because the helper picks `max + 1`
 //! and never reuses the slot.
 
-use mmcp_core::conventions::MEMORIES_DIR;
 use mmcp_core::memory::MemoryFile;
 use mmcp_git::{GitBackend, NativeBackend, Rev};
 
 use crate::groups::GroupEntry;
-use crate::memory::ImportError;
+use crate::memory::{ImportError, list_memory_slug_dirs};
 
 /// Compute the next ticket number for the group.
 ///
 /// Reads the frontmatter of every memory under `memories/`, looks
 /// at `feature.number` and `issue.number`, and returns one more
 /// than the maximum observed value. Returns `1` for an empty
-/// group.
+/// group. FR-41-aware: nested slug paths are walked recursively
+/// via [`list_memory_slug_dirs`].
 ///
 /// Errors only on a hard list / read failure on the underlying
 /// git tree; per-memory parse errors are ignored so a single
@@ -33,18 +33,13 @@ pub async fn next_ticket_number(
     entry: &GroupEntry,
 ) -> Result<u32, ImportError> {
     let rev = Rev::head();
-    let slug_dirs = backend
-        .list_subtrees(&entry.handle, MEMORIES_DIR, &rev)
+    let slug_dirs = list_memory_slug_dirs(backend, &entry.handle, &rev)
         .await
         .map_err(ImportError::Git)?;
     let mut max = 0u32;
-    for slug in slug_dirs {
-        let dir = format!("{MEMORIES_DIR}/{slug}");
-        let Ok(filenames) = backend.list_tree(&entry.handle, &dir, &rev).await else {
-            continue;
-        };
-        for filename in filenames {
-            let path = format!("{dir}/{filename}");
+    for slug_dir in slug_dirs {
+        for filename in &slug_dir.filenames {
+            let path = format!("{}/{filename}", slug_dir.dir);
             let Ok(bytes) = backend.read_file(&entry.handle, &path, &rev).await else {
                 continue;
             };

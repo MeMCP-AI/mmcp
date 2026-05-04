@@ -58,7 +58,7 @@ pub struct SynthFrontmatter {
 #[derive(Debug, thiserror::Error)]
 pub enum ImportError {
     #[error(
-        "invalid slug '{0}': must be 1-128 chars, lowercase alphanumeric with hyphens, no leading/trailing hyphens"
+        "invalid slug '{0}': must be 1-{MAX_SLUG_SEGMENTS} `/`-joined segments (each lowercase alphanumeric with hyphens, no leading/trailing hyphens, no `..`), total length up to {MAX_SLUG_LENGTH} chars"
     )]
     InvalidSlug(String),
 
@@ -149,24 +149,89 @@ pub struct MemoryFileRef {
     pub path: String,
 }
 
-/// Walk every memory file in the group at `rev`. Each slug
-/// subdirectory under `memories/` is enumerated and every
-/// UUID-named `.md` file inside surfaces as one entry; duplicate
-/// slugs appear as multiple entries with distinct UUIDs.
+/// One leaf slug directory found by [`list_memory_slug_dirs`].
+/// "Leaf" means a tree node that holds at least one direct `.md`
+/// blob; intermediate path nodes that only contain subtrees are
+/// not surfaced. The `slug` field is the full slash-joined path
+/// from `memories/` down (e.g. `feedback/git/commit-phase`).
+#[derive(Debug, Clone)]
+pub struct MemorySlugDir {
+    /// Path slug (one or more `/`-joined segments, no leading
+    /// `memories/` prefix).
+    pub slug: String,
+    /// Full in-repo directory path: `memories/<slug>`.
+    pub dir: String,
+    /// Direct file entries returned by `list_tree(dir)`. Includes
+    /// non-UUID names so diagnostics can flag schema violations
+    /// without re-listing.
+    pub filenames: Vec<String>,
+}
+
+/// Walk the `memories/` tree recursively and surface every leaf
+/// slug directory under it. A directory counts as a leaf iff it
+/// holds at least one direct `.md` blob; intermediate path nodes
+/// (only subtrees, no direct files) are traversed transparently.
+///
+/// FR-41 introduces `/`-separated slug paths; this helper is the
+/// shared enumeration primitive every listing surface (memories,
+/// features, issues, tracker, diagnostics) routes through so a
+/// nested slug never goes invisible.
+pub async fn list_memory_slug_dirs(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    rev: &Rev,
+) -> Result<Vec<MemorySlugDir>, GitError> {
+    let root = mmcp_core::conventions::MEMORIES_DIR;
+    let ext = mmcp_core::conventions::MEMORY_EXTENSION;
+    let mut out = Vec::new();
+    // Iterative DFS so async recursion doesn't need Box::pin per
+    // descent. Each frame holds (full git path, accumulated slug).
+    let mut stack: Vec<(String, String)> = vec![(root.to_string(), String::new())];
+    while let Some((prefix, slug_prefix)) = stack.pop() {
+        let files = backend.list_tree(handle, &prefix, rev).await?;
+        if !slug_prefix.is_empty() && files.iter().any(|f| f.ends_with(ext)) {
+            out.push(MemorySlugDir {
+                slug: slug_prefix.clone(),
+                dir: prefix.clone(),
+                filenames: files,
+            });
+        }
+        // Always recurse: a leaf may also have child slug paths
+        // (e.g. `feedback/<uuid>.md` and `feedback/git/<uuid>.md`
+        // can coexist). Skipping recursion on `has_md` would hide
+        // the children.
+        let subs = backend.list_subtrees(handle, &prefix, rev).await?;
+        for name in subs {
+            let child_prefix = format!("{prefix}/{name}");
+            let child_slug = if slug_prefix.is_empty() {
+                name
+            } else {
+                format!("{slug_prefix}/{name}")
+            };
+            stack.push((child_prefix, child_slug));
+        }
+    }
+    out.sort_by(|a, b| a.slug.cmp(&b.slug));
+    Ok(out)
+}
+
+/// Walk every memory file in the group at `rev`. Every leaf slug
+/// directory under `memories/` is enumerated and every UUID-named
+/// `.md` file inside surfaces as one entry; duplicate slugs appear
+/// as multiple entries with distinct UUIDs.
 ///
 /// Used by diagnostics and any other consumer that needs to read
-/// every memory exactly once.
+/// every memory exactly once. FR-41-aware: nested slug paths
+/// surface alongside flat ones because the walk is recursive.
 pub async fn list_all_memory_files(
     backend: &NativeBackend,
     handle: &RepoHandle,
     rev: &Rev,
 ) -> Result<Vec<MemoryFileRef>, GitError> {
-    let dir = mmcp_core::conventions::MEMORIES_DIR;
     let ext = mmcp_core::conventions::MEMORY_EXTENSION;
     let mut out = Vec::new();
-    for slug in backend.list_subtrees(handle, dir, rev).await? {
-        let subdir = format!("{dir}/{slug}");
-        for filename in backend.list_tree(handle, &subdir, rev).await? {
+    for entry in list_memory_slug_dirs(backend, handle, rev).await? {
+        for filename in &entry.filenames {
             let Some(stem) = filename.strip_suffix(ext) else {
                 continue;
             };
@@ -176,9 +241,9 @@ pub async fn list_all_memory_files(
                 continue;
             };
             out.push(MemoryFileRef {
-                slug: slug.clone(),
+                slug: entry.slug.clone(),
                 id,
-                path: format!("{subdir}/{filename}"),
+                path: format!("{}/{filename}", entry.dir),
             });
         }
     }
@@ -421,19 +486,15 @@ async fn resolve_by_id(
     // Every file read goes through `parse_frontmatter_id` so the
     // frontmatter id is the source of truth (FR-28 / D4).
     let rev = Rev::head();
-    let dirs = backend
-        .list_subtrees(handle, mmcp_core::conventions::MEMORIES_DIR, &rev)
-        .await?;
+    let slug_dirs = list_memory_slug_dirs(backend, handle, &rev).await?;
 
     let filename_ext = mmcp_core::conventions::MEMORY_EXTENSION;
     let mut step1_candidates: Vec<(String, String)> = Vec::new();
     let mut step2_candidates: Vec<(String, String)> = Vec::new();
     let mut step3_candidates: Vec<(String, String)> = Vec::new();
 
-    for slug in &dirs {
-        let dir = format!("{}/{}", mmcp_core::conventions::MEMORIES_DIR, slug);
-        let entries = backend.list_tree(handle, &dir, &rev).await?;
-        for name in entries {
+    for entry in &slug_dirs {
+        for name in &entry.filenames {
             let Some(stem) = name.strip_suffix(filename_ext) else {
                 // Non-`.md` files are a schema violation that
                 // `diagnose` already flags; the resolver ignores
@@ -441,16 +502,16 @@ async fn resolve_by_id(
                 // fallback scan.
                 continue;
             };
-            let path = format!("{}/{}/{}", mmcp_core::conventions::MEMORIES_DIR, slug, name);
+            let path = format!("{}/{name}", entry.dir);
             match Uuid::parse_str(stem) {
                 Ok(file_uuid) if file_uuid == expected => {
-                    step1_candidates.push((slug.clone(), path));
+                    step1_candidates.push((entry.slug.clone(), path));
                 }
                 Ok(_) => {
-                    step3_candidates.push((slug.clone(), path));
+                    step3_candidates.push((entry.slug.clone(), path));
                 }
                 Err(_) => {
-                    step2_candidates.push((slug.clone(), path));
+                    step2_candidates.push((entry.slug.clone(), path));
                 }
             }
         }
@@ -674,6 +735,100 @@ pub async fn delete_file_at_path(
     Ok(commit_id)
 }
 
+/// Outcome of a successful [`move_memory_path`] call. The id and
+/// body bytes are unchanged — the move is purely a slug/path
+/// rewrite.
+#[derive(Debug, Clone)]
+pub struct MoveMemoryOutcome {
+    pub old_slug: String,
+    pub new_slug: String,
+    pub id: Uuid,
+    pub old_path: String,
+    pub new_path: String,
+    pub commit_id: String,
+}
+
+/// Atomically rename a memory's slug path inside its group. Single
+/// commit: writes the bytes at the new path and removes the file
+/// at the old path in the same tree rewrite, so `git log` never
+/// shows a half-moved state. The frontmatter (id, name, body, …)
+/// is preserved verbatim so cross-refs stay valid.
+///
+/// Validation: both slugs must pass [`validate_memory_slug`]. The
+/// source memory is resolved via [`resolve_memory`] so callers may
+/// address it by `slug + id`, slug only, or id only. Refuses to
+/// overwrite an existing memory at `new_slug` with the same id.
+///
+/// Same-slug moves short-circuit and return without committing —
+/// the operation is a no-op.
+pub async fn move_memory_path(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    old_slug: Option<&str>,
+    id: Option<Uuid>,
+    new_slug: &str,
+    author: &ResolvedAuthor,
+    message: Option<&str>,
+) -> Result<MoveMemoryOutcome, ImportError> {
+    validate_memory_slug(new_slug)?;
+    let resolved = resolve_memory(backend, handle, old_slug, id).await?;
+    if resolved.slug == new_slug {
+        // No-op: the move target is the source. Returning a fake
+        // commit id would mislead callers; surface the unchanged
+        // path so they know the memory already lives where they
+        // asked.
+        return Ok(MoveMemoryOutcome {
+            old_slug: resolved.slug.clone(),
+            new_slug: resolved.slug,
+            id: resolved.id,
+            old_path: resolved.path.clone(),
+            new_path: resolved.path,
+            commit_id: String::new(),
+        });
+    }
+    // Refuse to overwrite a sibling at the destination with the
+    // same id. Writing different bytes there silently would lose
+    // data; the caller should pick a different target or delete
+    // the existing entry first.
+    let new_path = mmcp_core::conventions::memory_path(new_slug, resolved.id);
+    match backend.read_file(handle, &new_path, &Rev::head()).await {
+        Ok(_) => {
+            return Err(ImportError::MemoryAlreadyExists {
+                slug: new_slug.to_string(),
+            });
+        }
+        Err(GitError::PathNotFound(_)) => {}
+        Err(other) => return Err(ImportError::Git(other)),
+    }
+    let bytes = backend
+        .read_file(handle, &resolved.path, &Rev::head())
+        .await?;
+    let fallback = format!("move memory {} -> {} ({})", resolved.slug, new_slug, resolved.id);
+    let commit_message = message.unwrap_or(fallback.as_str());
+    let commit_id = backend
+        .write_commit(
+            handle,
+            CommitSpec::mmcp_commit(
+                commit_message.to_string(),
+                vec![
+                    (new_path.clone(), Some(bytes.to_vec())),
+                    (resolved.path.clone(), None),
+                ],
+                &author.name,
+                &author.email,
+            ),
+        )
+        .await?;
+    Ok(MoveMemoryOutcome {
+        old_slug: resolved.slug,
+        new_slug: new_slug.to_string(),
+        id: resolved.id,
+        old_path: resolved.path,
+        new_path,
+        commit_id,
+    })
+}
+
 /// Write a memory at the two-level `memories/<slug>/<id>.md` path
 /// with create-or-override semantics. Delegates the FR-28 / D4
 /// id-mismatch check to [`write_file_at_path`] so callers thread
@@ -805,23 +960,73 @@ pub async fn import_memory(
     })
 }
 
-/// Validate a memory slug.
-pub fn validate_slug(slug: &str) -> Result<(), ImportError> {
-    if slug.is_empty() || slug.len() > 128 {
-        return Err(ImportError::InvalidSlug(slug.to_string()));
+/// Maximum number of `/`-separated segments in a memory slug
+/// path. Bounded so a malicious or buggy caller cannot blow the
+/// directory tree out arbitrarily.
+pub const MAX_SLUG_SEGMENTS: usize = 8;
+
+/// Maximum total slug length, including separators. 256 is well
+/// above the legitimate need (8 segments × 30 chars + 7 separators
+/// = 247) while still bounded.
+pub const MAX_SLUG_LENGTH: usize = 256;
+
+/// Validate a single slug segment (no `/`). Used both for memory
+/// slug components and for top-level identifiers like group slugs
+/// where path separators are never legal.
+pub fn validate_slug_segment(segment: &str) -> Result<(), ImportError> {
+    if segment.is_empty() {
+        return Err(ImportError::InvalidSlug(segment.to_string()));
     }
-    if slug.starts_with('-') || slug.ends_with('-') {
-        return Err(ImportError::InvalidSlug(slug.to_string()));
+    if segment.starts_with('-') || segment.ends_with('-') {
+        return Err(ImportError::InvalidSlug(segment.to_string()));
     }
-    for ch in slug.chars() {
+    for ch in segment.chars() {
         if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && ch != '-' {
-            return Err(ImportError::InvalidSlug(slug.to_string()));
+            return Err(ImportError::InvalidSlug(segment.to_string()));
         }
     }
-    if slug.contains("--") {
-        return Err(ImportError::InvalidSlug(slug.to_string()));
+    if segment.contains("--") {
+        return Err(ImportError::InvalidSlug(segment.to_string()));
     }
     Ok(())
+}
+
+/// Validate a memory slug path. A slug is one to
+/// [`MAX_SLUG_SEGMENTS`] `/`-joined segments; each segment matches
+/// the single-segment rules in [`validate_slug_segment`]. Total
+/// length is capped at [`MAX_SLUG_LENGTH`]. Existing flat slugs are
+/// just zero-`/` paths and stay valid.
+pub fn validate_memory_slug(slug: &str) -> Result<(), ImportError> {
+    if slug.is_empty() || slug.len() > MAX_SLUG_LENGTH {
+        return Err(ImportError::InvalidSlug(slug.to_string()));
+    }
+    if slug.starts_with('/') || slug.ends_with('/') {
+        return Err(ImportError::InvalidSlug(slug.to_string()));
+    }
+    let segments: Vec<&str> = slug.split('/').collect();
+    if segments.is_empty() || segments.len() > MAX_SLUG_SEGMENTS {
+        return Err(ImportError::InvalidSlug(slug.to_string()));
+    }
+    for segment in &segments {
+        if *segment == ".." || *segment == "." {
+            return Err(ImportError::InvalidSlug(slug.to_string()));
+        }
+        validate_slug_segment(segment)
+            .map_err(|_| ImportError::InvalidSlug(slug.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Validate a memory slug. Accepts multi-segment paths joined by
+/// `/`, so callers wanting hierarchical sub-grouping (FR-41) can
+/// use e.g. `feedback/git/commit-phase`. Defers per-segment rules
+/// to [`validate_slug_segment`].
+///
+/// Kept as the historical name so existing call sites compile
+/// unchanged; new code may also call [`validate_memory_slug`]
+/// directly when the path semantics are intentional.
+pub fn validate_slug(slug: &str) -> Result<(), ImportError> {
+    validate_memory_slug(slug)
 }
 
 /// Derive a slug from a filename.
@@ -942,7 +1147,42 @@ mod tests {
         assert!(validate_slug("UPPER").is_err());
         assert!(validate_slug("has space").is_err());
         assert!(validate_slug("double--hyphen").is_err());
-        assert!(validate_slug(&"a".repeat(129)).is_err());
+        // Total-length cap: now MAX_SLUG_LENGTH (256). 257 chars
+        // overflow even when each segment passes the per-segment
+        // rules.
+        assert!(validate_slug(&"a".repeat(MAX_SLUG_LENGTH + 1)).is_err());
+    }
+
+    #[test]
+    fn validate_memory_slug_accepts_paths() {
+        // FR-41: multi-segment paths with `/` separators.
+        assert!(validate_memory_slug("feedback/git/commit-phase").is_ok());
+        assert!(validate_memory_slug("rules/testing").is_ok());
+        assert!(validate_memory_slug("a/b/c/d/e/f/g/h").is_ok()); // 8 segments OK
+    }
+
+    #[test]
+    fn validate_memory_slug_rejects_path_violations() {
+        // Leading / trailing / empty / dotted segments.
+        assert!(validate_memory_slug("/leading").is_err());
+        assert!(validate_memory_slug("trailing/").is_err());
+        assert!(validate_memory_slug("a//b").is_err());
+        assert!(validate_memory_slug("a/../b").is_err());
+        assert!(validate_memory_slug("a/./b").is_err());
+        // Depth cap.
+        assert!(validate_memory_slug("a/b/c/d/e/f/g/h/i").is_err());
+        // Per-segment rules still apply.
+        assert!(validate_memory_slug("ok/-bad").is_err());
+        assert!(validate_memory_slug("ok/UPPER").is_err());
+    }
+
+    #[test]
+    fn validate_slug_segment_rejects_slashes() {
+        // Group / project slugs go through the segment validator;
+        // a `/` in either is always invalid because they're not
+        // path-bearing identifiers.
+        assert!(validate_slug_segment("ok").is_ok());
+        assert!(validate_slug_segment("with/slash").is_err());
     }
 
     #[test]
@@ -1410,6 +1650,181 @@ mod tests {
         assert!(parsed.frontmatter.mandatory);
         assert!(parsed.body.contains("Round trip body"));
         assert_eq!(parsed.frontmatter.id, Some(resolved.id));
+    }
+
+    #[tokio::test]
+    async fn list_memory_slug_dirs_walks_nested_paths() {
+        // FR-41: a memory at `feedback/git/scope/<uuid>.md` and one
+        // at the flat `legacy/<uuid>.md` should both surface as
+        // separate leaf slug directories.
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let nested_id = Uuid::now_v7();
+        let flat_id = Uuid::now_v7();
+        seed_raw(
+            &backend,
+            &handle,
+            &format!("memories/feedback/git/scope/{nested_id}.md"),
+            "+++\nname = \"x\"\ndescription = \"x\"\nkind = \"rule\"\n+++\n\n",
+            &author,
+        )
+        .await;
+        seed_raw(
+            &backend,
+            &handle,
+            &format!("memories/legacy/{flat_id}.md"),
+            "+++\nname = \"y\"\ndescription = \"y\"\nkind = \"rule\"\n+++\n\n",
+            &author,
+        )
+        .await;
+
+        let dirs = list_memory_slug_dirs(&backend, &handle, &Rev::head())
+            .await
+            .expect("list");
+        let slugs: Vec<_> = dirs.iter().map(|d| d.slug.as_str()).collect();
+        assert!(slugs.contains(&"feedback/git/scope"), "got: {slugs:?}");
+        assert!(slugs.contains(&"legacy"), "got: {slugs:?}");
+    }
+
+    #[tokio::test]
+    async fn list_all_memory_files_recurses_into_nested_paths() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let id = Uuid::now_v7();
+        let path = format!("memories/feedback/git/{id}.md");
+        seed_raw(
+            &backend,
+            &handle,
+            &path,
+            &format!(
+                "+++\nname = \"n\"\ndescription = \"d\"\nkind = \"rule\"\nid = \"{id}\"\n+++\n\nbody"
+            ),
+            &author,
+        )
+        .await;
+        let files = list_all_memory_files(&backend, &handle, &Rev::head())
+            .await
+            .expect("list");
+        let hit = files
+            .iter()
+            .find(|f| f.id == id)
+            .expect("nested memory surfaces in flat enumeration");
+        assert_eq!(hit.slug, "feedback/git");
+        assert_eq!(hit.path, path);
+    }
+
+    #[tokio::test]
+    async fn resolve_memory_finds_nested_paths_by_id() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let id = Uuid::now_v7();
+        seed_raw(
+            &backend,
+            &handle,
+            &format!("memories/rules/testing/{id}.md"),
+            &format!(
+                "+++\nname = \"t\"\ndescription = \"t\"\nkind = \"rule\"\nid = \"{id}\"\n+++\n\nbody"
+            ),
+            &author,
+        )
+        .await;
+        let resolved = resolve_memory(&backend, &handle, None, Some(id))
+            .await
+            .expect("resolve by id");
+        assert_eq!(resolved.slug, "rules/testing");
+        assert_eq!(resolved.id, id);
+    }
+
+    #[tokio::test]
+    async fn move_memory_path_relocates_slug() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let content =
+            "+++\nname = \"m\"\ndescription = \"m\"\nkind = \"rule\"\n+++\n\nMove me.\n";
+        let imported = import_memory(&backend, &handle, "old-slug", content, None, &author, false)
+            .await
+            .expect("import");
+
+        let outcome = move_memory_path(
+            &backend,
+            &handle,
+            Some("old-slug"),
+            Some(imported.id),
+            "new/path/leaf",
+            &author,
+            None,
+        )
+        .await
+        .expect("move");
+        assert_eq!(outcome.id, imported.id);
+        assert_eq!(outcome.new_slug, "new/path/leaf");
+        assert!(!outcome.commit_id.is_empty());
+
+        // Old path is gone; new path resolves and the body was
+        // preserved verbatim.
+        assert!(matches!(
+            backend
+                .read_file(&handle, &outcome.old_path, &Rev::head())
+                .await,
+            Err(GitError::PathNotFound(_))
+        ));
+        let resolved = resolve_memory(&backend, &handle, None, Some(imported.id))
+            .await
+            .expect("resolve new");
+        assert_eq!(resolved.slug, "new/path/leaf");
+        let bytes = backend
+            .read_file(&handle, &resolved.path, &Rev::head())
+            .await
+            .expect("read");
+        let text = std::str::from_utf8(&bytes).expect("utf8");
+        assert!(text.contains("Move me."));
+    }
+
+    #[tokio::test]
+    async fn move_memory_path_same_slug_is_noop() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let content =
+            "+++\nname = \"s\"\ndescription = \"s\"\nkind = \"rule\"\n+++\n\n";
+        let imported = import_memory(&backend, &handle, "stay", content, None, &author, false)
+            .await
+            .expect("import");
+        let outcome = move_memory_path(
+            &backend,
+            &handle,
+            Some("stay"),
+            Some(imported.id),
+            "stay",
+            &author,
+            None,
+        )
+        .await
+        .expect("noop move");
+        assert_eq!(outcome.commit_id, "");
+        assert_eq!(outcome.old_path, outcome.new_path);
+    }
+
+    #[tokio::test]
+    async fn move_memory_path_validates_target() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let content =
+            "+++\nname = \"v\"\ndescription = \"v\"\nkind = \"rule\"\n+++\n\n";
+        import_memory(&backend, &handle, "src", content, None, &author, false)
+            .await
+            .expect("import");
+        let err = move_memory_path(
+            &backend,
+            &handle,
+            Some("src"),
+            None,
+            "bad//path",
+            &author,
+            None,
+        )
+        .await
+        .expect_err("invalid target slug");
+        assert!(matches!(err, ImportError::InvalidSlug(_)));
     }
 
     /// Seed an arbitrary file at an arbitrary path. Used by the

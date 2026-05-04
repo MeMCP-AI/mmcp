@@ -28,7 +28,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use mmcp_store::groups::GroupIndex;
-use mmcp_store::memory::validate_slug;
+use mmcp_store::memory::validate_slug_segment;
 
 /// Options accepted by [`create_standalone_group`].
 ///
@@ -120,7 +120,7 @@ pub async fn create_standalone_group(
     groups: &GroupIndex,
     opts: &CreateGroupOptions,
 ) -> Result<CreateGroupReport, CreateGroupError> {
-    validate_slug(&opts.slug).map_err(|_| CreateGroupError::InvalidSlug {
+    validate_slug_segment(&opts.slug).map_err(|_| CreateGroupError::InvalidSlug {
         slug: opts.slug.clone(),
     })?;
 

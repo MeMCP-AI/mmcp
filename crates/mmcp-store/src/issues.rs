@@ -709,14 +709,15 @@ pub async fn list_issues(
     status_filter: Option<IssueStatus>,
     show_all: bool,
 ) -> Result<Vec<IssueRecord>, IssueError> {
-    let slugs = backend
-        .list_subtrees(&entry.handle, mmcp_core::conventions::MEMORIES_DIR, &Rev::head())
+    // FR-41-aware: walk recursively so nested slug paths surface
+    // alongside flat ones.
+    let slug_dirs = crate::memory::list_memory_slug_dirs(backend, &entry.handle, &Rev::head())
         .await
         .map_err(|e| IssueError::Memory(ImportError::Git(e)))?;
 
     let mut out = Vec::new();
-    for slug in slugs {
-        match read_issue(backend, entry, &slug, None).await {
+    for slug_dir in slug_dirs {
+        match read_issue(backend, entry, &slug_dir.slug, None).await {
             Ok(record) => {
                 let keep = match status_filter {
                     Some(want) => record.status == want,
