@@ -5518,9 +5518,17 @@ async fn read_memory_descriptor(
                 None,
             ),
         };
+    // FR-41: every descriptor carries a segmented `path` so
+    // structure-aware consumers (GUIs that render trees, callers
+    // that filter by path) work with a typed `Vec<String>` instead
+    // of re-splitting the slug on `/`. The slug stays as the
+    // canonical addressing key (full path-shaped string) so flat
+    // consumers keep working.
+    let path: Vec<&str> = slug.split('/').filter(|s| !s.is_empty()).collect();
     Ok(json!({
         "group": entry.manifest.group_id,
         "slug": slug,
+        "path": path,
         "name": name,
         "description": description,
         "kind": kind,
@@ -8354,6 +8362,89 @@ mod tests {
             !slugs.contains(&"feedback/git/scope".to_string()),
             "non-recursive must exclude deeper paths; got: {slugs:?}",
         );
+    }
+
+    #[tokio::test]
+    async fn list_memories_descriptor_carries_segmented_path() {
+        // FR-41: every descriptor exposes the slug both as the
+        // canonical full string and as a segmented `path` array so
+        // structure-aware consumers don't re-split on `/`.
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "deep", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+        // Move the memory into a nested slug so the path has more
+        // than one segment.
+        server
+            .move_memory_unguarded(MoveMemoryArgs {
+                group: group.to_string(),
+                slug: Some("deep".into()),
+                new_slug: "feedback/git/scope".into(),
+                ..Default::default()
+            })
+            .await
+            .expect("move");
+
+        let res = server
+            .list_memories(Parameters(ListMemoriesArgs {
+                group: group.to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect("list");
+        let parsed = parse_ok_json(res);
+        let entry = parsed
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .expect("one memory");
+        assert_eq!(
+            entry.get("slug").and_then(|v| v.as_str()),
+            Some("feedback/git/scope"),
+            "slug stays the canonical full string",
+        );
+        let path: Vec<String> = entry
+            .get("path")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect()
+            })
+            .expect("path array");
+        assert_eq!(path, vec!["feedback", "git", "scope"]);
+    }
+
+    #[tokio::test]
+    async fn list_memories_flat_slug_yields_single_segment_path() {
+        // Sanity: a flat slug surfaces as a single-element path so
+        // serde consumers don't need a special case for top-level
+        // memories.
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "flat", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+        let res = server
+            .list_memories(Parameters(ListMemoriesArgs {
+                group: group.to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect("list");
+        let parsed = parse_ok_json(res);
+        let entry = parsed
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .expect("one memory");
+        let path: Vec<String> = entry
+            .get("path")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect()
+            })
+            .expect("path array");
+        assert_eq!(path, vec!["flat"]);
     }
 
     #[tokio::test]
