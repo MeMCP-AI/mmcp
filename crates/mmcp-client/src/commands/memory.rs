@@ -46,6 +46,8 @@ pub struct MemoryArgs {
 pub enum MemoryCommand {
     /// List memories in a group.
     List(ListArgs),
+    /// Render the slug-path hierarchy as a tree (FR-41).
+    Tree(TreeArgs),
     /// Read a memory's frontmatter + body. Slug-or-UUID positional.
     Read(ReadArgs),
     /// Walk the commit history of a memory.
@@ -60,6 +62,8 @@ pub enum MemoryCommand {
     Edit(EditArgs),
     /// Apply ordered semantic body ops to an existing memory (FR-026).
     EditBody(EditBodyArgs),
+    /// Atomically rewrite a memory's slug path within its group (FR-41).
+    Move(MoveArgs),
     /// Delete a memory by slug or UUID.
     Delete(DeleteArgs),
 }
@@ -68,6 +72,48 @@ pub enum MemoryCommand {
 pub struct ListArgs {
     /// Target group (UUID or slug).
     pub group: String,
+
+    /// FR-41: literal slug-path prefix to filter on. Pass
+    /// `feedback` to list every memory whose slug starts with
+    /// `feedback` or `feedback/...`.
+    #[arg(long)]
+    pub prefix: Option<String>,
+
+    /// FR-41: when set, only memories whose slug has at most one
+    /// path segment beyond `--prefix` (or one segment total when
+    /// no prefix is set) are listed. Default lists every match.
+    #[arg(long)]
+    pub no_recursive: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct TreeArgs {
+    /// Target group (UUID or slug).
+    pub group: String,
+
+    /// FR-41: optional literal slug-path prefix; the tree is
+    /// rooted at this node so the listing fits the question
+    /// "what's under feedback/git?".
+    #[arg(long)]
+    pub prefix: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct MoveArgs {
+    /// Target group (UUID or slug).
+    pub group: String,
+
+    /// Source memory address — slug path or UUID. UUIDs are
+    /// detected by shape.
+    pub addr: String,
+
+    /// New slug path. Multi-segment paths use `/` separators
+    /// (e.g. `feedback/git/commit-phase`).
+    pub new_slug: String,
+
+    /// Override the git commit message.
+    #[arg(long)]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -294,6 +340,7 @@ pub async fn run(args: MemoryArgs) -> Result<()> {
         // a future variant lands without a dispatch update.
         None => unreachable!("clap enforces subcommand presence"),
         Some(MemoryCommand::List(a)) => run_list(a).await,
+        Some(MemoryCommand::Tree(a)) => run_tree(a).await,
         Some(MemoryCommand::Read(a)) => run_read(a).await,
         Some(MemoryCommand::Versions(a)) => run_versions(a).await,
         Some(MemoryCommand::Sections(a)) => run_sections(a).await,
@@ -301,6 +348,7 @@ pub async fn run(args: MemoryArgs) -> Result<()> {
         Some(MemoryCommand::Write(a)) => run_write(a).await,
         Some(MemoryCommand::Edit(a)) => run_edit(a).await,
         Some(MemoryCommand::EditBody(a)) => run_edit_body(a).await,
+        Some(MemoryCommand::Move(a)) => run_move(a).await,
         Some(MemoryCommand::Delete(a)) => run_delete(a).await,
     }
 }
@@ -313,11 +361,23 @@ async fn run_list(args: ListArgs) -> Result<()> {
     let entry = resolve_group(&groups, &args.group)
         .await
         .map_err(anyhow::Error::from)?;
-    let files = list_all_memory_files(&backend, &entry.handle, &Rev::head())
+    let all_files = list_all_memory_files(&backend, &entry.handle, &Rev::head())
         .await
         .context("listing memory files")?;
+    let prefix = args.prefix.as_deref().map(|p| p.trim_end_matches('/'));
+    let recursive = !args.no_recursive;
+    let files: Vec<_> = all_files
+        .into_iter()
+        .filter(|f| slug_matches_filter(&f.slug, prefix, recursive))
+        .collect();
     if files.is_empty() {
-        println!("group `{}` has no memories", entry.manifest.slug);
+        match prefix {
+            Some(p) => println!(
+                "group `{}` has no memories under prefix `{}`",
+                entry.manifest.slug, p
+            ),
+            None => println!("group `{}` has no memories", entry.manifest.slug),
+        }
         return Ok(());
     }
     println!(
@@ -330,6 +390,134 @@ async fn run_list(args: ListArgs) -> Result<()> {
     for file in &files {
         let title = read_title(&backend, &entry, &file.path).await;
         println!("  {} {}  {}", file.slug, short_id(&file.id), title);
+    }
+    Ok(())
+}
+
+/// FR-41: shared slug-path filter. Returns `true` when `slug`
+/// belongs in a listing constrained to `prefix` and the recursion
+/// mode. Mirrors the MCP-side helper of the same name (kept in
+/// sync by the parity test in `serve.rs`).
+fn slug_matches_filter(slug: &str, prefix: Option<&str>, recursive: bool) -> bool {
+    let depth = match prefix {
+        None | Some("") | Some("/") => slug.split('/').count(),
+        Some(p) => {
+            if slug == p {
+                0
+            } else if let Some(rest) = slug.strip_prefix(p)
+                && let Some(suffix) = rest.strip_prefix('/')
+            {
+                suffix.split('/').count()
+            } else {
+                return false;
+            }
+        }
+    };
+    if recursive { true } else { depth <= 1 }
+}
+
+async fn run_tree(args: TreeArgs) -> Result<()> {
+    let home = MmcpHome::discover()?;
+    let (backend, groups) = home.init_backend().await?;
+    let entry = resolve_group(&groups, &args.group)
+        .await
+        .map_err(anyhow::Error::from)?;
+    let prefix = args.prefix.as_deref().map(|p| p.trim_end_matches('/'));
+    let files = list_all_memory_files(&backend, &entry.handle, &Rev::head())
+        .await
+        .context("listing memory files")?;
+    let mut counts: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for file in &files {
+        if !slug_matches_filter(&file.slug, prefix, true) {
+            continue;
+        }
+        let relative = match prefix {
+            None => file.slug.as_str(),
+            Some(p) if file.slug == p => "",
+            Some(p) => file
+                .slug
+                .strip_prefix(p)
+                .and_then(|rest| rest.strip_prefix('/'))
+                .unwrap_or(file.slug.as_str()),
+        };
+        // Walk the relative slug accumulating one bump per
+        // ancestor, so a memory at `git/scope/foo` lights up
+        // entries for `git`, `git/scope`, and `git/scope/foo`.
+        let mut path = String::new();
+        for segment in relative.split('/').filter(|s| !s.is_empty()) {
+            if !path.is_empty() {
+                path.push('/');
+            }
+            path.push_str(segment);
+            *counts.entry(path.clone()).or_insert(0) += 1;
+        }
+        if relative.is_empty() {
+            *counts.entry(String::new()).or_insert(0) += 1;
+        }
+    }
+    let header = match prefix {
+        Some(p) => format!("{} ({}) — tree under `{}`", entry.manifest.slug, entry.manifest.group_id, p),
+        None => format!("{} ({}) — slug tree", entry.manifest.slug, entry.manifest.group_id),
+    };
+    println!("{header}");
+    if counts.is_empty() {
+        println!("  (no memories)");
+        return Ok(());
+    }
+    for (path, count) in &counts {
+        let depth = if path.is_empty() {
+            0
+        } else {
+            path.matches('/').count() + 1
+        };
+        let indent = "  ".repeat(depth + 1);
+        let label = if path.is_empty() { "." } else { path.as_str() };
+        let suffix = if *count == 1 { "memory" } else { "memories" };
+        println!("{indent}{label} ({count} {suffix})");
+    }
+    Ok(())
+}
+
+async fn run_move(args: MoveArgs) -> Result<()> {
+    let home = MmcpHome::discover()?;
+    let (backend, groups) = home.init_backend().await?;
+    let entry = resolve_group(&groups, &args.group)
+        .await
+        .map_err(anyhow::Error::from)?;
+    let (slug_opt, id_opt) = parse_addr(&args.addr);
+    let author = home.resolve_author();
+    // FR-39 v2: a slug-rewrite move spans source + target slug
+    // dirs, so coarsen at the group level just like a feature
+    // rename does.
+    let _lock_guards = mmcp_store::lock::acquire_chain(
+        &mmcp_store::lock::coarsen_group_chain(*entry.manifest.group_id.as_uuid()),
+    )
+    .await;
+    let outcome = mmcp_store::move_memory_path(
+        &backend,
+        &entry.handle,
+        slug_opt.as_deref(),
+        id_opt,
+        &args.new_slug,
+        &author,
+        args.message.as_deref(),
+    )
+    .await
+    .map_err(anyhow::Error::from)?;
+    if outcome.commit_id.is_empty() {
+        println!(
+            "no-op: memory {} already lives at `{}`",
+            outcome.id, outcome.new_slug
+        );
+    } else {
+        // 7-char prefix matches git's default short-hash width;
+        // operators reading the line don't need the full sha.
+        let short: String = outcome.commit_id.chars().take(7).collect();
+        println!(
+            "moved {} from `{}` to `{}` (commit {short})",
+            outcome.id, outcome.old_slug, outcome.new_slug,
+        );
     }
     Ok(())
 }
