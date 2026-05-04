@@ -5521,13 +5521,14 @@ async fn read_memory_descriptor(
     // FR-41: every descriptor carries a segmented `path` so
     // structure-aware consumers (GUIs that render trees, callers
     // that filter by path) work with a typed `Vec<String>` instead
-    // of re-splitting the slug on `/`. The slug stays as the
-    // canonical addressing key (full path-shaped string) so flat
-    // consumers keep working.
+    // of re-splitting on `/`. `slug` is the leaf-only identifier
+    // (last path segment); the full structural location lives in
+    // `path`. Callers that want the joined form do `path.join("/")`.
     let path: Vec<&str> = slug.split('/').filter(|s| !s.is_empty()).collect();
+    let leaf = path.last().copied().unwrap_or(slug);
     Ok(json!({
         "group": entry.manifest.group_id,
-        "slug": slug,
+        "slug": leaf,
         "path": path,
         "name": name,
         "description": description,
@@ -8311,7 +8312,9 @@ mod tests {
             .await
             .expect("seed sibling");
 
-        // Recursive (default): both surface.
+        // Recursive (default): both surface. Match on the
+        // joined-path form (`path.join("/")`) so the assertion is
+        // about the structural location, not the leaf-only slug.
         let res = server
             .list_memories(Parameters(ListMemoriesArgs {
                 group: group.to_string(),
@@ -8321,19 +8324,26 @@ mod tests {
             .await
             .expect("list");
         let parsed = parse_ok_json(res);
-        let slugs: Vec<String> = parsed
+        let joined: Vec<String> = parsed
             .get("memories")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|m| m.get("slug").and_then(|s| s.as_str()).map(str::to_string))
+                    .filter_map(|m| {
+                        m.get("path").and_then(|v| v.as_array()).map(|segs| {
+                            segs.iter()
+                                .filter_map(|s| s.as_str())
+                                .collect::<Vec<_>>()
+                                .join("/")
+                        })
+                    })
                     .collect()
             })
             .unwrap_or_default();
-        assert!(slugs.contains(&"feedback".to_string()), "got: {slugs:?}");
+        assert!(joined.contains(&"feedback".to_string()), "got: {joined:?}");
         assert!(
-            slugs.contains(&"feedback/git/scope".to_string()),
-            "got: {slugs:?}"
+            joined.contains(&"feedback/git/scope".to_string()),
+            "got: {joined:?}"
         );
 
         // Non-recursive: only immediate children of `feedback` (and
@@ -8348,27 +8358,35 @@ mod tests {
             .await
             .expect("list");
         let parsed = parse_ok_json(res);
-        let slugs: Vec<String> = parsed
+        let joined: Vec<String> = parsed
             .get("memories")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|m| m.get("slug").and_then(|s| s.as_str()).map(str::to_string))
+                    .filter_map(|m| {
+                        m.get("path").and_then(|v| v.as_array()).map(|segs| {
+                            segs.iter()
+                                .filter_map(|s| s.as_str())
+                                .collect::<Vec<_>>()
+                                .join("/")
+                        })
+                    })
                     .collect()
             })
             .unwrap_or_default();
-        assert!(slugs.contains(&"feedback".to_string()), "got: {slugs:?}");
+        assert!(joined.contains(&"feedback".to_string()), "got: {joined:?}");
         assert!(
-            !slugs.contains(&"feedback/git/scope".to_string()),
-            "non-recursive must exclude deeper paths; got: {slugs:?}",
+            !joined.contains(&"feedback/git/scope".to_string()),
+            "non-recursive must exclude deeper paths; got: {joined:?}",
         );
     }
 
     #[tokio::test]
-    async fn list_memories_descriptor_carries_segmented_path() {
-        // FR-41: every descriptor exposes the slug both as the
-        // canonical full string and as a segmented `path` array so
-        // structure-aware consumers don't re-split on `/`.
+    async fn list_memories_descriptor_splits_slug_and_path() {
+        // FR-41: descriptor splits the on-disk path into a leaf
+        // `slug` (basename) and a segmented `path` (full location).
+        // Structure-aware consumers rebuild the joined form via
+        // `path.join("/")`.
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "rules", "deep", SAMPLE_MEMORY).await;
         let server = McpServer::new(state, ServeMode::Full);
@@ -8399,8 +8417,8 @@ mod tests {
             .expect("one memory");
         assert_eq!(
             entry.get("slug").and_then(|v| v.as_str()),
-            Some("feedback/git/scope"),
-            "slug stays the canonical full string",
+            Some("scope"),
+            "slug is the leaf only — no `/` separators",
         );
         let path: Vec<String> = entry
             .get("path")
@@ -8416,9 +8434,9 @@ mod tests {
 
     #[tokio::test]
     async fn list_memories_flat_slug_yields_single_segment_path() {
-        // Sanity: a flat slug surfaces as a single-element path so
-        // serde consumers don't need a special case for top-level
-        // memories.
+        // Sanity: a flat slug surfaces as a single-element path
+        // and the leaf slug equals that segment, so serde consumers
+        // don't need a special case for top-level memories.
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "rules", "flat", SAMPLE_MEMORY).await;
         let server = McpServer::new(state, ServeMode::Full);
@@ -8435,6 +8453,7 @@ mod tests {
             .and_then(|v| v.as_array())
             .and_then(|arr| arr.first())
             .expect("one memory");
+        assert_eq!(entry.get("slug").and_then(|v| v.as_str()), Some("flat"));
         let path: Vec<String> = entry
             .get("path")
             .and_then(|v| v.as_array())
