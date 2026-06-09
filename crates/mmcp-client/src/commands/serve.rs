@@ -1378,6 +1378,74 @@ struct ListFeaturesArgs {
     pub all: Option<bool>,
 }
 
+/// Memory filter facets shared by `export_archive` and
+/// `import_archive`. Every facet is optional; an absent filter matches
+/// every memory.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ArchiveFilterArgs {
+    /// Include only memories with these slugs.
+    #[serde(default)]
+    pub memory: Vec<String>,
+    /// Exclude memories with these slugs.
+    #[serde(default)]
+    pub exclude_memory: Vec<String>,
+    /// Include only these kinds (rule, snapshot, log, reference,
+    /// scratch, feature, issue).
+    #[serde(default)]
+    pub kind: Vec<String>,
+    /// Exclude these kinds.
+    #[serde(default)]
+    pub exclude_kind: Vec<String>,
+    /// Include only memories carrying these tags.
+    #[serde(default)]
+    pub tag: Vec<String>,
+    /// Require every `tag` rather than any one of them.
+    #[serde(default)]
+    pub all_tags: bool,
+    /// Exclude memories carrying these tags.
+    #[serde(default)]
+    pub exclude_tag: Vec<String>,
+    /// Case-insensitive substring over name, description, tags, slug,
+    /// and body.
+    #[serde(default)]
+    pub search: Option<String>,
+    /// Restrict to mandatory (`true`) or non-mandatory (`false`)
+    /// memories; absent matches either.
+    #[serde(default)]
+    pub mandatory: Option<bool>,
+}
+
+impl ArchiveFilterArgs {
+    fn to_filter(&self) -> Result<mmcp_store::MemoryFilter, McpError> {
+        Ok(mmcp_store::MemoryFilter {
+            slugs: self.memory.clone(),
+            exclude_slugs: self.exclude_memory.clone(),
+            kinds: parse_filter_kinds(&self.kind)?,
+            exclude_kinds: parse_filter_kinds(&self.exclude_kind)?,
+            tags: self.tag.clone(),
+            require_all_tags: self.all_tags,
+            exclude_tags: self.exclude_tag.clone(),
+            search: self.search.clone(),
+            mandatory: self.mandatory,
+        })
+    }
+}
+
+fn parse_filter_kinds(values: &[String]) -> Result<Vec<mmcp_core::memory::MemoryKind>, McpError> {
+    values
+        .iter()
+        .map(|value| {
+            mmcp_store::parse_memory_kind(value).ok_or_else(|| {
+                McpError::invalid_params(
+                    Cow::Owned(format!("unknown kind '{value}'")),
+                    Some(json!({ "code": "unknown_kind", "kind": value })),
+                )
+            })
+        })
+        .collect()
+}
+
 /// Arguments for the `export_archive` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -1389,10 +1457,10 @@ struct ExportArchiveArgs {
     /// Export every group in the local mirror.
     #[serde(default)]
     pub all: bool,
-    /// Export only memories whose slug is in this set (matched across
-    /// the selected groups). Empty exports every memory.
+    /// Memory filter facets (slug / kind / tag / search / mandatory,
+    /// include and exclude). Empty exports every memory.
     #[serde(default)]
-    pub memory: Vec<String>,
+    pub filter: ArchiveFilterArgs,
     /// Destination archive path on the server's filesystem.
     pub output: String,
     /// gzip-compress the tar stream.
@@ -1414,10 +1482,11 @@ struct ImportArchiveArgs {
     /// every group in the archive.
     #[serde(default)]
     pub only_groups: Vec<String>,
-    /// Import only memories whose slug is in this set. Empty imports
-    /// every memory in the chosen groups.
+    /// Memory filter facets (slug / kind / tag / search / mandatory,
+    /// include and exclude). Empty imports every memory in the chosen
+    /// groups.
     #[serde(default)]
-    pub only_memory_slugs: Vec<String>,
+    pub filter: ArchiveFilterArgs,
     /// Replace colliding memories instead of reporting a conflict.
     #[serde(default)]
     pub overwrite: bool,
@@ -2067,7 +2136,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Export one or more groups to a portable mmcp archive (tar; optionally gzip) at the `output` path on the server's filesystem. The batch counterpart to `import_archive`. Written atomically (temp file then rename). Select groups by `group` (UUID or slug, repeatable) or `all: true`; `memory` narrows to specific memory slugs. Identities (UUIDs, slugs, kinds, tags, feature/issue numbers) round-trip. Errors: `invalid_selector`, `no_groups_selected`, `archive_error`.",
+        description = "Export one or more groups to a portable mmcp archive (tar; optionally gzip) at the `output` path on the server's filesystem. The batch counterpart to `import_archive`. Written atomically (temp file then rename). Select groups by `group` (UUID or slug, repeatable) or `all: true`; `filter` narrows memories by slug / kind / tag / search / mandatory (include and exclude). Identities (UUIDs, slugs, kinds, tags, feature/issue numbers) round-trip. Errors: `invalid_selector`, `no_groups_selected`, `archive_error`.",
         annotations(
             title = "Export groups to an archive",
             read_only_hint = false,
@@ -2108,10 +2177,7 @@ impl McpServer {
         }
         let options = mmcp_store::ExportOptions {
             gzip: args.gzip,
-            filter: mmcp_store::MemoryFilter {
-                slugs: args.memory,
-                ..Default::default()
-            },
+            filter: args.filter.to_filter()?,
         };
         let manifest = mmcp_store::export_archive_to_path(
             &self.state.backend,
@@ -2138,7 +2204,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Import a portable mmcp archive (tar; gzip auto-detected) from the `input` path on the server's filesystem, recreating its groups by uuid and replaying each memory through the same primitive `import_memory` uses. `into` remaps every memory into one existing group; `only_groups` / `only_memory_slugs` restrict which archived groups and memories are replayed; `overwrite` replaces colliding memories instead of reporting them; `new_ids` mints fresh UUIDs (fork / copy). Protected target groups prompt for confirmation before writing. Errors: `archive_read_failed`, `unsupported_archive_format`, `group_not_found` (bad `into`), `malformed_archive`, `protected_write_cancelled`.",
+        description = "Import a portable mmcp archive (tar; gzip auto-detected) from the `input` path on the server's filesystem, recreating its groups by uuid and replaying each memory through the same primitive `import_memory` uses. `into` remaps every memory into one existing group; `only_groups` restricts which archived groups, and `filter` narrows memories by slug / kind / tag / search / mandatory (include and exclude); `overwrite` replaces colliding memories instead of reporting them; `new_ids` mints fresh UUIDs (fork / copy). Protected target groups prompt for confirmation before writing. Errors: `archive_read_failed`, `unsupported_archive_format`, `group_not_found` (bad `into`), `malformed_archive`, `protected_write_cancelled`.",
         annotations(
             title = "Import an archive into the store",
             read_only_hint = false,
@@ -2179,10 +2245,7 @@ impl McpServer {
             new_ids: args.new_ids,
             allow_protected: true,
             select_groups: args.only_groups,
-            filter: mmcp_store::MemoryFilter {
-                slugs: args.only_memory_slugs,
-                ..Default::default()
-            },
+            filter: args.filter.to_filter()?,
         };
         let report = mmcp_store::import_archive(
             &self.state.backend,
