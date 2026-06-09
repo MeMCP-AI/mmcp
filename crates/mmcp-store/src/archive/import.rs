@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Read;
+use std::path::{Component, Path};
 
 use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION};
 use mmcp_core::id::GroupId;
@@ -22,7 +23,8 @@ use crate::memory::{
 use super::error::ArchiveError;
 use super::filter::MemoryFilter;
 use super::manifest::{
-    ARCHIVE_FORMAT_VERSION, ARCHIVE_GROUPS_DIR, ARCHIVE_MANIFEST_FILENAME, ArchiveManifest,
+    ARCHIVE_FORMAT_VERSION, ARCHIVE_GIT_DIR, ARCHIVE_GROUPS_DIR, ARCHIVE_MANIFEST_FILENAME,
+    ArchiveManifest, ArchiveMode, ArchivedGroupMeta,
 };
 
 /// Gzip stream magic; sniffed so import accepts both plain and
@@ -59,8 +61,12 @@ pub struct ImportArchiveOptions {
     /// uuid or slug). Empty imports every group in the archive.
     pub select_groups: Vec<String>,
     /// Facet filter narrowing which memories are replayed. Empty
-    /// imports every memory in the selected groups.
+    /// imports every memory in the selected groups. Snapshot mode only.
     pub filter: MemoryFilter,
+    /// History mode: overwrite a group that already exists locally with
+    /// the restored repo. Off skips groups already present (the clean
+    /// machine case installs them either way).
+    pub force_restore: bool,
 }
 
 /// A memory the import left untouched because its uuid already exists
@@ -191,6 +197,8 @@ pub fn list_archive(bytes: &[u8]) -> Result<Vec<ArchiveGroupListing>, ArchiveErr
 }
 
 /// Replay `bytes` into the local store and report what happened.
+/// Branches on the archive mode: a snapshot replays memories, a history
+/// archive restores each group's bare repo verbatim.
 pub async fn import_archive(
     backend: &NativeBackend,
     groups: &GroupIndex,
@@ -202,6 +210,24 @@ pub async fn import_archive(
     let manifest = read_toc(&entries)?;
     ensure_supported(&manifest)?;
 
+    match manifest.mode {
+        ArchiveMode::Snapshot => {
+            import_snapshot(backend, groups, author, &entries, &manifest, options).await
+        }
+        ArchiveMode::History => import_history(backend, groups, &entries, &manifest, options).await,
+    }
+}
+
+/// Snapshot replay: recreate or merge each group and write every memory
+/// through the shared `import_memory` primitive.
+async fn import_snapshot(
+    backend: &NativeBackend,
+    groups: &GroupIndex,
+    author: &ResolvedAuthor,
+    entries: &BTreeMap<String, Vec<u8>>,
+    manifest: &ArchiveManifest,
+    options: &ImportArchiveOptions,
+) -> Result<ImportArchiveReport, ArchiveError> {
     // Resolve the single remap target up front when --into is set.
     let into_target = match options.into_group {
         Some(group_id) => Some(groups.get(&group_id).await.ok_or_else(|| {
@@ -212,7 +238,7 @@ pub async fn import_archive(
 
     // Backstop the protected-group guard before any write so a partial
     // import cannot start against a group the caller has not confirmed.
-    protected_precheck(groups, &manifest, into_target.as_ref(), options).await?;
+    protected_precheck(groups, manifest, into_target.as_ref(), options).await?;
 
     let mut report = ImportArchiveReport::default();
     for group_meta in &manifest.groups {
@@ -223,7 +249,7 @@ pub async fn import_archive(
             backend,
             groups,
             author,
-            &entries,
+            entries,
             group_meta.group_id,
             group_meta.slug.clone(),
             into_target.as_ref(),
@@ -233,6 +259,168 @@ pub async fn import_archive(
         report.groups.push(outcome);
     }
     Ok(report)
+}
+
+/// History restore: install each selected group's bare repo verbatim,
+/// preserving full git history. Whole-repo and all-or-nothing per
+/// group, so the snapshot-only knobs are rejected up front.
+async fn import_history(
+    backend: &NativeBackend,
+    groups: &GroupIndex,
+    entries: &BTreeMap<String, Vec<u8>>,
+    manifest: &ArchiveManifest,
+    options: &ImportArchiveOptions,
+) -> Result<ImportArchiveReport, ArchiveError> {
+    if options.into_group.is_some() {
+        return Err(ArchiveError::SnapshotOnlyOption { option: "into_group" });
+    }
+    if options.new_ids {
+        return Err(ArchiveError::SnapshotOnlyOption { option: "new_ids" });
+    }
+    if options.overwrite {
+        return Err(ArchiveError::SnapshotOnlyOption { option: "overwrite" });
+    }
+    if !options.filter.is_empty() {
+        return Err(ArchiveError::SnapshotOnlyOption { option: "filter" });
+    }
+
+    // A forced restore can overwrite an existing (possibly protected)
+    // group, so it takes the same confirmation backstop. Without force,
+    // existing groups are skipped and nothing is overwritten.
+    if options.force_restore {
+        protected_precheck(groups, manifest, None, options).await?;
+    }
+
+    let mut report = ImportArchiveReport::default();
+    for group_meta in &manifest.groups {
+        if !group_selected(&options.select_groups, group_meta) {
+            continue;
+        }
+        let outcome =
+            restore_one_group(backend, groups, entries, group_meta, options.force_restore).await?;
+        report.groups.push(outcome);
+    }
+    Ok(report)
+}
+
+/// Install one archived group's bare repo, skipping it when it already
+/// exists unless `force_restore`. On a clean machine the group is
+/// absent and is installed fresh.
+async fn restore_one_group(
+    backend: &NativeBackend,
+    groups: &GroupIndex,
+    entries: &BTreeMap<String, Vec<u8>>,
+    group_meta: &ArchivedGroupMeta,
+    force_restore: bool,
+) -> Result<GroupImportOutcome, ArchiveError> {
+    let group_id = group_meta.group_id;
+    let exists = resolve_group(groups, &group_id.to_string()).await.is_ok();
+
+    let mut outcome = GroupImportOutcome {
+        source_group_id: group_id,
+        target_group_id: group_id,
+        slug: group_meta.slug.clone(),
+        created_group: false,
+        created: 0,
+        overwritten: 0,
+        skipped: 0,
+        conflicts: Vec::new(),
+    };
+
+    if exists && !force_restore {
+        outcome.skipped = group_meta.memory_count;
+        return Ok(outcome);
+    }
+
+    let git_prefix = format!("{ARCHIVE_GROUPS_DIR}/{group_id}/{ARCHIVE_GIT_DIR}/");
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    for (path, data) in entries {
+        let Some(rel) = path.strip_prefix(&git_prefix) else {
+            continue;
+        };
+        if !is_safe_relpath(rel) {
+            return Err(ArchiveError::Malformed {
+                detail: format!("history archive has an unsafe git path `{path}`"),
+            });
+        }
+        files.push((rel.to_string(), data.clone()));
+    }
+    if files.is_empty() {
+        return Err(ArchiveError::Malformed {
+            detail: format!("history archive carries no git files for group {group_id}"),
+        });
+    }
+
+    let repo_path = backend.repo_path(group_id);
+    tokio::task::spawn_blocking(move || install_bare_repo(&repo_path, &files))
+        .await
+        .map_err(|e| ArchiveError::Malformed {
+            detail: format!("restore task failed: {e}"),
+        })??;
+
+    groups.refresh().await?;
+
+    // The scanner drops a repo whose manifest id disagrees with its
+    // directory name; surface that instead of a silently-missing group.
+    resolve_group(groups, &group_id.to_string())
+        .await
+        .map_err(|_| ArchiveError::Malformed {
+            detail: format!(
+                "restored group {group_id} did not register; its manifest id likely mismatches"
+            ),
+        })?;
+
+    if exists {
+        outcome.overwritten = group_meta.memory_count;
+    } else {
+        outcome.created_group = true;
+        outcome.created = group_meta.memory_count;
+    }
+    Ok(outcome)
+}
+
+/// Atomically install a bare repo's `files` at `repo_path`: stage in a
+/// sibling temp dir, then rename into place so a partial write never
+/// leaves a broken repo. Replaces an existing repo (the caller gates
+/// that on `force_restore`).
+fn install_bare_repo(repo_path: &Path, files: &[(String, Vec<u8>)]) -> Result<(), ArchiveError> {
+    let parent = repo_path.parent().ok_or_else(|| ArchiveError::Malformed {
+        detail: format!("repo path {} has no parent", repo_path.display()),
+    })?;
+    let pid = std::process::id();
+    let stage = parent.join(format!(".restore-{pid}.stage"));
+    let _ = std::fs::remove_dir_all(&stage);
+    for (rel, bytes) in files {
+        let dest = stage.join(rel);
+        if let Some(dir) = dest.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&dest, bytes)?;
+    }
+
+    if repo_path.exists() {
+        let backup = parent.join(format!(".restore-{pid}.old"));
+        let _ = std::fs::remove_dir_all(&backup);
+        std::fs::rename(repo_path, &backup)?;
+        if let Err(e) = std::fs::rename(&stage, repo_path) {
+            let _ = std::fs::rename(&backup, repo_path);
+            return Err(e.into());
+        }
+        let _ = std::fs::remove_dir_all(&backup);
+    } else {
+        std::fs::rename(&stage, repo_path)?;
+    }
+    Ok(())
+}
+
+/// Whether `rel` is a safe relative path to extract — every component
+/// must be a plain name (no `..`, no root, no drive prefix) so a crafted
+/// archive cannot escape the staging directory.
+fn is_safe_relpath(rel: &str) -> bool {
+    !rel.is_empty()
+        && Path::new(rel)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_)))
 }
 
 /// Import every memory belonging to one archived group, recreating or
@@ -672,6 +860,173 @@ mod tests {
 
         // No id anywhere is unresolvable.
         assert!(ensure_id(no_id, None).expect("ensure").is_none());
+    }
+
+    /// History export of a group, restored into a clean home, brings
+    /// the whole bare repo back — the memory is readable at HEAD.
+    #[tokio::test]
+    async fn history_round_trip_restores_group_with_full_repo() {
+        let id = Uuid::now_v7();
+        let src = ScratchHome::new().await.expect("src home");
+        let seeded = src.seed_group("origin").await.expect("seed");
+        let entry = src.groups().get(&seeded.group_id).await.expect("entry");
+        import_memory(
+            src.backend(),
+            &entry.handle,
+            "note",
+            &memory_doc(id, "Body."),
+            None,
+            src.author(),
+            false,
+        )
+        .await
+        .expect("seed memory");
+
+        let entry = src.groups().get(&seeded.group_id).await.expect("entry");
+        let mut buf = Vec::new();
+        export_archive(
+            src.backend(),
+            &[entry],
+            &ExportOptions {
+                mode: ArchiveMode::History,
+                ..Default::default()
+            },
+            &mut buf,
+        )
+        .await
+        .expect("history export");
+
+        let dst = ScratchHome::new().await.expect("dst home");
+        let report = import_archive(
+            dst.backend(),
+            dst.groups(),
+            dst.author(),
+            &buf,
+            &ImportArchiveOptions::default(),
+        )
+        .await
+        .expect("history import");
+
+        assert_eq!(report.groups.len(), 1);
+        assert!(report.groups[0].created_group, "group restored fresh");
+        assert_eq!(report.groups[0].target_group_id, *seeded.group_id.as_uuid());
+
+        let dst_entry = dst
+            .groups()
+            .get(&seeded.group_id)
+            .await
+            .expect("group restored in dst");
+        let files = list_all_memory_files(dst.backend(), &dst_entry.handle, &Rev::Head)
+            .await
+            .expect("files");
+        assert_eq!(files.len(), 1);
+    }
+
+    /// Restoring over an existing group is a no-op without
+    /// `force_restore`; with it, the whole repo is overwritten.
+    #[tokio::test]
+    async fn history_restore_skips_existing_then_force_overwrites() {
+        let id = Uuid::now_v7();
+        let src = ScratchHome::new().await.expect("src home");
+        let seeded = src.seed_group("origin").await.expect("seed");
+        let entry = src.groups().get(&seeded.group_id).await.expect("entry");
+        import_memory(
+            src.backend(),
+            &entry.handle,
+            "note",
+            &memory_doc(id, "Body."),
+            None,
+            src.author(),
+            false,
+        )
+        .await
+        .expect("seed memory");
+        let entry = src.groups().get(&seeded.group_id).await.expect("entry");
+        let mut buf = Vec::new();
+        export_archive(
+            src.backend(),
+            &[entry],
+            &ExportOptions {
+                mode: ArchiveMode::History,
+                ..Default::default()
+            },
+            &mut buf,
+        )
+        .await
+        .expect("history export");
+
+        let dst = ScratchHome::new().await.expect("dst home");
+        import_archive(
+            dst.backend(),
+            dst.groups(),
+            dst.author(),
+            &buf,
+            &ImportArchiveOptions::default(),
+        )
+        .await
+        .expect("first restore");
+
+        let second = import_archive(
+            dst.backend(),
+            dst.groups(),
+            dst.author(),
+            &buf,
+            &ImportArchiveOptions::default(),
+        )
+        .await
+        .expect("second restore");
+        assert!(!second.groups[0].created_group);
+        assert!(second.groups[0].skipped >= 1);
+        assert_eq!(second.groups[0].overwritten, 0);
+
+        let forced = import_archive(
+            dst.backend(),
+            dst.groups(),
+            dst.author(),
+            &buf,
+            &ImportArchiveOptions {
+                force_restore: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("forced restore");
+        assert!(forced.groups[0].overwritten >= 1);
+    }
+
+    /// The snapshot-only knobs are rejected for a history restore.
+    #[tokio::test]
+    async fn history_rejects_snapshot_only_options() {
+        let src = ScratchHome::new().await.expect("src home");
+        let seeded = src.seed_group("origin").await.expect("seed");
+        let entry = src.groups().get(&seeded.group_id).await.expect("entry");
+        let mut buf = Vec::new();
+        export_archive(
+            src.backend(),
+            &[entry],
+            &ExportOptions {
+                mode: ArchiveMode::History,
+                ..Default::default()
+            },
+            &mut buf,
+        )
+        .await
+        .expect("history export");
+
+        let dst = ScratchHome::new().await.expect("dst home");
+        let err = import_archive(
+            dst.backend(),
+            dst.groups(),
+            dst.author(),
+            &buf,
+            &ImportArchiveOptions {
+                new_ids: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("snapshot-only option must be rejected");
+        assert!(matches!(err, ArchiveError::SnapshotOnlyOption { .. }));
     }
 
     #[tokio::test]

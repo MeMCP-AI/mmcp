@@ -16,8 +16,8 @@ use crate::memory::{ImportError, list_all_memory_files, read_frontmatters_in_gro
 use super::error::ArchiveError;
 use super::filter::MemoryFilter;
 use super::manifest::{
-    ARCHIVE_FORMAT_VERSION, ARCHIVE_GROUPS_DIR, ARCHIVE_MANIFEST_FILENAME, ArchiveManifest,
-    ArchiveMode, ArchivedGroupMeta,
+    ARCHIVE_FORMAT_VERSION, ARCHIVE_GIT_DIR, ARCHIVE_GROUPS_DIR, ARCHIVE_MANIFEST_FILENAME,
+    ArchiveManifest, ArchiveMode, ArchivedGroupMeta,
 };
 
 /// Unix mode bits stamped on every archive entry: owner read/write,
@@ -28,10 +28,6 @@ const ARCHIVE_ENTRY_MODE: u32 = 0o644;
 /// exports of identical store content differ only by the manifest's
 /// own `created_at` stamp, not by per-file mtimes.
 const ARCHIVE_ENTRY_MTIME: u64 = 0;
-
-/// Directory inside an archived group that holds the verbatim bare
-/// repository for `ArchiveMode::History`.
-const ARCHIVE_GIT_DIR: &str = "git";
 
 /// Top-level bare-repo entries excluded from a history capture:
 /// `hooks/` are sample executables and `logs/` are local reflogs;

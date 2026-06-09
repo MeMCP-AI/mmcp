@@ -64,6 +64,11 @@ pub enum ArchiveError {
     #[error("malformed archive: {detail}")]
     Malformed { detail: String },
 
+    /// A snapshot-only option was set for a history restore, which is
+    /// whole-repo and all-or-nothing per group.
+    #[error("option `{option}` applies to snapshot import only, not a history restore")]
+    SnapshotOnlyOption { option: &'static str },
+
     /// A text entry (manifest or memory) was not valid UTF-8.
     #[error("archive entry `{path}` is not valid UTF-8")]
     NotUtf8 {

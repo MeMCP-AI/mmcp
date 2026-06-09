@@ -9,6 +9,10 @@ pub const ARCHIVE_MANIFEST_FILENAME: &str = "archive.toml";
 /// Directory each group's contents live under inside the archive.
 pub const ARCHIVE_GROUPS_DIR: &str = "groups";
 
+/// Directory holding a group's verbatim bare repository inside a
+/// history-mode archive (`groups/<uuid>/git/...`).
+pub const ARCHIVE_GIT_DIR: &str = "git";
+
 /// Archive layout version. Bumped only on a breaking layout change;
 /// a reader rejects any archive whose `format_version` exceeds the
 /// version it was built with.

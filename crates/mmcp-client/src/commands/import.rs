@@ -308,6 +308,7 @@ async fn run_archive(
         allow_protected: true,
         select_groups: args.only_group.clone(),
         filter: args.filter.to_filter()?,
+        force_restore: false,
     };
     let report = import_archive(backend, group_index, author, &bytes, &options).await?;
 

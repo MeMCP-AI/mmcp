@@ -263,6 +263,7 @@ pub async fn import_archive(
         allow_protected: true,
         select_groups: only_groups,
         filter: filter.to_filter()?,
+        force_restore: false,
     };
     let report =
         mmcp_store::import_archive(&state.backend, &state.index, &author, &bytes, &options).await?;

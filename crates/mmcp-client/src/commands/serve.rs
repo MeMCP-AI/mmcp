@@ -2252,6 +2252,7 @@ impl McpServer {
             allow_protected: true,
             select_groups: args.only_groups,
             filter: args.filter.to_filter()?,
+            force_restore: false,
         };
         let report = mmcp_store::import_archive(
             &self.state.backend,
