@@ -61,6 +61,7 @@ pub mod testing;
 
 pub use archive::{
     ARCHIVE_FORMAT_VERSION, ArchiveError, ArchiveManifest, ArchiveMode, ArchivedGroupMeta,
+    ExportOptions, export_archive,
 };
 pub use diagnostics::{
     DiagReport, Finding, GroupReport, diagnose_all, diagnose_group, health_check_all,

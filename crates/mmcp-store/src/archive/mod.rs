@@ -18,9 +18,11 @@
 //! primitive the loose-file import path uses.
 
 pub mod error;
+pub mod export;
 pub mod manifest;
 
 pub use error::ArchiveError;
+pub use export::{ExportOptions, export_archive};
 pub use manifest::{
     ARCHIVE_FORMAT_VERSION, ARCHIVE_GROUPS_DIR, ARCHIVE_MANIFEST_FILENAME, ArchiveManifest,
     ArchiveMode, ArchivedGroupMeta,
