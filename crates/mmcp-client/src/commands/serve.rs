@@ -8521,9 +8521,21 @@ mod tests {
             .get("memories")
             .and_then(|v| v.as_array())
             .expect("memories");
+        // Descriptors carry the leaf-only `slug` plus the full
+        // segmented `path`; the moved memory surfaces as
+        // slug `leaf` at path `nested/path/leaf`.
         assert!(
-            arr.iter()
-                .any(|m| m.get("slug").and_then(|v| v.as_str()) == Some("nested/path/leaf")),
+            arr.iter().any(|m| {
+                let slug_is_leaf = m.get("slug").and_then(|v| v.as_str()) == Some("leaf");
+                let path_matches = m
+                    .get("path")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|segments| {
+                        segments.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>()
+                            == ["nested", "path", "leaf"]
+                    });
+                slug_is_leaf && path_matches
+            }),
             "moved memory must surface under prefix filter; got {arr:?}",
         );
     }
