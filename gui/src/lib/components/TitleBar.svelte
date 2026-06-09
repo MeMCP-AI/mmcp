@@ -9,7 +9,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { emit } from '@tauri-apps/api/event';
   import { pickDirectory, setReferencePoint } from '$lib/api/workspace';
-  import { exportArchive, importArchive } from '$lib/api/archive';
+  import ArchiveDialog from '$lib/components/ArchiveDialog.svelte';
   import { settingsStore, type ThemeMode } from '$lib/stores/settings.svelte';
   import { syncStore } from '$lib/stores/sync.svelte';
   import { openDiagnosticsWindow, openSettingsWindow } from '$lib/windows';
@@ -21,6 +21,7 @@
   let barEl: HTMLElement | undefined = $state();
   let maximized = $state(false);
   let altHeld = $state(false);
+  let archiveDialogMode = $state<'export' | 'import' | null>(null);
 
   const win = getCurrentWindow();
 
@@ -154,29 +155,14 @@
     await syncStore.pull();
   }
 
-  async function onExportArchive() {
+  function onExportArchive() {
     openMenu = null;
-    try {
-      const report = await exportArchive([], false);
-      if (report) console.info('exported archive', report);
-    } catch (err) {
-      console.warn('export archive failed', err);
-    }
+    archiveDialogMode = 'export';
   }
 
-  async function onImportArchive() {
+  function onImportArchive() {
     openMenu = null;
-    try {
-      const report = await importArchive(null, false, false);
-      if (report) {
-        console.info('imported archive', report);
-        // The backend emits `mirror:changed`; nudge a workspace
-        // refresh too so any open views re-read immediately.
-        await emit('workspace:changed');
-      }
-    } catch (err) {
-      console.warn('import archive failed', err);
-    }
+    archiveDialogMode = 'import';
   }
 
   function onOpenSettings() {
@@ -447,6 +433,10 @@
     </ul>
   {/if}
 </header>
+
+{#if archiveDialogMode}
+  <ArchiveDialog mode={archiveDialogMode} onClose={() => (archiveDialogMode = null)} />
+{/if}
 
 <style>
   /* Title-bar chrome glyphs share a 10x10 viewBox; size scales off

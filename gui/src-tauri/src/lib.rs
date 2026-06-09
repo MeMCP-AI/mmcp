@@ -48,6 +48,8 @@ pub fn run() {
             commands::groups::refresh_groups,
             commands::archive::export_archive,
             commands::archive::import_archive,
+            commands::archive::pick_import_path,
+            commands::archive::inspect_archive,
             commands::memory::list_memory_slugs,
             commands::memory::load_memory,
             commands::memory::create_memory,

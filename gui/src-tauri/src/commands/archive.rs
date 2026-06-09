@@ -1,10 +1,11 @@
 //! Archive export / import Tauri commands.
 //!
-//! Thin wrappers over `mmcp_store::{export_archive, import_archive}`:
-//! the backend owns the tar packing and store replay, this layer owns
-//! the native file dialogs (parented to the main window like
-//! `workspace::pick_directory`), the protected-group confirmation, and
-//! the `mirror:changed` refresh nudge after an import lands.
+//! Thin wrappers over `mmcp_store` archive primitives. This layer owns
+//! the native file dialogs (parented to the main window), the
+//! protected-group confirmation, and the `mirror:changed` refresh
+//! nudge after an import lands. The selection dialog drives the flow:
+//! it lists local groups/memories for export and inspects a chosen
+//! archive for import, then calls export / import with the picks.
 
 use mmcp_core::id::GroupId;
 use mmcp_store::{ArchiveManifest, ExportOptions, ImportArchiveOptions};
@@ -15,6 +16,14 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use crate::commands::sync::MIRROR_CHANGED_EVENT;
 use crate::error::{GuiError, GuiResult};
 use crate::state::AppState;
+
+/// One archived group's contents for the import selection dialog.
+#[derive(Debug, Serialize)]
+pub struct ArchiveGroupListingDto {
+    pub group_id: String,
+    pub slug: String,
+    pub memory_slugs: Vec<String>,
+}
 
 /// Summary returned to the frontend after an export.
 #[derive(Debug, Serialize)]
@@ -44,14 +53,16 @@ pub struct ImportArchiveReportDto {
     pub groups: Vec<GroupImportOutcomeDto>,
 }
 
-/// Export groups to a portable archive chosen via a native save
-/// dialog. An empty `group_ids` exports every mirrored group. Returns
-/// `None` when the operator dismisses the dialog.
+/// Export the chosen groups (and optionally a memory-slug subset) to an
+/// archive picked via a native save dialog. An empty `group_ids`
+/// exports every mirrored group. Returns `None` when the operator
+/// dismisses the dialog.
 #[tauri::command]
 pub async fn export_archive(
     app: AppHandle,
     state: State<'_, AppState>,
     group_ids: Vec<String>,
+    memory_slugs: Vec<String>,
     gzip: bool,
 ) -> GuiResult<Option<ExportArchiveReportDto>> {
     let selected = if group_ids.is_empty() {
@@ -67,46 +78,18 @@ pub async fn export_archive(
         return Err(GuiError::Other("no groups to export".into()));
     }
 
-    let main = app
-        .get_webview_window("main")
-        .ok_or_else(|| GuiError::Other("main window is not available".into()))?;
     let suggested = if gzip {
         "mmcp-export.tar.gz"
     } else {
         "mmcp-export.tar"
     };
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    app.dialog()
-        .file()
-        .set_title("Export mmcp archive")
-        .set_file_name(suggested)
-        .set_parent(&main)
-        .save_file(move |picked| {
-            let _ = tx.send(picked);
-        });
-    let picked = rx
-        .await
-        .map_err(|e| GuiError::Other(format!("dialog channel: {e}")))?;
-    let Some(target) = picked else {
+    let Some(path) = pick_save_path(&app, suggested).await? else {
         return Ok(None);
     };
-    let path = target
-        .into_path()
-        .map_err(|e| GuiError::Other(format!("dialog path: {e}")))?;
 
-    let file = std::fs::File::create(&path)
-        .map_err(|e| GuiError::Other(format!("creating archive {}: {e}", path.display())))?;
+    let options = ExportOptions { gzip, memory_slugs };
     let manifest =
-        mmcp_store::export_archive(
-            &state.backend,
-            &selected,
-            &ExportOptions {
-                gzip,
-                ..Default::default()
-            },
-            file,
-        )
-        .await?;
+        mmcp_store::export_archive_to_path(&state.backend, &selected, &options, &path).await?;
 
     Ok(Some(ExportArchiveReportDto {
         output: path.to_string_lossy().into_owned(),
@@ -115,22 +98,14 @@ pub async fn export_archive(
     }))
 }
 
-/// Import an archive chosen via a native open dialog, recreating its
-/// groups. `into_group` remaps every memory into one existing group.
-/// Protected target groups prompt a confirmation dialog. Returns
-/// `None` when the operator dismisses either dialog.
+/// Open a native picker for an archive to import and return its path,
+/// or `None` if the operator dismisses the dialog. The frontend then
+/// inspects the archive before committing to an import.
 #[tauri::command]
-pub async fn import_archive(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    into_group: Option<String>,
-    overwrite: bool,
-    new_ids: bool,
-) -> GuiResult<Option<ImportArchiveReportDto>> {
+pub async fn pick_import_path(app: AppHandle) -> GuiResult<Option<String>> {
     let main = app
         .get_webview_window("main")
         .ok_or_else(|| GuiError::Other("main window is not available".into()))?;
-
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -142,15 +117,45 @@ pub async fn import_archive(
     let picked = rx
         .await
         .map_err(|e| GuiError::Other(format!("dialog channel: {e}")))?;
-    let Some(source) = picked else {
-        return Ok(None);
-    };
-    let path = source
-        .into_path()
-        .map_err(|e| GuiError::Other(format!("dialog path: {e}")))?;
+    Ok(picked.and_then(|p| p.into_path().ok().map(|pb| pb.to_string_lossy().into_owned())))
+}
 
-    let bytes = std::fs::read(&path)
-        .map_err(|e| GuiError::Other(format!("reading archive {}: {e}", path.display())))?;
+/// Enumerate an archive's groups and the memory slugs each carries, so
+/// the import dialog can offer group- and memory-level selection.
+#[tauri::command]
+pub async fn inspect_archive(input: String) -> GuiResult<Vec<ArchiveGroupListingDto>> {
+    let bytes = std::fs::read(&input)
+        .map_err(|e| GuiError::Other(format!("reading archive {input}: {e}")))?;
+    let listing = mmcp_store::list_archive(&bytes)?;
+    Ok(listing
+        .into_iter()
+        .map(|g| ArchiveGroupListingDto {
+            group_id: g.group_id.to_string(),
+            slug: g.slug,
+            memory_slugs: g.memory_slugs,
+        })
+        .collect())
+}
+
+/// Import a previously-picked archive with the dialog's selection.
+/// `only_groups` / `only_memory_slugs` restrict what is replayed;
+/// `into_group` remaps into one existing group. Protected target
+/// groups prompt for confirmation. Returns `None` if the operator
+/// declines a protected write.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn import_archive(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    input: String,
+    only_groups: Vec<String>,
+    only_memory_slugs: Vec<String>,
+    into_group: Option<String>,
+    overwrite: bool,
+    new_ids: bool,
+) -> GuiResult<Option<ImportArchiveReportDto>> {
+    let bytes = std::fs::read(&input)
+        .map_err(|e| GuiError::Other(format!("reading archive {input}: {e}")))?;
     let manifest = mmcp_store::inspect_archive(&bytes)?;
 
     let into = match &into_group {
@@ -171,18 +176,18 @@ pub async fn import_archive(
         overwrite,
         new_ids,
         allow_protected: true,
-        ..Default::default()
+        select_groups: only_groups,
+        select_memory_slugs: only_memory_slugs,
     };
     let report =
         mmcp_store::import_archive(&state.backend, &state.index, &author, &bytes, &options).await?;
 
-    // A full-mirror refresh: recreated groups and replayed memories
-    // are not all under one group id, so a null target makes the
-    // frontend re-list everything.
+    // Recreated groups and replayed memories span several group ids, so
+    // a null target makes the frontend re-list everything.
     let _ = app.emit(MIRROR_CHANGED_EVENT, serde_json::json!({ "group_id": null }));
 
     Ok(Some(ImportArchiveReportDto {
-        input: path.to_string_lossy().into_owned(),
+        input,
         groups: report
             .groups
             .iter()
@@ -200,10 +205,40 @@ pub async fn import_archive(
     }))
 }
 
+/// Open a native save picker parented to the main window.
+async fn pick_save_path(
+    app: &AppHandle,
+    suggested_name: &str,
+) -> GuiResult<Option<std::path::PathBuf>> {
+    let main = app
+        .get_webview_window("main")
+        .ok_or_else(|| GuiError::Other("main window is not available".into()))?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Export mmcp archive")
+        .set_file_name(suggested_name)
+        .set_parent(&main)
+        .save_file(move |picked| {
+            let _ = tx.send(picked);
+        });
+    let picked = rx
+        .await
+        .map_err(|e| GuiError::Other(format!("dialog channel: {e}")))?;
+    match picked {
+        Some(target) => Ok(Some(
+            target
+                .into_path()
+                .map_err(|e| GuiError::Other(format!("dialog path: {e}")))?,
+        )),
+        None => Ok(None),
+    }
+}
+
 /// Confirm via a native dialog when an import would write into an
 /// existing protected group. Returns `true` to proceed, `false` when
-/// the operator declines. Imports that touch no protected group skip
-/// the prompt entirely.
+/// the operator declines. Imports touching no protected group skip the
+/// prompt entirely.
 async fn confirm_protected(
     app: &AppHandle,
     state: &AppState,
