@@ -2128,7 +2128,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Import a portable mmcp archive (tar; gzip auto-detected) from the `input` path on the server's filesystem, recreating its groups by uuid and replaying each memory through the same primitive `import_memory` uses. `into` remaps every memory into one existing group; `overwrite` replaces colliding memories instead of reporting them; `new_ids` mints fresh UUIDs (fork / copy). Protected target groups fire the FR-019 confirmation. Errors: `archive_read_failed`, `unsupported_archive_format`, `into_group_not_found`, `protected_write_cancelled`.",
+        description = "Import a portable mmcp archive (tar; gzip auto-detected) from the `input` path on the server's filesystem, recreating its groups by uuid and replaying each memory through the same primitive `import_memory` uses. `into` remaps every memory into one existing group; `overwrite` replaces colliding memories instead of reporting them; `new_ids` mints fresh UUIDs (fork / copy). Protected target groups prompt for confirmation before writing. Errors: `archive_read_failed`, `unsupported_archive_format`, `group_not_found` (bad `into`), `malformed_archive`, `protected_write_cancelled`.",
         annotations(
             title = "Import an archive into the store",
             read_only_hint = false,
@@ -4561,9 +4561,9 @@ impl McpServer {
             .map_err(map_memory_error_to_mcp)
     }
 
-    /// Fire the FR-019 confirmation for every existing protected group
-    /// an archive import would write into. New groups recreated from
-    /// the archive carry no local protection to confirm.
+    /// Fire the protected-group confirmation for every existing
+    /// protected group an archive import would write into. New groups
+    /// recreated from the archive carry no local protection to confirm.
     async fn confirm_archive_protected(
         &self,
         peer: &Peer<RoleServer>,
@@ -5452,7 +5452,11 @@ async fn elicit_claude_conflict_choice(
 fn map_archive_error_to_mcp(err: mmcp_store::ArchiveError) -> McpError {
     use mmcp_store::ArchiveError;
     let message = err.to_string();
-    match &err {
+    match err {
+        // Per-memory replay failures carry their own structured codes
+        // (invalid_slug, memory_already_exists, ...); keep them rather
+        // than flattening into an opaque `archive_error`.
+        ArchiveError::Import(inner) => map_memory_error_to_mcp(inner),
         ArchiveError::UnsupportedFormatVersion { found, supported } => McpError::invalid_params(
             message,
             Some(json!({
@@ -5484,6 +5488,9 @@ fn map_archive_error_to_mcp(err: mmcp_store::ArchiveError) -> McpError {
             message,
             Some(json!({ "code": "into_group_not_found", "group": group })),
         ),
+        ArchiveError::ManifestParse(_) => {
+            McpError::invalid_params(message, Some(json!({ "code": "malformed_archive" })))
+        }
         ArchiveError::Malformed { .. } => {
             McpError::invalid_params(message, Some(json!({ "code": "malformed_archive" })))
         }
