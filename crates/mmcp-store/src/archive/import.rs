@@ -14,7 +14,10 @@ use uuid::Uuid;
 
 use crate::groups::{GroupEntry, GroupIndex};
 use crate::home::ResolvedAuthor;
-use crate::memory::{ImportError, import_memory, resolve_group, resolve_memory};
+use crate::lock;
+use crate::memory::{
+    ImportError, import_memory, resolve_group, resolve_memory, write_file_at_path,
+};
 
 use super::error::ArchiveError;
 use super::manifest::{
@@ -24,6 +27,14 @@ use super::manifest::{
 /// Gzip stream magic; sniffed so import accepts both plain and
 /// gzip-compressed archives without the caller declaring which.
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+
+/// Hard cap on the total (post-decompression) bytes import reads from
+/// an archive, so a gzip bomb or a corrupt length cannot exhaust
+/// memory. Generous for archives of text memories.
+const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Hard cap on a single archive entry's (post-decompression) bytes.
+const MAX_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
 
 /// How an archive should be replayed into the local store.
 ///
@@ -92,8 +103,7 @@ pub fn inspect_archive(bytes: &[u8]) -> Result<ArchiveManifest, ArchiveError> {
         let mut entry = entry?;
         let path = entry.path()?.to_string_lossy().into_owned();
         if path == ARCHIVE_MANIFEST_FILENAME {
-            let mut buf = Vec::new();
-            entry.read_to_end(&mut buf)?;
+            let buf = read_capped(&mut entry, &path)?;
             let text = utf8(&path, &buf)?;
             let manifest = ArchiveManifest::from_toml(text)?;
             ensure_supported(&manifest)?;
@@ -180,14 +190,28 @@ async fn import_one_group(
             continue;
         }
         let remainder = &path[prefix.len()..];
-        let Some((memory_slug, _filename)) = remainder.rsplit_once('/') else {
+        let Some((memory_slug, filename)) = remainder.rsplit_once('/') else {
             return Err(ArchiveError::Malformed {
                 detail: format!("memory entry `{path}` has no slug directory"),
             });
         };
+        // The archive filename is `<uuid>.md`; the uuid is the memory's
+        // identity for id-less frontmatter (pre-FR-028 / hand-crafted).
+        let filename_id = filename
+            .strip_suffix(MEMORY_EXTENSION)
+            .and_then(|stem| Uuid::parse_str(stem).ok());
         let content = utf8(path, data)?;
-        import_one_memory(backend, &target, author, memory_slug, content, options, &mut outcome)
-            .await?;
+        import_one_memory(
+            backend,
+            &target,
+            author,
+            memory_slug,
+            filename_id,
+            content,
+            options,
+            &mut outcome,
+        )
+        .await?;
     }
 
     Ok(outcome)
@@ -212,6 +236,18 @@ async fn resolve_or_create_target(
             let manifest = GroupManifest::from_toml(text).map_err(|source| {
                 ArchiveError::GroupManifestParse { group_id: source_group_id, source }
             })?;
+            // The repo is created at manifest.group_id; reject an archive
+            // whose inner manifest disagrees with its directory uuid so a
+            // crafted archive cannot persist a stray repo under a
+            // different identity than the operator confirmed against.
+            if manifest.group_id.as_uuid() != &source_group_id {
+                return Err(ArchiveError::Malformed {
+                    detail: format!(
+                        "group {source_group_id} manifest declares a different id {}",
+                        manifest.group_id.as_uuid()
+                    ),
+                });
+            }
             backend.create_group_repo(&manifest).await?;
             groups.refresh().await?;
             let entry = groups
@@ -226,11 +262,13 @@ async fn resolve_or_create_target(
 
 /// Write one archived memory into `target`, applying the new-ids /
 /// overwrite / skip policy and tallying the result on `outcome`.
+#[allow(clippy::too_many_arguments)]
 async fn import_one_memory(
     backend: &NativeBackend,
     target: &GroupEntry,
     author: &ResolvedAuthor,
     slug: &str,
+    filename_id: Option<Uuid>,
     content: &str,
     options: &ImportArchiveOptions,
     outcome: &mut GroupImportOutcome,
@@ -244,17 +282,19 @@ async fn import_one_memory(
         return Ok(());
     }
 
-    // Identity-preserving import. Without an id in frontmatter the
-    // primitive mints one, so the write is always a create.
-    let Some(id) = memory_id(content)? else {
-        import_memory(backend, &target.handle, slug, content, None, author, false).await?;
-        outcome.created += 1;
-        return Ok(());
+    // Identity-preserving import. The id is the frontmatter id, falling
+    // back to the archive filename uuid so id-less files keep their
+    // identity and a re-import stays idempotent rather than minting a
+    // fresh duplicate every run.
+    let Some((id, prepared)) = ensure_id(content, filename_id)? else {
+        return Err(ArchiveError::Malformed {
+            detail: format!("memory `{slug}` has no id in frontmatter or filename"),
+        });
     };
 
     match resolve_memory(backend, &target.handle, None, Some(id)).await {
         Err(ImportError::MemoryNotFound { .. }) => {
-            import_memory(backend, &target.handle, slug, content, None, author, false).await?;
+            import_memory(backend, &target.handle, slug, &prepared, None, author, false).await?;
             outcome.created += 1;
         }
         Err(other) => return Err(other.into()),
@@ -263,13 +303,25 @@ async fn import_one_memory(
                 .read_file(&target.handle, &existing.path, &Rev::Head)
                 .await?;
             let existing_text = utf8(&existing.path, &existing_bytes)?;
-            if normalize(existing_text)? == normalize(content)? {
+            if normalize(existing_text)? == normalize(&prepared)? {
                 outcome.skipped += 1;
             } else if options.overwrite {
-                // Replace at the existing on-disk slug so a moved memory
-                // is not duplicated under its archived slug.
-                import_memory(backend, &target.handle, &existing.slug, content, None, author, true)
-                    .await?;
+                // Replace at the existing on-disk path so a drifted
+                // memory (filename uuid != frontmatter id) is replaced in
+                // place rather than duplicated under a canonical name.
+                let _guards =
+                    lock::acquire_chain(&lock::create_chain(target.handle.group_id)).await;
+                write_file_at_path(
+                    backend,
+                    &target.handle,
+                    &existing.path,
+                    &prepared,
+                    author,
+                    existing.addressing_mode,
+                    true,
+                    None,
+                )
+                .await?;
                 outcome.overwritten += 1;
             } else {
                 outcome.conflicts.push(MemoryConflict { slug: existing.slug, id });
@@ -324,7 +376,9 @@ fn ensure_supported(manifest: &ArchiveManifest) -> Result<(), ArchiveError> {
 }
 
 /// Read every tar entry into a path-keyed map, transparently
-/// decompressing a gzip stream.
+/// decompressing a gzip stream. Rejects duplicate paths so a crafted
+/// archive cannot shadow the table of contents the protected-group
+/// confirmation was driven from.
 fn read_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, ArchiveError> {
     let reader = open_reader(bytes);
     let mut archive = tar::Archive::new(reader);
@@ -332,11 +386,26 @@ fn read_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, ArchiveError>
     for entry in archive.entries()? {
         let mut entry = entry?;
         let path = entry.path()?.to_string_lossy().into_owned();
-        let mut buf = Vec::new();
-        entry.read_to_end(&mut buf)?;
-        map.insert(path, buf);
+        let buf = read_capped(&mut entry, &path)?;
+        if map.insert(path.clone(), buf).is_some() {
+            return Err(ArchiveError::Malformed {
+                detail: format!("duplicate archive entry `{path}`"),
+            });
+        }
     }
     Ok(map)
+}
+
+/// Read one entry's bytes, rejecting anything past the per-entry cap.
+fn read_capped<R: Read>(entry: &mut R, path: &str) -> Result<Vec<u8>, ArchiveError> {
+    let mut buf = Vec::new();
+    entry.take(MAX_ENTRY_BYTES + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > MAX_ENTRY_BYTES {
+        return Err(ArchiveError::Malformed {
+            detail: format!("archive entry `{path}` exceeds the per-entry size limit"),
+        });
+    }
+    Ok(buf)
 }
 
 /// Look up and parse the `archive.toml` table of contents.
@@ -348,13 +417,17 @@ fn read_toc(entries: &BTreeMap<String, Vec<u8>>) -> Result<ArchiveManifest, Arch
     Ok(ArchiveManifest::from_toml(text)?)
 }
 
-/// Wrap the raw bytes in a gzip decoder when the gzip magic is present.
+/// Wrap the raw bytes in a (multi-member) gzip decoder when the gzip
+/// magic is present, then cap the total decompressed bytes so a bomb
+/// cannot exhaust memory.
 fn open_reader(bytes: &[u8]) -> Box<dyn Read + '_> {
-    if bytes.len() >= GZIP_MAGIC.len() && bytes[..GZIP_MAGIC.len()] == GZIP_MAGIC {
-        Box::new(flate2::read::GzDecoder::new(bytes))
-    } else {
-        Box::new(bytes)
-    }
+    let raw: Box<dyn Read + '_> =
+        if bytes.len() >= GZIP_MAGIC.len() && bytes[..GZIP_MAGIC.len()] == GZIP_MAGIC {
+            Box::new(flate2::read::MultiGzDecoder::new(bytes))
+        } else {
+            Box::new(bytes)
+        };
+    Box::new(raw.take(MAX_ARCHIVE_BYTES))
 }
 
 /// Decode an archive entry's bytes as UTF-8, attributing failures to
@@ -366,18 +439,29 @@ fn utf8<'a>(path: &str, bytes: &'a [u8]) -> Result<&'a str, ArchiveError> {
     })
 }
 
-/// The frontmatter id of a memory document, if any.
-fn memory_id(content: &str) -> Result<Option<Uuid>, ArchiveError> {
-    let parsed = MemoryFile::parse(content).map_err(ImportError::Parse)?;
-    Ok(parsed.frontmatter.id)
-}
-
 /// Re-render a memory document with its frontmatter id removed.
 fn content_without_id(content: &str) -> Result<String, ArchiveError> {
     let mut parsed = MemoryFile::parse(content).map_err(ImportError::Parse)?;
     parsed.frontmatter.id = None;
     let rendered = parsed.to_string().map_err(ImportError::Parse)?;
     Ok(rendered)
+}
+
+/// Resolve a memory's effective id (frontmatter id, else the archive
+/// filename uuid) and return the content guaranteed to carry it. Yields
+/// `None` only when the memory has no id in either place — an archive
+/// whose identity cannot be preserved.
+fn ensure_id(content: &str, fallback: Option<Uuid>) -> Result<Option<(Uuid, String)>, ArchiveError> {
+    let mut parsed = MemoryFile::parse(content).map_err(ImportError::Parse)?;
+    if let Some(id) = parsed.frontmatter.id {
+        return Ok(Some((id, content.to_string())));
+    }
+    let Some(id) = fallback else {
+        return Ok(None);
+    };
+    parsed.frontmatter.id = Some(id);
+    let rendered = parsed.to_string().map_err(ImportError::Parse)?;
+    Ok(Some((id, rendered)))
 }
 
 /// Re-render a memory document in canonical form so two copies compare
@@ -390,6 +474,7 @@ fn normalize(content: &str) -> Result<String, ArchiveError> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::manifest::{ArchiveMode, ArchivedGroupMeta};
     use super::*;
     use crate::testing::ScratchHome;
     use crate::{ExportOptions, export_archive, list_all_memory_files};
@@ -409,6 +494,85 @@ mod tests {
             .await
             .expect("export");
         buf
+    }
+
+    /// Hand-build an archive carrying one memory whose frontmatter body
+    /// is supplied verbatim — used to construct id-less inputs the
+    /// store's own export path never produces.
+    fn build_archive(
+        group_id: Uuid,
+        group_manifest: &GroupManifest,
+        slug: &str,
+        memory_id: Uuid,
+        memory_body: &str,
+    ) -> Vec<u8> {
+        let toc = ArchiveManifest {
+            format_version: ARCHIVE_FORMAT_VERSION,
+            mode: ArchiveMode::Snapshot,
+            mmcp_version: "test".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            groups: vec![ArchivedGroupMeta {
+                group_id,
+                slug: group_manifest.slug.clone(),
+                display_name: None,
+                memory_count: 1,
+            }],
+        }
+        .to_toml()
+        .expect("toc");
+        let group_toml = group_manifest.to_toml().expect("group manifest");
+
+        let mut buf = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut buf);
+            append_entry(&mut builder, ARCHIVE_MANIFEST_FILENAME, toc.as_bytes());
+            append_entry(
+                &mut builder,
+                &format!("{ARCHIVE_GROUPS_DIR}/{group_id}/{MANIFEST_FILENAME}"),
+                group_toml.as_bytes(),
+            );
+            append_entry(
+                &mut builder,
+                &format!("{ARCHIVE_GROUPS_DIR}/{group_id}/{MEMORIES_DIR}/{slug}/{memory_id}.md"),
+                memory_body.as_bytes(),
+            );
+            builder.finish().expect("finish tar");
+        }
+        buf
+    }
+
+    fn append_entry(builder: &mut tar::Builder<&mut Vec<u8>>, path: &str, data: &[u8]) {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        builder.append_data(&mut header, path, data).expect("append");
+    }
+
+    #[test]
+    fn ensure_id_falls_back_to_filename_then_errors_when_absent() {
+        let filename_id = Uuid::now_v7();
+        let no_id = "+++\nname = \"n\"\ndescription = \"d\"\nkind = \"reference\"\n+++\nBody.\n";
+        let (effective, prepared) = ensure_id(no_id, Some(filename_id))
+            .expect("ensure")
+            .expect("has id");
+        assert_eq!(effective, filename_id);
+        assert!(
+            prepared.contains(&filename_id.to_string()),
+            "filename id must be injected into frontmatter",
+        );
+
+        // An explicit frontmatter id wins and the content is unchanged.
+        let explicit = Uuid::now_v7();
+        let doc = memory_doc(explicit, "Body.");
+        let (effective2, prepared2) = ensure_id(&doc, Some(Uuid::now_v7()))
+            .expect("ensure")
+            .expect("has id");
+        assert_eq!(effective2, explicit);
+        assert_eq!(prepared2, doc);
+
+        // No id anywhere is unresolvable.
+        assert!(ensure_id(no_id, None).expect("ensure").is_none());
     }
 
     #[tokio::test]
@@ -503,6 +667,117 @@ mod tests {
         assert_eq!(second.groups[0].created, 0);
         assert_eq!(second.groups[0].skipped, 1);
         assert!(!second.groups[0].created_group);
+    }
+
+    #[tokio::test]
+    async fn idless_memory_keeps_filename_id_and_is_idempotent() {
+        let home = ScratchHome::new().await.expect("home");
+        let seeded = home.seed_group("origin").await.expect("seed");
+        let group_id = *seeded.group_id.as_uuid();
+        let memory_id = Uuid::now_v7();
+        // Frontmatter without an id; the identity lives only in the
+        // archive filename `<memory_id>.md`.
+        let body = "+++\nname = \"n\"\ndescription = \"d\"\nkind = \"reference\"\n+++\nBody.\n";
+        let buf = build_archive(group_id, &seeded.manifest, "note", memory_id, body);
+
+        let first = import_archive(
+            home.backend(),
+            home.groups(),
+            home.author(),
+            &buf,
+            &ImportArchiveOptions::default(),
+        )
+        .await
+        .expect("first import");
+        assert_eq!(first.groups[0].created, 1);
+
+        let entry = home.groups().get(&seeded.group_id).await.expect("entry");
+        let files = list_all_memory_files(home.backend(), &entry.handle, &Rev::Head)
+            .await
+            .expect("list");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].id, memory_id, "filename id preserved, not re-minted");
+
+        let second = import_archive(
+            home.backend(),
+            home.groups(),
+            home.author(),
+            &buf,
+            &ImportArchiveOptions::default(),
+        )
+        .await
+        .expect("second import");
+        assert_eq!(second.groups[0].created, 0);
+        assert_eq!(second.groups[0].skipped, 1);
+        let files = list_all_memory_files(home.backend(), &entry.handle, &Rev::Head)
+            .await
+            .expect("list");
+        assert_eq!(files.len(), 1, "no duplicate sibling minted");
+    }
+
+    #[tokio::test]
+    async fn rejects_archive_with_mismatched_inner_group_manifest() {
+        let src = ScratchHome::new().await.expect("src home");
+        let seeded = src.seed_group("origin").await.expect("seed");
+        let entry = src.groups().get(&seeded.group_id).await.expect("entry");
+        import_memory(
+            src.backend(),
+            &entry.handle,
+            "note",
+            &memory_doc(Uuid::now_v7(), "Body."),
+            None,
+            src.author(),
+            false,
+        )
+        .await
+        .expect("seed memory");
+        let mut buf = export_group(&src, seeded.group_id).await;
+
+        // Corrupt the inner manifest so its declared group_id differs
+        // from the archive directory uuid.
+        let original = seeded.manifest.to_toml().expect("manifest");
+        let tampered = original.replace(
+            seeded.group_id.as_uuid().to_string().as_str(),
+            Uuid::now_v7().to_string().as_str(),
+        );
+        assert_ne!(original, tampered, "manifest must contain the group id");
+        buf = rewrite_group_manifest(&buf, *seeded.group_id.as_uuid(), &tampered);
+
+        let dst = ScratchHome::new().await.expect("dst home");
+        let err = import_archive(
+            dst.backend(),
+            dst.groups(),
+            dst.author(),
+            &buf,
+            &ImportArchiveOptions::default(),
+        )
+        .await
+        .expect_err("mismatched manifest must be rejected");
+        assert!(matches!(err, ArchiveError::Malformed { .. }), "got {err:?}");
+    }
+
+    /// Rebuild an archive replacing one group's `.mmcp.toml` bytes.
+    fn rewrite_group_manifest(bytes: &[u8], group_id: Uuid, new_manifest: &str) -> Vec<u8> {
+        let manifest_path = format!("{ARCHIVE_GROUPS_DIR}/{group_id}/{MANIFEST_FILENAME}");
+        let mut out = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut out);
+            let mut archive = tar::Archive::new(bytes);
+            for entry in archive.entries().expect("entries") {
+                let mut entry = entry.expect("entry");
+                let path = entry.path().expect("path").to_string_lossy().into_owned();
+                let mut buf = Vec::new();
+                entry.read_to_end(&mut buf).expect("read");
+                let data = if path == manifest_path {
+                    new_manifest.as_bytes().to_vec()
+                } else {
+                    buf
+                };
+                append_entry(&mut builder, &path, &data);
+            }
+            builder.finish().expect("finish");
+        }
+        out
     }
 
     #[tokio::test]
@@ -660,8 +935,6 @@ mod tests {
         assert!(!g.created_group);
         assert_eq!(g.created, 1);
 
-        // The memory landed in the target, and the source group was not
-        // recreated in dst.
         let target_entry = dst.groups().get(&target.group_id).await.expect("target");
         let files = list_all_memory_files(dst.backend(), &target_entry.handle, &Rev::Head)
             .await

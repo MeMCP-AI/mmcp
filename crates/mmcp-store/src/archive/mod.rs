@@ -10,12 +10,13 @@
 //! groups/<group-uuid>/memories/<slug>/<id>.md    verbatim memory file
 //! ```
 //!
-//! Memory bytes are copied verbatim from HEAD, so UUIDs, slugs,
-//! kinds, tags, feature/issue numbers, refs, and source survive a
-//! round trip. Feature and issue memories ride along as ordinary
-//! memory files. The export path writes the stream; the import path
-//! reads it and replays each memory through the same `import_memory`
-//! primitive the loose-file import path uses.
+//! Export copies HEAD bytes verbatim. Import replays each memory
+//! through the same `import_memory` primitive the loose-file import
+//! path uses, which preserves the modeled frontmatter (id, slug,
+//! kind, tags, feature/issue numbers, refs, source) and the body but
+//! re-renders in canonical form — so identities round trip, while
+//! exact byte formatting and any unmodeled frontmatter keys do not.
+//! Feature and issue memories ride along as ordinary memory files.
 
 pub mod error;
 pub mod export;
