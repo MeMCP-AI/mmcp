@@ -100,6 +100,19 @@
     void init();
   });
 
+  // Tauri rejects with the serialized `GuiError` (`{ kind, message }`),
+  // so `String(e)` would render `[object Object]`. Pull out the
+  // human-readable message (then kind), matching the store helpers.
+  function errorMessage(e: unknown): string {
+    if (typeof e === 'string') return e;
+    if (e && typeof e === 'object') {
+      const o = e as { message?: unknown; kind?: unknown };
+      if (o.message != null) return String(o.message);
+      if (o.kind != null) return String(o.kind);
+    }
+    return String(e);
+  }
+
   async function init() {
     busy = true;
     error = null;
@@ -127,7 +140,7 @@
       // so it loads lazily in the background when the filter opens
       // (see ensureExportTags) rather than blocking the form.
     } catch (e) {
-      error = String(e);
+      error = errorMessage(e);
     } finally {
       busy = false;
     }
@@ -197,7 +210,7 @@
       try {
         memoriesByGroup = { ...memoriesByGroup, [id]: await listMemorySlugs(id) };
       } catch (e) {
-        error = String(e);
+        error = errorMessage(e);
       }
     }
   }
@@ -257,7 +270,7 @@
         result = `Imported ${report.groups.length} group(s): ${sum((g) => g.created)} created, ${sum((g) => g.overwritten)} overwritten, ${sum((g) => g.skipped)} skipped, ${sum((g) => g.conflicts)} conflicts`;
       }
     } catch (e) {
-      error = String(e);
+      error = errorMessage(e);
     } finally {
       busy = false;
     }
@@ -298,6 +311,7 @@
         <!-- Search, always available -->
         <input
           type="search"
+          name="archive-search"
           placeholder="Search name, description, tags, slug, body…"
           bind:value={search}
           class="mb-3 w-full rounded-md border border-line bg-surface-2 px-3 py-1.5 text-fg"
@@ -338,6 +352,7 @@
               <div class="relative mt-1">
                 <input
                   type="text"
+                  name="archive-tag-input"
                   placeholder="Add a tag…"
                   bind:value={tagInput}
                   onkeydown={(e) => {
@@ -370,6 +385,7 @@
               <label class="flex items-center gap-2 text-fg-muted">
                 <span>Mandatory</span>
                 <select
+                  name="archive-mandatory"
                   bind:value={mandatory}
                   class="rounded-md border border-line bg-surface-2 px-2 py-1 text-fg"
                 >
@@ -381,6 +397,7 @@
               <label class="flex items-center gap-2 text-fg-muted">
                 <span>References</span>
                 <select
+                  name="archive-has-refs"
                   bind:value={hasRefs}
                   class="rounded-md border border-line bg-surface-2 px-2 py-1 text-fg"
                 >
@@ -435,6 +452,7 @@
               <th class="w-8 px-2 py-1">
                 <input
                   type="checkbox"
+                  name="archive-select-all"
                   checked={allSelected}
                   use:indeterminate={someSelected}
                   onchange={toggleAll}
@@ -459,6 +477,7 @@
                     <td class="px-2 py-1">
                       <input
                         type="checkbox"
+                        name={`archive-group-${g.id}`}
                         checked={selectedGroupIds.includes(g.id)}
                         onchange={() => (selectedGroupIds = toggle(selectedGroupIds, g.id))}
                       />
@@ -483,6 +502,7 @@
                           <label class="flex items-center gap-2 py-0.5 text-fg-muted">
                             <input
                               type="checkbox"
+                              name={`archive-memory-${slug}`}
                               checked={pickedMemory.includes(slug)}
                               onchange={() => (pickedMemory = toggle(pickedMemory, slug))}
                             />
@@ -507,7 +527,7 @@
 
         {#if mode === 'export'}
           <label class="flex items-center gap-2 text-fg-muted">
-            <input type="checkbox" bind:checked={gzip} />
+            <input type="checkbox" name="archive-gzip" bind:checked={gzip} />
             gzip-compress the archive
           </label>
         {:else}
@@ -515,6 +535,7 @@
             <label class="flex items-center gap-2 text-fg-muted">
               <span class="w-28">Import into</span>
               <select
+                name="archive-into"
                 bind:value={into}
                 class="flex-1 rounded-md border border-line bg-surface-2 px-2 py-1 text-fg"
               >
@@ -525,11 +546,11 @@
               </select>
             </label>
             <label class="flex items-center gap-2 text-fg-muted">
-              <input type="checkbox" bind:checked={overwrite} />
+              <input type="checkbox" name="archive-overwrite" bind:checked={overwrite} />
               Overwrite memories that already exist with different content
             </label>
             <label class="flex items-center gap-2 text-fg-muted">
-              <input type="checkbox" bind:checked={newIds} />
+              <input type="checkbox" name="archive-new-ids" bind:checked={newIds} />
               Fork: mint fresh ids instead of preserving identities
             </label>
           </div>
