@@ -91,10 +91,11 @@ impl MemoryFilter {
         {
             return false;
         }
-        if let Some(want) = self.has_refs
-            && !fm.refs.is_empty() != want
-        {
-            return false;
+        if let Some(want) = self.has_refs {
+            let has_refs = !fm.refs.is_empty();
+            if has_refs != want {
+                return false;
+            }
         }
         if let Some(query) = &self.search {
             let needle = query.to_lowercase();
