@@ -26,8 +26,8 @@ pub mod manifest;
 pub use error::ArchiveError;
 pub use export::{ExportOptions, export_archive, export_archive_to_path};
 pub use import::{
-    GroupImportOutcome, ImportArchiveOptions, ImportArchiveReport, MemoryConflict, import_archive,
-    inspect_archive,
+    ArchiveGroupListing, GroupImportOutcome, ImportArchiveOptions, ImportArchiveReport,
+    MemoryConflict, import_archive, inspect_archive, list_archive,
 };
 pub use manifest::{
     ARCHIVE_FORMAT_VERSION, ARCHIVE_GROUPS_DIR, ARCHIVE_MANIFEST_FILENAME, ArchiveManifest,

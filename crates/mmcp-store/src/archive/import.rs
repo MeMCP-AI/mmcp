@@ -119,6 +119,48 @@ pub fn inspect_archive(bytes: &[u8]) -> Result<ArchiveManifest, ArchiveError> {
     Err(ArchiveError::MissingManifest)
 }
 
+/// One archived group's contents: its identity plus the memory slugs
+/// it carries. Surfaces use this to drive an import selection UI.
+#[derive(Debug, Clone)]
+pub struct ArchiveGroupListing {
+    pub group_id: Uuid,
+    pub slug: String,
+    pub memory_slugs: Vec<String>,
+}
+
+/// List every group in an archive together with the memory slugs it
+/// carries, so a selection UI can offer group- and memory-level
+/// choices before an import runs.
+pub fn list_archive(bytes: &[u8]) -> Result<Vec<ArchiveGroupListing>, ArchiveError> {
+    let entries = read_entries(bytes)?;
+    let manifest = read_toc(&entries)?;
+    ensure_supported(&manifest)?;
+
+    let mut listings = Vec::with_capacity(manifest.groups.len());
+    for group_meta in &manifest.groups {
+        let prefix = format!("{ARCHIVE_GROUPS_DIR}/{}/{MEMORIES_DIR}/", group_meta.group_id);
+        let mut memory_slugs: Vec<String> = Vec::new();
+        for path in entries.keys() {
+            if !path.ends_with(MEMORY_EXTENSION) {
+                continue;
+            }
+            if let Some(remainder) = path.strip_prefix(&prefix)
+                && let Some((slug, _)) = remainder.rsplit_once('/')
+                && !memory_slugs.iter().any(|s| s == slug)
+            {
+                memory_slugs.push(slug.to_string());
+            }
+        }
+        memory_slugs.sort();
+        listings.push(ArchiveGroupListing {
+            group_id: group_meta.group_id,
+            slug: group_meta.slug.clone(),
+            memory_slugs,
+        });
+    }
+    Ok(listings)
+}
+
 /// Replay `bytes` into the local store and report what happened.
 pub async fn import_archive(
     backend: &NativeBackend,
@@ -1078,6 +1120,36 @@ mod tests {
         assert!(
             dst.groups().get(&beta.group_id).await.is_some(),
             "beta must be imported",
+        );
+    }
+
+    #[tokio::test]
+    async fn list_archive_reports_groups_and_memory_slugs() {
+        let src = ScratchHome::new().await.expect("src");
+        let seeded = src.seed_group("origin").await.expect("seed");
+        let entry = src.groups().get(&seeded.group_id).await.expect("entry");
+        for slug in ["alpha", "beta"] {
+            import_memory(
+                src.backend(),
+                &entry.handle,
+                slug,
+                &memory_doc(Uuid::now_v7(), "B"),
+                None,
+                src.author(),
+                false,
+            )
+            .await
+            .expect("seed");
+        }
+        let buf = export_group(&src, seeded.group_id).await;
+
+        let listing = list_archive(&buf).expect("listing");
+        assert_eq!(listing.len(), 1);
+        assert_eq!(listing[0].group_id, *seeded.group_id.as_uuid());
+        assert_eq!(listing[0].slug, "origin");
+        assert_eq!(
+            listing[0].memory_slugs,
+            vec!["alpha".to_string(), "beta".to_string()]
         );
     }
 }
