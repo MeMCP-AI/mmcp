@@ -7,6 +7,7 @@
   // lists the local mirror; import inspects a chosen archive.
 
   import { onMount } from 'svelte';
+  import { ChevronDown, ChevronRight } from 'lucide-svelte';
   import { listGroups } from '$lib/api/groups';
   import { listMemorySlugs } from '$lib/api/memory';
   import {
@@ -218,12 +219,19 @@
 
       {#if !result}
         <!-- Filter first, then the groups it narrows. -->
-        <div class="mb-2 flex items-center justify-end">
-          <label class="flex items-center gap-1 text-fg-muted">
-            <input type="checkbox" bind:checked={advanced} />
-            Advanced filter
-          </label>
-        </div>
+        <button
+          type="button"
+          class="mb-2 flex w-full items-center gap-1 rounded-md px-1 py-1 text-left text-fg-muted hover:bg-surface-2 hover:text-fg"
+          onclick={() => (advanced = !advanced)}
+          aria-expanded={advanced}
+        >
+          {#if advanced}
+            <ChevronDown size={14} class="text-fg-subtle" />
+          {:else}
+            <ChevronRight size={14} class="text-fg-subtle" />
+          {/if}
+          <span>Advanced filter</span>
+        </button>
 
         {#if advanced}
           <div class="mb-3 space-y-2 rounded-md border border-line p-3">
