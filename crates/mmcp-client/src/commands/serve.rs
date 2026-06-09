@@ -1378,6 +1378,42 @@ struct ListFeaturesArgs {
     pub all: Option<bool>,
 }
 
+/// Arguments for the `export_archive` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ExportArchiveArgs {
+    /// Groups to export (UUID or slug). Repeatable. Mutually
+    /// exclusive with `all`.
+    #[serde(default)]
+    pub group: Vec<String>,
+    /// Export every group in the local mirror.
+    #[serde(default)]
+    pub all: bool,
+    /// Destination archive path on the server's filesystem.
+    pub output: String,
+    /// gzip-compress the tar stream.
+    #[serde(default)]
+    pub gzip: bool,
+}
+
+/// Arguments for the `import_archive` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ImportArchiveArgs {
+    /// Path to the archive file on the server's filesystem.
+    pub input: String,
+    /// Remap every memory into this existing group (UUID or slug)
+    /// instead of recreating the archived groups.
+    #[serde(default)]
+    pub into: Option<String>,
+    /// Replace colliding memories instead of reporting a conflict.
+    #[serde(default)]
+    pub overwrite: bool,
+    /// Mint fresh UUIDs for every imported memory (fork / copy).
+    #[serde(default)]
+    pub new_ids: bool,
+}
+
 #[tool_router]
 impl McpServer {
     fn new(state: ClientState, mode: ServeMode) -> Self {
@@ -2015,6 +2051,151 @@ impl McpServer {
             "id":        result.id.to_string(),
             "commit_id": result.commit_id,
             "group":     args.group,
+        })))
+    }
+
+    #[tool(
+        description = "Export one or more groups to a portable mmcp archive (tar; optionally gzip) at the `output` path on the server's filesystem. The batch counterpart to `import_archive`. Select groups by `group` (UUID or slug, repeatable) or `all: true`. Memories are copied verbatim at HEAD so UUIDs, slugs, kinds, tags, and feature/issue numbers round-trip. Errors: `invalid_selector`, `no_groups_selected`, `archive_write_failed`.",
+        annotations(
+            title = "Export groups to an archive",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true,
+        )
+    )]
+    async fn export_archive(
+        &self,
+        Parameters(args): Parameters<ExportArchiveArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if args.all && !args.group.is_empty() {
+            return Err(McpError::invalid_params(
+                Cow::Borrowed("`all` cannot be combined with `group`"),
+                Some(json!({ "code": "invalid_selector" })),
+            ));
+        }
+        let selected = if args.all {
+            self.state.groups.list().await
+        } else if !args.group.is_empty() {
+            let mut out = Vec::with_capacity(args.group.len());
+            for group in &args.group {
+                out.push(self.resolve_group_any(group).await?);
+            }
+            out
+        } else {
+            return Err(McpError::invalid_params(
+                Cow::Borrowed("specify `group` (repeatable) or `all: true`"),
+                Some(json!({ "code": "no_groups_selected" })),
+            ));
+        };
+        if selected.is_empty() {
+            return Err(McpError::invalid_params(
+                Cow::Borrowed("no groups to export"),
+                Some(json!({ "code": "no_groups_selected" })),
+            ));
+        }
+        let file = std::fs::File::create(&args.output).map_err(|e| {
+            McpError::internal_error(
+                Cow::Owned(format!("creating archive {}: {e}", args.output)),
+                Some(json!({ "code": "archive_write_failed" })),
+            )
+        })?;
+        let manifest = mmcp_store::export_archive(
+            &self.state.backend,
+            &selected,
+            &mmcp_store::ExportOptions { gzip: args.gzip },
+            file,
+        )
+        .await
+        .map_err(map_archive_error_to_mcp)?;
+        Ok(ok_json(json!({
+            "output": args.output,
+            "format_version": manifest.format_version,
+            "total_memories": manifest.total_memory_count(),
+            "groups": manifest
+                .groups
+                .iter()
+                .map(|g| json!({
+                    "group_id": g.group_id.to_string(),
+                    "slug": g.slug,
+                    "memory_count": g.memory_count,
+                }))
+                .collect::<Vec<_>>(),
+        })))
+    }
+
+    #[tool(
+        description = "Import a portable mmcp archive (tar; gzip auto-detected) from the `input` path on the server's filesystem, recreating its groups by uuid and replaying each memory through the same primitive `import_memory` uses. `into` remaps every memory into one existing group; `overwrite` replaces colliding memories instead of reporting them; `new_ids` mints fresh UUIDs (fork / copy). Protected target groups fire the FR-019 confirmation. Errors: `archive_read_failed`, `unsupported_archive_format`, `into_group_not_found`, `protected_write_cancelled`.",
+        annotations(
+            title = "Import an archive into the store",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true,
+        )
+    )]
+    async fn import_archive(
+        &self,
+        Parameters(args): Parameters<ImportArchiveArgs>,
+        peer: Peer<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let bytes = std::fs::read(&args.input).map_err(|e| {
+            McpError::invalid_params(
+                Cow::Owned(format!("reading archive {}: {e}", args.input)),
+                Some(json!({ "code": "archive_read_failed" })),
+            )
+        })?;
+        let manifest = mmcp_store::inspect_archive(&bytes).map_err(map_archive_error_to_mcp)?;
+
+        let into_group = match &args.into {
+            Some(query) => {
+                let entry = self.resolve_group_any(query).await?;
+                Some(GroupId::from_uuid(entry.handle.group_id))
+            }
+            None => None,
+        };
+
+        // Confirm every existing protected target group before any
+        // write; recreated groups are authorised by the import intent.
+        self.confirm_archive_protected(&peer, &manifest, into_group)
+            .await?;
+
+        let options = mmcp_store::ImportArchiveOptions {
+            into_group,
+            overwrite: args.overwrite,
+            new_ids: args.new_ids,
+            allow_protected: true,
+        };
+        let report = mmcp_store::import_archive(
+            &self.state.backend,
+            &self.state.groups,
+            &self.state.author,
+            &bytes,
+            &options,
+        )
+        .await
+        .map_err(map_archive_error_to_mcp)?;
+
+        Ok(ok_json(json!({
+            "input": args.input,
+            "groups": report
+                .groups
+                .iter()
+                .map(|g| json!({
+                    "source_group_id": g.source_group_id.to_string(),
+                    "target_group_id": g.target_group_id.to_string(),
+                    "slug": g.slug,
+                    "created_group": g.created_group,
+                    "created": g.created,
+                    "overwritten": g.overwritten,
+                    "skipped": g.skipped,
+                    "conflicts": g
+                        .conflicts
+                        .iter()
+                        .map(|c| json!({ "slug": c.slug, "id": c.id.to_string() }))
+                        .collect::<Vec<_>>(),
+                }))
+                .collect::<Vec<_>>(),
         })))
     }
 
@@ -3987,6 +4168,9 @@ impl McpServer {
             Self::unsubscribe_tool_attr(),
             Self::create_group_tool_attr(),
             Self::add_feature_tool_attr(),
+            // Archive tools (open_world = true).
+            Self::export_archive_tool_attr(),
+            Self::import_archive_tool_attr(),
             // Sync tools (open_world = true).
             Self::sync_fetch_tool_attr(),
             Self::sync_push_tool_attr(),
@@ -4068,6 +4252,10 @@ fn tool_icon_category(name: &str) -> ToolIconCategory {
         | "debug_write_file"
         | "debug_toggle" => ToolIconCategory::Debug,
         "sync_fetch" | "sync_push" | "sync_pull" | "sync" => ToolIconCategory::Sync,
+        // Archive export reads the store to produce an artifact;
+        // import writes the store from one.
+        "export_archive" => ToolIconCategory::Read,
+        "import_archive" => ToolIconCategory::Mutate,
         // Default arm: every remaining live tool is a local
         // mutator. New tools that drift outside the buckets above
         // surface as `Mutate` until the curator updates this match;
@@ -4169,6 +4357,7 @@ fn meta_for_tool(name: &str) -> Option<rmcp::model::Meta> {
             | "delete_memory"
             | "debug_write_file"
             | "init_claude"
+            | "import_archive"
     ) {
         keys.push(("mmcp.protected_group_gated", true));
     }
@@ -4312,6 +4501,14 @@ pub(crate) fn arg_risk_hints_for(tool_name: &str) -> &'static [ArgRiskHint] {
                 reason: "force: true bypasses the FR-28 filename/frontmatter id-mismatch guard",
             },
         ],
+        "import_archive" => &[
+            ArgRiskHint {
+                arg: "overwrite",
+                risk_when: "true",
+                kind: "destructive",
+                reason: "overwrite: true replaces colliding memories in place instead of reporting a conflict",
+            },
+        ],
         _ => &[],
     }
 }
@@ -4349,6 +4546,46 @@ impl McpServer {
                 Some(json!({ "group": group_id.to_string() })),
             )
         })
+    }
+
+    /// Resolve a group by UUID *or* slug. Unlike `resolve_group_entry`
+    /// (UUID-only), the archive tools accept either so operators can
+    /// name groups the way they do everywhere else on the CLI.
+    async fn resolve_group_any(&self, group: &str) -> Result<GroupEntry, McpError> {
+        mmcp_store::resolve_group(&self.state.groups, group)
+            .await
+            .map_err(map_memory_error_to_mcp)
+    }
+
+    /// Fire the FR-019 confirmation for every existing protected group
+    /// an archive import would write into. New groups recreated from
+    /// the archive carry no local protection to confirm.
+    async fn confirm_archive_protected(
+        &self,
+        peer: &Peer<RoleServer>,
+        manifest: &mmcp_store::ArchiveManifest,
+        into_group: Option<GroupId>,
+    ) -> Result<(), McpError> {
+        let targets: Vec<GroupEntry> = if let Some(group_id) = into_group {
+            self.state.groups.get(&group_id).await.into_iter().collect()
+        } else {
+            let mut out = Vec::new();
+            for group_meta in &manifest.groups {
+                if let Ok(entry) =
+                    mmcp_store::resolve_group(&self.state.groups, &group_meta.group_id.to_string())
+                        .await
+                {
+                    out.push(entry);
+                }
+            }
+            out
+        };
+        for entry in &targets {
+            if entry.manifest.protected {
+                confirm_protected_write(peer, entry, "<archive>", "archive-import").await?;
+            }
+        }
+        Ok(())
     }
 
     /// Shared body for `subscribe` and `unsubscribe`. Resolves the
@@ -5206,6 +5443,53 @@ async fn elicit_claude_conflict_choice(
 /// `invalid_slug`, `memory_render_failed`) are stable wire contracts
 /// the `edit_memory`, `delete_memory`, and tightened `write_memory`
 /// tools all share.
+/// Map a store-layer `ArchiveError` onto a typed MCP error with a
+/// stable `code` payload so harnesses can branch on the failure mode.
+fn map_archive_error_to_mcp(err: mmcp_store::ArchiveError) -> McpError {
+    use mmcp_store::ArchiveError;
+    let message = err.to_string();
+    match &err {
+        ArchiveError::UnsupportedFormatVersion { found, supported } => McpError::invalid_params(
+            message,
+            Some(json!({
+                "code": "unsupported_archive_format",
+                "found": found,
+                "supported": supported,
+            })),
+        ),
+        ArchiveError::MissingManifest => {
+            McpError::invalid_params(message, Some(json!({ "code": "missing_archive_manifest" })))
+        }
+        ArchiveError::GroupManifestMissing { group_id } => McpError::invalid_params(
+            message,
+            Some(json!({ "code": "group_manifest_missing", "group_id": group_id.to_string() })),
+        ),
+        ArchiveError::GroupManifestParse { group_id, .. } => McpError::invalid_params(
+            message,
+            Some(json!({ "code": "group_manifest_parse", "group_id": group_id.to_string() })),
+        ),
+        ArchiveError::ProtectedGroup { group_id, slug } => McpError::invalid_params(
+            message,
+            Some(json!({
+                "code": "protected_group",
+                "group_id": group_id.to_string(),
+                "slug": slug,
+            })),
+        ),
+        ArchiveError::IntoGroupNotFound(group) => McpError::invalid_params(
+            message,
+            Some(json!({ "code": "into_group_not_found", "group": group })),
+        ),
+        ArchiveError::Malformed { .. } => {
+            McpError::invalid_params(message, Some(json!({ "code": "malformed_archive" })))
+        }
+        ArchiveError::NotUtf8 { .. } => {
+            McpError::invalid_params(message, Some(json!({ "code": "archive_not_utf8" })))
+        }
+        _ => McpError::internal_error(message, Some(json!({ "code": "archive_error" }))),
+    }
+}
+
 fn map_memory_error_to_mcp(err: ImportError) -> McpError {
     let message = err.to_string();
     let payload = match &err {
@@ -8927,6 +9211,20 @@ mod tests {
         let sw_pull = (Some(false), Some(true), Some(true), Some(true));
         check_bits(McpServer::sync_pull_tool_attr(), sw_pull);
         check_bits(McpServer::sync_tool_attr(), sw_pull);
+
+        // ── Archive tools (open_world = true) ───────────────────
+        // export_archive: writes a file (not read-only) but does not
+        // mutate the store; re-exporting is idempotent.
+        check_bits(
+            McpServer::export_archive_tool_attr(),
+            (Some(false), Some(false), Some(true), Some(true)),
+        );
+        // import_archive: additive store write fed by an external
+        // file; not idempotent under new_ids / overwrite.
+        check_bits(
+            McpServer::import_archive_tool_attr(),
+            (Some(false), Some(false), Some(false), Some(true)),
+        );
     }
 
     /// FR-49: every registered tool surfaces a non-empty `icons` list
