@@ -61,6 +61,7 @@
   let availableTags = $state<string[]>([]);
   let mandatory = $state<'any' | 'mandatory' | 'non-mandatory'>('any');
   let hasRefs = $state<'any' | 'yes' | 'no'>('any');
+  let tagsLoaded = $state(false);
   let pickedMemory = $state<string[]>([]);
   let expanded = $state<string[]>([]);
   let memoriesByGroup = $state<Record<string, string[]>>({});
@@ -104,9 +105,7 @@
     error = null;
     try {
       localGroups = await listGroups();
-      if (mode === 'export') {
-        availableTags = await localTags([]);
-      } else {
+      if (mode === 'import') {
         const path = await pickImportPath();
         if (!path) {
           onClose();
@@ -122,11 +121,28 @@
         }
         memoriesByGroup = memories;
         availableTags = [...tags].sort();
+        tagsLoaded = true;
       }
+      // The export tag universe scans every memory across the mirror,
+      // so it loads lazily in the background when the filter opens
+      // (see ensureExportTags) rather than blocking the form.
     } catch (e) {
       error = String(e);
     } finally {
       busy = false;
+    }
+  }
+
+  // Load the export tag universe once, off the critical path, so the
+  // autocomplete fills in without ever disabling the Export button.
+  async function ensureExportTags() {
+    if (mode !== 'export' || tagsLoaded) return;
+    tagsLoaded = true;
+    try {
+      availableTags = await localTags([]);
+    } catch {
+      // Autocomplete simply stays empty; not worth surfacing.
+      tagsLoaded = false;
     }
   }
 
@@ -382,7 +398,10 @@
           <button
             type="button"
             class="flex items-center gap-1 rounded-md px-2 py-0.5 text-fg-subtle hover:bg-surface-2 hover:text-fg"
-            onclick={() => (advanced = !advanced)}
+            onclick={() => {
+              advanced = !advanced;
+              if (advanced) void ensureExportTags();
+            }}
             aria-expanded={advanced}
           >
             {#if advanced}
