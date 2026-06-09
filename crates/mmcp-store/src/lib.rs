@@ -40,6 +40,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod archive;
 pub mod config;
 pub mod diagnostics;
 pub mod error;
@@ -58,6 +59,9 @@ pub mod tracker;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
+pub use archive::{
+    ARCHIVE_FORMAT_VERSION, ArchiveError, ArchiveManifest, ArchiveMode, ArchivedGroupMeta,
+};
 pub use diagnostics::{
     DiagReport, Finding, GroupReport, diagnose_all, diagnose_group, health_check_all,
     health_check_group,

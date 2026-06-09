@@ -43,6 +43,14 @@ acdc-converters-markdown = { workspace = true }
 # paying the tempfile compile cost at release time.
 tempfile = { version = "3", optional = true }
 
+# Portable archive container for `archive::export_archive` /
+# `import_archive`. `tar` packages a group's verbatim memory files
+# into one stream; `flate2` adds optional gzip. `flate2` is pinned to
+# its pure-Rust `rust_backend` (miniz_oxide) so no `libz-sys` /
+# `miniz-sys` C binding ever enters the graph.
+tar = "0.4"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
 [dev-dependencies]
 tempfile = "3"
 
