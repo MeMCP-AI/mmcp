@@ -97,7 +97,16 @@ pub async fn export_archive(
     let file = std::fs::File::create(&path)
         .map_err(|e| GuiError::Other(format!("creating archive {}: {e}", path.display())))?;
     let manifest =
-        mmcp_store::export_archive(&state.backend, &selected, &ExportOptions { gzip }, file).await?;
+        mmcp_store::export_archive(
+            &state.backend,
+            &selected,
+            &ExportOptions {
+                gzip,
+                ..Default::default()
+            },
+            file,
+        )
+        .await?;
 
     Ok(Some(ExportArchiveReportDto {
         output: path.to_string_lossy().into_owned(),
@@ -162,6 +171,7 @@ pub async fn import_archive(
         overwrite,
         new_ids,
         allow_protected: true,
+        ..Default::default()
     };
     let report =
         mmcp_store::import_archive(&state.backend, &state.index, &author, &bytes, &options).await?;

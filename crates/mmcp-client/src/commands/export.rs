@@ -51,7 +51,16 @@ pub async fn run(groups: Vec<String>, all: bool, output: PathBuf, gzip: bool) ->
 
     let file = std::fs::File::create(&output)
         .with_context(|| format!("creating archive {}", output.display()))?;
-    let manifest = export_archive(&backend, &selected, &ExportOptions { gzip }, file).await?;
+    let manifest = export_archive(
+        &backend,
+        &selected,
+        &ExportOptions {
+            gzip,
+            ..Default::default()
+        },
+        file,
+    )
+    .await?;
 
     println!(
         "exported {} group(s), {} memories to {}",

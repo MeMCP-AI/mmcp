@@ -54,6 +54,12 @@ pub struct ImportArchiveOptions {
     /// Permit writes into protected existing groups. The surfaces set
     /// this only after confirming the write with the operator.
     pub allow_protected: bool,
+    /// When non-empty, import only these archived groups (matched by
+    /// uuid or slug). Empty imports every group in the archive.
+    pub select_groups: Vec<String>,
+    /// When non-empty, import only memories whose slug is in this set.
+    /// Empty imports every memory in the selected groups.
+    pub select_memory_slugs: Vec<String>,
 }
 
 /// A memory the import left untouched because its uuid already exists
@@ -139,6 +145,9 @@ pub async fn import_archive(
 
     let mut report = ImportArchiveReport::default();
     for group_meta in &manifest.groups {
+        if !group_selected(&options.select_groups, group_meta) {
+            continue;
+        }
         let outcome = import_one_group(
             backend,
             groups,
@@ -195,6 +204,11 @@ async fn import_one_group(
                 detail: format!("memory entry `{path}` has no slug directory"),
             });
         };
+        if !options.select_memory_slugs.is_empty()
+            && !options.select_memory_slugs.iter().any(|s| s == memory_slug)
+        {
+            continue;
+        }
         // The archive filename is `<uuid>.md`; the uuid is the memory's
         // identity for id-less frontmatter (pre-FR-028 / hand-crafted).
         let filename_id = filename
@@ -352,6 +366,9 @@ async fn protected_precheck(
         return Ok(());
     }
     for group_meta in &manifest.groups {
+        if !group_selected(&options.select_groups, group_meta) {
+            continue;
+        }
         if let Ok(existing) = resolve_group(groups, &group_meta.group_id.to_string()).await
             && existing.manifest.protected
         {
@@ -362,6 +379,16 @@ async fn protected_precheck(
         }
     }
     Ok(())
+}
+
+/// Whether an archived group is in scope for this import. An empty
+/// selection imports every group; otherwise a group matches by its
+/// uuid string or its slug.
+fn group_selected(select: &[String], group_meta: &super::manifest::ArchivedGroupMeta) -> bool {
+    select.is_empty()
+        || select
+            .iter()
+            .any(|s| s == &group_meta.group_id.to_string() || s == &group_meta.slug)
 }
 
 /// Reject an archive whose layout version is newer than this build.
@@ -944,6 +971,113 @@ mod tests {
         assert!(
             dst.groups().get(&seeded.group_id).await.is_none(),
             "source group must not be recreated under --into",
+        );
+    }
+
+    #[tokio::test]
+    async fn select_memory_slugs_imports_only_the_chosen_memory() {
+        let src = ScratchHome::new().await.expect("src");
+        let seeded = src.seed_group("origin").await.expect("seed");
+        let entry = src.groups().get(&seeded.group_id).await.expect("entry");
+        for (slug, body) in [("keep", "K"), ("drop", "D")] {
+            import_memory(
+                src.backend(),
+                &entry.handle,
+                slug,
+                &memory_doc(Uuid::now_v7(), body),
+                None,
+                src.author(),
+                false,
+            )
+            .await
+            .expect("seed memory");
+        }
+        let buf = export_group(&src, seeded.group_id).await;
+
+        let dst = ScratchHome::new().await.expect("dst");
+        let report = import_archive(
+            dst.backend(),
+            dst.groups(),
+            dst.author(),
+            &buf,
+            &ImportArchiveOptions {
+                select_memory_slugs: vec!["keep".to_string()],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("import");
+        assert_eq!(report.groups[0].created, 1);
+
+        let dst_entry = dst.groups().get(&seeded.group_id).await.expect("group");
+        let files = list_all_memory_files(dst.backend(), &dst_entry.handle, &Rev::Head)
+            .await
+            .expect("list");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].slug, "keep");
+    }
+
+    #[tokio::test]
+    async fn select_groups_imports_only_the_chosen_group() {
+        let src = ScratchHome::new().await.expect("src");
+        let alpha = src.seed_group("alpha").await.expect("alpha");
+        let beta = src.seed_group("beta").await.expect("beta");
+        let alpha_entry = src.groups().get(&alpha.group_id).await.expect("alpha entry");
+        let beta_entry = src.groups().get(&beta.group_id).await.expect("beta entry");
+        import_memory(
+            src.backend(),
+            &alpha_entry.handle,
+            "a",
+            &memory_doc(Uuid::now_v7(), "A"),
+            None,
+            src.author(),
+            false,
+        )
+        .await
+        .expect("a");
+        import_memory(
+            src.backend(),
+            &beta_entry.handle,
+            "b",
+            &memory_doc(Uuid::now_v7(), "B"),
+            None,
+            src.author(),
+            false,
+        )
+        .await
+        .expect("b");
+        let mut buf = Vec::new();
+        export_archive(
+            src.backend(),
+            &[alpha_entry, beta_entry],
+            &ExportOptions::default(),
+            &mut buf,
+        )
+        .await
+        .expect("export both");
+
+        let dst = ScratchHome::new().await.expect("dst");
+        let report = import_archive(
+            dst.backend(),
+            dst.groups(),
+            dst.author(),
+            &buf,
+            &ImportArchiveOptions {
+                select_groups: vec![beta.group_id.as_uuid().to_string()],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("import");
+        assert_eq!(report.groups.len(), 1);
+        assert_eq!(report.groups[0].source_group_id, *beta.group_id.as_uuid());
+        assert!(
+            dst.groups().get(&alpha.group_id).await.is_none(),
+            "alpha must not be imported",
+        );
+        assert!(
+            dst.groups().get(&beta.group_id).await.is_some(),
+            "beta must be imported",
         );
     }
 }

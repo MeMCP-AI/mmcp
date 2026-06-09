@@ -24,7 +24,7 @@ pub mod import;
 pub mod manifest;
 
 pub use error::ArchiveError;
-pub use export::{ExportOptions, export_archive};
+pub use export::{ExportOptions, export_archive, export_archive_to_path};
 pub use import::{
     GroupImportOutcome, ImportArchiveOptions, ImportArchiveReport, MemoryConflict, import_archive,
     inspect_archive,

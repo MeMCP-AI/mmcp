@@ -2103,7 +2103,10 @@ impl McpServer {
         let manifest = mmcp_store::export_archive(
             &self.state.backend,
             &selected,
-            &mmcp_store::ExportOptions { gzip: args.gzip },
+            &mmcp_store::ExportOptions {
+                gzip: args.gzip,
+                ..Default::default()
+            },
             file,
         )
         .await
@@ -2165,6 +2168,7 @@ impl McpServer {
             overwrite: args.overwrite,
             new_ids: args.new_ids,
             allow_protected: true,
+            ..Default::default()
         };
         let report = mmcp_store::import_archive(
             &self.state.backend,

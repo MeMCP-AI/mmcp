@@ -286,6 +286,7 @@ async fn run_archive(
         overwrite: args.r#override,
         new_ids: args.new_ids,
         allow_protected: true,
+        ..Default::default()
     };
     let report = import_archive(backend, group_index, author, &bytes, &options).await?;
 

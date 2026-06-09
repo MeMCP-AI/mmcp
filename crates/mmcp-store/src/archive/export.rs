@@ -2,6 +2,7 @@
 //! archive whose layout mirrors the on-disk repo minus git internals.
 
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
@@ -32,6 +33,9 @@ const ARCHIVE_ENTRY_MTIME: u64 = 0;
 pub struct ExportOptions {
     /// gzip the tar stream (pure-Rust flate2). Off means a plain tar.
     pub gzip: bool,
+    /// When non-empty, export only memories whose slug is in this set
+    /// (matched across every selected group). Empty exports them all.
+    pub memory_slugs: Vec<String>,
 }
 
 /// Package `groups` into a snapshot archive written to `writer`.
@@ -61,7 +65,10 @@ pub async fn export_archive<W: Write>(
             .await?;
         entries.push((format!("{base}/{MANIFEST_FILENAME}"), manifest_bytes.to_vec()));
 
-        let files = list_all_memory_files(backend, &group.handle, &Rev::Head).await?;
+        let mut files = list_all_memory_files(backend, &group.handle, &Rev::Head).await?;
+        if !options.memory_slugs.is_empty() {
+            files.retain(|file| options.memory_slugs.iter().any(|slug| slug == &file.slug));
+        }
         for file in &files {
             let bytes = backend
                 .read_file(&group.handle, &file.path, &Rev::Head)
@@ -143,6 +150,48 @@ fn append_bytes<W: Write>(
     Ok(())
 }
 
+/// Export `groups` to `path` atomically: pack into a sibling temp file
+/// and rename onto `path` only on success, so a mid-export failure
+/// never truncates or leaves a partial file at the operator's chosen
+/// destination. The shared entry point for the CLI, MCP, and GUI
+/// surfaces so all three publish archives the same way.
+pub async fn export_archive_to_path(
+    backend: &NativeBackend,
+    groups: &[GroupEntry],
+    options: &ExportOptions,
+    path: &Path,
+) -> Result<ArchiveManifest, ArchiveError> {
+    let tmp = temp_sibling(path);
+    let file = std::fs::File::create(&tmp)?;
+    let manifest = match export_archive(backend, groups, options, file).await {
+        Ok(manifest) => manifest,
+        Err(err) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(err);
+        }
+    };
+    if let Err(err) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err.into());
+    }
+    Ok(manifest)
+}
+
+/// A same-directory temp path for the atomic export. Same directory so
+/// the rename stays on one filesystem; the pid keeps concurrent
+/// exports from colliding on the staging file.
+fn temp_sibling(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(std::ffi::OsString::from)
+        .unwrap_or_else(|| std::ffi::OsString::from("archive"));
+    name.push(format!(".{}.tmp", std::process::id()));
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(name),
+        _ => PathBuf::from(name),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,5 +267,65 @@ mod tests {
         let parsed = ArchiveManifest::from_toml(&toc).expect("parse toc");
         assert_eq!(parsed.format_version, ARCHIVE_FORMAT_VERSION);
         assert_eq!(parsed.total_memory_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn export_memory_slug_filter_includes_only_selected() {
+        let home = ScratchHome::new().await.expect("scratch home");
+        let seeded = home.seed_group("team").await.expect("seed group");
+        let entry = home
+            .groups()
+            .get(&seeded.group_id)
+            .await
+            .expect("group entry");
+        for slug in ["keep", "drop"] {
+            import_memory(
+                home.backend(),
+                &entry.handle,
+                slug,
+                "Body.",
+                Some(SynthFrontmatter {
+                    name: slug.to_string(),
+                    description: "desc".to_string(),
+                    kind: MemoryKind::Reference,
+                }),
+                home.author(),
+                false,
+            )
+            .await
+            .expect("import memory");
+        }
+
+        let mut buf = Vec::new();
+        let manifest = export_archive(
+            home.backend(),
+            &[entry],
+            &ExportOptions {
+                memory_slugs: vec!["keep".to_string()],
+                ..Default::default()
+            },
+            &mut buf,
+        )
+        .await
+        .expect("export");
+
+        assert_eq!(manifest.groups[0].memory_count, 1);
+        let mut archive = tar::Archive::new(&buf[..]);
+        let paths: Vec<String> = archive
+            .entries()
+            .expect("entries")
+            .map(|e| {
+                e.expect("entry")
+                    .path()
+                    .expect("path")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert!(paths.iter().any(|p| p.contains("/memories/keep/")));
+        assert!(
+            !paths.iter().any(|p| p.contains("/memories/drop/")),
+            "filtered-out memory must not be in the archive; got {paths:?}",
+        );
     }
 }
