@@ -38,6 +38,8 @@ pub struct ArchiveFilterDto {
     pub search: Option<String>,
     #[serde(default)]
     pub mandatory: Option<bool>,
+    #[serde(default)]
+    pub has_refs: Option<bool>,
 }
 
 impl ArchiveFilterDto {
@@ -52,7 +54,18 @@ impl ArchiveFilterDto {
             exclude_tags: self.exclude_tag.clone(),
             search: self.search.clone(),
             mandatory: self.mandatory,
+            has_refs: self.has_refs,
         })
+    }
+}
+
+/// Wire string for a group scope, matching the frontend `GroupScope`.
+fn scope_str(scope: mmcp_core::manifest::GroupScope) -> &'static str {
+    use mmcp_core::manifest::GroupScope;
+    match scope {
+        GroupScope::Global => "global",
+        GroupScope::Shared => "shared",
+        GroupScope::Project => "project",
     }
 }
 
@@ -70,7 +83,9 @@ fn parse_kinds(values: &[String]) -> GuiResult<Vec<mmcp_core::memory::MemoryKind
 pub struct ArchiveGroupListingDto {
     pub group_id: String,
     pub slug: String,
+    pub scope: String,
     pub memory_slugs: Vec<String>,
+    pub tags: Vec<String>,
 }
 
 /// Summary returned to the frontend after an export.
@@ -183,9 +198,27 @@ pub async fn inspect_archive(input: String) -> GuiResult<Vec<ArchiveGroupListing
         .map(|g| ArchiveGroupListingDto {
             group_id: g.group_id.to_string(),
             slug: g.slug,
+            scope: scope_str(g.scope).to_string(),
             memory_slugs: g.memory_slugs,
+            tags: g.tags,
         })
         .collect())
+}
+
+/// Distinct tags across the chosen local groups (empty = every group),
+/// for the export dialog's tag autocomplete.
+#[tauri::command]
+pub async fn local_tags(state: State<'_, AppState>, group_ids: Vec<String>) -> GuiResult<Vec<String>> {
+    let groups = if group_ids.is_empty() {
+        state.index.list().await
+    } else {
+        let mut out = Vec::with_capacity(group_ids.len());
+        for id in &group_ids {
+            out.push(mmcp_store::resolve_group(&state.index, id).await?);
+        }
+        out
+    };
+    Ok(mmcp_store::collect_group_tags(&state.backend, &groups).await?)
 }
 
 /// Import a previously-picked archive with the dialog's selection.

@@ -7,7 +7,7 @@ use std::io::Read;
 
 use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION};
 use mmcp_core::id::GroupId;
-use mmcp_core::manifest::{GroupManifest, MANIFEST_FILENAME};
+use mmcp_core::manifest::{GroupManifest, GroupScope, MANIFEST_FILENAME};
 use mmcp_core::memory::MemoryFile;
 use mmcp_git::{GitBackend, NativeBackend, Rev};
 use uuid::Uuid;
@@ -120,18 +120,22 @@ pub fn inspect_archive(bytes: &[u8]) -> Result<ArchiveManifest, ArchiveError> {
     Err(ArchiveError::MissingManifest)
 }
 
-/// One archived group's contents: its identity plus the memory slugs
-/// it carries. Surfaces use this to drive an import selection UI.
+/// One archived group's contents: its identity, scope, the memory
+/// slugs it carries, and the distinct tags across those memories.
+/// Surfaces use this to drive an import selection UI with scope
+/// grouping and tag autocomplete.
 #[derive(Debug, Clone)]
 pub struct ArchiveGroupListing {
     pub group_id: Uuid,
     pub slug: String,
+    pub scope: GroupScope,
     pub memory_slugs: Vec<String>,
+    pub tags: Vec<String>,
 }
 
-/// List every group in an archive together with the memory slugs it
-/// carries, so a selection UI can offer group- and memory-level
-/// choices before an import runs.
+/// List every group in an archive with its scope, memory slugs, and
+/// distinct tags, so a selection UI can offer scope grouping plus
+/// group-, memory-, and tag-level choices before an import runs.
 pub fn list_archive(bytes: &[u8]) -> Result<Vec<ArchiveGroupListing>, ArchiveError> {
     let entries = read_entries(bytes)?;
     let manifest = read_toc(&entries)?;
@@ -139,24 +143,48 @@ pub fn list_archive(bytes: &[u8]) -> Result<Vec<ArchiveGroupListing>, ArchiveErr
 
     let mut listings = Vec::with_capacity(manifest.groups.len());
     for group_meta in &manifest.groups {
-        let prefix = format!("{ARCHIVE_GROUPS_DIR}/{}/{MEMORIES_DIR}/", group_meta.group_id);
+        let group_id = group_meta.group_id;
+        let scope = entries
+            .get(&format!("{ARCHIVE_GROUPS_DIR}/{group_id}/{MANIFEST_FILENAME}"))
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .and_then(|text| GroupManifest::from_toml(text).ok())
+            .map(|manifest| manifest.scope)
+            .unwrap_or_default();
+
+        let prefix = format!("{ARCHIVE_GROUPS_DIR}/{group_id}/{MEMORIES_DIR}/");
         let mut memory_slugs: Vec<String> = Vec::new();
-        for path in entries.keys() {
+        let mut tags: Vec<String> = Vec::new();
+        for (path, data) in &entries {
             if !path.ends_with(MEMORY_EXTENSION) {
                 continue;
             }
-            if let Some(remainder) = path.strip_prefix(&prefix)
-                && let Some((slug, _)) = remainder.rsplit_once('/')
-                && !memory_slugs.iter().any(|s| s == slug)
-            {
+            let Some(remainder) = path.strip_prefix(&prefix) else {
+                continue;
+            };
+            let Some((slug, _)) = remainder.rsplit_once('/') else {
+                continue;
+            };
+            if !memory_slugs.iter().any(|s| s == slug) {
                 memory_slugs.push(slug.to_string());
+            }
+            if let Ok(text) = std::str::from_utf8(data)
+                && let Ok(parsed) = MemoryFile::parse(text)
+            {
+                for tag in parsed.frontmatter.tags {
+                    if !tags.iter().any(|t| t == &tag) {
+                        tags.push(tag);
+                    }
+                }
             }
         }
         memory_slugs.sort();
+        tags.sort();
         listings.push(ArchiveGroupListing {
-            group_id: group_meta.group_id,
+            group_id,
             slug: group_meta.slug.clone(),
+            scope,
             memory_slugs,
+            tags,
         });
     }
     Ok(listings)

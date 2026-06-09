@@ -53,6 +53,14 @@ pub struct MemoryFilterArgs {
     /// Keep only non-mandatory memories.
     #[arg(long = "non-mandatory", default_value_t = false)]
     pub non_mandatory: bool,
+
+    /// Keep only memories that carry cross-references.
+    #[arg(long = "has-refs", default_value_t = false, conflicts_with = "no_refs")]
+    pub has_refs: bool,
+
+    /// Keep only memories with no cross-references.
+    #[arg(long = "no-refs", default_value_t = false)]
+    pub no_refs: bool,
 }
 
 impl MemoryFilterArgs {
@@ -67,11 +75,18 @@ impl MemoryFilterArgs {
             && self.search.is_none()
             && !self.mandatory
             && !self.non_mandatory
+            && !self.has_refs
+            && !self.no_refs
     }
 
     /// Build the store-level filter, validating kind names.
     pub fn to_filter(&self) -> Result<MemoryFilter> {
         let mandatory = match (self.mandatory, self.non_mandatory) {
+            (true, false) => Some(true),
+            (false, true) => Some(false),
+            _ => None,
+        };
+        let has_refs = match (self.has_refs, self.no_refs) {
             (true, false) => Some(true),
             (false, true) => Some(false),
             _ => None,
@@ -86,6 +101,7 @@ impl MemoryFilterArgs {
             exclude_tags: self.exclude_tag.clone(),
             search: self.search.clone(),
             mandatory,
+            has_refs,
         })
     }
 }

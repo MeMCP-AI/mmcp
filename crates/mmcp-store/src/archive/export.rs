@@ -11,7 +11,7 @@ use mmcp_core::memory::MemoryFile;
 use mmcp_git::{GitBackend, NativeBackend, Rev};
 
 use crate::groups::GroupEntry;
-use crate::memory::{ImportError, list_all_memory_files};
+use crate::memory::{ImportError, list_all_memory_files, read_frontmatters_in_group};
 
 use super::error::ArchiveError;
 use super::filter::MemoryFilter;
@@ -186,6 +186,31 @@ pub async fn export_archive_to_path(
         return Err(err.into());
     }
     Ok(manifest)
+}
+
+/// Distinct tags across the memories of `groups`, sorted. Backs the
+/// export dialog's tag autocomplete (the universe of tags a user can
+/// filter by). Malformed frontmatter is skipped rather than failing
+/// the whole listing.
+pub async fn collect_group_tags(
+    backend: &NativeBackend,
+    groups: &[GroupEntry],
+) -> Result<Vec<String>, ArchiveError> {
+    let mut tags: Vec<String> = Vec::new();
+    for group in groups {
+        let entries = read_frontmatters_in_group(backend, &group.handle, &Rev::Head).await?;
+        for entry in entries {
+            if let Ok(frontmatter) = entry.frontmatter {
+                for tag in frontmatter.tags {
+                    if !tags.iter().any(|t| t == &tag) {
+                        tags.push(tag);
+                    }
+                }
+            }
+        }
+    }
+    tags.sort();
+    Ok(tags)
 }
 
 /// A same-directory temp path for the atomic export. Same directory so

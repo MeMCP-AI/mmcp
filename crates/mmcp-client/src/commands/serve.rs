@@ -1414,6 +1414,10 @@ struct ArchiveFilterArgs {
     /// memories; absent matches either.
     #[serde(default)]
     pub mandatory: Option<bool>,
+    /// Restrict to memories that carry cross-references (`true`) or
+    /// carry none (`false`); absent matches either.
+    #[serde(default)]
+    pub has_refs: Option<bool>,
 }
 
 impl ArchiveFilterArgs {
@@ -1428,6 +1432,7 @@ impl ArchiveFilterArgs {
             exclude_tags: self.exclude_tag.clone(),
             search: self.search.clone(),
             mandatory: self.mandatory,
+            has_refs: self.has_refs,
         })
     }
 }

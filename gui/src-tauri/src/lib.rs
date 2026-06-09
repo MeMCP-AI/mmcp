@@ -50,6 +50,7 @@ pub fn run() {
             commands::archive::import_archive,
             commands::archive::pick_import_path,
             commands::archive::inspect_archive,
+            commands::archive::local_tags,
             commands::memory::list_memory_slugs,
             commands::memory::load_memory,
             commands::memory::create_memory,

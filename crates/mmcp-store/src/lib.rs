@@ -62,8 +62,8 @@ pub mod testing;
 pub use archive::{
     ARCHIVE_FORMAT_VERSION, ArchiveError, ArchiveGroupListing, ArchiveManifest, ArchiveMode,
     ArchivedGroupMeta, ExportOptions, GroupImportOutcome, ImportArchiveOptions,
-    ImportArchiveReport, MemoryConflict, MemoryFilter, export_archive, export_archive_to_path,
-    import_archive, inspect_archive, list_archive, parse_memory_kind,
+    ImportArchiveReport, MemoryConflict, MemoryFilter, collect_group_tags, export_archive,
+    export_archive_to_path, import_archive, inspect_archive, list_archive, parse_memory_kind,
 };
 pub use diagnostics::{
     DiagReport, Finding, GroupReport, diagnose_all, diagnose_group, health_check_all,

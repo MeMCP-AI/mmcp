@@ -26,7 +26,7 @@ pub mod manifest;
 
 pub use error::ArchiveError;
 pub use filter::{MemoryFilter, parse_memory_kind};
-pub use export::{ExportOptions, export_archive, export_archive_to_path};
+pub use export::{ExportOptions, collect_group_tags, export_archive, export_archive_to_path};
 pub use import::{
     ArchiveGroupListing, GroupImportOutcome, ImportArchiveOptions, ImportArchiveReport,
     MemoryConflict, import_archive, inspect_archive, list_archive,

@@ -35,6 +35,9 @@ pub struct MemoryFilter {
     /// Restrict to mandatory (`Some(true)`) or non-mandatory
     /// (`Some(false)`) memories. `None` = either.
     pub mandatory: Option<bool>,
+    /// Restrict to memories that carry cross-references (`Some(true)`)
+    /// or carry none (`Some(false)`). `None` = either.
+    pub has_refs: Option<bool>,
 }
 
 impl MemoryFilter {
@@ -50,6 +53,7 @@ impl MemoryFilter {
             && self.exclude_tags.is_empty()
             && self.search.is_none()
             && self.mandatory.is_none()
+            && self.has_refs.is_none()
     }
 
     /// Whether a memory at `slug` with frontmatter `fm` and `body`
@@ -84,6 +88,11 @@ impl MemoryFilter {
         }
         if let Some(want) = self.mandatory
             && fm.mandatory != want
+        {
+            return false;
+        }
+        if let Some(want) = self.has_refs
+            && !fm.refs.is_empty() != want
         {
             return false;
         }
