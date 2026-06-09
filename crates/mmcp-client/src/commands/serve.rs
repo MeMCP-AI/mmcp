@@ -2108,7 +2108,10 @@ impl McpServer {
         }
         let options = mmcp_store::ExportOptions {
             gzip: args.gzip,
-            memory_slugs: args.memory,
+            filter: mmcp_store::MemoryFilter {
+                slugs: args.memory,
+                ..Default::default()
+            },
         };
         let manifest = mmcp_store::export_archive_to_path(
             &self.state.backend,
@@ -2176,7 +2179,10 @@ impl McpServer {
             new_ids: args.new_ids,
             allow_protected: true,
             select_groups: args.only_groups,
-            select_memory_slugs: args.only_memory_slugs,
+            filter: mmcp_store::MemoryFilter {
+                slugs: args.only_memory_slugs,
+                ..Default::default()
+            },
         };
         let report = mmcp_store::import_archive(
             &self.state.backend,

@@ -7,12 +7,14 @@ use std::path::{Path, PathBuf};
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use mmcp_core::manifest::MANIFEST_FILENAME;
+use mmcp_core::memory::MemoryFile;
 use mmcp_git::{GitBackend, NativeBackend, Rev};
 
 use crate::groups::GroupEntry;
-use crate::memory::list_all_memory_files;
+use crate::memory::{ImportError, list_all_memory_files};
 
 use super::error::ArchiveError;
+use super::filter::MemoryFilter;
 use super::manifest::{
     ARCHIVE_FORMAT_VERSION, ARCHIVE_GROUPS_DIR, ARCHIVE_MANIFEST_FILENAME, ArchiveManifest,
     ArchiveMode, ArchivedGroupMeta,
@@ -33,9 +35,9 @@ const ARCHIVE_ENTRY_MTIME: u64 = 0;
 pub struct ExportOptions {
     /// gzip the tar stream (pure-Rust flate2). Off means a plain tar.
     pub gzip: bool,
-    /// When non-empty, export only memories whose slug is in this set
-    /// (matched across every selected group). Empty exports them all.
-    pub memory_slugs: Vec<String>,
+    /// Facet filter narrowing which memories are packed. Empty matches
+    /// every memory in the selected groups.
+    pub filter: MemoryFilter,
 }
 
 /// Package `groups` into a snapshot archive written to `writer`.
@@ -65,22 +67,31 @@ pub async fn export_archive<W: Write>(
             .await?;
         entries.push((format!("{base}/{MANIFEST_FILENAME}"), manifest_bytes.to_vec()));
 
-        let mut files = list_all_memory_files(backend, &group.handle, &Rev::Head).await?;
-        if !options.memory_slugs.is_empty() {
-            files.retain(|file| options.memory_slugs.iter().any(|slug| slug == &file.slug));
-        }
+        let files = list_all_memory_files(backend, &group.handle, &Rev::Head).await?;
+        let mut packed: u32 = 0;
         for file in &files {
             let bytes = backend
                 .read_file(&group.handle, &file.path, &Rev::Head)
                 .await?;
+            if !options.filter.is_empty() {
+                let text = std::str::from_utf8(&bytes).map_err(|source| ArchiveError::NotUtf8 {
+                    path: file.path.clone(),
+                    source,
+                })?;
+                let parsed = MemoryFile::parse(text).map_err(ImportError::Parse)?;
+                if !options.filter.matches(&file.slug, &parsed.frontmatter, &parsed.body) {
+                    continue;
+                }
+            }
             entries.push((format!("{base}/{}", file.path), bytes.to_vec()));
+            packed = packed.saturating_add(1);
         }
 
         group_metas.push(ArchivedGroupMeta {
             group_id,
             slug: group.manifest.slug.clone(),
             display_name: group.manifest.display_name.clone(),
-            memory_count: u32::try_from(files.len()).unwrap_or(u32::MAX),
+            memory_count: packed,
         });
     }
 
@@ -301,7 +312,10 @@ mod tests {
             home.backend(),
             &[entry],
             &ExportOptions {
-                memory_slugs: vec!["keep".to_string()],
+                filter: MemoryFilter {
+                    slugs: vec!["keep".to_string()],
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             &mut buf,

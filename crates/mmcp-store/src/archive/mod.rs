@@ -20,10 +20,12 @@
 
 pub mod error;
 pub mod export;
+pub mod filter;
 pub mod import;
 pub mod manifest;
 
 pub use error::ArchiveError;
+pub use filter::{MemoryFilter, parse_memory_kind};
 pub use export::{ExportOptions, export_archive, export_archive_to_path};
 pub use import::{
     ArchiveGroupListing, GroupImportOutcome, ImportArchiveOptions, ImportArchiveReport,

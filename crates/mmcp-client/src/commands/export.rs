@@ -10,7 +10,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use mmcp_store::groups::GroupEntry;
 use mmcp_store::home::MmcpHome;
-use mmcp_store::{ExportOptions, export_archive_to_path, resolve_group, resolve_project_group};
+use mmcp_store::{
+    ExportOptions, MemoryFilter, export_archive_to_path, resolve_group, resolve_project_group,
+};
 
 /// CLI entry point for `mmcp export`.
 ///
@@ -55,7 +57,10 @@ pub async fn run(
 
     let options = ExportOptions {
         gzip,
-        memory_slugs: memory,
+        filter: MemoryFilter {
+            slugs: memory,
+            ..Default::default()
+        },
     };
     let manifest = export_archive_to_path(&backend, &selected, &options, &output).await?;
 

@@ -22,7 +22,9 @@ use mmcp_store::import_adoc::{convert_adoc_to_markdown, is_adoc_filename};
 use mmcp_store::memory::{
     ImportError, SynthFrontmatter, import_memory, parse_kind, resolve_group, slugify_filename,
 };
-use mmcp_store::{ArchiveManifest, ImportArchiveOptions, import_archive, inspect_archive};
+use mmcp_store::{
+    ArchiveManifest, ImportArchiveOptions, MemoryFilter, import_archive, inspect_archive,
+};
 
 /// Arguments for `mmcp import`. The three input shapes (`--file`,
 /// `--dir`, `--archive`) are mutually exclusive; loose-only and
@@ -297,7 +299,10 @@ async fn run_archive(
         new_ids: args.new_ids,
         allow_protected: true,
         select_groups: args.only_group.clone(),
-        select_memory_slugs: args.only_memory.clone(),
+        filter: MemoryFilter {
+            slugs: args.only_memory.clone(),
+            ..Default::default()
+        },
     };
     let report = import_archive(backend, group_index, author, &bytes, &options).await?;
 

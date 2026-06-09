@@ -8,7 +8,7 @@
 //! archive for import, then calls export / import with the picks.
 
 use mmcp_core::id::GroupId;
-use mmcp_store::{ArchiveManifest, ExportOptions, ImportArchiveOptions};
+use mmcp_store::{ArchiveManifest, ExportOptions, ImportArchiveOptions, MemoryFilter};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -87,7 +87,13 @@ pub async fn export_archive(
         return Ok(None);
     };
 
-    let options = ExportOptions { gzip, memory_slugs };
+    let options = ExportOptions {
+        gzip,
+        filter: MemoryFilter {
+            slugs: memory_slugs,
+            ..Default::default()
+        },
+    };
     let manifest =
         mmcp_store::export_archive_to_path(&state.backend, &selected, &options, &path).await?;
 
@@ -177,7 +183,10 @@ pub async fn import_archive(
         new_ids,
         allow_protected: true,
         select_groups: only_groups,
-        select_memory_slugs: only_memory_slugs,
+        filter: MemoryFilter {
+            slugs: only_memory_slugs,
+            ..Default::default()
+        },
     };
     let report =
         mmcp_store::import_archive(&state.backend, &state.index, &author, &bytes, &options).await?;

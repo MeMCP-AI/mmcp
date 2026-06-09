@@ -20,6 +20,7 @@ use crate::memory::{
 };
 
 use super::error::ArchiveError;
+use super::filter::MemoryFilter;
 use super::manifest::{
     ARCHIVE_FORMAT_VERSION, ARCHIVE_GROUPS_DIR, ARCHIVE_MANIFEST_FILENAME, ArchiveManifest,
 };
@@ -57,9 +58,9 @@ pub struct ImportArchiveOptions {
     /// When non-empty, import only these archived groups (matched by
     /// uuid or slug). Empty imports every group in the archive.
     pub select_groups: Vec<String>,
-    /// When non-empty, import only memories whose slug is in this set.
-    /// Empty imports every memory in the selected groups.
-    pub select_memory_slugs: Vec<String>,
+    /// Facet filter narrowing which memories are replayed. Empty
+    /// imports every memory in the selected groups.
+    pub filter: MemoryFilter,
 }
 
 /// A memory the import left untouched because its uuid already exists
@@ -246,17 +247,18 @@ async fn import_one_group(
                 detail: format!("memory entry `{path}` has no slug directory"),
             });
         };
-        if !options.select_memory_slugs.is_empty()
-            && !options.select_memory_slugs.iter().any(|s| s == memory_slug)
-        {
-            continue;
+        let content = utf8(path, data)?;
+        if !options.filter.is_empty() {
+            let parsed = MemoryFile::parse(content).map_err(ImportError::Parse)?;
+            if !options.filter.matches(memory_slug, &parsed.frontmatter, &parsed.body) {
+                continue;
+            }
         }
         // The archive filename is `<uuid>.md`; the uuid is the memory's
         // identity for id-less frontmatter (pre-FR-028 / hand-crafted).
         let filename_id = filename
             .strip_suffix(MEMORY_EXTENSION)
             .and_then(|stem| Uuid::parse_str(stem).ok());
-        let content = utf8(path, data)?;
         import_one_memory(
             backend,
             &target,
@@ -1043,7 +1045,10 @@ mod tests {
             dst.author(),
             &buf,
             &ImportArchiveOptions {
-                select_memory_slugs: vec!["keep".to_string()],
+                filter: MemoryFilter {
+                    slugs: vec!["keep".to_string()],
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )
