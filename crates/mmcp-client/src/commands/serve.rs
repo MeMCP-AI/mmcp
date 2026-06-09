@@ -1389,6 +1389,10 @@ struct ExportArchiveArgs {
     /// Export every group in the local mirror.
     #[serde(default)]
     pub all: bool,
+    /// Export only memories whose slug is in this set (matched across
+    /// the selected groups). Empty exports every memory.
+    #[serde(default)]
+    pub memory: Vec<String>,
     /// Destination archive path on the server's filesystem.
     pub output: String,
     /// gzip-compress the tar stream.
@@ -1406,6 +1410,14 @@ struct ImportArchiveArgs {
     /// instead of recreating the archived groups.
     #[serde(default)]
     pub into: Option<String>,
+    /// Import only these archived groups (UUID or slug). Empty imports
+    /// every group in the archive.
+    #[serde(default)]
+    pub only_groups: Vec<String>,
+    /// Import only memories whose slug is in this set. Empty imports
+    /// every memory in the chosen groups.
+    #[serde(default)]
+    pub only_memory_slugs: Vec<String>,
     /// Replace colliding memories instead of reporting a conflict.
     #[serde(default)]
     pub overwrite: bool,
@@ -2055,7 +2067,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Export one or more groups to a portable mmcp archive (tar; optionally gzip) at the `output` path on the server's filesystem. The batch counterpart to `import_archive`. Select groups by `group` (UUID or slug, repeatable) or `all: true`. Memories are copied verbatim at HEAD so UUIDs, slugs, kinds, tags, and feature/issue numbers round-trip. Errors: `invalid_selector`, `no_groups_selected`, `archive_write_failed`.",
+        description = "Export one or more groups to a portable mmcp archive (tar; optionally gzip) at the `output` path on the server's filesystem. The batch counterpart to `import_archive`. Written atomically (temp file then rename). Select groups by `group` (UUID or slug, repeatable) or `all: true`; `memory` narrows to specific memory slugs. Identities (UUIDs, slugs, kinds, tags, feature/issue numbers) round-trip. Errors: `invalid_selector`, `no_groups_selected`, `archive_error`.",
         annotations(
             title = "Export groups to an archive",
             read_only_hint = false,
@@ -2094,20 +2106,15 @@ impl McpServer {
                 Some(json!({ "code": "no_groups_selected" })),
             ));
         }
-        let file = std::fs::File::create(&args.output).map_err(|e| {
-            McpError::internal_error(
-                Cow::Owned(format!("creating archive {}: {e}", args.output)),
-                Some(json!({ "code": "archive_write_failed" })),
-            )
-        })?;
-        let manifest = mmcp_store::export_archive(
+        let options = mmcp_store::ExportOptions {
+            gzip: args.gzip,
+            memory_slugs: args.memory,
+        };
+        let manifest = mmcp_store::export_archive_to_path(
             &self.state.backend,
             &selected,
-            &mmcp_store::ExportOptions {
-                gzip: args.gzip,
-                ..Default::default()
-            },
-            file,
+            &options,
+            std::path::Path::new(&args.output),
         )
         .await
         .map_err(map_archive_error_to_mcp)?;
@@ -2128,7 +2135,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Import a portable mmcp archive (tar; gzip auto-detected) from the `input` path on the server's filesystem, recreating its groups by uuid and replaying each memory through the same primitive `import_memory` uses. `into` remaps every memory into one existing group; `overwrite` replaces colliding memories instead of reporting them; `new_ids` mints fresh UUIDs (fork / copy). Protected target groups prompt for confirmation before writing. Errors: `archive_read_failed`, `unsupported_archive_format`, `group_not_found` (bad `into`), `malformed_archive`, `protected_write_cancelled`.",
+        description = "Import a portable mmcp archive (tar; gzip auto-detected) from the `input` path on the server's filesystem, recreating its groups by uuid and replaying each memory through the same primitive `import_memory` uses. `into` remaps every memory into one existing group; `only_groups` / `only_memory_slugs` restrict which archived groups and memories are replayed; `overwrite` replaces colliding memories instead of reporting them; `new_ids` mints fresh UUIDs (fork / copy). Protected target groups prompt for confirmation before writing. Errors: `archive_read_failed`, `unsupported_archive_format`, `group_not_found` (bad `into`), `malformed_archive`, `protected_write_cancelled`.",
         annotations(
             title = "Import an archive into the store",
             read_only_hint = false,
@@ -2168,7 +2175,8 @@ impl McpServer {
             overwrite: args.overwrite,
             new_ids: args.new_ids,
             allow_protected: true,
-            ..Default::default()
+            select_groups: args.only_groups,
+            select_memory_slugs: args.only_memory_slugs,
         };
         let report = mmcp_store::import_archive(
             &self.state.backend,
