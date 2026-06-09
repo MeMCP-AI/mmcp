@@ -3,6 +3,7 @@
 pub mod bootstrap;
 pub mod claude;
 pub mod debug;
+pub mod export;
 pub mod feature;
 pub mod group;
 pub mod health;

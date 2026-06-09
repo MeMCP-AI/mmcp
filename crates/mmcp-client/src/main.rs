@@ -94,56 +94,38 @@ enum Command {
         group: Option<String>,
     },
 
-    /// Import memories from external markdown files into a group.
-    /// Errors on slug collision by default — pass `--override` to
-    /// replace the existing memory, mirroring the MCP
-    /// `write_memory` contract. Writes into a protected group
-    /// prompt for confirmation on a TTY; non-TTY invocations
-    /// require `--force`.
-    Import {
-        /// Target group (UUID or slug).
-        #[arg(long)]
-        group: String,
+    /// Import memories into the store. Three input shapes: a loose
+    /// `--file`, a `--dir` of loose files, or a portable `--archive`
+    /// (tar; gzip auto-detected) produced by `mmcp export`. Loose
+    /// inputs target one `--group` and error on slug collision unless
+    /// `--override`; archives carry their own groups and recreate
+    /// them, optionally remapping into one group via `--into`. Writes
+    /// into a protected group prompt for confirmation on a TTY;
+    /// non-TTY invocations require `--force`.
+    Import(commands::import::ImportArgs),
 
-        /// Path to a single .md file to import.
-        #[arg(long, conflicts_with = "dir")]
-        file: Option<std::path::PathBuf>,
+    /// Export one or more groups to a portable archive on disk. The
+    /// batch counterpart to `mmcp import`. Select groups with
+    /// repeated `--group`, with `--all`, or default to the current
+    /// project's group. Pass `--gzip` to compress the tar.
+    Export {
+        /// Group to export (UUID or slug). Repeatable. All mirrored
+        /// groups with `--all`; the current project group if neither
+        /// is given.
+        #[arg(long, conflicts_with = "all")]
+        group: Vec<String>,
 
-        /// Import all .md files from this directory.
-        #[arg(long, conflicts_with = "file")]
-        dir: Option<std::path::PathBuf>,
-
-        /// Override the slug (only valid with --file).
-        #[arg(long, conflicts_with = "dir")]
-        slug: Option<String>,
-
-        /// Memory name (required if file has no +++ frontmatter).
-        #[arg(long)]
-        name: Option<String>,
-
-        /// Memory description (required if file has no +++ frontmatter).
-        #[arg(long)]
-        description: Option<String>,
-
-        /// Memory kind: rule, snapshot, log, reference, scratch
-        /// (required if file has no +++ frontmatter).
-        #[arg(long)]
-        kind: Option<String>,
-
-        /// Replace an existing memory instead of erroring. Default
-        /// is strict create — prefer editing memories via the MCP
-        /// `edit_memory` tool or a direct file edit in the bare
-        /// repo, and reach for `--override` only when replacing
-        /// the whole file is the intent.
+        /// Export every group in the local mirror.
         #[arg(long, default_value_t = false)]
-        r#override: bool,
+        all: bool,
 
-        /// Skip the protected-group confirmation prompt. Required
-        /// on non-TTY stdin when the target group is marked
-        /// protected; otherwise the command errors rather than
-        /// silently writing.
+        /// Destination archive path.
+        #[arg(long)]
+        output: std::path::PathBuf,
+
+        /// gzip-compress the tar stream.
         #[arg(long, default_value_t = false)]
-        force: bool,
+        gzip: bool,
     },
 
     /// Hook handler subcommands invoked by Claude Code hook entries.
@@ -262,30 +244,13 @@ async fn main() -> Result<()> {
         Command::Fetch { selector } => commands::sync::run_fetch(selector).await?,
         Command::Pull { selector } => commands::sync::run_pull(selector).await?,
         Command::Push { selector } => commands::sync::run_push(selector).await?,
-        Command::Import {
+        Command::Import(args) => commands::import::run(args).await?,
+        Command::Export {
             group,
-            file,
-            dir,
-            slug,
-            name,
-            description,
-            kind,
-            r#override,
-            force,
-        } => {
-            commands::import::run(
-                group,
-                file,
-                dir,
-                slug,
-                name,
-                description,
-                kind,
-                r#override,
-                force,
-            )
-            .await?
-        }
+            all,
+            output,
+            gzip,
+        } => commands::export::run(group, all, output, gzip).await?,
         Command::Hook { command } => match command {
             HookCommand::UserPrompt => commands::hook::user_prompt().await?,
         },
