@@ -153,6 +153,7 @@ pub async fn export_archive(
     let options = ExportOptions {
         gzip,
         filter: filter.to_filter()?,
+        ..Default::default()
     };
     let manifest =
         mmcp_store::export_archive_to_path(&state.backend, &selected, &options, &path).await?;

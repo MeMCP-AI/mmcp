@@ -58,6 +58,7 @@ pub async fn run(
     let options = ExportOptions {
         gzip,
         filter: filter.to_filter()?,
+        ..Default::default()
     };
     let manifest = export_archive_to_path(&backend, &selected, &options, &output).await?;
 

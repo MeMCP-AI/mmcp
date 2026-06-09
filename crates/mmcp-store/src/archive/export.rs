@@ -29,6 +29,15 @@ const ARCHIVE_ENTRY_MODE: u32 = 0o644;
 /// own `created_at` stamp, not by per-file mtimes.
 const ARCHIVE_ENTRY_MTIME: u64 = 0;
 
+/// Directory inside an archived group that holds the verbatim bare
+/// repository for `ArchiveMode::History`.
+const ARCHIVE_GIT_DIR: &str = "git";
+
+/// Top-level bare-repo entries excluded from a history capture:
+/// `hooks/` are sample executables and `logs/` are local reflogs;
+/// neither belongs in a portable backup.
+const GIT_EXCLUDED_TOP: [&str; 2] = ["hooks", "logs"];
+
 /// Knobs for an export run. `Default`-derived so call sites set only
 /// the toggles they care about.
 #[derive(Debug, Clone, Default)]
@@ -36,8 +45,11 @@ pub struct ExportOptions {
     /// gzip the tar stream (pure-Rust flate2). Off means a plain tar.
     pub gzip: bool,
     /// Facet filter narrowing which memories are packed. Empty matches
-    /// every memory in the selected groups.
+    /// every memory in the selected groups. Snapshot mode only.
     pub filter: MemoryFilter,
+    /// What to capture: a HEAD snapshot (default) or each group's full
+    /// git history (the bare repo, verbatim).
+    pub mode: ArchiveMode,
 }
 
 /// Package `groups` into a snapshot archive written to `writer`.
@@ -62,42 +74,39 @@ pub async fn export_archive<W: Write>(
         let group_id = group.handle.group_id;
         let base = format!("{ARCHIVE_GROUPS_DIR}/{group_id}");
 
+        // The verbatim manifest rides in both modes so a reader can
+        // list a group and its scope without unpacking the payload.
         let manifest_bytes = backend
             .read_file(&group.handle, MANIFEST_FILENAME, &Rev::Head)
             .await?;
         entries.push((format!("{base}/{MANIFEST_FILENAME}"), manifest_bytes.to_vec()));
 
-        let files = list_all_memory_files(backend, &group.handle, &Rev::Head).await?;
-        let mut packed: u32 = 0;
-        for file in &files {
-            let bytes = backend
-                .read_file(&group.handle, &file.path, &Rev::Head)
-                .await?;
-            if !options.filter.is_empty() {
-                let text = std::str::from_utf8(&bytes).map_err(|source| ArchiveError::NotUtf8 {
-                    path: file.path.clone(),
-                    source,
-                })?;
-                let parsed = MemoryFile::parse(text).map_err(ImportError::Parse)?;
-                if !options.filter.matches(&file.slug, &parsed.frontmatter, &parsed.body) {
-                    continue;
-                }
+        let memory_count = match options.mode {
+            ArchiveMode::Snapshot => {
+                pack_snapshot_memories(backend, group, &base, &options.filter, &mut entries).await?
             }
-            entries.push((format!("{base}/{}", file.path), bytes.to_vec()));
-            packed = packed.saturating_add(1);
-        }
+            ArchiveMode::History => {
+                let git_base = format!("{base}/{ARCHIVE_GIT_DIR}");
+                for (rel, bytes) in pack_git_dir(&backend.repo_path(group_id)).await? {
+                    entries.push((format!("{git_base}/{rel}"), bytes));
+                }
+                // Informational only — the HEAD memory count for listing.
+                let files = list_all_memory_files(backend, &group.handle, &Rev::Head).await?;
+                u32::try_from(files.len()).unwrap_or(u32::MAX)
+            }
+        };
 
         group_metas.push(ArchivedGroupMeta {
             group_id,
             slug: group.manifest.slug.clone(),
             display_name: group.manifest.display_name.clone(),
-            memory_count: packed,
+            memory_count,
         });
     }
 
     let manifest = ArchiveManifest {
         format_version: ARCHIVE_FORMAT_VERSION,
-        mode: ArchiveMode::Snapshot,
+        mode: options.mode,
         mmcp_version: env!("CARGO_PKG_VERSION").to_string(),
         created_at: jiff::Timestamp::now().to_string(),
         groups: group_metas,
@@ -105,6 +114,84 @@ pub async fn export_archive<W: Write>(
 
     write_archive(&manifest, &entries, writer, options.gzip)?;
     Ok(manifest)
+}
+
+/// Pack a group's HEAD memory files (filtered) under `base`, returning
+/// the count packed. The snapshot half of [`export_archive`].
+async fn pack_snapshot_memories(
+    backend: &NativeBackend,
+    group: &GroupEntry,
+    base: &str,
+    filter: &MemoryFilter,
+    entries: &mut Vec<(String, Vec<u8>)>,
+) -> Result<u32, ArchiveError> {
+    let files = list_all_memory_files(backend, &group.handle, &Rev::Head).await?;
+    let mut packed: u32 = 0;
+    for file in &files {
+        let bytes = backend
+            .read_file(&group.handle, &file.path, &Rev::Head)
+            .await?;
+        if !filter.is_empty() {
+            let text = std::str::from_utf8(&bytes).map_err(|source| ArchiveError::NotUtf8 {
+                path: file.path.clone(),
+                source,
+            })?;
+            let parsed = MemoryFile::parse(text).map_err(ImportError::Parse)?;
+            if !filter.matches(&file.slug, &parsed.frontmatter, &parsed.body) {
+                continue;
+            }
+        }
+        entries.push((format!("{base}/{}", file.path), bytes.to_vec()));
+        packed = packed.saturating_add(1);
+    }
+    Ok(packed)
+}
+
+/// Walk a group's bare repository and return every git file as
+/// `(forward-slash relative path, bytes)`, sorted for determinism.
+/// `hooks/` and `logs/` are skipped. Offloaded to a blocking task
+/// since it reads the disk synchronously.
+async fn pack_git_dir(repo_path: &Path) -> Result<Vec<(String, Vec<u8>)>, ArchiveError> {
+    let repo_path = repo_path.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<Vec<(String, Vec<u8>)>, ArchiveError> {
+        let mut out = Vec::new();
+        walk_git_dir(&repo_path, &repo_path, &mut out)?;
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(out)
+    })
+    .await
+    .map_err(|e| ArchiveError::Malformed {
+        detail: format!("git walk task failed: {e}"),
+    })?
+}
+
+/// Recursive helper for [`pack_git_dir`]; `root` anchors relative paths.
+fn walk_git_dir(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<(String, Vec<u8>)>,
+) -> Result<(), ArchiveError> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let rel = path.strip_prefix(root).unwrap_or(&path);
+        let excluded = rel
+            .components()
+            .next()
+            .and_then(|c| c.as_os_str().to_str())
+            .is_some_and(|top| GIT_EXCLUDED_TOP.contains(&top));
+        if excluded {
+            continue;
+        }
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            walk_git_dir(root, &path, out)?;
+        } else if file_type.is_file() {
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            out.push((rel_str, std::fs::read(&path)?));
+        }
+    }
+    Ok(())
 }
 
 /// Write the table of contents plus every entry to a (optionally
@@ -303,6 +390,72 @@ mod tests {
         let parsed = ArchiveManifest::from_toml(&toc).expect("parse toc");
         assert_eq!(parsed.format_version, ARCHIVE_FORMAT_VERSION);
         assert_eq!(parsed.total_memory_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn history_export_packs_the_bare_repo() {
+        let home = ScratchHome::new().await.expect("scratch home");
+        let seeded = home.seed_group("team").await.expect("seed group");
+        let entry = home
+            .groups()
+            .get(&seeded.group_id)
+            .await
+            .expect("group entry");
+        import_memory(
+            home.backend(),
+            &entry.handle,
+            "note",
+            "Body.",
+            Some(SynthFrontmatter {
+                name: "n".to_string(),
+                description: "d".to_string(),
+                kind: MemoryKind::Reference,
+            }),
+            home.author(),
+            false,
+        )
+        .await
+        .expect("import memory");
+
+        let mut buf = Vec::new();
+        let manifest = export_archive(
+            home.backend(),
+            &[entry],
+            &ExportOptions {
+                mode: ArchiveMode::History,
+                ..Default::default()
+            },
+            &mut buf,
+        )
+        .await
+        .expect("export");
+        assert_eq!(manifest.mode, ArchiveMode::History);
+
+        let gid = seeded.group_id.as_uuid();
+        let mut archive = tar::Archive::new(&buf[..]);
+        let paths: Vec<String> = archive
+            .entries()
+            .expect("entries")
+            .map(|e| {
+                e.expect("entry")
+                    .path()
+                    .expect("path")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+
+        // The verbatim manifest (for listing) plus the bare repo: HEAD
+        // and at least one object must be present.
+        assert!(paths.iter().any(|p| *p == format!("groups/{gid}/.mmcp.toml")));
+        assert!(paths.iter().any(|p| *p == format!("groups/{gid}/git/HEAD")));
+        assert!(
+            paths
+                .iter()
+                .any(|p| p.starts_with(&format!("groups/{gid}/git/objects/"))),
+            "no git objects packed; got {paths:?}",
+        );
+        assert!(!paths.iter().any(|p| p.contains("/git/hooks/")));
     }
 
     #[tokio::test]

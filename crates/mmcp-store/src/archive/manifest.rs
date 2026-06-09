@@ -16,9 +16,8 @@ pub const ARCHIVE_FORMAT_VERSION: u32 = 1;
 
 /// What an archive carries for each group.
 ///
-/// One variant today. The mode is kept as an explicit field rather
-/// than implied so a future full-git-history mode lands as an
-/// additive variant without reshaping the manifest.
+/// The mode is an explicit field so the two payload shapes coexist in
+/// one container format without reshaping the manifest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -27,6 +26,9 @@ pub enum ArchiveMode {
     /// revision, no version history.
     #[default]
     Snapshot,
+    /// Full git history: each group's bare repository captured
+    /// verbatim, so a restore replays every commit, ref, and tag.
+    History,
 }
 
 /// One group's summary row in the archive table of contents.

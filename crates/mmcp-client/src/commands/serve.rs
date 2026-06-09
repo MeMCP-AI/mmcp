@@ -2183,6 +2183,7 @@ impl McpServer {
         let options = mmcp_store::ExportOptions {
             gzip: args.gzip,
             filter: args.filter.to_filter()?,
+            ..Default::default()
         };
         let manifest = mmcp_store::export_archive_to_path(
             &self.state.backend,
