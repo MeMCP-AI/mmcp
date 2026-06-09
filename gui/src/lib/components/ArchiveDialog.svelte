@@ -1,25 +1,29 @@
 <script lang="ts">
-  // Simple-to-advanced archive selection dialog. Simple: export/import
-  // all groups or a chosen subset. Advanced: drill into a group and
-  // pick individual memory slugs. Drives both directions: for export it
-  // lists the local mirror; for import it inspects a chosen archive.
+  // Archive selection dialog. One selection table with a header
+  // global checkbox (no All/Selected mode). Advanced reveals the full
+  // memory filter — include/exclude by kind and tag, any/all tags,
+  // text search, mandatory tri-state — plus per-group drill-down to
+  // pick individual memories. Drives both directions: export lists the
+  // local mirror; import inspects a chosen archive.
 
   import { onMount } from 'svelte';
   import { listGroups } from '$lib/api/groups';
   import { listMemorySlugs } from '$lib/api/memory';
   import {
+    emptyFilter,
     exportArchive,
     importArchive,
     inspectArchive,
     pickImportPath,
+    type ArchiveFilter,
     type ArchiveGroupListing
   } from '$lib/api/archive';
   import type { GroupEntry } from '$lib/types';
 
   let { mode, onClose }: { mode: 'export' | 'import'; onClose: () => void } = $props();
 
-  // Selectable units. For export these come from the local mirror; for
-  // import from the inspected archive.
+  const KINDS = ['rule', 'snapshot', 'log', 'reference', 'scratch', 'feature', 'issue'];
+
   type SelectableGroup = { id: string; slug: string };
 
   let busy = $state(true);
@@ -30,16 +34,23 @@
   let archiveGroups = $state<ArchiveGroupListing[]>([]);
   let archivePath = $state<string | null>(null);
 
-  let groupScope = $state<'all' | 'selected'>('all');
   let selectedGroupIds = $state<string[]>([]);
   let advanced = $state(false);
-  let selectedMemorySlugs = $state<string[]>([]);
   let expanded = $state<string[]>([]);
   let memoriesByGroup = $state<Record<string, string[]>>({});
 
-  // Export-only.
+  // Filter facets.
+  let pickedMemory = $state<string[]>([]);
+  let includeKinds = $state<string[]>([]);
+  let excludeKinds = $state<string[]>([]);
+  let includeTags = $state('');
+  let allTags = $state(false);
+  let excludeTags = $state('');
+  let search = $state('');
+  let mandatory = $state<'any' | 'mandatory' | 'non-mandatory'>('any');
+
+  // Export-only / import-only options.
   let gzip = $state(false);
-  // Import-only. Empty `into` recreates the archived groups.
   let into = $state('');
   let overwrite = $state(false);
   let newIds = $state(false);
@@ -49,7 +60,8 @@
       ? localGroups.map((g) => ({ id: g.group_id, slug: g.slug }))
       : archiveGroups.map((g) => ({ id: g.group_id, slug: g.slug }))
   );
-
+  const allSelected = $derived(groups.length > 0 && selectedGroupIds.length === groups.length);
+  const someSelected = $derived(selectedGroupIds.length > 0 && !allSelected);
   const title = $derived(mode === 'export' ? 'Export Archive' : 'Import Archive');
   const actionLabel = $derived(mode === 'export' ? 'Export' : 'Import');
 
@@ -81,24 +93,28 @@
     }
   }
 
+  function indeterminate(node: HTMLInputElement, value: boolean) {
+    node.indeterminate = value;
+    return {
+      update(v: boolean) {
+        node.indeterminate = v;
+      }
+    };
+  }
+
   function toggle(list: string[], value: string): string[] {
     return list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
   }
 
-  function toggleGroup(id: string) {
-    selectedGroupIds = toggle(selectedGroupIds, id);
-  }
-
-  function toggleMemory(slug: string) {
-    selectedMemorySlugs = toggle(selectedMemorySlugs, slug);
+  function toggleAll() {
+    selectedGroupIds = allSelected ? [] : groups.map((g) => g.id);
   }
 
   async function toggleExpand(id: string) {
     expanded = toggle(expanded, id);
     if (mode === 'export' && memoriesByGroup[id] === undefined) {
       try {
-        const slugs = await listMemorySlugs(id);
-        memoriesByGroup = { ...memoriesByGroup, [id]: slugs };
+        memoriesByGroup = { ...memoriesByGroup, [id]: await listMemorySlugs(id) };
       } catch (e) {
         error = String(e);
       }
@@ -109,15 +125,33 @@
     return memoriesByGroup[id] ?? [];
   }
 
+  function splitTokens(value: string): string[] {
+    return value
+      .split(/[\s,]+/)
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+  }
+
+  function buildFilter(): ArchiveFilter {
+    const filter = emptyFilter();
+    filter.memory = pickedMemory;
+    filter.kind = includeKinds;
+    filter.exclude_kind = excludeKinds;
+    filter.tag = splitTokens(includeTags);
+    filter.all_tags = allTags;
+    filter.exclude_tag = splitTokens(excludeTags);
+    filter.search = search.trim() === '' ? null : search.trim();
+    filter.mandatory = mandatory === 'any' ? null : mandatory === 'mandatory';
+    return filter;
+  }
+
   async function submit() {
     busy = true;
     error = null;
     result = null;
     try {
-      const groupIds = groupScope === 'all' ? [] : selectedGroupIds;
-      const memorySlugs = advanced ? selectedMemorySlugs : [];
       if (mode === 'export') {
-        const report = await exportArchive(groupIds, memorySlugs, gzip);
+        const report = await exportArchive(selectedGroupIds, buildFilter(), gzip);
         if (!report) {
           onClose();
           return;
@@ -130,8 +164,8 @@
         }
         const report = await importArchive(
           archivePath,
-          groupIds,
-          memorySlugs,
+          selectedGroupIds,
+          buildFilter(),
           into.trim() === '' ? null : into.trim(),
           overwrite,
           newIds
@@ -140,11 +174,9 @@
           onClose();
           return;
         }
-        const created = report.groups.reduce((n, g) => n + g.created, 0);
-        const overwritten = report.groups.reduce((n, g) => n + g.overwritten, 0);
-        const skipped = report.groups.reduce((n, g) => n + g.skipped, 0);
-        const conflicts = report.groups.reduce((n, g) => n + g.conflicts, 0);
-        result = `Imported ${report.groups.length} group(s): ${created} created, ${overwritten} overwritten, ${skipped} skipped, ${conflicts} conflicts`;
+        const sum = (pick: (g: (typeof report.groups)[number]) => number) =>
+          report.groups.reduce((n, g) => n + pick(g), 0);
+        result = `Imported ${report.groups.length} group(s): ${sum((g) => g.created)} created, ${sum((g) => g.overwritten)} overwritten, ${sum((g) => g.skipped)} skipped, ${sum((g) => g.conflicts)} conflicts`;
       }
     } catch (e) {
       error = String(e);
@@ -162,7 +194,7 @@
   }}
 >
   <div
-    class="flex max-h-[80vh] w-[36rem] flex-col overflow-hidden rounded-lg border border-line bg-surface-1 text-sm text-fg shadow-xl"
+    class="flex max-h-[85vh] w-[40rem] flex-col overflow-hidden rounded-lg border border-line bg-surface-1 text-sm text-fg shadow-xl"
     role="dialog"
     aria-modal="true"
     aria-label={title}
@@ -185,86 +217,158 @@
       {/if}
 
       {#if !result}
-        <!-- Group scope -->
-        <div class="mb-3 flex items-center gap-2">
-          <span class="text-fg-muted">Groups:</span>
-          <button
-            type="button"
-            class="rounded-md px-2 py-0.5 {groupScope === 'all'
-              ? 'bg-surface-2 text-fg'
-              : 'text-fg-muted hover:bg-surface-2'}"
-            onclick={() => (groupScope = 'all')}>All</button
-          >
-          <button
-            type="button"
-            class="rounded-md px-2 py-0.5 {groupScope === 'selected'
-              ? 'bg-surface-2 text-fg'
-              : 'text-fg-muted hover:bg-surface-2'}"
-            onclick={() => (groupScope = 'selected')}>Selected</button
-          >
-          <label class="ml-auto flex items-center gap-1 text-fg-muted">
+        <div class="mb-2 flex items-center justify-between">
+          <span class="text-fg-muted">Groups</span>
+          <label class="flex items-center gap-1 text-fg-muted">
             <input type="checkbox" bind:checked={advanced} />
-            Advanced (pick memories)
+            Advanced filter
           </label>
         </div>
 
-        <!-- Group / memory list -->
-        <ul class="mb-3 max-h-56 overflow-y-auto rounded-md border border-line">
-          {#each groups as g (g.id)}
-            {@const groupSelected = groupScope === 'all' || selectedGroupIds.includes(g.id)}
-            <li class="border-b border-line last:border-b-0">
-              <div class="flex items-center gap-2 px-3 py-1.5">
-                {#if groupScope === 'selected'}
+        <!-- Selection table with a header global checkbox -->
+        <table class="mb-3 w-full table-fixed border-collapse overflow-hidden rounded-md border border-line">
+          <thead>
+            <tr class="bg-surface-2 text-left text-fg-muted">
+              <th class="w-8 px-2 py-1">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  use:indeterminate={someSelected}
+                  onchange={toggleAll}
+                  aria-label="Select all groups"
+                />
+              </th>
+              <th class="px-2 py-1 font-normal">Group</th>
+              {#if advanced}<th class="w-20 px-2 py-1"></th>{/if}
+            </tr>
+          </thead>
+          <tbody>
+            {#each groups as g (g.id)}
+              <tr class="border-t border-line">
+                <td class="px-2 py-1">
                   <input
                     type="checkbox"
                     checked={selectedGroupIds.includes(g.id)}
-                    onchange={() => toggleGroup(g.id)}
+                    onchange={() => (selectedGroupIds = toggle(selectedGroupIds, g.id))}
                   />
-                {/if}
-                <span class="flex-1 truncate {groupSelected ? 'text-fg' : 'text-fg-subtle'}"
-                  >{g.slug}</span
-                >
+                </td>
+                <td class="truncate px-2 py-1">{g.slug}</td>
                 {#if advanced}
-                  <button
-                    type="button"
-                    class="text-xs text-fg-subtle hover:text-fg"
-                    onclick={() => toggleExpand(g.id)}
-                    >{expanded.includes(g.id) ? 'Hide' : 'Memories'}</button
-                  >
+                  <td class="px-2 py-1 text-right">
+                    <button
+                      type="button"
+                      class="text-xs text-fg-subtle hover:text-fg"
+                      onclick={() => toggleExpand(g.id)}
+                      >{expanded.includes(g.id) ? 'Hide' : 'Memories'}</button
+                    >
+                  </td>
                 {/if}
-              </div>
+              </tr>
               {#if advanced && expanded.includes(g.id)}
-                <ul class="bg-surface-2 px-6 py-1">
-                  {#each groupMemories(g.id) as slug (slug)}
-                    <li class="py-0.5">
-                      <label class="flex items-center gap-2 text-fg-muted">
+                <tr class="border-t border-line bg-surface-2">
+                  <td></td>
+                  <td colspan="2" class="px-2 py-1">
+                    {#each groupMemories(g.id) as slug (slug)}
+                      <label class="flex items-center gap-2 py-0.5 text-fg-muted">
                         <input
                           type="checkbox"
-                          checked={selectedMemorySlugs.includes(slug)}
-                          onchange={() => toggleMemory(slug)}
+                          checked={pickedMemory.includes(slug)}
+                          onchange={() => (pickedMemory = toggle(pickedMemory, slug))}
                         />
                         <span class="truncate">{slug}</span>
                       </label>
-                    </li>
-                  {:else}
-                    <li class="py-0.5 text-fg-subtle">no memories</li>
-                  {/each}
-                </ul>
+                    {:else}
+                      <span class="text-fg-subtle">no memories</span>
+                    {/each}
+                  </td>
+                </tr>
               {/if}
-            </li>
-          {:else}
-            <li class="px-3 py-2 text-fg-subtle">
-              {busy ? 'Loading…' : 'No groups available.'}
-            </li>
-          {/each}
-        </ul>
+            {:else}
+              <tr><td colspan="3" class="px-2 py-2 text-fg-subtle">
+                {busy ? 'Loading…' : 'No groups available.'}
+              </td></tr>
+            {/each}
+          </tbody>
+        </table>
+
         {#if advanced}
-          <p class="mb-3 text-xs text-fg-subtle">
-            With no memory checked, every memory in the selected groups is included.
-          </p>
+          <div class="mb-3 space-y-2 rounded-md border border-line p-3">
+            <p class="text-fg-muted">Memory filter (AND across facets; checked memories above also apply)</p>
+
+            <div>
+              <span class="text-fg-subtle">Include kinds</span>
+              <div class="flex flex-wrap gap-2">
+                {#each KINDS as k (k)}
+                  <label class="flex items-center gap-1 text-fg-muted">
+                    <input
+                      type="checkbox"
+                      checked={includeKinds.includes(k)}
+                      onchange={() => (includeKinds = toggle(includeKinds, k))}
+                    />
+                    {k}
+                  </label>
+                {/each}
+              </div>
+            </div>
+
+            <div>
+              <span class="text-fg-subtle">Exclude kinds</span>
+              <div class="flex flex-wrap gap-2">
+                {#each KINDS as k (k)}
+                  <label class="flex items-center gap-1 text-fg-muted">
+                    <input
+                      type="checkbox"
+                      checked={excludeKinds.includes(k)}
+                      onchange={() => (excludeKinds = toggle(excludeKinds, k))}
+                    />
+                    {k}
+                  </label>
+                {/each}
+              </div>
+            </div>
+
+            <label class="block">
+              <span class="text-fg-subtle">Include tags (space/comma separated)</span>
+              <input
+                type="text"
+                bind:value={includeTags}
+                class="mt-0.5 w-full rounded-md border border-line bg-surface-2 px-2 py-1 text-fg"
+              />
+            </label>
+            <label class="flex items-center gap-2 text-fg-muted">
+              <input type="checkbox" bind:checked={allTags} />
+              Require all included tags
+            </label>
+            <label class="block">
+              <span class="text-fg-subtle">Exclude tags</span>
+              <input
+                type="text"
+                bind:value={excludeTags}
+                class="mt-0.5 w-full rounded-md border border-line bg-surface-2 px-2 py-1 text-fg"
+              />
+            </label>
+            <label class="block">
+              <span class="text-fg-subtle">Search (name, description, tags, slug, body)</span>
+              <input
+                type="text"
+                bind:value={search}
+                class="mt-0.5 w-full rounded-md border border-line bg-surface-2 px-2 py-1 text-fg"
+              />
+            </label>
+            <label class="flex items-center gap-2 text-fg-muted">
+              <span class="w-24">Mandatory</span>
+              <select
+                bind:value={mandatory}
+                class="rounded-md border border-line bg-surface-2 px-2 py-1 text-fg"
+              >
+                <option value="any">Any</option>
+                <option value="mandatory">Only mandatory</option>
+                <option value="non-mandatory">Only non-mandatory</option>
+              </select>
+            </label>
+          </div>
         {/if}
 
-        <!-- Mode-specific options -->
         {#if mode === 'export'}
           <label class="flex items-center gap-2 text-fg-muted">
             <input type="checkbox" bind:checked={gzip} />
@@ -308,7 +412,7 @@
           type="button"
           class="inline-flex items-center rounded-md bg-sky-600 px-3 py-1.5 font-medium text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
           onclick={submit}
-          disabled={busy || (groupScope === 'selected' && selectedGroupIds.length === 0)}
+          disabled={busy || selectedGroupIds.length === 0}
         >
           {actionLabel}
         </button>

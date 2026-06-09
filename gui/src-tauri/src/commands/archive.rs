@@ -8,14 +8,62 @@
 //! archive for import, then calls export / import with the picks.
 
 use mmcp_core::id::GroupId;
-use mmcp_store::{ArchiveManifest, ExportOptions, ImportArchiveOptions, MemoryFilter};
-use serde::Serialize;
+use mmcp_store::{ArchiveManifest, ExportOptions, ImportArchiveOptions, MemoryFilter, parse_memory_kind};
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 use crate::commands::sync::MIRROR_CHANGED_EVENT;
 use crate::error::{GuiError, GuiResult};
 use crate::state::AppState;
+
+/// Memory filter facets sent from the dialog's advanced panel.
+#[derive(Debug, Default, Deserialize)]
+pub struct ArchiveFilterDto {
+    #[serde(default)]
+    pub memory: Vec<String>,
+    #[serde(default)]
+    pub exclude_memory: Vec<String>,
+    #[serde(default)]
+    pub kind: Vec<String>,
+    #[serde(default)]
+    pub exclude_kind: Vec<String>,
+    #[serde(default)]
+    pub tag: Vec<String>,
+    #[serde(default)]
+    pub all_tags: bool,
+    #[serde(default)]
+    pub exclude_tag: Vec<String>,
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub mandatory: Option<bool>,
+}
+
+impl ArchiveFilterDto {
+    fn to_filter(&self) -> GuiResult<MemoryFilter> {
+        Ok(MemoryFilter {
+            slugs: self.memory.clone(),
+            exclude_slugs: self.exclude_memory.clone(),
+            kinds: parse_kinds(&self.kind)?,
+            exclude_kinds: parse_kinds(&self.exclude_kind)?,
+            tags: self.tag.clone(),
+            require_all_tags: self.all_tags,
+            exclude_tags: self.exclude_tag.clone(),
+            search: self.search.clone(),
+            mandatory: self.mandatory,
+        })
+    }
+}
+
+fn parse_kinds(values: &[String]) -> GuiResult<Vec<mmcp_core::memory::MemoryKind>> {
+    values
+        .iter()
+        .map(|value| {
+            parse_memory_kind(value).ok_or_else(|| GuiError::Other(format!("unknown kind '{value}'")))
+        })
+        .collect()
+}
 
 /// One archived group's contents for the import selection dialog.
 #[derive(Debug, Serialize)]
@@ -62,7 +110,7 @@ pub async fn export_archive(
     app: AppHandle,
     state: State<'_, AppState>,
     group_ids: Vec<String>,
-    memory_slugs: Vec<String>,
+    filter: ArchiveFilterDto,
     gzip: bool,
 ) -> GuiResult<Option<ExportArchiveReportDto>> {
     let selected = if group_ids.is_empty() {
@@ -89,10 +137,7 @@ pub async fn export_archive(
 
     let options = ExportOptions {
         gzip,
-        filter: MemoryFilter {
-            slugs: memory_slugs,
-            ..Default::default()
-        },
+        filter: filter.to_filter()?,
     };
     let manifest =
         mmcp_store::export_archive_to_path(&state.backend, &selected, &options, &path).await?;
@@ -155,7 +200,7 @@ pub async fn import_archive(
     state: State<'_, AppState>,
     input: String,
     only_groups: Vec<String>,
-    only_memory_slugs: Vec<String>,
+    filter: ArchiveFilterDto,
     into_group: Option<String>,
     overwrite: bool,
     new_ids: bool,
@@ -183,10 +228,7 @@ pub async fn import_archive(
         new_ids,
         allow_protected: true,
         select_groups: only_groups,
-        filter: MemoryFilter {
-            slugs: only_memory_slugs,
-            ..Default::default()
-        },
+        filter: filter.to_filter()?,
     };
     let report =
         mmcp_store::import_archive(&state.backend, &state.index, &author, &bytes, &options).await?;
