@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use mmcp_store::groups::GroupEntry;
 use mmcp_store::home::MmcpHome;
-use mmcp_store::{ExportOptions, export_archive, resolve_group, resolve_project_group};
+use mmcp_store::{ExportOptions, export_archive_to_path, resolve_group, resolve_project_group};
 
 /// CLI entry point for `mmcp export`.
 ///
@@ -18,14 +18,18 @@ use mmcp_store::{ExportOptions, export_archive, resolve_group, resolve_project_g
 /// otherwise each `--group` is resolved; with neither, the current
 /// project's group is used (and a missing project is an error that
 /// names the two explicit selectors).
-pub async fn run(groups: Vec<String>, all: bool, output: PathBuf, gzip: bool) -> Result<()> {
+pub async fn run(
+    groups: Vec<String>,
+    all: bool,
+    memory: Vec<String>,
+    output: PathBuf,
+    gzip: bool,
+) -> Result<()> {
     let mmcp_home = MmcpHome::discover()?;
     let (backend, group_index) = mmcp_home.init_backend().await?;
 
+    // `--group` and `--all` are mutually exclusive at the clap layer.
     let selected: Vec<GroupEntry> = if all {
-        if !groups.is_empty() {
-            bail!("--all cannot be combined with --group");
-        }
         group_index.list().await
     } else if !groups.is_empty() {
         let mut out = Vec::with_capacity(groups.len());
@@ -49,18 +53,11 @@ pub async fn run(groups: Vec<String>, all: bool, output: PathBuf, gzip: bool) ->
         bail!("no groups to export");
     }
 
-    let file = std::fs::File::create(&output)
-        .with_context(|| format!("creating archive {}", output.display()))?;
-    let manifest = export_archive(
-        &backend,
-        &selected,
-        &ExportOptions {
-            gzip,
-            ..Default::default()
-        },
-        file,
-    )
-    .await?;
+    let options = ExportOptions {
+        gzip,
+        memory_slugs: memory,
+    };
+    let manifest = export_archive_to_path(&backend, &selected, &options, &output).await?;
 
     println!(
         "exported {} group(s), {} memories to {}",

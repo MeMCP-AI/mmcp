@@ -49,7 +49,7 @@ pub struct ImportArgs {
     pub archive: Option<PathBuf>,
 
     /// Override the slug (loose `--file` import only).
-    #[arg(long, conflicts_with_all = ["dir", "archive"])]
+    #[arg(long, conflicts_with_all = ["dir", "archive"], requires = "file")]
     pub slug: Option<String>,
 
     /// Memory name (loose import when the file has no +++ frontmatter).
@@ -66,13 +66,23 @@ pub struct ImportArgs {
 
     /// Archive import: remap every memory into this existing group
     /// (UUID or slug) instead of recreating the archived groups.
-    #[arg(long, conflicts_with_all = ["file", "dir"])]
+    #[arg(long, conflicts_with_all = ["file", "dir"], requires = "archive")]
     pub into: Option<String>,
 
     /// Archive import: mint fresh UUIDs for every imported memory
     /// (fork / copy) instead of preserving the archived identities.
-    #[arg(long, default_value_t = false, conflicts_with_all = ["file", "dir"])]
+    #[arg(long, default_value_t = false, conflicts_with_all = ["file", "dir"], requires = "archive")]
     pub new_ids: bool,
+
+    /// Archive import: import only these archived groups (UUID or
+    /// slug, repeatable). Empty imports every group in the archive.
+    #[arg(long = "only-group", conflicts_with_all = ["file", "dir"], requires = "archive")]
+    pub only_group: Vec<String>,
+
+    /// Archive import: import only memories whose slug is in this set
+    /// (repeatable). Empty imports every memory in the chosen groups.
+    #[arg(long = "only-memory", conflicts_with_all = ["file", "dir"], requires = "archive")]
+    pub only_memory: Vec<String>,
 
     /// Replace an existing memory instead of erroring (loose) or
     /// overwrite colliding memories (archive). Default is strict.
@@ -286,7 +296,8 @@ async fn run_archive(
         overwrite: args.r#override,
         new_ids: args.new_ids,
         allow_protected: true,
-        ..Default::default()
+        select_groups: args.only_group.clone(),
+        select_memory_slugs: args.only_memory.clone(),
     };
     let report = import_archive(backend, group_index, author, &bytes, &options).await?;
 

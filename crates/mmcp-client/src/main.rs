@@ -119,6 +119,11 @@ enum Command {
         #[arg(long, default_value_t = false)]
         all: bool,
 
+        /// Export only memories whose slug is in this set (repeatable).
+        /// Empty exports every memory in the selected groups.
+        #[arg(long)]
+        memory: Vec<String>,
+
         /// Destination archive path.
         #[arg(long)]
         output: std::path::PathBuf,
@@ -248,9 +253,10 @@ async fn main() -> Result<()> {
         Command::Export {
             group,
             all,
+            memory,
             output,
             gzip,
-        } => commands::export::run(group, all, output, gzip).await?,
+        } => commands::export::run(group, all, memory, output, gzip).await?,
         Command::Hook { command } => match command {
             HookCommand::UserPrompt => commands::hook::user_prompt().await?,
         },
@@ -266,4 +272,18 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// clap's own graph self-check: catches a `conflicts_with` /
+    /// `requires` reference to an unknown arg id, a duplicate flag,
+    /// and similar wiring mistakes across the whole command tree.
+    #[test]
+    fn cli_graph_is_valid() {
+        Cli::command().debug_assert();
+    }
 }
