@@ -1,5 +1,6 @@
 //! Client subcommands.
 
+pub mod archive_filter;
 pub mod bootstrap;
 pub mod claude;
 pub mod debug;

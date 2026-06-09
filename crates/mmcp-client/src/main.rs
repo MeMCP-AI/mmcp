@@ -119,10 +119,10 @@ enum Command {
         #[arg(long, default_value_t = false)]
         all: bool,
 
-        /// Export only memories whose slug is in this set (repeatable).
-        /// Empty exports every memory in the selected groups.
-        #[arg(long)]
-        memory: Vec<String>,
+        /// Memory filter facets (slug / kind / tag / search / mandatory,
+        /// include and exclude). Empty exports every memory.
+        #[command(flatten)]
+        filter: commands::archive_filter::MemoryFilterArgs,
 
         /// Destination archive path.
         #[arg(long)]
@@ -253,10 +253,10 @@ async fn main() -> Result<()> {
         Command::Export {
             group,
             all,
-            memory,
+            filter,
             output,
             gzip,
-        } => commands::export::run(group, all, memory, output, gzip).await?,
+        } => commands::export::run(group, all, filter, output, gzip).await?,
         Command::Hook { command } => match command {
             HookCommand::UserPrompt => commands::hook::user_prompt().await?,
         },

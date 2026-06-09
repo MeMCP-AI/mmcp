@@ -22,9 +22,9 @@ use mmcp_store::import_adoc::{convert_adoc_to_markdown, is_adoc_filename};
 use mmcp_store::memory::{
     ImportError, SynthFrontmatter, import_memory, parse_kind, resolve_group, slugify_filename,
 };
-use mmcp_store::{
-    ArchiveManifest, ImportArchiveOptions, MemoryFilter, import_archive, inspect_archive,
-};
+use mmcp_store::{ArchiveManifest, ImportArchiveOptions, import_archive, inspect_archive};
+
+use crate::commands::archive_filter::MemoryFilterArgs;
 
 /// Arguments for `mmcp import`. The three input shapes (`--file`,
 /// `--dir`, `--archive`) are mutually exclusive; loose-only and
@@ -62,8 +62,10 @@ pub struct ImportArgs {
     #[arg(long, conflicts_with = "archive")]
     pub description: Option<String>,
 
-    /// Memory kind (loose import without +++ frontmatter).
-    #[arg(long, conflicts_with = "archive")]
+    /// Synthesised memory kind for a loose file with no +++
+    /// frontmatter. Named `--synth-kind` so the archive filter owns
+    /// the `--kind` facet.
+    #[arg(id = "synth_kind", long = "synth-kind", conflicts_with = "archive")]
     pub kind: Option<String>,
 
     /// Archive import: remap every memory into this existing group
@@ -81,10 +83,11 @@ pub struct ImportArgs {
     #[arg(long = "only-group", conflicts_with_all = ["file", "dir"], requires = "archive")]
     pub only_group: Vec<String>,
 
-    /// Archive import: import only memories whose slug is in this set
-    /// (repeatable). Empty imports every memory in the chosen groups.
-    #[arg(long = "only-memory", conflicts_with_all = ["file", "dir"], requires = "archive")]
-    pub only_memory: Vec<String>,
+    /// Archive import: memory filter facets (slug / kind / tag /
+    /// search / mandatory, include and exclude). Empty imports every
+    /// memory in the chosen groups.
+    #[command(flatten)]
+    pub filter: MemoryFilterArgs,
 
     /// Replace an existing memory instead of erroring (loose) or
     /// overwrite colliding memories (archive). Default is strict.
@@ -161,6 +164,11 @@ async fn run_loose(
     author: &ResolvedAuthor,
     args: ImportArgs,
 ) -> Result<()> {
+    if !args.filter.is_empty() {
+        bail!(
+            "filter facets (--memory / --kind / --tag / --search / --mandatory) apply only to --archive import"
+        );
+    }
     let Some(group) = args.group.clone() else {
         bail!("--group is required for --file / --dir import");
     };
@@ -299,10 +307,7 @@ async fn run_archive(
         new_ids: args.new_ids,
         allow_protected: true,
         select_groups: args.only_group.clone(),
-        filter: MemoryFilter {
-            slugs: args.only_memory.clone(),
-            ..Default::default()
-        },
+        filter: args.filter.to_filter()?,
     };
     let report = import_archive(backend, group_index, author, &bytes, &options).await?;
 
