@@ -67,6 +67,15 @@ pub fn init_bare(path: &Path) -> Result<(), GitError> {
         return Ok(());
     }
     gix::init_bare(path).map_err(gix_err)?;
+    // `gix::init_bare` points HEAD at the host's `init.defaultBranch`
+    // (often `master`), but mmcp commits to `main`. Pin HEAD to `main`
+    // so HEAD resolves to the branch mmcp actually writes, regardless of
+    // the host git config — otherwise the repo looks empty-HEAD and the
+    // group scan skips it.
+    std::fs::write(
+        path.join("HEAD"),
+        format!("ref: refs/heads/{}\n", mmcp_core::conventions::MAIN_BRANCH),
+    )?;
     Ok(())
 }
 
@@ -346,12 +355,32 @@ fn resolve_rev(repo: &gix::Repository, rev: &Rev) -> Result<gix::ObjectId, GitEr
         }
         Rev::Commit(hex) => gix::ObjectId::from_hex(hex.as_bytes())
             .map_err(|_| GitError::RevNotFound(hex.clone()))?,
-        Rev::Head => repo
-            .head_id()
-            .map(|id| id.detach())
-            .map_err(|_| GitError::RevNotFound("HEAD".to_string()))?,
+        Rev::Head => resolve_head(repo)?,
     };
     Ok(target)
+}
+
+/// Resolve `HEAD` to a commit, tolerating a branch-name mismatch.
+///
+/// A repo's HEAD can point at an unborn or missing branch — it was
+/// init'd with `init.defaultBranch=master` while mmcp committed to
+/// `main`, or it was cloned from a `master` remote. Fall back to the
+/// `main` then `master` branch so reads never break on the
+/// default-name mismatch.
+fn resolve_head(repo: &gix::Repository) -> Result<gix::ObjectId, GitError> {
+    if let Ok(id) = repo.head_id() {
+        return Ok(id.detach());
+    }
+    let candidates = [
+        format!("refs/heads/{}", mmcp_core::conventions::MAIN_BRANCH),
+        "refs/heads/master".to_string(),
+    ];
+    for name in candidates {
+        if let Ok(reference) = repo.find_reference(name.as_str()) {
+            return Ok(reference.id().detach());
+        }
+    }
+    Err(GitError::RevNotFound("HEAD".to_string()))
 }
 
 /// Walk `path` inside `tree`, returning the object id of the blob if

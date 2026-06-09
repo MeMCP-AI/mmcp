@@ -56,6 +56,38 @@ async fn create_group_repo_writes_initial_manifest() {
 }
 
 #[tokio::test]
+async fn init_bare_pins_head_to_main() {
+    let (backend, _tmp) = backend_in_tempdir();
+    let manifest = sample_manifest();
+    let _handle = backend.create_group_repo(&manifest).await.unwrap();
+
+    // HEAD is pinned to `main` regardless of the host init.defaultBranch.
+    let head =
+        std::fs::read_to_string(backend.repo_path(*manifest.group_id.as_uuid()).join("HEAD"))
+            .unwrap();
+    assert_eq!(head.trim(), "ref: refs/heads/main");
+}
+
+#[tokio::test]
+async fn head_read_falls_back_when_default_branch_mismatches() {
+    let (backend, _tmp) = backend_in_tempdir();
+    let manifest = sample_manifest();
+    let handle = backend.create_group_repo(&manifest).await.unwrap();
+
+    // Simulate a repo whose HEAD points at an unborn `master` (created
+    // with init.defaultBranch=master) while mmcp committed to `main`.
+    std::fs::write(
+        backend.repo_path(*manifest.group_id.as_uuid()).join("HEAD"),
+        b"ref: refs/heads/master\n",
+    )
+    .unwrap();
+
+    // Rev::Head must still resolve via the `main` fallback.
+    let loaded = backend.read_manifest(&handle).await.unwrap();
+    assert_eq!(loaded.group_id, manifest.group_id);
+}
+
+#[tokio::test]
 async fn write_manifest_overwrites_existing_manifest() {
     let (backend, _tmp) = backend_in_tempdir();
     let original = sample_manifest();
