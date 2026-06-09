@@ -1,10 +1,10 @@
 <script lang="ts">
-  // Archive selection dialog. One selection table with a header
-  // global checkbox (no All/Selected mode). Advanced reveals the full
-  // memory filter — include/exclude by kind and tag, any/all tags,
-  // text search, mandatory tri-state — plus per-group drill-down to
-  // pick individual memories. Drives both directions: export lists the
-  // local mirror; import inspects a chosen archive.
+  // Archive selection dialog. The advanced memory filter sits at the
+  // top (include/exclude by kind and tag, any/all tags, text search,
+  // mandatory tri-state); the group selection table sits below it with
+  // a header global checkbox (no All/Selected mode). Advanced rows can
+  // drill into individual memories. Drives both directions: export
+  // lists the local mirror; import inspects a chosen archive.
 
   import { onMount } from 'svelte';
   import { listGroups } from '$lib/api/groups';
@@ -217,83 +217,20 @@
       {/if}
 
       {#if !result}
-        <div class="mb-2 flex items-center justify-between">
-          <span class="text-fg-muted">Groups</span>
+        <!-- Filter first, then the groups it narrows. -->
+        <div class="mb-2 flex items-center justify-end">
           <label class="flex items-center gap-1 text-fg-muted">
             <input type="checkbox" bind:checked={advanced} />
             Advanced filter
           </label>
         </div>
 
-        <!-- Selection table with a header global checkbox -->
-        <table class="mb-3 w-full table-fixed border-collapse overflow-hidden rounded-md border border-line">
-          <thead>
-            <tr class="bg-surface-2 text-left text-fg-muted">
-              <th class="w-8 px-2 py-1">
-                <input
-                  type="checkbox"
-                  checked={allSelected}
-                  use:indeterminate={someSelected}
-                  onchange={toggleAll}
-                  aria-label="Select all groups"
-                />
-              </th>
-              <th class="px-2 py-1 font-normal">Group</th>
-              {#if advanced}<th class="w-20 px-2 py-1"></th>{/if}
-            </tr>
-          </thead>
-          <tbody>
-            {#each groups as g (g.id)}
-              <tr class="border-t border-line">
-                <td class="px-2 py-1">
-                  <input
-                    type="checkbox"
-                    checked={selectedGroupIds.includes(g.id)}
-                    onchange={() => (selectedGroupIds = toggle(selectedGroupIds, g.id))}
-                  />
-                </td>
-                <td class="truncate px-2 py-1">{g.slug}</td>
-                {#if advanced}
-                  <td class="px-2 py-1 text-right">
-                    <button
-                      type="button"
-                      class="text-xs text-fg-subtle hover:text-fg"
-                      onclick={() => toggleExpand(g.id)}
-                      >{expanded.includes(g.id) ? 'Hide' : 'Memories'}</button
-                    >
-                  </td>
-                {/if}
-              </tr>
-              {#if advanced && expanded.includes(g.id)}
-                <tr class="border-t border-line bg-surface-2">
-                  <td></td>
-                  <td colspan="2" class="px-2 py-1">
-                    {#each groupMemories(g.id) as slug (slug)}
-                      <label class="flex items-center gap-2 py-0.5 text-fg-muted">
-                        <input
-                          type="checkbox"
-                          checked={pickedMemory.includes(slug)}
-                          onchange={() => (pickedMemory = toggle(pickedMemory, slug))}
-                        />
-                        <span class="truncate">{slug}</span>
-                      </label>
-                    {:else}
-                      <span class="text-fg-subtle">no memories</span>
-                    {/each}
-                  </td>
-                </tr>
-              {/if}
-            {:else}
-              <tr><td colspan="3" class="px-2 py-2 text-fg-subtle">
-                {busy ? 'Loading…' : 'No groups available.'}
-              </td></tr>
-            {/each}
-          </tbody>
-        </table>
-
         {#if advanced}
           <div class="mb-3 space-y-2 rounded-md border border-line p-3">
-            <p class="text-fg-muted">Memory filter (AND across facets; checked memories above also apply)</p>
+            <p class="text-fg-muted">
+              Memory filter — AND across facets. Ticking individual memories in the table below
+              narrows further.
+            </p>
 
             <div>
               <span class="text-fg-subtle">Include kinds</span>
@@ -368,6 +305,73 @@
             </label>
           </div>
         {/if}
+
+        <p class="mb-1 text-fg-muted">Groups</p>
+        <!-- Selection table with a header global checkbox -->
+        <table class="mb-3 w-full table-fixed border-collapse overflow-hidden rounded-md border border-line">
+          <thead>
+            <tr class="bg-surface-2 text-left text-fg-muted">
+              <th class="w-8 px-2 py-1">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  use:indeterminate={someSelected}
+                  onchange={toggleAll}
+                  aria-label="Select all groups"
+                />
+              </th>
+              <th class="px-2 py-1 font-normal">Group</th>
+              {#if advanced}<th class="w-20 px-2 py-1"></th>{/if}
+            </tr>
+          </thead>
+          <tbody>
+            {#each groups as g (g.id)}
+              <tr class="border-t border-line">
+                <td class="px-2 py-1">
+                  <input
+                    type="checkbox"
+                    checked={selectedGroupIds.includes(g.id)}
+                    onchange={() => (selectedGroupIds = toggle(selectedGroupIds, g.id))}
+                  />
+                </td>
+                <td class="truncate px-2 py-1">{g.slug}</td>
+                {#if advanced}
+                  <td class="px-2 py-1 text-right">
+                    <button
+                      type="button"
+                      class="text-xs text-fg-subtle hover:text-fg"
+                      onclick={() => toggleExpand(g.id)}
+                      >{expanded.includes(g.id) ? 'Hide' : 'Memories'}</button
+                    >
+                  </td>
+                {/if}
+              </tr>
+              {#if advanced && expanded.includes(g.id)}
+                <tr class="border-t border-line bg-surface-2">
+                  <td></td>
+                  <td colspan="2" class="px-2 py-1">
+                    {#each groupMemories(g.id) as slug (slug)}
+                      <label class="flex items-center gap-2 py-0.5 text-fg-muted">
+                        <input
+                          type="checkbox"
+                          checked={pickedMemory.includes(slug)}
+                          onchange={() => (pickedMemory = toggle(pickedMemory, slug))}
+                        />
+                        <span class="truncate">{slug}</span>
+                      </label>
+                    {:else}
+                      <span class="text-fg-subtle">no memories</span>
+                    {/each}
+                  </td>
+                </tr>
+              {/if}
+            {:else}
+              <tr><td colspan="3" class="px-2 py-2 text-fg-subtle">
+                {busy ? 'Loading…' : 'No groups available.'}
+              </td></tr>
+            {/each}
+          </tbody>
+        </table>
 
         {#if mode === 'export'}
           <label class="flex items-center gap-2 text-fg-muted">
