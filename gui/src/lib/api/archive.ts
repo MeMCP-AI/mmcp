@@ -13,6 +13,7 @@ export interface ArchiveFilter {
   exclude_tag: string[];
   search: string | null;
   mandatory: boolean | null;
+  has_refs: boolean | null;
 }
 
 export function emptyFilter(): ArchiveFilter {
@@ -25,14 +26,17 @@ export function emptyFilter(): ArchiveFilter {
     all_tags: false,
     exclude_tag: [],
     search: null,
-    mandatory: null
+    mandatory: null,
+    has_refs: null
   };
 }
 
 export interface ArchiveGroupListing {
   group_id: string;
   slug: string;
+  scope: string;
   memory_slugs: string[];
+  tags: string[];
 }
 
 export interface ExportArchiveReport {
@@ -65,14 +69,16 @@ export const exportArchive = (groupIds: string[], filter: ArchiveFilter, gzip: b
 // Open a native picker for an archive to import; `null` if dismissed.
 export const pickImportPath = () => invoke<string | null>('pick_import_path');
 
-// Enumerate an archive's groups and the memory slugs each carries.
+// Enumerate an archive's groups (scope, memory slugs, tags).
 export const inspectArchive = (input: string) =>
   invoke<ArchiveGroupListing[]>('inspect_archive', { input });
 
+// Distinct tags across the chosen local groups (empty = all), for the
+// export dialog's tag autocomplete.
+export const localTags = (groupIds: string[]) =>
+  invoke<string[]>('local_tags', { groupIds });
+
 // Import a previously-picked archive with the dialog's selection.
-// `onlyGroups` empty = every archived group; `filter` narrows
-// memories. `intoGroup` null recreates the archived groups. Resolves
-// to `null` when the operator declines a protected-group write.
 export const importArchive = (
   input: string,
   onlyGroups: string[],

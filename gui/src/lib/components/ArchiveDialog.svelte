@@ -1,13 +1,20 @@
 <script lang="ts">
-  // Archive selection dialog. The advanced memory filter sits at the
-  // top (include/exclude by kind and tag, any/all tags, text search,
-  // mandatory tri-state); the group selection table sits below it with
-  // a header global checkbox (no All/Selected mode). Advanced rows can
-  // drill into individual memories. Drives both directions: export
-  // lists the local mirror; import inspects a chosen archive.
+  // Archive selection dialog.
+  //
+  //   • Search is always available (top).
+  //   • Advanced filter is a collapsible panel above the groups; its
+  //     toggle is centered and sits at the bottom of the panel, so it
+  //     closes from the bottom.
+  //   • Kinds and tags are tri-state (neutral / include / exclude).
+  //     Tags autocomplete against the real tag universe.
+  //   • Groups are filtered and grouped by scope (global/shared/
+  //     project), with a global checkbox in the table header.
+  //
+  // Drives both directions: export lists the local mirror; import
+  // inspects a chosen archive.
 
   import { onMount } from 'svelte';
-  import { ChevronDown, ChevronRight } from 'lucide-svelte';
+  import { ChevronDown, ChevronUp } from 'lucide-svelte';
   import { listGroups } from '$lib/api/groups';
   import { listMemorySlugs } from '$lib/api/memory';
   import {
@@ -15,6 +22,7 @@
     exportArchive,
     importArchive,
     inspectArchive,
+    localTags,
     pickImportPath,
     type ArchiveFilter,
     type ArchiveGroupListing
@@ -24,8 +32,14 @@
   let { mode, onClose }: { mode: 'export' | 'import'; onClose: () => void } = $props();
 
   const KINDS = ['rule', 'snapshot', 'log', 'reference', 'scratch', 'feature', 'issue'];
+  const SCOPES: { id: string; label: string }[] = [
+    { id: 'global', label: 'Global' },
+    { id: 'shared', label: 'Shared' },
+    { id: 'project', label: 'Project' }
+  ];
+  type TriState = 'include' | 'exclude';
 
-  type SelectableGroup = { id: string; slug: string };
+  type SelectableGroup = { id: string; slug: string; scope: string };
 
   let busy = $state(true);
   let error = $state<string | null>(null);
@@ -36,21 +50,22 @@
   let archivePath = $state<string | null>(null);
 
   let selectedGroupIds = $state<string[]>([]);
+  let visibleScopes = $state<string[]>(['global', 'shared', 'project']);
+
+  // Facets.
+  let search = $state('');
   let advanced = $state(false);
+  let kindState = $state<Record<string, TriState>>({});
+  let tagState = $state<Record<string, TriState>>({});
+  let tagInput = $state('');
+  let availableTags = $state<string[]>([]);
+  let mandatory = $state<'any' | 'mandatory' | 'non-mandatory'>('any');
+  let hasRefs = $state<'any' | 'yes' | 'no'>('any');
+  let pickedMemory = $state<string[]>([]);
   let expanded = $state<string[]>([]);
   let memoriesByGroup = $state<Record<string, string[]>>({});
 
-  // Filter facets.
-  let pickedMemory = $state<string[]>([]);
-  let includeKinds = $state<string[]>([]);
-  let excludeKinds = $state<string[]>([]);
-  let includeTags = $state('');
-  let allTags = $state(false);
-  let excludeTags = $state('');
-  let search = $state('');
-  let mandatory = $state<'any' | 'mandatory' | 'non-mandatory'>('any');
-
-  // Export-only / import-only options.
+  // Export-only / import-only.
   let gzip = $state(false);
   let into = $state('');
   let overwrite = $state(false);
@@ -58,11 +73,25 @@
 
   const groups = $derived<SelectableGroup[]>(
     mode === 'export'
-      ? localGroups.map((g) => ({ id: g.group_id, slug: g.slug }))
-      : archiveGroups.map((g) => ({ id: g.group_id, slug: g.slug }))
+      ? localGroups.map((g) => ({ id: g.group_id, slug: g.slug, scope: g.scope }))
+      : archiveGroups.map((g) => ({ id: g.group_id, slug: g.slug, scope: g.scope }))
   );
-  const allSelected = $derived(groups.length > 0 && selectedGroupIds.length === groups.length);
-  const someSelected = $derived(selectedGroupIds.length > 0 && !allSelected);
+  const visibleGroups = $derived(groups.filter((g) => visibleScopes.includes(g.scope)));
+  const allSelected = $derived(
+    visibleGroups.length > 0 && visibleGroups.every((g) => selectedGroupIds.includes(g.id))
+  );
+  const someSelected = $derived(
+    visibleGroups.some((g) => selectedGroupIds.includes(g.id)) && !allSelected
+  );
+  const tagSuggestions = $derived(
+    tagInput.trim() === ''
+      ? []
+      : availableTags
+          .filter(
+            (t) => t.toLowerCase().includes(tagInput.trim().toLowerCase()) && tagState[t] === undefined
+          )
+          .slice(0, 8)
+  );
   const title = $derived(mode === 'export' ? 'Export Archive' : 'Import Archive');
   const actionLabel = $derived(mode === 'export' ? 'Export' : 'Import');
 
@@ -75,7 +104,9 @@
     error = null;
     try {
       localGroups = await listGroups();
-      if (mode === 'import') {
+      if (mode === 'export') {
+        availableTags = await localTags([]);
+      } else {
         const path = await pickImportPath();
         if (!path) {
           onClose();
@@ -84,8 +115,13 @@
         archivePath = path;
         archiveGroups = await inspectArchive(path);
         const memories: Record<string, string[]> = {};
-        for (const g of archiveGroups) memories[g.group_id] = g.memory_slugs;
+        const tags = new Set<string>();
+        for (const g of archiveGroups) {
+          memories[g.group_id] = g.memory_slugs;
+          for (const t of g.tags) tags.add(t);
+        }
         memoriesByGroup = memories;
+        availableTags = [...tags].sort();
       }
     } catch (e) {
       error = String(e);
@@ -108,7 +144,35 @@
   }
 
   function toggleAll() {
-    selectedGroupIds = allSelected ? [] : groups.map((g) => g.id);
+    selectedGroupIds = allSelected ? [] : visibleGroups.map((g) => g.id);
+  }
+
+  // Cycle a tri-state entry: absent -> include -> exclude -> absent.
+  function cycle(map: Record<string, TriState>, key: string): Record<string, TriState> {
+    const next = { ...map };
+    if (next[key] === undefined) next[key] = 'include';
+    else if (next[key] === 'include') next[key] = 'exclude';
+    else delete next[key];
+    return next;
+  }
+
+  function triClass(state: TriState | undefined): string {
+    if (state === 'include') return 'border-emerald-600 bg-emerald-950/40 text-emerald-300';
+    if (state === 'exclude') return 'border-red-600 bg-red-950/40 text-red-300';
+    return 'border-line text-fg-muted hover:bg-surface-2';
+  }
+
+  function triGlyph(state: TriState | undefined): string {
+    if (state === 'include') return '+';
+    if (state === 'exclude') return '−';
+    return '';
+  }
+
+  function addTag(tag: string) {
+    const t = tag.trim();
+    if (t === '') return;
+    if (tagState[t] === undefined) tagState = { ...tagState, [t]: 'include' };
+    tagInput = '';
   }
 
   async function toggleExpand(id: string) {
@@ -126,23 +190,20 @@
     return memoriesByGroup[id] ?? [];
   }
 
-  function splitTokens(value: string): string[] {
-    return value
-      .split(/[\s,]+/)
-      .map((t) => t.trim())
-      .filter((t) => t.length > 0);
+  function keysWhere(map: Record<string, TriState>, state: TriState): string[] {
+    return Object.keys(map).filter((k) => map[k] === state);
   }
 
   function buildFilter(): ArchiveFilter {
     const filter = emptyFilter();
     filter.memory = pickedMemory;
-    filter.kind = includeKinds;
-    filter.exclude_kind = excludeKinds;
-    filter.tag = splitTokens(includeTags);
-    filter.all_tags = allTags;
-    filter.exclude_tag = splitTokens(excludeTags);
+    filter.kind = keysWhere(kindState, 'include');
+    filter.exclude_kind = keysWhere(kindState, 'exclude');
+    filter.tag = keysWhere(tagState, 'include');
+    filter.exclude_tag = keysWhere(tagState, 'exclude');
     filter.search = search.trim() === '' ? null : search.trim();
     filter.mandatory = mandatory === 'any' ? null : mandatory === 'mandatory';
+    filter.has_refs = hasRefs === 'any' ? null : hasRefs === 'yes';
     return filter;
   }
 
@@ -195,7 +256,7 @@
   }}
 >
   <div
-    class="flex max-h-[85vh] w-[40rem] flex-col overflow-hidden rounded-lg border border-line bg-surface-1 text-sm text-fg shadow-xl"
+    class="flex max-h-[88vh] w-[42rem] flex-col overflow-hidden rounded-lg border border-line bg-surface-1 text-sm text-fg shadow-xl"
     role="dialog"
     aria-modal="true"
     aria-label={title}
@@ -218,104 +279,137 @@
       {/if}
 
       {#if !result}
-        <!-- Filter first, then the groups it narrows. -->
-        <button
-          type="button"
-          class="mb-2 flex w-full items-center gap-1 rounded-md px-1 py-1 text-left text-fg-muted hover:bg-surface-2 hover:text-fg"
-          onclick={() => (advanced = !advanced)}
-          aria-expanded={advanced}
-        >
-          {#if advanced}
-            <ChevronDown size={14} class="text-fg-subtle" />
-          {:else}
-            <ChevronRight size={14} class="text-fg-subtle" />
-          {/if}
-          <span>Advanced filter</span>
-        </button>
+        <!-- Search, always available -->
+        <input
+          type="search"
+          placeholder="Search name, description, tags, slug, body…"
+          bind:value={search}
+          class="mb-3 w-full rounded-md border border-line bg-surface-2 px-3 py-1.5 text-fg"
+        />
 
+        <!-- Advanced filter panel (collapses from the bottom toggle) -->
         {#if advanced}
-          <div class="mb-3 space-y-2 rounded-md border border-line p-3">
-            <p class="text-fg-muted">
-              Memory filter — AND across facets. Ticking individual memories in the table below
-              narrows further.
-            </p>
-
+          <div class="space-y-3 rounded-md border border-line p-3">
             <div>
-              <span class="text-fg-subtle">Include kinds</span>
-              <div class="flex flex-wrap gap-2">
+              <span class="text-fg-subtle">Kinds</span>
+              <div class="mt-1 flex flex-wrap gap-1.5">
                 {#each KINDS as k (k)}
-                  <label class="flex items-center gap-1 text-fg-muted">
-                    <input
-                      type="checkbox"
-                      checked={includeKinds.includes(k)}
-                      onchange={() => (includeKinds = toggle(includeKinds, k))}
-                    />
-                    {k}
-                  </label>
+                  <button
+                    type="button"
+                    class="rounded-md border px-2 py-0.5 {triClass(kindState[k])}"
+                    onclick={() => (kindState = cycle(kindState, k))}
+                  >
+                    {triGlyph(kindState[k])}{k}
+                  </button>
                 {/each}
               </div>
             </div>
 
             <div>
-              <span class="text-fg-subtle">Exclude kinds</span>
-              <div class="flex flex-wrap gap-2">
-                {#each KINDS as k (k)}
-                  <label class="flex items-center gap-1 text-fg-muted">
-                    <input
-                      type="checkbox"
-                      checked={excludeKinds.includes(k)}
-                      onchange={() => (excludeKinds = toggle(excludeKinds, k))}
-                    />
-                    {k}
-                  </label>
+              <span class="text-fg-subtle">Tags</span>
+              <div class="mt-1 flex flex-wrap gap-1.5">
+                {#each Object.keys(tagState) as t (t)}
+                  <button
+                    type="button"
+                    class="rounded-md border px-2 py-0.5 {triClass(tagState[t])}"
+                    onclick={() => (tagState = cycle(tagState, t))}
+                    title="Click to cycle include / exclude / remove"
+                  >
+                    {triGlyph(tagState[t])}{t}
+                  </button>
                 {/each}
+              </div>
+              <div class="relative mt-1">
+                <input
+                  type="text"
+                  placeholder="Add a tag…"
+                  bind:value={tagInput}
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      addTag(tagInput);
+                    }
+                  }}
+                  class="w-full rounded-md border border-line bg-surface-2 px-2 py-1 text-fg"
+                />
+                {#if tagSuggestions.length > 0}
+                  <ul
+                    class="absolute z-10 mt-0.5 max-h-40 w-full overflow-y-auto rounded-md border border-line bg-surface-1 shadow-lg"
+                  >
+                    {#each tagSuggestions as t (t)}
+                      <li>
+                        <button
+                          type="button"
+                          class="block w-full px-2 py-1 text-left text-fg-muted hover:bg-surface-2"
+                          onclick={() => addTag(t)}>{t}</button
+                        >
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
               </div>
             </div>
 
-            <label class="block">
-              <span class="text-fg-subtle">Include tags (space/comma separated)</span>
-              <input
-                type="text"
-                bind:value={includeTags}
-                class="mt-0.5 w-full rounded-md border border-line bg-surface-2 px-2 py-1 text-fg"
-              />
-            </label>
-            <label class="flex items-center gap-2 text-fg-muted">
-              <input type="checkbox" bind:checked={allTags} />
-              Require all included tags
-            </label>
-            <label class="block">
-              <span class="text-fg-subtle">Exclude tags</span>
-              <input
-                type="text"
-                bind:value={excludeTags}
-                class="mt-0.5 w-full rounded-md border border-line bg-surface-2 px-2 py-1 text-fg"
-              />
-            </label>
-            <label class="block">
-              <span class="text-fg-subtle">Search (name, description, tags, slug, body)</span>
-              <input
-                type="text"
-                bind:value={search}
-                class="mt-0.5 w-full rounded-md border border-line bg-surface-2 px-2 py-1 text-fg"
-              />
-            </label>
-            <label class="flex items-center gap-2 text-fg-muted">
-              <span class="w-24">Mandatory</span>
-              <select
-                bind:value={mandatory}
-                class="rounded-md border border-line bg-surface-2 px-2 py-1 text-fg"
-              >
-                <option value="any">Any</option>
-                <option value="mandatory">Only mandatory</option>
-                <option value="non-mandatory">Only non-mandatory</option>
-              </select>
-            </label>
+            <div class="flex flex-wrap items-center gap-4">
+              <label class="flex items-center gap-2 text-fg-muted">
+                <span>Mandatory</span>
+                <select
+                  bind:value={mandatory}
+                  class="rounded-md border border-line bg-surface-2 px-2 py-1 text-fg"
+                >
+                  <option value="any">Any</option>
+                  <option value="mandatory">Only</option>
+                  <option value="non-mandatory">Exclude</option>
+                </select>
+              </label>
+              <label class="flex items-center gap-2 text-fg-muted">
+                <span>References</span>
+                <select
+                  bind:value={hasRefs}
+                  class="rounded-md border border-line bg-surface-2 px-2 py-1 text-fg"
+                >
+                  <option value="any">Any</option>
+                  <option value="yes">Has refs</option>
+                  <option value="no">No refs</option>
+                </select>
+              </label>
+            </div>
           </div>
         {/if}
 
-        <p class="mb-1 text-fg-muted">Groups</p>
-        <!-- Selection table with a header global checkbox -->
+        <!-- Collapse toggle: centered, at the bottom of the filter -->
+        <div class="mb-3 flex justify-center">
+          <button
+            type="button"
+            class="flex items-center gap-1 rounded-md px-2 py-0.5 text-fg-subtle hover:bg-surface-2 hover:text-fg"
+            onclick={() => (advanced = !advanced)}
+            aria-expanded={advanced}
+          >
+            {#if advanced}
+              <ChevronUp size={14} /> Hide filters
+            {:else}
+              <ChevronDown size={14} /> Advanced filters
+            {/if}
+          </button>
+        </div>
+
+        <!-- Group scope filter -->
+        <div class="mb-1 flex items-center gap-2">
+          <span class="text-fg-muted">Groups</span>
+          <span class="ml-2 flex gap-1">
+            {#each SCOPES as s (s.id)}
+              <button
+                type="button"
+                class="rounded-md border px-2 py-0.5 text-xs {visibleScopes.includes(s.id)
+                  ? 'border-sky-600 bg-sky-950/40 text-sky-300'
+                  : 'border-line text-fg-subtle hover:bg-surface-2'}"
+                onclick={() => (visibleScopes = toggle(visibleScopes, s.id))}>{s.label}</button
+              >
+            {/each}
+          </span>
+        </div>
+
+        <!-- Group table, grouped by scope, with a header global checkbox -->
         <table class="mb-3 w-full table-fixed border-collapse overflow-hidden rounded-md border border-line">
           <thead>
             <tr class="bg-surface-2 text-left text-fg-muted">
@@ -325,7 +419,7 @@
                   checked={allSelected}
                   use:indeterminate={someSelected}
                   onchange={toggleAll}
-                  aria-label="Select all groups"
+                  aria-label="Select all visible groups"
                 />
               </th>
               <th class="px-2 py-1 font-normal">Group</th>
@@ -333,51 +427,62 @@
             </tr>
           </thead>
           <tbody>
-            {#each groups as g (g.id)}
-              <tr class="border-t border-line">
-                <td class="px-2 py-1">
-                  <input
-                    type="checkbox"
-                    checked={selectedGroupIds.includes(g.id)}
-                    onchange={() => (selectedGroupIds = toggle(selectedGroupIds, g.id))}
-                  />
-                </td>
-                <td class="truncate px-2 py-1">{g.slug}</td>
-                {#if advanced}
-                  <td class="px-2 py-1 text-right">
-                    <button
-                      type="button"
-                      class="text-xs text-fg-subtle hover:text-fg"
-                      onclick={() => toggleExpand(g.id)}
-                      >{expanded.includes(g.id) ? 'Hide' : 'Memories'}</button
-                    >
-                  </td>
-                {/if}
-              </tr>
-              {#if advanced && expanded.includes(g.id)}
-                <tr class="border-t border-line bg-surface-2">
-                  <td></td>
-                  <td colspan="2" class="px-2 py-1">
-                    {#each groupMemories(g.id) as slug (slug)}
-                      <label class="flex items-center gap-2 py-0.5 text-fg-muted">
-                        <input
-                          type="checkbox"
-                          checked={pickedMemory.includes(slug)}
-                          onchange={() => (pickedMemory = toggle(pickedMemory, slug))}
-                        />
-                        <span class="truncate">{slug}</span>
-                      </label>
-                    {:else}
-                      <span class="text-fg-subtle">no memories</span>
-                    {/each}
-                  </td>
+            {#each SCOPES as s (s.id)}
+              {@const scopeGroups = visibleGroups.filter((g) => g.scope === s.id)}
+              {#if scopeGroups.length > 0}
+                <tr class="border-t border-line bg-surface-1">
+                  <td colspan="3" class="px-2 py-0.5 text-xs uppercase tracking-wide text-fg-subtle"
+                    >{s.label}</td
+                  >
                 </tr>
+                {#each scopeGroups as g (g.id)}
+                  <tr class="border-t border-line">
+                    <td class="px-2 py-1">
+                      <input
+                        type="checkbox"
+                        checked={selectedGroupIds.includes(g.id)}
+                        onchange={() => (selectedGroupIds = toggle(selectedGroupIds, g.id))}
+                      />
+                    </td>
+                    <td class="truncate px-2 py-1">{g.slug}</td>
+                    {#if advanced}
+                      <td class="px-2 py-1 text-right">
+                        <button
+                          type="button"
+                          class="text-xs text-fg-subtle hover:text-fg"
+                          onclick={() => toggleExpand(g.id)}
+                          >{expanded.includes(g.id) ? 'Hide' : 'Memories'}</button
+                        >
+                      </td>
+                    {/if}
+                  </tr>
+                  {#if advanced && expanded.includes(g.id)}
+                    <tr class="border-t border-line bg-surface-2">
+                      <td></td>
+                      <td colspan="2" class="px-2 py-1">
+                        {#each groupMemories(g.id) as slug (slug)}
+                          <label class="flex items-center gap-2 py-0.5 text-fg-muted">
+                            <input
+                              type="checkbox"
+                              checked={pickedMemory.includes(slug)}
+                              onchange={() => (pickedMemory = toggle(pickedMemory, slug))}
+                            />
+                            <span class="truncate">{slug}</span>
+                          </label>
+                        {:else}
+                          <span class="text-fg-subtle">no memories</span>
+                        {/each}
+                      </td>
+                    </tr>
+                  {/if}
+                {/each}
               {/if}
-            {:else}
-              <tr><td colspan="3" class="px-2 py-2 text-fg-subtle">
-                {busy ? 'Loading…' : 'No groups available.'}
-              </td></tr>
             {/each}
+            {#if visibleGroups.length === 0}
+              <tr><td colspan="3" class="px-2 py-2 text-fg-subtle">
+                {busy ? 'Loading…' : 'No groups in the selected scopes.'}
+              </td></tr>
+            {/if}
           </tbody>
         </table>
 
