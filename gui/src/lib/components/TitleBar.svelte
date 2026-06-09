@@ -9,6 +9,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { emit } from '@tauri-apps/api/event';
   import { pickDirectory, setReferencePoint } from '$lib/api/workspace';
+  import { exportArchive, importArchive } from '$lib/api/archive';
   import { settingsStore, type ThemeMode } from '$lib/stores/settings.svelte';
   import { syncStore } from '$lib/stores/sync.svelte';
   import { openDiagnosticsWindow, openSettingsWindow } from '$lib/windows';
@@ -92,6 +93,8 @@
       if (k === 'o') { void onOpenProject(); return true; }
       if (k === 'c' && settingsStore.values.reference_point) { void onClearProject(); return true; }
       if (k === 'p' && syncStore.configured && !syncStore.inFlight) { void onPull(); return true; }
+      if (k === 'e') { void onExportArchive(); return true; }
+      if (k === 'i') { void onImportArchive(); return true; }
       if (k === 's') { onOpenSettings(); return true; }
       if (k === 'q') { openMenu = null; void win.close(); return true; }
     } else if (menu === 'view') {
@@ -149,6 +152,31 @@
     openMenu = null;
     if (!syncStore.configured || syncStore.inFlight) return;
     await syncStore.pull();
+  }
+
+  async function onExportArchive() {
+    openMenu = null;
+    try {
+      const report = await exportArchive([], false);
+      if (report) console.info('exported archive', report);
+    } catch (err) {
+      console.warn('export archive failed', err);
+    }
+  }
+
+  async function onImportArchive() {
+    openMenu = null;
+    try {
+      const report = await importArchive(null, false, false);
+      if (report) {
+        console.info('imported archive', report);
+        // The backend emits `mirror:changed`; nudge a workspace
+        // refresh too so any open views re-read immediately.
+        await emit('workspace:changed');
+      }
+    } catch (err) {
+      console.warn('import archive failed', err);
+    }
   }
 
   function onOpenSettings() {
@@ -303,7 +331,27 @@
           <span><u class="acc">P</u>ull Now</span>
         </button>
       </li>
+      <li class="border-t border-line">
+        <button
+          type="button"
+          role="menuitem"
+          class="flex w-full items-center justify-between px-3 py-1.5 text-left hover:bg-surface-2"
+          onclick={onExportArchive}
+        >
+          <span><u class="acc">E</u>xport Archive…</span>
+        </button>
+      </li>
       <li>
+        <button
+          type="button"
+          role="menuitem"
+          class="flex w-full items-center justify-between px-3 py-1.5 text-left hover:bg-surface-2"
+          onclick={onImportArchive}
+        >
+          <span><u class="acc">I</u>mport Archive…</span>
+        </button>
+      </li>
+      <li class="border-t border-line">
         <button
           type="button"
           role="menuitem"

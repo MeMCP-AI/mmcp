@@ -46,6 +46,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::groups::list_groups,
             commands::groups::refresh_groups,
+            commands::archive::export_archive,
+            commands::archive::import_archive,
             commands::memory::list_memory_slugs,
             commands::memory::load_memory,
             commands::memory::create_memory,

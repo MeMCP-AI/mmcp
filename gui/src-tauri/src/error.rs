@@ -47,6 +47,12 @@ impl From<mmcp_store::ImportError> for GuiError {
     }
 }
 
+impl From<mmcp_store::ArchiveError> for GuiError {
+    fn from(e: mmcp_store::ArchiveError) -> Self {
+        GuiError::Store(e.to_string())
+    }
+}
+
 impl From<anyhow::Error> for GuiError {
     fn from(e: anyhow::Error) -> Self {
         GuiError::Other(e.to_string())
