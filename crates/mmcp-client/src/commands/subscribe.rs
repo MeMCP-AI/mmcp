@@ -140,12 +140,10 @@ pub async fn validate_subscription_target(
 ) -> Result<(), SubscribeError> {
     match kind {
         SubscriptionKind::Tag | SubscriptionKind::Language => Ok(()),
-        SubscriptionKind::Group => {
-            resolve_group(groups, value)
-                .await
-                .map(|_| ())
-                .map_err(|_| SubscribeError::UnknownGroup(value.to_string()))
-        }
+        SubscriptionKind::Group => resolve_group(groups, value)
+            .await
+            .map(|_| ())
+            .map_err(|_| SubscribeError::UnknownGroup(value.to_string())),
         SubscriptionKind::Memory => {
             let (group_part, slug_part) = value
                 .split_once(':')
@@ -246,8 +244,8 @@ pub async fn run_unsubscribe(args: SubscribeCliArgs) -> Result<()> {
 
 async fn run_cli(args: SubscribeCliArgs, action: SubscriptionAction) -> Result<()> {
     let cwd = std::env::current_dir().context("reading current working directory")?;
-    let project_root = resolve_project_root(args.path.as_deref(), Some(&cwd))
-        .map_err(|e| anyhow!("{e}"))?;
+    let project_root =
+        resolve_project_root(args.path.as_deref(), Some(&cwd)).map_err(|e| anyhow!("{e}"))?;
 
     let home = MmcpHome::discover()?;
     let (backend, groups) = home.init_backend().await?;
@@ -260,23 +258,13 @@ async fn run_cli(args: SubscribeCliArgs, action: SubscriptionAction) -> Result<(
     let changed = apply_subscription(&mut cfg, args.kind, &args.value, action);
     if changed {
         save(&project_root, &cfg)?;
-        println!(
-            "{} {} {}",
-            action.as_str(),
-            args.kind.as_str(),
-            args.value
-        );
+        println!("{} {} {}", action.as_str(), args.kind.as_str(), args.value);
     } else {
         let already = match action {
             SubscriptionAction::Subscribe => "already subscribed",
             SubscriptionAction::Unsubscribe => "not subscribed",
         };
-        println!(
-            "noop ({}): {} {}",
-            already,
-            args.kind.as_str(),
-            args.value
-        );
+        println!("noop ({}): {} {}", already, args.kind.as_str(), args.value);
     }
     Ok(())
 }

@@ -48,10 +48,10 @@ pub mod features;
 pub mod groups;
 pub mod home;
 pub mod import_adoc;
+pub mod issues;
 pub mod lock;
 pub mod memory;
 pub mod memory_ops;
-pub mod issues;
 pub mod sessions;
 pub mod sync;
 pub mod tracker;
@@ -81,10 +81,11 @@ pub use features::{
 // Per global-coding-rules section 13 this re-export lives at the
 // crate root (the only place a cross-crate re-export is allowed),
 // not on a peer module that would imply ownership.
-pub use mmcp_core::memory::{MemoryRefInput, XrefError, parse_cross_refs, parse_memory_refs};
 pub use groups::{GroupEntry, GroupIndex};
 pub use home::{MmcpHome, ResolvedAuthor, read_git_global};
-pub use import_adoc::{ADOC_EXTENSIONS, AdocConvertError, convert_adoc_to_markdown, is_adoc_filename};
+pub use import_adoc::{
+    ADOC_EXTENSIONS, AdocConvertError, convert_adoc_to_markdown, is_adoc_filename,
+};
 pub use memory::{
     AddressingMode, IdValidation, ImportError, ImportResult, MAX_SLUG_LENGTH, MAX_SLUG_SEGMENTS,
     MemoryFileRef, MemoryFrontmatterEntry, MemorySlugDir, MoveMemoryOutcome, ResolvedMemory,
@@ -95,5 +96,6 @@ pub use memory::{
     write_file_at_path, write_memory_by_id,
 };
 pub use memory_ops::{MemoryEditError, MemoryEditOp, apply_ops};
+pub use mmcp_core::memory::{MemoryRefInput, XrefError, parse_cross_refs, parse_memory_refs};
 pub use sessions::{MemoryRead, SessionState, SessionStore};
 pub use sync::{IndexResolver, build_engine};

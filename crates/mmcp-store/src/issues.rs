@@ -192,8 +192,7 @@ pub async fn add_issue(
     author: &ResolvedAuthor,
 ) -> Result<IssueRecord, IssueError> {
     let group = *entry.manifest.group_id.as_uuid();
-    let _guards =
-        crate::lock::acquire_chain(&crate::lock::create_chain(group)).await;
+    let _guards = crate::lock::acquire_chain(&crate::lock::create_chain(group)).await;
 
     if spec.title.trim().is_empty() && spec.slug.is_none() {
         return Err(IssueError::TitleRequired);
@@ -320,10 +319,7 @@ async fn resolve_supersede_target(
     };
 
     match record.status {
-        IssueStatus::Open
-        | IssueStatus::Blocked
-        | IssueStatus::Deferred
-        | IssueStatus::Closed => {}
+        IssueStatus::Open | IssueStatus::Blocked | IssueStatus::Deferred | IssueStatus::Closed => {}
         IssueStatus::Superseded => {
             return Err(IssueError::SupersedesInvalidStatus {
                 slug: record.slug,
@@ -400,8 +396,14 @@ pub async fn update_issue(
 ) -> Result<IssueRecord, IssueError> {
     let group = *entry.manifest.group_id.as_uuid();
     let _ancestors = crate::lock::acquire_chain(&[
-        (crate::lock::LockScope::Process, crate::lock::LockMode::Shared),
-        (crate::lock::LockScope::Group(group), crate::lock::LockMode::Shared),
+        (
+            crate::lock::LockScope::Process,
+            crate::lock::LockMode::Shared,
+        ),
+        (
+            crate::lock::LockScope::Group(group),
+            crate::lock::LockMode::Shared,
+        ),
     ])
     .await;
     let resolved = resolve_memory(backend, &entry.handle, Some(slug), None)
@@ -438,7 +440,11 @@ pub async fn update_issue_unlocked(
     let number = current.number;
     let depends_on = spec.depends_on.unwrap_or(current.depends_on);
     let blocks = spec.blocks.unwrap_or(current.blocks);
-    let refs = compose_refs(current_refs, spec.refs_remove.as_deref(), spec.refs_add.as_deref());
+    let refs = compose_refs(
+        current_refs,
+        spec.refs_remove.as_deref(),
+        spec.refs_add.as_deref(),
+    );
     let superseded_by = spec.superseded_by.or(current.superseded_by);
 
     let metadata = IssueMetadata {
@@ -545,10 +551,7 @@ pub async fn rename_issue(
         return list_issues_for_slug(backend, entry, old_slug).await;
     }
 
-    let old_dir = format!(
-        "{}/{old_slug}",
-        mmcp_core::conventions::MEMORIES_DIR
-    );
+    let old_dir = format!("{}/{old_slug}", mmcp_core::conventions::MEMORIES_DIR);
     let entries = backend
         .list_tree(&entry.handle, &old_dir, &Rev::head())
         .await
@@ -577,8 +580,8 @@ pub async fn rename_issue(
             .map_err(|e| IssueError::Memory(ImportError::Git(e)))?;
 
         let text = String::from_utf8_lossy(&bytes).into_owned();
-        let file = MemoryFile::parse(&text)
-            .map_err(|e| IssueError::Memory(ImportError::Parse(e)))?;
+        let file =
+            MemoryFile::parse(&text).map_err(|e| IssueError::Memory(ImportError::Parse(e)))?;
         // Refuse rename when the source memory does not carry an
         // [issue] block. Mirrors the feature side's
         // not-a-feature guard.
@@ -652,8 +655,14 @@ pub async fn delete_issue(
 ) -> Result<String, IssueError> {
     let group = *entry.manifest.group_id.as_uuid();
     let _ancestors = crate::lock::acquire_chain(&[
-        (crate::lock::LockScope::Process, crate::lock::LockMode::Shared),
-        (crate::lock::LockScope::Group(group), crate::lock::LockMode::Shared),
+        (
+            crate::lock::LockScope::Process,
+            crate::lock::LockMode::Shared,
+        ),
+        (
+            crate::lock::LockScope::Group(group),
+            crate::lock::LockMode::Shared,
+        ),
     ])
     .await;
     let resolved = resolve_memory(backend, &entry.handle, Some(slug), None)

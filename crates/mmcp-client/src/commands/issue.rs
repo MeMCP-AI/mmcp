@@ -14,8 +14,8 @@ use mmcp_proto::Note;
 use mmcp_store::features::resolve_project_group;
 use mmcp_store::home::MmcpHome;
 use mmcp_store::issues::{
-    AddSpec, IssueRecord, IssueSummary, UpdateSpec, add_issue, delete_issue,
-    list_issue_summaries, read_issue, rename_issue, update_issue,
+    AddSpec, IssueRecord, IssueSummary, UpdateSpec, add_issue, delete_issue, list_issue_summaries,
+    read_issue, rename_issue, update_issue,
 };
 
 use crate::notes::{dangling_ref_notes_for, render_notes_tail};
@@ -196,8 +196,8 @@ async fn run_add(args: AddArgs) -> Result<()> {
     let author = home.resolve_author();
 
     let status = parse_status_cli(args.status.as_deref())?.unwrap_or_default();
-    let depends_on =
-        mmcp_store::parse_cross_refs(&args.depends_on, "depends_on").map_err(anyhow::Error::from)?;
+    let depends_on = mmcp_store::parse_cross_refs(&args.depends_on, "depends_on")
+        .map_err(anyhow::Error::from)?;
     let blocks =
         mmcp_store::parse_cross_refs(&args.blocks, "blocks").map_err(anyhow::Error::from)?;
     let spec = AddSpec {
@@ -412,7 +412,11 @@ fn print_listing_row(
     status: IssueStatus,
     number: Option<u32>,
 ) {
-    let title = if title.is_empty() { "(untitled)" } else { title };
+    let title = if title.is_empty() {
+        "(untitled)"
+    } else {
+        title
+    };
     let number = number.map(|n| format!("#{n} ")).unwrap_or_default();
     println!("[{}] {}{} — {}", status.as_str(), number, slug, title);
     if !description.is_empty() {

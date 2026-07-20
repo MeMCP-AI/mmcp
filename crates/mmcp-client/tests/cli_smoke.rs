@@ -176,9 +176,8 @@ fn sync_rejects_bare_call_without_selector() {
         .assert()
         .failure()
         .stderr(
-            predicate::str::contains("--group").and(
-                predicate::str::contains("--scope").and(predicate::str::contains("--all")),
-            ),
+            predicate::str::contains("--group")
+                .and(predicate::str::contains("--scope").and(predicate::str::contains("--all"))),
         );
 }
 

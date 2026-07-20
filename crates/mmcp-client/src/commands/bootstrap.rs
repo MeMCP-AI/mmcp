@@ -68,9 +68,7 @@ pub async fn run(args: BootstrapArgs) -> Result<()> {
         None => std::collections::HashSet::new(),
         Some(cfg) => entries
             .iter()
-            .filter(|entry| {
-                entry.manifest.scope == mmcp_core::manifest::GroupScope::Shared
-            })
+            .filter(|entry| entry.manifest.scope == mmcp_core::manifest::GroupScope::Shared)
             .filter(|entry| is_group_adopted(&entry.manifest.slug, cfg))
             .map(|entry| *entry.manifest.group_id.as_uuid())
             .collect(),

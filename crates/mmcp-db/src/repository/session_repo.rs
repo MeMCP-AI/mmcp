@@ -16,10 +16,7 @@ pub struct NewSession {
     pub started_at: i64,
 }
 
-pub async fn upsert(
-    conn: &sea_orm::DatabaseConnection,
-    new: NewSession,
-) -> Result<Model, DbError> {
+pub async fn upsert(conn: &sea_orm::DatabaseConnection, new: NewSession) -> Result<Model, DbError> {
     if let Some(existing) = find(conn, &new.session_id).await? {
         let mut active: ActiveModel = existing.into();
         active.user_id = Set(new.user_id);
@@ -129,7 +126,9 @@ pub async fn has_read(
     session_id: &str,
     memory_id: Uuid,
 ) -> Result<bool, DbError> {
-    Ok(!reads_for_memory(conn, session_id, memory_id).await?.is_empty())
+    Ok(!reads_for_memory(conn, session_id, memory_id)
+        .await?
+        .is_empty())
 }
 
 // The `Column` import is required for filter predicates above.

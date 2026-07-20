@@ -43,11 +43,7 @@ use crate::filter::{ScopeIndex, SyncFilter};
 /// `scope_index` and treats unknown groups as non-matching so the
 /// engine silently skips them (unknown-group operator errors are
 /// raised at the CLI / MCP boundary, not here).
-fn group_matches(
-    filter: SyncFilter,
-    group_id: Uuid,
-    scope_index: &dyn ScopeIndex,
-) -> bool {
+fn group_matches(filter: SyncFilter, group_id: Uuid, scope_index: &dyn ScopeIndex) -> bool {
     match filter {
         SyncFilter::All => true,
         SyncFilter::Group(target) => target == group_id,
@@ -137,28 +133,25 @@ impl SyncEngine {
             )];
             let remote_url = self.client.git_url_for(group_id);
             let creds = self.client.git_credentials();
-            let content_transferred = match self
-                .backend
-                .push(&handle, &remote_url, &refs, &creds)
-                .await
-            {
-                Ok(_) => true,
-                Err(mmcp_git::GitError::Unsupported(_)) => false,
-                Err(mmcp_git::GitError::Transport { stderr, .. })
-                    if stderr_indicates_non_fast_forward(&stderr) =>
-                {
-                    // Git-symmetric signal: remote has commits we
-                    // do not, `git push` refused to overwrite. Raise
-                    // structured so the CLI and MCP surfaces can
-                    // tell the operator to pull first.
-                    return Err(SyncError::PushDiverged {
-                        group: group_id,
-                        stderr,
-                    });
-                }
-                Err(mmcp_git::GitError::Transport { .. }) => false,
-                Err(other) => return Err(SyncError::Git(other)),
-            };
+            let content_transferred =
+                match self.backend.push(&handle, &remote_url, &refs, &creds).await {
+                    Ok(_) => true,
+                    Err(mmcp_git::GitError::Unsupported(_)) => false,
+                    Err(mmcp_git::GitError::Transport { stderr, .. })
+                        if stderr_indicates_non_fast_forward(&stderr) =>
+                    {
+                        // Git-symmetric signal: remote has commits we
+                        // do not, `git push` refused to overwrite. Raise
+                        // structured so the CLI and MCP surfaces can
+                        // tell the operator to pull first.
+                        return Err(SyncError::PushDiverged {
+                            group: group_id,
+                            stderr,
+                        });
+                    }
+                    Err(mmcp_git::GitError::Transport { .. }) => false,
+                    Err(other) => return Err(SyncError::Git(other)),
+                };
             pushed.push(PushedGroup {
                 group_id,
                 content_transferred,
@@ -219,10 +212,7 @@ impl SyncEngine {
                         // does not. Git-symmetric `git pull --ff-only`
                         // failure. Raise so the operator can resolve
                         // before any more groups get touched.
-                        Ok(mmcp_git::FastForwardOutcome::NotFastForward {
-                            local,
-                            target,
-                        }) => {
+                        Ok(mmcp_git::FastForwardOutcome::NotFastForward { local, target }) => {
                             return Err(SyncError::PullDiverged {
                                 group: fetched_group.group_id,
                                 local,

@@ -16,10 +16,7 @@ pub struct NewOrg {
     pub created_at: i64,
 }
 
-pub async fn create(
-    conn: &sea_orm::DatabaseConnection,
-    new: NewOrg,
-) -> Result<Model, DbError> {
+pub async fn create(conn: &sea_orm::DatabaseConnection, new: NewOrg) -> Result<Model, DbError> {
     let active = ActiveModel {
         id: Set(new.id),
         slug: Set(new.slug),

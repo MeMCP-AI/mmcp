@@ -138,10 +138,7 @@ async fn run_git_log(args: GitLogArgs) -> Result<()> {
     }
     for commit in history.iter().take(args.limit) {
         let short: String = commit.id.chars().take(7).collect();
-        println!(
-            "{}  {}  {}",
-            short, commit.author_name, commit.subject
-        );
+        println!("{}  {}  {}", short, commit.author_name, commit.subject);
     }
     let shown = history.len().min(args.limit);
     println!("\n{shown}/{} commit(s) shown", history.len());

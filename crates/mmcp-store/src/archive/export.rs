@@ -75,7 +75,10 @@ pub async fn export_archive<W: Write>(
         let manifest_bytes = backend
             .read_file(&group.handle, MANIFEST_FILENAME, &Rev::Head)
             .await?;
-        entries.push((format!("{base}/{MANIFEST_FILENAME}"), manifest_bytes.to_vec()));
+        entries.push((
+            format!("{base}/{MANIFEST_FILENAME}"),
+            manifest_bytes.to_vec(),
+        ));
 
         let memory_count = match options.mode {
             ArchiveMode::Snapshot => {
@@ -375,11 +378,16 @@ mod tests {
 
         let gid = seeded.group_id.as_uuid();
         assert!(paths.iter().any(|p| p == ARCHIVE_MANIFEST_FILENAME));
-        assert!(paths.iter().any(|p| *p == format!("groups/{gid}/.mmcp.toml")));
         assert!(
-            paths.iter().any(|p| p
-                .starts_with(&format!("groups/{gid}/memories/note/"))
-                && p.ends_with(".md")),
+            paths
+                .iter()
+                .any(|p| *p == format!("groups/{gid}/.mmcp.toml"))
+        );
+        assert!(
+            paths
+                .iter()
+                .any(|p| p.starts_with(&format!("groups/{gid}/memories/note/"))
+                    && p.ends_with(".md")),
             "memory entry missing; got {paths:?}",
         );
 
@@ -443,7 +451,11 @@ mod tests {
 
         // The verbatim manifest (for listing) plus the bare repo: HEAD
         // and at least one object must be present.
-        assert!(paths.iter().any(|p| *p == format!("groups/{gid}/.mmcp.toml")));
+        assert!(
+            paths
+                .iter()
+                .any(|p| *p == format!("groups/{gid}/.mmcp.toml"))
+        );
         assert!(paths.iter().any(|p| *p == format!("groups/{gid}/git/HEAD")));
         assert!(
             paths

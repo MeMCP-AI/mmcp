@@ -71,7 +71,11 @@ async fn group_repo_path_follows_uuid_dot_git_convention() {
     let (state, _tmp) = bootstrap_state().await;
     let group = Uuid::now_v7();
     let path = state.group_repo_path(group);
-    let last = path.file_name().expect("last path component").to_string_lossy().into_owned();
+    let last = path
+        .file_name()
+        .expect("last path component")
+        .to_string_lossy()
+        .into_owned();
     assert!(last.ends_with(".git"));
     assert!(last.starts_with(&group.to_string()));
 }

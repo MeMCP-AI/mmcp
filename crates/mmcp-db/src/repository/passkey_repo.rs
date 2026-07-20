@@ -54,9 +54,7 @@ pub async fn update_after_auth(
     credential_json: String,
     now: i64,
 ) -> Result<Model, DbError> {
-    let row = find_by_id(conn, id)
-        .await?
-        .ok_or(DbError::NotFound)?;
+    let row = find_by_id(conn, id).await?.ok_or(DbError::NotFound)?;
     let mut active: ActiveModel = row.into();
     active.credential_json = Set(credential_json);
     active.last_used_at = Set(Some(now));
@@ -64,10 +62,7 @@ pub async fn update_after_auth(
 }
 
 /// Delete a credential by id.
-pub async fn delete(
-    conn: &sea_orm::DatabaseConnection,
-    id: Uuid,
-) -> Result<(), DbError> {
+pub async fn delete(conn: &sea_orm::DatabaseConnection, id: Uuid) -> Result<(), DbError> {
     Entity::delete_by_id(id).exec(conn).await?;
     Ok(())
 }

@@ -102,10 +102,7 @@ pub enum ImportError {
     /// `memories/<slug>/`. The caller must re-query with an
     /// explicit `id` from the candidate list.
     #[error("memory slug '{slug}' has multiple entries; disambiguate with id")]
-    MemoryAmbiguous {
-        slug: String,
-        candidates: Vec<Uuid>,
-    },
+    MemoryAmbiguous { slug: String, candidates: Vec<Uuid> },
 
     /// Both `slug` and `id` were supplied but the on-disk memory's
     /// frontmatter carries a different id. Signals either a stale
@@ -277,7 +274,6 @@ pub enum AddressingMode {
     BySlugOnly,
 }
 
-
 /// Outcome of the filename-vs-frontmatter id check that
 /// [`validate_id_mismatch`] runs on every write. Callers map this
 /// onto FR-45 notes (`id_mismatch_accepted` / `id_mismatch_forced`)
@@ -439,11 +435,7 @@ async fn resolve_by_slug(
 ) -> Result<ResolvedMemory, ImportError> {
     // `list_tree` on `memories/<slug>` returns only the direct
     // UUID-named blobs; subtrees would be a schema violation.
-    let dir = format!(
-        "{}/{}",
-        mmcp_core::conventions::MEMORIES_DIR,
-        slug
-    );
+    let dir = format!("{}/{}", mmcp_core::conventions::MEMORIES_DIR, slug);
     let entries = backend.list_tree(handle, &dir, &Rev::head()).await?;
     let uuids: Vec<Uuid> = entries
         .iter()
@@ -803,7 +795,10 @@ pub async fn move_memory_path(
     let bytes = backend
         .read_file(handle, &resolved.path, &Rev::head())
         .await?;
-    let fallback = format!("move memory {} -> {} ({})", resolved.slug, new_slug, resolved.id);
+    let fallback = format!(
+        "move memory {} -> {} ({})",
+        resolved.slug, new_slug, resolved.id
+    );
     let commit_message = message.unwrap_or(fallback.as_str());
     let commit_id = backend
         .write_commit(
@@ -930,8 +925,7 @@ pub async fn import_memory(
     // minting and file creation regardless of kind. The shared
     // ticket counter and slug-uniqueness invariant both rely on
     // the group-wide exclusive view.
-    let _guards =
-        crate::lock::acquire_chain(&crate::lock::create_chain(handle.group_id)).await;
+    let _guards = crate::lock::acquire_chain(&crate::lock::create_chain(handle.group_id)).await;
 
     let message = format!("import memory {slug}/{id}");
     // FR-28 / D4: import_memory mints `id` and stamps it into
@@ -1011,8 +1005,7 @@ pub fn validate_memory_slug(slug: &str) -> Result<(), ImportError> {
         if *segment == ".." || *segment == "." {
             return Err(ImportError::InvalidSlug(slug.to_string()));
         }
-        validate_slug_segment(segment)
-            .map_err(|_| ImportError::InvalidSlug(slug.to_string()))?;
+        validate_slug_segment(segment).map_err(|_| ImportError::InvalidSlug(slug.to_string()))?;
     }
     Ok(())
 }
@@ -1739,8 +1732,7 @@ mod tests {
     async fn move_memory_path_relocates_slug() {
         let (backend, handle, _tmp) = test_backend().await;
         let author = test_author();
-        let content =
-            "+++\nname = \"m\"\ndescription = \"m\"\nkind = \"rule\"\n+++\n\nMove me.\n";
+        let content = "+++\nname = \"m\"\ndescription = \"m\"\nkind = \"rule\"\n+++\n\nMove me.\n";
         let imported = import_memory(&backend, &handle, "old-slug", content, None, &author, false)
             .await
             .expect("import");
@@ -1784,8 +1776,7 @@ mod tests {
     async fn move_memory_path_same_slug_is_noop() {
         let (backend, handle, _tmp) = test_backend().await;
         let author = test_author();
-        let content =
-            "+++\nname = \"s\"\ndescription = \"s\"\nkind = \"rule\"\n+++\n\n";
+        let content = "+++\nname = \"s\"\ndescription = \"s\"\nkind = \"rule\"\n+++\n\n";
         let imported = import_memory(&backend, &handle, "stay", content, None, &author, false)
             .await
             .expect("import");
@@ -1808,8 +1799,7 @@ mod tests {
     async fn move_memory_path_validates_target() {
         let (backend, handle, _tmp) = test_backend().await;
         let author = test_author();
-        let content =
-            "+++\nname = \"v\"\ndescription = \"v\"\nkind = \"rule\"\n+++\n\n";
+        let content = "+++\nname = \"v\"\ndescription = \"v\"\nkind = \"rule\"\n+++\n\n";
         import_memory(&backend, &handle, "src", content, None, &author, false)
             .await
             .expect("import");
@@ -1879,7 +1869,14 @@ mod tests {
         let body = format!(
             "+++\nid = \"{id}\"\nname = \"hand\"\ndescription = \"d\"\nkind = \"rule\"\n+++\nbody\n"
         );
-        seed_raw(&backend, &handle, "memories/hand/scratch.md", &body, &author).await;
+        seed_raw(
+            &backend,
+            &handle,
+            "memories/hand/scratch.md",
+            &body,
+            &author,
+        )
+        .await;
 
         let resolved = resolve_memory(&backend, &handle, None, Some(id))
             .await
@@ -1954,7 +1951,14 @@ mod tests {
         let dup_body = format!(
             "+++\nid = \"{id}\"\nname = \"dup\"\ndescription = \"d\"\nkind = \"rule\"\n+++\nbody\n"
         );
-        seed_raw(&backend, &handle, "memories/scratch/manual.md", &dup_body, &author).await;
+        seed_raw(
+            &backend,
+            &handle,
+            "memories/scratch/manual.md",
+            &dup_body,
+            &author,
+        )
+        .await;
 
         let resolved = resolve_memory(&backend, &handle, None, Some(id))
             .await
@@ -2049,10 +2053,7 @@ mod tests {
         let rendered = rendered_for(frontmatter);
         let outcome =
             validate_id_mismatch(&path, &rendered, AddressingMode::BySlugOnly, false).unwrap();
-        assert!(matches!(
-            outcome,
-            IdValidation::MismatchAccepted { .. }
-        ));
+        assert!(matches!(outcome, IdValidation::MismatchAccepted { .. }));
     }
 
     /// Hand-crafted filenames (non-UUID stem) have nothing to
@@ -2096,10 +2097,7 @@ mod tests {
         )
         .await
         .expect_err("rejection");
-        assert!(matches!(
-            err,
-            ImportError::IdMismatchOnFilenameWrite { .. }
-        ));
+        assert!(matches!(err, ImportError::IdMismatchOnFilenameWrite { .. }));
     }
 
     /// End-to-end: write_memory_by_id with `force = true` under
@@ -2127,9 +2125,6 @@ mod tests {
         .await
         .expect("forced write");
         assert!(!commit.is_empty());
-        assert!(matches!(
-            validation,
-            IdValidation::MismatchForced { .. }
-        ));
+        assert!(matches!(validation, IdValidation::MismatchForced { .. }));
     }
 }

@@ -109,9 +109,10 @@ async fn info_refs(
     let service = query.service.clone();
     let content_type = format!("application/x-{service}-advertisement");
 
-    let body = tokio::task::spawn_blocking(move || advertise_refs(&repo_path, &service, protocol_version))
-        .await
-        .map_err(GitHttpError::internal)??;
+    let body =
+        tokio::task::spawn_blocking(move || advertise_refs(&repo_path, &service, protocol_version))
+            .await
+            .map_err(GitHttpError::internal)??;
 
     Ok((
         StatusCode::OK,
@@ -299,15 +300,19 @@ where
 {
     let repo = gix::open(repo_path)?;
     match kind {
-        ServeKind::UploadPack { protocol_version: 2 } => {
-            let _outcome = repo.serve_pack_upload_v2_dispatch_auto(reader, &mut writer, interrupt)?;
+        ServeKind::UploadPack {
+            protocol_version: 2,
+        } => {
+            let _outcome =
+                repo.serve_pack_upload_v2_dispatch_auto(reader, &mut writer, interrupt)?;
         }
         ServeKind::UploadPack { .. } => {
             let _outcome = repo.serve_pack_upload_v1_auto(reader, &mut writer, interrupt)?;
         }
         ServeKind::ReceivePack => {
             let mut progress = gix::progress::Discard;
-            let _outcome = repo.serve_pack_receive(reader, &mut writer, &mut progress, interrupt)?;
+            let _outcome =
+                repo.serve_pack_receive(reader, &mut writer, &mut progress, interrupt)?;
         }
     }
     Ok(())
@@ -334,7 +339,11 @@ fn service_announcement(service: &str) -> Vec<u8> {
 fn enforce_write(headers: &HeaderMap, _group_id: Uuid) -> Result<(), GitHttpError> {
     let expected = match std::env::var("MMCP_PUSH_TOKEN") {
         Ok(token) if !token.is_empty() => token,
-        _ => return Err(GitHttpError::Forbidden("push disabled: set MMCP_PUSH_TOKEN")),
+        _ => {
+            return Err(GitHttpError::Forbidden(
+                "push disabled: set MMCP_PUSH_TOKEN",
+            ));
+        }
     };
     let auth = headers
         .get("authorization")
@@ -380,7 +389,9 @@ impl IntoResponse for GitHttpError {
                 )
                     .into_response()
             }
-            GitHttpError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.to_string()).into_response(),
+            GitHttpError::Forbidden(msg) => {
+                (StatusCode::FORBIDDEN, msg.to_string()).into_response()
+            }
         }
     }
 }

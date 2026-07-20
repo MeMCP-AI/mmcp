@@ -18,10 +18,7 @@ pub struct NewMemory {
     pub updated_at: i64,
 }
 
-pub async fn create(
-    conn: &sea_orm::DatabaseConnection,
-    new: NewMemory,
-) -> Result<Model, DbError> {
+pub async fn create(conn: &sea_orm::DatabaseConnection, new: NewMemory) -> Result<Model, DbError> {
     let active = ActiveModel {
         id: Set(new.id),
         group_id: Set(new.group_id),

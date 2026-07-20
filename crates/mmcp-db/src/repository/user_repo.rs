@@ -18,10 +18,7 @@ pub struct NewUser {
 }
 
 /// Insert a fresh user row. Returns the inserted model.
-pub async fn create(
-    conn: &sea_orm::DatabaseConnection,
-    new: NewUser,
-) -> Result<Model, DbError> {
+pub async fn create(conn: &sea_orm::DatabaseConnection, new: NewUser) -> Result<Model, DbError> {
     let active = ActiveModel {
         id: Set(new.id),
         handle: Set(new.handle),
@@ -53,10 +50,7 @@ pub async fn find_by_handle(
 }
 
 /// Convenience: fetch by id or return `DbError::NotFound`.
-pub async fn require(
-    conn: &sea_orm::DatabaseConnection,
-    id: Uuid,
-) -> Result<Model, DbError> {
+pub async fn require(conn: &sea_orm::DatabaseConnection, id: Uuid) -> Result<Model, DbError> {
     find_by_id(conn, id).await?.ok_or(DbError::NotFound)
 }
 
@@ -74,4 +68,3 @@ pub async fn update_profile(
     }
     Ok(active.update(conn).await?)
 }
-

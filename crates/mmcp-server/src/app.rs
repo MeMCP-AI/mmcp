@@ -18,11 +18,8 @@ pub fn build_router(state: ServerState) -> Router {
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store);
 
-    let auth_layer = AuthManagerLayerBuilder::new(
-        state.auth_backend.clone(),
-        session_layer,
-    )
-    .build();
+    let auth_layer =
+        AuthManagerLayerBuilder::new(state.auth_backend.clone(), session_layer).build();
 
     Router::new()
         .merge(routes::health::router())

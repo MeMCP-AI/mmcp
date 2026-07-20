@@ -117,7 +117,10 @@ mod tests {
         let shared_id = GroupId::new();
         let mut shared = GroupManifest::new_user_owned(shared_id, "team", Uuid::now_v7());
         shared.scope = GroupScope::Shared;
-        backend.create_group_repo(&shared).await.expect("seed shared");
+        backend
+            .create_group_repo(&shared)
+            .await
+            .expect("seed shared");
 
         let project_id = GroupId::new();
         let project = GroupManifest::new_user_owned(project_id, "proj", Uuid::now_v7());

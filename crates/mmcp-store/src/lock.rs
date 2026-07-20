@@ -307,8 +307,7 @@ mod tests {
             acquire(group_scope(group), LockMode::Exclusive),
         )
         .await
-        .expect("after the shared holder drops, Exclusive must succeed")
-        ;
+        .expect("after the shared holder drops, Exclusive must succeed");
     }
 
     /// Memory-leaf chain: the canonical helper produces ancestors
@@ -370,8 +369,7 @@ mod tests {
         let m = Uuid::now_v7();
         // Acquire a memory-modify chain (Shared on Group, Exclusive
         // on Memory).
-        let _memory_guards =
-            acquire_chain(&memory_chain(g, m, LockMode::Exclusive)).await;
+        let _memory_guards = acquire_chain(&memory_chain(g, m, LockMode::Exclusive)).await;
         // A coarsening rename now wants Exclusive Group; it must wait.
         let coarsen_attempt = tokio::time::timeout(
             Duration::from_millis(100),

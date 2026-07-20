@@ -14,9 +14,7 @@ use std::sync::Arc;
 use mmcp_core::id::GroupId;
 use mmcp_core::manifest::GroupManifest;
 use mmcp_git::{GitBackend, NativeBackend, RepoHandle};
-use mmcp_sync::{
-    GroupHandleResolver, ManifestResponse, RemoteGroup, SyncClient, SyncEngine,
-};
+use mmcp_sync::{GroupHandleResolver, ManifestResponse, RemoteGroup, SyncClient, SyncEngine};
 use tempfile::TempDir;
 use uuid::Uuid;
 use wiremock::matchers::{method, path};
@@ -216,7 +214,10 @@ async fn pull_reports_updated_and_new_groups() {
 
     let client = SyncClient::new(server.uri()).expect("client");
     let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, client);
-    let report = engine.pull(mmcp_sync::SyncFilter::All, &resolver, &resolver).await.expect("pull ok");
+    let report = engine
+        .pull(mmcp_sync::SyncFilter::All, &resolver, &resolver)
+        .await
+        .expect("pull ok");
     assert_eq!(report.updated.len(), 1);
     assert_eq!(report.updated[0].slug, "team-rust");
     assert_eq!(report.new_groups.len(), 1);

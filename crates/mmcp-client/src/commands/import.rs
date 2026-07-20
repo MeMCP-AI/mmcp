@@ -373,8 +373,8 @@ async fn confirm_protected_targets(
 /// memory can land at `memories/<slug>/<uuid>.md` with the same
 /// frontmatter semantics as a native markdown import.
 fn load_import_source(path: &Path) -> Result<String> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let raw =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     if is_adoc_filename(filename) {
         convert_adoc_to_markdown(&raw)

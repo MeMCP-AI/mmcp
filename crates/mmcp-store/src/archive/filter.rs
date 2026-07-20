@@ -83,7 +83,11 @@ impl MemoryFilter {
                 return false;
             }
         }
-        if self.exclude_tags.iter().any(|t| fm.tags.iter().any(|ft| ft == t)) {
+        if self
+            .exclude_tags
+            .iter()
+            .any(|t| fm.tags.iter().any(|ft| ft == t))
+        {
             return false;
         }
         if let Some(want) = self.mandatory
@@ -195,8 +199,16 @@ mod tests {
             search: Some("needle".to_string()),
             ..Default::default()
         };
-        assert!(filter.matches("s", &fm("n", MemoryKind::Rule, &[], false), "has a NEEDLE here"));
-        assert!(filter.matches("path/needle", &fm("n", MemoryKind::Rule, &[], false), "body"));
+        assert!(filter.matches(
+            "s",
+            &fm("n", MemoryKind::Rule, &[], false),
+            "has a NEEDLE here"
+        ));
+        assert!(filter.matches(
+            "path/needle",
+            &fm("n", MemoryKind::Rule, &[], false),
+            "body"
+        ));
         assert!(!filter.matches("s", &fm("n", MemoryKind::Rule, &[], false), "nothing"));
     }
 

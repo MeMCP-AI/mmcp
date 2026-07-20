@@ -370,7 +370,9 @@ fn print_report(report: &ProjectGroupReport) {
     };
     let repo_line = match (&report.repo_path, report.created_repo) {
         (Some(path), true) => format!("created group repo at {}", path.display()),
-        (Some(path), false) => format!("group repo already present at {}", path.display()),
+        (Some(path), false) => {
+            format!("group repo already present at {}", path.display())
+        }
         (None, _) => "skipped group repo (config-only)".to_string(),
     };
     println!(

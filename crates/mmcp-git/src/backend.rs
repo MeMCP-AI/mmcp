@@ -24,17 +24,11 @@ pub trait GitBackend: Send + Sync {
     /// initialization: calling it again with the same manifest on
     /// an existing repo returns the same handle without writing a
     /// new commit.
-    async fn create_group_repo(
-        &self,
-        manifest: &GroupManifest,
-    ) -> Result<RepoHandle, GitError>;
+    async fn create_group_repo(&self, manifest: &GroupManifest) -> Result<RepoHandle, GitError>;
 
     /// Read and parse the `.mmcp.toml` manifest from the repo's
     /// `main` branch.
-    async fn read_manifest(
-        &self,
-        repo: &RepoHandle,
-    ) -> Result<GroupManifest, GitError>;
+    async fn read_manifest(&self, repo: &RepoHandle) -> Result<GroupManifest, GitError>;
 
     /// Commit a new revision of the `.mmcp.toml` manifest on the
     /// repo's `main` branch. Used by disaster recovery and by
@@ -88,29 +82,15 @@ pub trait GitBackend: Send + Sync {
 
     /// Read the raw bytes of a file inside the repository at a
     /// specific revision.
-    async fn read_file(
-        &self,
-        repo: &RepoHandle,
-        path: &str,
-        rev: &Rev,
-    ) -> Result<Bytes, GitError>;
+    async fn read_file(&self, repo: &RepoHandle, path: &str, rev: &Rev) -> Result<Bytes, GitError>;
 
     /// Write a new commit to the repository. The commit is applied on
     /// top of the current tip of `spec.branch`, or creates the branch
     /// if it does not yet exist. Returns the new commit id.
-    async fn write_commit(
-        &self,
-        repo: &RepoHandle,
-        spec: CommitSpec,
-    ) -> Result<String, GitError>;
+    async fn write_commit(&self, repo: &RepoHandle, spec: CommitSpec) -> Result<String, GitError>;
 
     /// Create a lightweight tag pointing at `target`.
-    async fn tag(
-        &self,
-        repo: &RepoHandle,
-        name: &str,
-        target: &str,
-    ) -> Result<(), GitError>;
+    async fn tag(&self, repo: &RepoHandle, name: &str, target: &str) -> Result<(), GitError>;
 
     /// Fast-forward `local_ref` to the commit pointed at by
     /// `target_ref`.

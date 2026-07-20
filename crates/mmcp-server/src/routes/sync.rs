@@ -24,9 +24,9 @@ use mmcp_db::entities::memory::MemoryKind;
 use mmcp_db::entities::memory_version;
 use mmcp_db::repository::{group_repo, memory_repo};
 use mmcp_git::{GitBackend, RepoHandle};
-use sea_orm::EntityTrait;
 use mmcp_proto::ProtoError;
 use mmcp_sync::{ManifestResponse, PushRequest, PushResponse, RefEntry, RefsResponse, RemoteGroup};
+use sea_orm::EntityTrait;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -93,12 +93,11 @@ async fn get_manifest(
 
     let mut groups = Vec::with_capacity(rows.len());
     for row in rows {
-        let handle = RepoHandle::new(row.id, state.group_repo_path(row.id).to_string_lossy().into_owned());
-        let head_commit = match state
-            .git
-            .read_manifest(&handle)
-            .await
-        {
+        let handle = RepoHandle::new(
+            row.id,
+            state.group_repo_path(row.id).to_string_lossy().into_owned(),
+        );
+        let head_commit = match state.git.read_manifest(&handle).await {
             Ok(_manifest) => {
                 // We have a manifest, so there's a main branch.
                 // Resolve its commit through `list_tree` on an
@@ -140,7 +139,13 @@ async fn get_refs(
         .map_err(internal)?
         .ok_or_else(|| not_found("group"))?;
 
-    let handle = RepoHandle::new(group_uuid, state.group_repo_path(group_uuid).to_string_lossy().into_owned());
+    let handle = RepoHandle::new(
+        group_uuid,
+        state
+            .group_repo_path(group_uuid)
+            .to_string_lossy()
+            .into_owned(),
+    );
     let main_tip = state
         .git
         .walk_history(&handle, ".mmcp.toml")
@@ -191,7 +196,10 @@ async fn post_push(
     // Look up (or create) the memory row. For a first publish of
     // a brand-new memory, the server autocreates the row so the
     // client can push without a preceding "create memory" call.
-    let memory = match memory_repo::find_by_id(conn, req.memory_id).await.map_err(internal)? {
+    let memory = match memory_repo::find_by_id(conn, req.memory_id)
+        .await
+        .map_err(internal)?
+    {
         Some(m) => m,
         None => {
             let now = Timestamp::now().as_millisecond();
@@ -237,7 +245,13 @@ async fn post_push(
         .map_err(internal)?;
 
     let tag_name = format!("v{version_str}");
-    let handle = RepoHandle::new(group.id, state.group_repo_path(group.id).to_string_lossy().into_owned());
+    let handle = RepoHandle::new(
+        group.id,
+        state
+            .group_repo_path(group.id)
+            .to_string_lossy()
+            .into_owned(),
+    );
     if let Err(err) = state.git.tag(&handle, &tag_name, &req.commit).await {
         // Tag creation against a commit the server does not yet
         // hold is expected until the git content plane lands.

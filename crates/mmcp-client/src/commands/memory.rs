@@ -426,8 +426,7 @@ async fn run_tree(args: TreeArgs) -> Result<()> {
     let files = list_all_memory_files(&backend, &entry.handle, &Rev::head())
         .await
         .context("listing memory files")?;
-    let mut counts: std::collections::BTreeMap<String, usize> =
-        std::collections::BTreeMap::new();
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for file in &files {
         if !slug_matches_filter(&file.slug, prefix, true) {
             continue;
@@ -457,8 +456,14 @@ async fn run_tree(args: TreeArgs) -> Result<()> {
         }
     }
     let header = match prefix {
-        Some(p) => format!("{} ({}) — tree under `{}`", entry.manifest.slug, entry.manifest.group_id, p),
-        None => format!("{} ({}) — slug tree", entry.manifest.slug, entry.manifest.group_id),
+        Some(p) => format!(
+            "{} ({}) — tree under `{}`",
+            entry.manifest.slug, entry.manifest.group_id, p
+        ),
+        None => format!(
+            "{} ({}) — slug tree",
+            entry.manifest.slug, entry.manifest.group_id
+        ),
     };
     println!("{header}");
     if counts.is_empty() {
@@ -490,9 +495,9 @@ async fn run_move(args: MoveArgs) -> Result<()> {
     // FR-39 v2: a slug-rewrite move spans source + target slug
     // dirs, so coarsen at the group level just like a feature
     // rename does.
-    let _lock_guards = mmcp_store::lock::acquire_chain(
-        &mmcp_store::lock::coarsen_group_chain(*entry.manifest.group_id.as_uuid()),
-    )
+    let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::coarsen_group_chain(
+        *entry.manifest.group_id.as_uuid(),
+    ))
     .await;
     let outcome = mmcp_store::move_memory_path(
         &backend,
@@ -541,10 +546,7 @@ async fn run_read(args: ReadArgs) -> Result<()> {
     let file = MemoryFile::parse(text)
         .map_err(|e| anyhow::anyhow!("memory frontmatter did not parse: {e}"))?;
 
-    println!(
-        "group       : {}",
-        entry.manifest.slug
-    );
+    println!("group       : {}", entry.manifest.slug);
     println!("slug        : {}", resolved.slug);
     println!("id          : {}", resolved.id);
     println!("name        : {}", file.frontmatter.name);
@@ -588,10 +590,7 @@ async fn run_versions(args: VersionsArgs) -> Result<()> {
     for commit in &history {
         // 7-char prefix matches git's default short-hash width.
         let short: String = commit.id.chars().take(7).collect();
-        println!(
-            "{}  {}  {}",
-            short, commit.author_name, commit.subject
-        );
+        println!("{}  {}  {}", short, commit.author_name, commit.subject);
     }
     println!("\n{} commit(s)", history.len());
     Ok(())
@@ -769,11 +768,10 @@ async fn run_write(args: WriteArgs) -> Result<()> {
     // Group-Exclusive). Kind discrimination dropped from the lock
     // layer so the shared ticket counter and slug-uniqueness
     // invariant both serialise on one scope.
-    let _lock_guards =
-        mmcp_store::lock::acquire_chain(&mmcp_store::lock::create_chain(
-            *entry.manifest.group_id.as_uuid(),
-        ))
-        .await;
+    let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::create_chain(
+        *entry.manifest.group_id.as_uuid(),
+    ))
+    .await;
     let _ = kind;
 
     let author = home.resolve_author();
@@ -820,8 +818,8 @@ async fn run_edit(args: EditArgs) -> Result<()> {
         .await
         .map_err(anyhow::Error::from)?;
     let text = String::from_utf8_lossy(&bytes).into_owned();
-    let mut file = MemoryFile::parse(&text)
-        .map_err(|e| anyhow::anyhow!("parsing existing memory: {e}"))?;
+    let mut file =
+        MemoryFile::parse(&text).map_err(|e| anyhow::anyhow!("parsing existing memory: {e}"))?;
 
     // Apply deltas. Body / frontmatter slot writes are
     // straightforward; tags compose additively with dedup; refs
@@ -920,16 +918,15 @@ async fn run_edit_body(args: EditBodyArgs) -> Result<()> {
         .map_err(anyhow::Error::from)?;
 
     let ops_json = read_body_input(&args.ops)?;
-    let ops: Vec<MemoryEditOp> =
-        serde_json::from_str(&ops_json).context("parsing --ops JSON")?;
+    let ops: Vec<MemoryEditOp> = serde_json::from_str(&ops_json).context("parsing --ops JSON")?;
 
     let bytes = backend
         .read_file(&entry.handle, &resolved.path, &Rev::head())
         .await
         .map_err(anyhow::Error::from)?;
     let text = String::from_utf8_lossy(&bytes).into_owned();
-    let mut file = MemoryFile::parse(&text)
-        .map_err(|e| anyhow::anyhow!("parsing existing memory: {e}"))?;
+    let mut file =
+        MemoryFile::parse(&text).map_err(|e| anyhow::anyhow!("parsing existing memory: {e}"))?;
 
     let new_body = apply_ops(&file.body, &ops).map_err(anyhow::Error::from)?;
     file.body = new_body;
@@ -1056,8 +1053,7 @@ fn read_body_input(raw: &str) -> Result<String> {
             .context("reading body from stdin")?;
         Ok(buf)
     } else if let Some(path) = raw.strip_prefix('@') {
-        std::fs::read_to_string(path)
-            .with_context(|| format!("reading body from {path}"))
+        std::fs::read_to_string(path).with_context(|| format!("reading body from {path}"))
     } else {
         Ok(raw.to_string())
     }
@@ -1103,7 +1099,9 @@ fn parse_scope(s: &str) -> Result<GroupScope> {
         "global" => Ok(GroupScope::Global),
         "shared" => Ok(GroupScope::Shared),
         "project" => Ok(GroupScope::Project),
-        other => anyhow::bail!("unknown scope `{other}` (expected global / shared / project)"),
+        other => {
+            anyhow::bail!("unknown scope `{other}` (expected global / shared / project)")
+        }
     }
 }
 
@@ -1129,4 +1127,3 @@ async fn read_title(backend: &NativeBackend, entry: &GroupEntry, path: &str) -> 
         Err(_) => "(parse error)".into(),
     }
 }
-

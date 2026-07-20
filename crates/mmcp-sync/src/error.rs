@@ -133,7 +133,9 @@ mod tests {
         let git_err = mmcp_git::GitError::RepoNotFound("/nowhere".into());
         let sync_err: SyncError = git_err.into();
         match sync_err {
-            SyncError::Git(mmcp_git::GitError::RepoNotFound(p)) => assert_eq!(p, "/nowhere"),
+            SyncError::Git(mmcp_git::GitError::RepoNotFound(p)) => {
+                assert_eq!(p, "/nowhere")
+            }
             other => panic!("expected Git(RepoNotFound), got {other:?}"),
         }
     }

@@ -137,9 +137,18 @@ async fn mcp_tool_list_memories_returns_group_contents() {
         descriptor.get("id").and_then(|v| v.as_str()),
         Some(memory.to_string().as_str())
     );
-    assert_eq!(descriptor.get("slug").and_then(|v| v.as_str()), Some("rules"));
-    assert_eq!(descriptor.get("kind").and_then(|v| v.as_str()), Some("rule"));
-    assert_eq!(descriptor.get("mandatory").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        descriptor.get("slug").and_then(|v| v.as_str()),
+        Some("rules")
+    );
+    assert_eq!(
+        descriptor.get("kind").and_then(|v| v.as_str()),
+        Some("rule")
+    );
+    assert_eq!(
+        descriptor.get("mandatory").and_then(|v| v.as_bool()),
+        Some(true)
+    );
 }
 
 #[tokio::test]
@@ -264,12 +273,18 @@ async fn mcp_tool_group_info_returns_metadata_for_known_group() {
         response.get("id").and_then(|v| v.as_str()),
         Some(group.to_string().as_str())
     );
-    assert_eq!(response.get("slug").and_then(|v| v.as_str()), Some("team-rust"));
+    assert_eq!(
+        response.get("slug").and_then(|v| v.as_str()),
+        Some("team-rust")
+    );
     assert_eq!(
         response.get("display_name").and_then(|v| v.as_str()),
         Some("Team")
     );
-    assert_eq!(response.get("memory_count").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(
+        response.get("memory_count").and_then(|v| v.as_u64()),
+        Some(1)
+    );
     assert!(
         response
             .get("owner")

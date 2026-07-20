@@ -139,7 +139,10 @@ mod tests {
     fn signature_changes_with_content() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         {
-            let mut f = std::fs::OpenOptions::new().write(true).open(tmp.path()).unwrap();
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(tmp.path())
+                .unwrap();
             f.write_all(b"hello world").unwrap();
         }
         let s1 = compute_signature(tmp.path()).unwrap().unwrap();

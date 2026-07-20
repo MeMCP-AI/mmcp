@@ -175,10 +175,10 @@ pub async fn create_standalone_group(
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
+use mmcp_git::Rev;
 use mmcp_store::config::{find_project_root, load as load_project_config};
 use mmcp_store::home::MmcpHome;
 use mmcp_store::memory::{list_all_memory_files, resolve_group};
-use mmcp_git::Rev;
 
 #[derive(Debug, Args)]
 #[command(arg_required_else_help = true)]

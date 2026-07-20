@@ -19,6 +19,6 @@ pub use tools::{
     DiffMemoryRequest, DiffMemoryResponse, GroupInfoRequest, GroupInfoResponse,
     ListMemoriesRequest, ListMemoriesResponse, ListVersionsRequest, ListVersionsResponse,
     MemoryDescriptor, ReadMemoryRequest, ReadMemoryResponse, SearchMemoriesRequest,
-    SearchMemoriesResponse, SearchMemoryHit, ToolName, VerifyMemoryRequest,
-    VerifyMemoryResponse, VersionEntry, WriteMemoryRequest, WriteMemoryResponse,
+    SearchMemoriesResponse, SearchMemoryHit, ToolName, VerifyMemoryRequest, VerifyMemoryResponse,
+    VersionEntry, WriteMemoryRequest, WriteMemoryResponse,
 };

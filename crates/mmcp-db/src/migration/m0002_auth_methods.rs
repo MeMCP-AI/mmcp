@@ -25,16 +25,8 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .primary_key(),
                     )
-                    .col(
-                        ColumnDef::new(PasskeyCredentials::UserId)
-                            .uuid()
-                            .not_null(),
-                    )
-                    .col(
-                        ColumnDef::new(PasskeyCredentials::Name)
-                            .string()
-                            .not_null(),
-                    )
+                    .col(ColumnDef::new(PasskeyCredentials::UserId).uuid().not_null())
+                    .col(ColumnDef::new(PasskeyCredentials::Name).string().not_null())
                     .col(
                         ColumnDef::new(PasskeyCredentials::CredentialJson)
                             .text()
@@ -53,10 +45,7 @@ impl MigrationTrait for Migration {
                     .foreign_key(
                         ForeignKey::create()
                             .name("fk_passkey_user")
-                            .from(
-                                PasskeyCredentials::Table,
-                                PasskeyCredentials::UserId,
-                            )
+                            .from(PasskeyCredentials::Table, PasskeyCredentials::UserId)
                             .to(Users::Table, Users::Id)
                             .on_delete(ForeignKeyAction::Cascade),
                     )
@@ -76,36 +65,16 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .primary_key(),
                     )
-                    .col(
-                        ColumnDef::new(OauthAccounts::UserId)
-                            .uuid()
-                            .not_null(),
-                    )
-                    .col(
-                        ColumnDef::new(OauthAccounts::Provider)
-                            .string()
-                            .not_null(),
-                    )
+                    .col(ColumnDef::new(OauthAccounts::UserId).uuid().not_null())
+                    .col(ColumnDef::new(OauthAccounts::Provider).string().not_null())
                     .col(
                         ColumnDef::new(OauthAccounts::ProviderUserId)
                             .string()
                             .not_null(),
                     )
-                    .col(
-                        ColumnDef::new(OauthAccounts::Email)
-                            .string()
-                            .null(),
-                    )
-                    .col(
-                        ColumnDef::new(OauthAccounts::AccessToken)
-                            .text()
-                            .null(),
-                    )
-                    .col(
-                        ColumnDef::new(OauthAccounts::RefreshToken)
-                            .text()
-                            .null(),
-                    )
+                    .col(ColumnDef::new(OauthAccounts::Email).string().null())
+                    .col(ColumnDef::new(OauthAccounts::AccessToken).text().null())
+                    .col(ColumnDef::new(OauthAccounts::RefreshToken).text().null())
                     .col(
                         ColumnDef::new(OauthAccounts::CreatedAt)
                             .big_integer()
@@ -145,18 +114,10 @@ impl MigrationTrait for Migration {
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager
-            .drop_table(
-                Table::drop()
-                    .table(OauthAccounts::Table)
-                    .to_owned(),
-            )
+            .drop_table(Table::drop().table(OauthAccounts::Table).to_owned())
             .await?;
         manager
-            .drop_table(
-                Table::drop()
-                    .table(PasskeyCredentials::Table)
-                    .to_owned(),
-            )
+            .drop_table(Table::drop().table(PasskeyCredentials::Table).to_owned())
             .await?;
         Ok(())
     }

@@ -76,10 +76,7 @@ impl AuthUser for MmcpUser {
 #[derive(Debug, Clone)]
 pub enum Credentials {
     /// Handle + plaintext password.
-    Password {
-        handle: String,
-        password: String,
-    },
+    Password { handle: String, password: String },
 
     /// OAuth callback: the token exchange already happened and the
     /// handler resolved the provider-side user ID. The backend
@@ -95,9 +92,7 @@ pub enum Credentials {
     /// Passkey assertion: the WebAuthn ceremony completed and the
     /// handler verified the signature. The credential row ID
     /// identifies which user to load.
-    Passkey {
-        credential_row_id: Uuid,
-    },
+    Passkey { credential_row_id: Uuid },
 }
 
 // ── Backend ─────────────────────────────────────────────────────
@@ -130,7 +125,10 @@ impl AuthnBackend for MmcpAuthBackend {
         creds: Self::Credentials,
     ) -> Result<Option<Self::User>, Self::Error> {
         match creds {
-            Credentials::Password { handle, password: pw } => {
+            Credentials::Password {
+                handle,
+                password: pw,
+            } => {
                 let user = user_repo::find_by_handle(&self.conn, &handle)
                     .await
                     .map_err(|e| AuthError::Claims(e.to_string()))?;
@@ -155,13 +153,10 @@ impl AuthnBackend for MmcpAuthBackend {
                 refresh_token,
             } => {
                 // Find existing link.
-                let existing = oauth_repo::find_by_provider(
-                    &self.conn,
-                    &provider,
-                    &provider_user_id,
-                )
-                .await
-                .map_err(|e| AuthError::Claims(e.to_string()))?;
+                let existing =
+                    oauth_repo::find_by_provider(&self.conn, &provider, &provider_user_id)
+                        .await
+                        .map_err(|e| AuthError::Claims(e.to_string()))?;
 
                 if let Some(link) = existing {
                     // Update tokens.
@@ -231,10 +226,7 @@ impl AuthnBackend for MmcpAuthBackend {
         }
     }
 
-    async fn get_user(
-        &self,
-        user_id: &UserId<Self>,
-    ) -> Result<Option<Self::User>, Self::Error> {
+    async fn get_user(&self, user_id: &UserId<Self>) -> Result<Option<Self::User>, Self::Error> {
         let user = user_repo::find_by_id(&self.conn, *user_id)
             .await
             .map_err(|e| AuthError::Claims(e.to_string()))?;

@@ -49,10 +49,7 @@ impl ServerState {
 
         // WebAuthn relying party derived from the origin.
         let origin_url = Url::parse(&cfg.origin)?;
-        let rp_id = origin_url
-            .host_str()
-            .unwrap_or("localhost")
-            .to_string();
+        let rp_id = origin_url.host_str().unwrap_or("localhost").to_string();
         let rp_origin = origin_url;
         let webauthn = Arc::new(
             WebauthnBuilder::new(&rp_id, &rp_origin)?
@@ -86,11 +83,7 @@ impl ServerState {
     /// repo cannot race and corrupt refs.
     #[must_use]
     pub fn repo_write_lock(&self, group_id: Uuid) -> Arc<AsyncMutex<()>> {
-        let mut locks = self
-            .0
-            .repo_locks
-            .lock()
-            .expect("repo_locks mutex poisoned");
+        let mut locks = self.0.repo_locks.lock().expect("repo_locks mutex poisoned");
         locks
             .entry(group_id)
             .or_insert_with(|| Arc::new(AsyncMutex::new(())))

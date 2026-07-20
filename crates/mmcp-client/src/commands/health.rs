@@ -82,7 +82,10 @@ pub async fn run_diagnose(group: Option<String>) -> Result<()> {
 /// carries the project/user-level diagnostics that belong to the
 /// whole mirror rather than any one group (sync config, author
 /// identity, CLAUDE.md); an empty slice is fine.
-fn print_reports(reports: &[GroupReport], project_findings: &[mmcp_store::diagnostics::Finding]) -> Vec<Note> {
+fn print_reports(
+    reports: &[GroupReport],
+    project_findings: &[mmcp_store::diagnostics::Finding],
+) -> Vec<Note> {
     let mut notes: Vec<Note> = findings_to_notes(project_findings);
     for report in reports {
         notes.extend(findings_to_notes(&report.findings));

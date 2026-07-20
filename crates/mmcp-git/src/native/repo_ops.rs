@@ -111,10 +111,7 @@ pub fn fetch(
     ensure_remote(repo_path, remote_url)?;
     let mut cmd = Command::new(git_binary());
     apply_credentials(&mut cmd, creds);
-    cmd.arg("-C")
-        .arg(repo_path)
-        .arg("fetch")
-        .arg("origin");
+    cmd.arg("-C").arg(repo_path).arg("fetch").arg("origin");
     for spec in refspecs {
         cmd.arg(spec);
     }
@@ -194,10 +191,7 @@ pub fn fast_forward(
 
     // Local may not exist yet (first-ever pull of a group that
     // was cloned empty). That's a legal create-from-nothing FF.
-    let local_commit = repo
-        .find_reference(local_ref)
-        .ok()
-        .map(|r| r.id().detach());
+    let local_commit = repo.find_reference(local_ref).ok().map(|r| r.id().detach());
 
     match local_commit {
         None => {
@@ -427,11 +421,7 @@ fn find_blob_in_tree(
 ///
 /// Empty prefix means the root tree. Missing prefix returns an
 /// empty vector rather than an error.
-pub fn list_tree(
-    repo_path: &Path,
-    path_prefix: &str,
-    rev: &Rev,
-) -> Result<Vec<String>, GitError> {
+pub fn list_tree(repo_path: &Path, path_prefix: &str, rev: &Rev) -> Result<Vec<String>, GitError> {
     let repo = open_bare(repo_path)?;
     let commit_id = match resolve_rev(&repo, rev) {
         Ok(id) => id,
@@ -576,10 +566,7 @@ impl TreeNode {
 }
 
 /// Load `tree_id` into an in-memory [`TreeNode::Dir`] recursively.
-fn load_tree(
-    repo: &gix::Repository,
-    tree_id: gix::ObjectId,
-) -> Result<TreeNode, GitError> {
+fn load_tree(repo: &gix::Repository, tree_id: gix::ObjectId) -> Result<TreeNode, GitError> {
     let obj = repo.find_object(tree_id).map_err(gix_err)?;
     let tree: gix::objs::Tree = obj.into_tree().decode().map_err(gix_err)?.into();
     let mut entries = std::collections::BTreeMap::new();
@@ -596,11 +583,7 @@ fn load_tree(
 
 /// Walk `node` (must be a dir) following `components`, creating
 /// intermediate directories as needed, and apply the given leaf edit.
-fn apply_edit(
-    node: &mut TreeNode,
-    components: &[&str],
-    leaf: TreeNode,
-) -> Result<(), GitError> {
+fn apply_edit(node: &mut TreeNode, components: &[&str], leaf: TreeNode) -> Result<(), GitError> {
     let TreeNode::Dir(map) = node else {
         return Err(GitError::Gix(
             "path component collides with an existing blob".to_string(),
@@ -621,10 +604,7 @@ fn apply_edit(
 }
 
 /// Recursively flush an in-memory tree to the object database.
-fn flush_tree(
-    repo: &gix::Repository,
-    node: &TreeNode,
-) -> Result<Option<gix::ObjectId>, GitError> {
+fn flush_tree(repo: &gix::Repository, node: &TreeNode) -> Result<Option<gix::ObjectId>, GitError> {
     let TreeNode::Dir(map) = node else {
         return Err(GitError::Gix("flush_tree expects a Dir".to_string()));
     };
@@ -689,7 +669,9 @@ fn build_tree(
         Some(id) => Ok(id),
         None => {
             // Empty tree: write a zero-entry tree object.
-            let empty = gix::objs::Tree { entries: Vec::new() };
+            let empty = gix::objs::Tree {
+                entries: Vec::new(),
+            };
             Ok(repo.write_object(&empty).map_err(gix_err)?.detach())
         }
     }
@@ -823,9 +805,7 @@ pub fn walk_history(repo_path: &Path, path: &str) -> Result<Vec<CommitMeta>, Git
                 .map_err(gix_err)?
                 .into_owned()
                 .map_err(gix_err)?;
-            if let Some(parent_blob) =
-                find_blob_in_tree(&repo, parent_commit.tree, path)?
-            {
+            if let Some(parent_blob) = find_blob_in_tree(&repo, parent_commit.tree, path)? {
                 if parent_blob == current_blob {
                     matches_parent = true;
                     break;

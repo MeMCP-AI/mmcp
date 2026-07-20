@@ -17,7 +17,12 @@ impl MigrationTrait for Migration {
                     .table(Users::Table)
                     .if_not_exists()
                     .col(ColumnDef::new(Users::Id).uuid().not_null().primary_key())
-                    .col(ColumnDef::new(Users::Handle).string().not_null().unique_key())
+                    .col(
+                        ColumnDef::new(Users::Handle)
+                            .string()
+                            .not_null()
+                            .unique_key(),
+                    )
                     .col(ColumnDef::new(Users::DisplayName).string().null())
                     .col(ColumnDef::new(Users::PasswordHash).string().null())
                     .col(ColumnDef::new(Users::Email).string().null())
@@ -44,11 +49,20 @@ impl MigrationTrait for Migration {
                 Table::create()
                     .table(OrgMembers::Table)
                     .if_not_exists()
-                    .col(ColumnDef::new(OrgMembers::Id).uuid().not_null().primary_key())
+                    .col(
+                        ColumnDef::new(OrgMembers::Id)
+                            .uuid()
+                            .not_null()
+                            .primary_key(),
+                    )
                     .col(ColumnDef::new(OrgMembers::OrgId).uuid().not_null())
                     .col(ColumnDef::new(OrgMembers::UserId).uuid().not_null())
                     .col(ColumnDef::new(OrgMembers::Role).small_integer().not_null())
-                    .col(ColumnDef::new(OrgMembers::GrantedAt).big_integer().not_null())
+                    .col(
+                        ColumnDef::new(OrgMembers::GrantedAt)
+                            .big_integer()
+                            .not_null(),
+                    )
                     .foreign_key(
                         ForeignKey::create()
                             .name("fk_org_members_org")
@@ -213,7 +227,11 @@ impl MigrationTrait for Migration {
                             .default(0),
                     )
                     .col(ColumnDef::new(Sessions::TranscriptPath).string().null())
-                    .col(ColumnDef::new(Sessions::TranscriptSignature).string().null())
+                    .col(
+                        ColumnDef::new(Sessions::TranscriptSignature)
+                            .string()
+                            .null(),
+                    )
                     .col(
                         ColumnDef::new(Sessions::PostCompaction)
                             .boolean()
@@ -221,7 +239,11 @@ impl MigrationTrait for Migration {
                             .default(false),
                     )
                     .col(ColumnDef::new(Sessions::StartedAt).big_integer().not_null())
-                    .col(ColumnDef::new(Sessions::LastSeenAt).big_integer().not_null())
+                    .col(
+                        ColumnDef::new(Sessions::LastSeenAt)
+                            .big_integer()
+                            .not_null(),
+                    )
                     .foreign_key(
                         ForeignKey::create()
                             .name("fk_sessions_user")
@@ -238,7 +260,12 @@ impl MigrationTrait for Migration {
                 Table::create()
                     .table(MemoryReads::Table)
                     .if_not_exists()
-                    .col(ColumnDef::new(MemoryReads::Id).uuid().not_null().primary_key())
+                    .col(
+                        ColumnDef::new(MemoryReads::Id)
+                            .uuid()
+                            .not_null()
+                            .primary_key(),
+                    )
                     .col(ColumnDef::new(MemoryReads::SessionId).string().not_null())
                     .col(ColumnDef::new(MemoryReads::MemoryId).uuid().not_null())
                     .col(ColumnDef::new(MemoryReads::Turn).integer().not_null())

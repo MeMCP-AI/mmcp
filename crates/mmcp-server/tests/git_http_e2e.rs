@@ -19,7 +19,9 @@ use uuid::Uuid;
 
 /// Start the server on an ephemeral port, returning its address and
 /// the `ServerState` handle so the test can seed groups into it.
-async fn start_server(repo_root: &std::path::Path) -> (SocketAddr, mmcp_server::state::ServerState) {
+async fn start_server(
+    repo_root: &std::path::Path,
+) -> (SocketAddr, mmcp_server::state::ServerState) {
     let cfg = mmcp_server::config::ServerConfig {
         bind: "127.0.0.1:0".parse().unwrap(),
         database_url: "sqlite::memory:".to_string(),
@@ -135,15 +137,15 @@ async fn stock_git_clones_from_smart_http_route() {
     );
 
     // The memory should be in the clone at the expected path.
-    let fetched = std::fs::read_to_string(clone_dst.join("memories/hello.md"))
-        .expect("read cloned file");
+    let fetched =
+        std::fs::read_to_string(clone_dst.join("memories/hello.md")).expect("read cloned file");
     assert_eq!(fetched, "content from server");
 
     // And the manifest committed by `create_group_repo` should also
     // be there, proving the whole tree round-tripped, not just the
     // latest commit.
-    let manifest = std::fs::read_to_string(clone_dst.join(".mmcp.toml"))
-        .expect("read cloned manifest");
+    let manifest =
+        std::fs::read_to_string(clone_dst.join(".mmcp.toml")).expect("read cloned manifest");
     assert!(
         manifest.contains("team-rust"),
         "manifest missing slug: {manifest}"

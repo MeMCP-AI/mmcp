@@ -64,7 +64,11 @@ impl MemoryRef {
     /// stable across repo history views that might disambiguate
     /// short shas differently.
     pub fn validate_commit_shape(commit: &str) -> Result<(), InvalidCommit> {
-        if commit.len() != 40 || !commit.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
+        if commit.len() != 40
+            || !commit
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        {
             return Err(InvalidCommit {
                 input: commit.to_string(),
             });
@@ -118,7 +122,9 @@ mod tests {
 
     #[test]
     fn validate_rejects_non_hex_characters() {
-        assert!(MemoryRef::validate_commit_shape("g123456789abcdef0123456789abcdef0123456z").is_err());
+        assert!(
+            MemoryRef::validate_commit_shape("g123456789abcdef0123456789abcdef0123456z").is_err()
+        );
     }
 
     #[test]

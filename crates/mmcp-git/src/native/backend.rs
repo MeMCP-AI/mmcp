@@ -57,10 +57,7 @@ impl NativeBackend {
 
 #[async_trait]
 impl GitBackend for NativeBackend {
-    async fn create_group_repo(
-        &self,
-        manifest: &GroupManifest,
-    ) -> Result<RepoHandle, GitError> {
+    async fn create_group_repo(&self, manifest: &GroupManifest) -> Result<RepoHandle, GitError> {
         let uuid = *manifest.group_id.as_uuid();
         let path = self.repo_path(uuid);
         let path_clone = path.clone();
@@ -79,16 +76,9 @@ impl GitBackend for NativeBackend {
         Ok(handle)
     }
 
-    async fn read_manifest(
-        &self,
-        repo: &RepoHandle,
-    ) -> Result<GroupManifest, GitError> {
+    async fn read_manifest(&self, repo: &RepoHandle) -> Result<GroupManifest, GitError> {
         let bytes = self
-            .read_file(
-                repo,
-                mmcp_core::manifest::MANIFEST_FILENAME,
-                &Rev::head(),
-            )
+            .read_file(repo, mmcp_core::manifest::MANIFEST_FILENAME, &Rev::head())
             .await?;
         let text = std::str::from_utf8(&bytes)
             .map_err(|e| GitError::Gix(format!("manifest is not valid UTF-8: {e}")))?;
@@ -198,12 +188,7 @@ impl GitBackend for NativeBackend {
         .map_err(|e| GitError::Gix(format!("join error: {e}")))?
     }
 
-    async fn read_file(
-        &self,
-        repo: &RepoHandle,
-        path: &str,
-        rev: &Rev,
-    ) -> Result<Bytes, GitError> {
+    async fn read_file(&self, repo: &RepoHandle, path: &str, rev: &Rev) -> Result<Bytes, GitError> {
         let repo_path = Self::handle_path(repo).to_path_buf();
         let path_owned = path.to_string();
         let rev = rev.clone();
@@ -212,23 +197,14 @@ impl GitBackend for NativeBackend {
             .map_err(|e| GitError::Gix(format!("join error: {e}")))?
     }
 
-    async fn write_commit(
-        &self,
-        repo: &RepoHandle,
-        spec: CommitSpec,
-    ) -> Result<String, GitError> {
+    async fn write_commit(&self, repo: &RepoHandle, spec: CommitSpec) -> Result<String, GitError> {
         let repo_path = Self::handle_path(repo).to_path_buf();
         tokio::task::spawn_blocking(move || repo_ops::write_commit(&repo_path, spec))
             .await
             .map_err(|e| GitError::Gix(format!("join error: {e}")))?
     }
 
-    async fn tag(
-        &self,
-        repo: &RepoHandle,
-        name: &str,
-        target: &str,
-    ) -> Result<(), GitError> {
+    async fn tag(&self, repo: &RepoHandle, name: &str, target: &str) -> Result<(), GitError> {
         let repo_path = Self::handle_path(repo).to_path_buf();
         let name = name.to_string();
         let target = target.to_string();

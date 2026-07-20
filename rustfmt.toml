@@ -1,0 +1,6 @@
+# Pinned explicitly so a toolchain upgrade cannot silently reformat the
+# workspace. Both values match the rustfmt defaults for edition 2024 at
+# the time the tree was normalized; stating them keeps a future default
+# change from producing a diff nobody asked for.
+style_edition = "2024"
+max_width = 100

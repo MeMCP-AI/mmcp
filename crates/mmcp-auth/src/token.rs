@@ -40,8 +40,8 @@ impl TokenIssuer {
 
     /// Issue a token carrying the provided claims.
     pub fn issue(&self, claims: &SessionClaims) -> Result<String, AuthError> {
-        let claims_json = serde_json::to_string(claims)
-            .map_err(|e| AuthError::Claims(e.to_string()))?;
+        let claims_json =
+            serde_json::to_string(claims).map_err(|e| AuthError::Claims(e.to_string()))?;
         let token = PasetoBuilder::<V4, Local>::default()
             .set_claim(
                 CustomClaim::try_from(("claims", claims_json))
@@ -71,8 +71,8 @@ impl TokenVerifier {
             .get("claims")
             .and_then(|v| v.as_str())
             .ok_or_else(|| AuthError::Claims("missing claims field".into()))?;
-        let claims: SessionClaims = serde_json::from_str(claims_str)
-            .map_err(|e| AuthError::Claims(e.to_string()))?;
+        let claims: SessionClaims =
+            serde_json::from_str(claims_str).map_err(|e| AuthError::Claims(e.to_string()))?;
 
         if claims.exp <= now_secs {
             return Err(AuthError::Expired);

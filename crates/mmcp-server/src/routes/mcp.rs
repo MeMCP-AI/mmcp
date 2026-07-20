@@ -15,7 +15,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
-use mmcp_proto::{GroupInfoRequest, ListMemoriesRequest, ListVersionsRequest, ProtoError, ToolName};
+use mmcp_proto::{
+    GroupInfoRequest, ListMemoriesRequest, ListVersionsRequest, ProtoError, ToolName,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

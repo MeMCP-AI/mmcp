@@ -2,10 +2,7 @@
 
 use argon2::{
     Argon2,
-    password_hash::{
-        PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
-        rand_core::OsRng,
-    },
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 
 use crate::error::AuthError;
@@ -27,8 +24,7 @@ pub fn hash_password(plaintext: &str) -> Result<String, AuthError> {
 /// [`AuthError::InvalidCredentials`] if it does not. Any parse or
 /// backend failure is returned as [`AuthError::Password`].
 pub fn verify_password(plaintext: &str, stored_hash: &str) -> Result<(), AuthError> {
-    let parsed =
-        PasswordHash::new(stored_hash).map_err(|e| AuthError::Password(e.to_string()))?;
+    let parsed = PasswordHash::new(stored_hash).map_err(|e| AuthError::Password(e.to_string()))?;
     match Argon2::default().verify_password(plaintext.as_bytes(), &parsed) {
         Ok(()) => Ok(()),
         Err(argon2::password_hash::Error::Password) => Err(AuthError::InvalidCredentials),

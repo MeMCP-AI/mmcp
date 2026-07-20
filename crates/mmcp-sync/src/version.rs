@@ -62,8 +62,7 @@ mod tests {
 
     #[test]
     fn prerelease_and_build_metadata_are_cleared() {
-        let v =
-            negotiate_next_version(Some("1.0.0-rc.1+build.42"), BumpIntent::Patch).unwrap();
+        let v = negotiate_next_version(Some("1.0.0-rc.1+build.42"), BumpIntent::Patch).unwrap();
         assert_eq!(v, Version::new(1, 0, 1));
     }
 

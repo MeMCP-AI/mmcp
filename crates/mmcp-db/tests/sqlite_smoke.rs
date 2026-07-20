@@ -1,9 +1,9 @@
 //! End-to-end smoke test against an in-memory SQLite database.
 
 use mmcp_db::entities::group::OwnerKind;
-use mmcp_db::entities::memory::MemoryKind;
 use mmcp_db::entities::membership::{GroupRole, PrincipalKind};
-use mmcp_db::entities::{memory_read, memory_version, membership};
+use mmcp_db::entities::memory::MemoryKind;
+use mmcp_db::entities::{membership, memory_read, memory_version};
 use mmcp_db::repository::{
     group_repo, memory_repo, oauth_repo, org_repo, passkey_repo, session_repo, user_repo,
 };
@@ -284,9 +284,11 @@ async fn memory_read_tracking_and_post_compaction() {
     .await
     .unwrap();
 
-    assert!(!session_repo::has_read(conn, "sess-1", memory_id)
-        .await
-        .unwrap());
+    assert!(
+        !session_repo::has_read(conn, "sess-1", memory_id)
+            .await
+            .unwrap()
+    );
 
     session_repo::record_read(
         conn,
@@ -303,9 +305,11 @@ async fn memory_read_tracking_and_post_compaction() {
     .await
     .unwrap();
 
-    assert!(session_repo::has_read(conn, "sess-1", memory_id)
-        .await
-        .unwrap());
+    assert!(
+        session_repo::has_read(conn, "sess-1", memory_id)
+            .await
+            .unwrap()
+    );
 
     session_repo::mark_post_compaction(conn, "sess-1", Some("sig".into()), 3)
         .await
@@ -313,7 +317,9 @@ async fn memory_read_tracking_and_post_compaction() {
     let refreshed = session_repo::find(conn, "sess-1").await.unwrap().unwrap();
     assert!(refreshed.post_compaction);
 
-    session_repo::clear_post_compaction(conn, "sess-1").await.unwrap();
+    session_repo::clear_post_compaction(conn, "sess-1")
+        .await
+        .unwrap();
     let refreshed = session_repo::find(conn, "sess-1").await.unwrap().unwrap();
     assert!(!refreshed.post_compaction);
 }
@@ -391,14 +397,7 @@ async fn oauth_account_create_find_and_update_tokens_round_trip() {
     assert_eq!(refreshed.updated_at, 20);
 
     // Updating a non-existent link surfaces NotFound.
-    let missing_update = oauth_repo::update_tokens(
-        conn,
-        Uuid::now_v7(),
-        None,
-        None,
-        30,
-    )
-    .await;
+    let missing_update = oauth_repo::update_tokens(conn, Uuid::now_v7(), None, None, 30).await;
     assert!(matches!(missing_update, Err(mmcp_db::DbError::NotFound)));
 }
 
@@ -449,25 +448,14 @@ async fn passkey_credential_create_find_update_and_delete_round_trip() {
 
     // After successful auth the counter in credential_json advances
     // and last_used_at updates.
-    let updated = passkey_repo::update_after_auth(
-        conn,
-        cred_id,
-        r#"{"counter":1}"#.into(),
-        20,
-    )
-    .await
-    .expect("update after auth");
+    let updated = passkey_repo::update_after_auth(conn, cred_id, r#"{"counter":1}"#.into(), 20)
+        .await
+        .expect("update after auth");
     assert_eq!(updated.credential_json, r#"{"counter":1}"#);
     assert_eq!(updated.last_used_at, Some(20));
 
     // Updating a non-existent credential surfaces NotFound.
-    let missing = passkey_repo::update_after_auth(
-        conn,
-        Uuid::now_v7(),
-        "{}".into(),
-        30,
-    )
-    .await;
+    let missing = passkey_repo::update_after_auth(conn, Uuid::now_v7(), "{}".into(), 30).await;
     assert!(matches!(missing, Err(mmcp_db::DbError::NotFound)));
 
     // Delete, then verify it's gone.
@@ -476,7 +464,9 @@ async fn passkey_credential_create_find_update_and_delete_round_trip() {
     assert!(gone.is_none());
 
     // Deleting an already-absent id is idempotent (no error).
-    passkey_repo::delete(conn, cred_id).await.expect("delete idempotent");
+    passkey_repo::delete(conn, cred_id)
+        .await
+        .expect("delete idempotent");
 }
 
 #[tokio::test]
@@ -504,7 +494,9 @@ async fn user_lookup_by_id_and_require_and_update_profile() {
     assert_eq!(by_id.handle, "carol");
 
     // `require` returns the row for an existing id.
-    let required = user_repo::require(conn, carol).await.expect("require alice");
+    let required = user_repo::require(conn, carol)
+        .await
+        .expect("require alice");
     assert_eq!(required.id, carol);
 
     // `require` surfaces NotFound for an unknown id rather than None.
@@ -513,28 +505,19 @@ async fn user_lookup_by_id_and_require_and_update_profile() {
 
     // `update_profile` writes display_name and rotates the password
     // hash when supplied; the returned model reflects both changes.
-    let updated = user_repo::update_profile(
-        conn,
-        carol,
-        Some("Carol Q.".into()),
-        Some("hash-v2".into()),
-    )
-    .await
-    .expect("update profile");
+    let updated =
+        user_repo::update_profile(conn, carol, Some("Carol Q.".into()), Some("hash-v2".into()))
+            .await
+            .expect("update profile");
     assert_eq!(updated.display_name.as_deref(), Some("Carol Q."));
     assert_eq!(updated.password_hash.as_deref(), Some("hash-v2"));
 
     // Passing `None` for password_hash preserves the existing hash
     // while still updating display_name — the "edit profile but not
     // password" path.
-    let preserved = user_repo::update_profile(
-        conn,
-        carol,
-        Some("Carol Third".into()),
-        None,
-    )
-    .await
-    .expect("update profile without password");
+    let preserved = user_repo::update_profile(conn, carol, Some("Carol Third".into()), None)
+        .await
+        .expect("update profile without password");
     assert_eq!(preserved.display_name.as_deref(), Some("Carol Third"));
     assert_eq!(preserved.password_hash.as_deref(), Some("hash-v2"));
 

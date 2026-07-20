@@ -151,7 +151,9 @@ pub fn list_archive(bytes: &[u8]) -> Result<Vec<ArchiveGroupListing>, ArchiveErr
     for group_meta in &manifest.groups {
         let group_id = group_meta.group_id;
         let scope = entries
-            .get(&format!("{ARCHIVE_GROUPS_DIR}/{group_id}/{MANIFEST_FILENAME}"))
+            .get(&format!(
+                "{ARCHIVE_GROUPS_DIR}/{group_id}/{MANIFEST_FILENAME}"
+            ))
             .and_then(|bytes| std::str::from_utf8(bytes).ok())
             .and_then(|text| GroupManifest::from_toml(text).ok())
             .map(|manifest| manifest.scope)
@@ -230,9 +232,12 @@ async fn import_snapshot(
 ) -> Result<ImportArchiveReport, ArchiveError> {
     // Resolve the single remap target up front when --into is set.
     let into_target = match options.into_group {
-        Some(group_id) => Some(groups.get(&group_id).await.ok_or_else(|| {
-            ArchiveError::IntoGroupNotFound(group_id.as_uuid().to_string())
-        })?),
+        Some(group_id) => Some(
+            groups
+                .get(&group_id)
+                .await
+                .ok_or_else(|| ArchiveError::IntoGroupNotFound(group_id.as_uuid().to_string()))?,
+        ),
         None => None,
     };
 
@@ -272,13 +277,17 @@ async fn import_history(
     options: &ImportArchiveOptions,
 ) -> Result<ImportArchiveReport, ArchiveError> {
     if options.into_group.is_some() {
-        return Err(ArchiveError::SnapshotOnlyOption { option: "into_group" });
+        return Err(ArchiveError::SnapshotOnlyOption {
+            option: "into_group",
+        });
     }
     if options.new_ids {
         return Err(ArchiveError::SnapshotOnlyOption { option: "new_ids" });
     }
     if options.overwrite {
-        return Err(ArchiveError::SnapshotOnlyOption { option: "overwrite" });
+        return Err(ArchiveError::SnapshotOnlyOption {
+            option: "overwrite",
+        });
     }
     if !options.filter.is_empty() {
         return Err(ArchiveError::SnapshotOnlyOption { option: "filter" });
@@ -466,7 +475,10 @@ async fn import_one_group(
         let content = utf8(path, data)?;
         if !options.filter.is_empty() {
             let parsed = MemoryFile::parse(content).map_err(ImportError::Parse)?;
-            if !options.filter.matches(memory_slug, &parsed.frontmatter, &parsed.body) {
+            if !options
+                .filter
+                .matches(memory_slug, &parsed.frontmatter, &parsed.body)
+            {
                 continue;
             }
         }
@@ -502,13 +514,19 @@ async fn resolve_or_create_target(
     match resolve_group(groups, &source_group_id.to_string()).await {
         Ok(existing) => Ok((existing, false)),
         Err(ImportError::GroupNotFound(_)) => {
-            let manifest_path = format!("{ARCHIVE_GROUPS_DIR}/{source_group_id}/{MANIFEST_FILENAME}");
+            let manifest_path =
+                format!("{ARCHIVE_GROUPS_DIR}/{source_group_id}/{MANIFEST_FILENAME}");
             let bytes = entries
                 .get(&manifest_path)
-                .ok_or(ArchiveError::GroupManifestMissing { group_id: source_group_id })?;
+                .ok_or(ArchiveError::GroupManifestMissing {
+                    group_id: source_group_id,
+                })?;
             let text = utf8(&manifest_path, bytes)?;
             let manifest = GroupManifest::from_toml(text).map_err(|source| {
-                ArchiveError::GroupManifestParse { group_id: source_group_id, source }
+                ArchiveError::GroupManifestParse {
+                    group_id: source_group_id,
+                    source,
+                }
             })?;
             // The repo is created at manifest.group_id; reject an archive
             // whose inner manifest disagrees with its directory uuid so a
@@ -527,7 +545,9 @@ async fn resolve_or_create_target(
             let entry = groups
                 .get(&GroupId::from_uuid(source_group_id))
                 .await
-                .ok_or(ArchiveError::GroupManifestMissing { group_id: source_group_id })?;
+                .ok_or(ArchiveError::GroupManifestMissing {
+                    group_id: source_group_id,
+                })?;
             Ok((entry, true))
         }
         Err(other) => Err(other.into()),
@@ -568,7 +588,16 @@ async fn import_one_memory(
 
     match resolve_memory(backend, &target.handle, None, Some(id)).await {
         Err(ImportError::MemoryNotFound { .. }) => {
-            import_memory(backend, &target.handle, slug, &prepared, None, author, false).await?;
+            import_memory(
+                backend,
+                &target.handle,
+                slug,
+                &prepared,
+                None,
+                author,
+                false,
+            )
+            .await?;
             outcome.created += 1;
         }
         Err(other) => return Err(other.into()),
@@ -598,7 +627,10 @@ async fn import_one_memory(
                 .await?;
                 outcome.overwritten += 1;
             } else {
-                outcome.conflicts.push(MemoryConflict { slug: existing.slug, id });
+                outcome.conflicts.push(MemoryConflict {
+                    slug: existing.slug,
+                    id,
+                });
             }
         }
     }
@@ -738,7 +770,10 @@ fn content_without_id(content: &str) -> Result<String, ArchiveError> {
 /// filename uuid) and return the content guaranteed to carry it. Yields
 /// `None` only when the memory has no id in either place — an archive
 /// whose identity cannot be preserved.
-fn ensure_id(content: &str, fallback: Option<Uuid>) -> Result<Option<(Uuid, String)>, ArchiveError> {
+fn ensure_id(
+    content: &str,
+    fallback: Option<Uuid>,
+) -> Result<Option<(Uuid, String)>, ArchiveError> {
     let mut parsed = MemoryFile::parse(content).map_err(ImportError::Parse)?;
     if let Some(id) = parsed.frontmatter.id {
         return Ok(Some((id, content.to_string())));
@@ -777,9 +812,14 @@ mod tests {
     async fn export_group(home: &ScratchHome, group: GroupId) -> Vec<u8> {
         let entry = home.groups().get(&group).await.expect("group entry");
         let mut buf = Vec::new();
-        export_archive(home.backend(), &[entry], &ExportOptions::default(), &mut buf)
-            .await
-            .expect("export");
+        export_archive(
+            home.backend(),
+            &[entry],
+            &ExportOptions::default(),
+            &mut buf,
+        )
+        .await
+        .expect("export");
         buf
     }
 
@@ -833,7 +873,9 @@ mod tests {
         header.set_entry_type(tar::EntryType::Regular);
         header.set_size(data.len() as u64);
         header.set_mode(0o644);
-        builder.append_data(&mut header, path, data).expect("append");
+        builder
+            .append_data(&mut header, path, data)
+            .expect("append");
     }
 
     #[test]
@@ -1150,7 +1192,10 @@ mod tests {
             .await
             .expect("list");
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0].id, memory_id, "filename id preserved, not re-minted");
+        assert_eq!(
+            files[0].id, memory_id,
+            "filename id preserved, not re-minted"
+        );
 
         let second = import_archive(
             home.backend(),
@@ -1452,7 +1497,11 @@ mod tests {
         let src = ScratchHome::new().await.expect("src");
         let alpha = src.seed_group("alpha").await.expect("alpha");
         let beta = src.seed_group("beta").await.expect("beta");
-        let alpha_entry = src.groups().get(&alpha.group_id).await.expect("alpha entry");
+        let alpha_entry = src
+            .groups()
+            .get(&alpha.group_id)
+            .await
+            .expect("alpha entry");
         let beta_entry = src.groups().get(&beta.group_id).await.expect("beta entry");
         import_memory(
             src.backend(),

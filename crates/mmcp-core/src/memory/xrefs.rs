@@ -103,11 +103,9 @@ pub fn parse_memory_refs(
     values
         .iter()
         .map(|raw| {
-            let target = Uuid::parse_str(&raw.target).map_err(|_| {
-                XrefError::InvalidMemoryRef {
-                    field,
-                    detail: format!("target '{}' is not a valid UUID", raw.target),
-                }
+            let target = Uuid::parse_str(&raw.target).map_err(|_| XrefError::InvalidMemoryRef {
+                field,
+                detail: format!("target '{}' is not a valid UUID", raw.target),
             })?;
             MemoryRef::validate_commit_shape(&raw.commit).map_err(|e| {
                 XrefError::InvalidMemoryRef {
@@ -184,7 +182,10 @@ mod tests {
         match err {
             XrefError::InvalidMemoryRef { field, detail } => {
                 assert_eq!(field, "refs");
-                assert!(detail.contains("not-a-uuid"), "detail must echo input: {detail}");
+                assert!(
+                    detail.contains("not-a-uuid"),
+                    "detail must echo input: {detail}"
+                );
             }
             other => panic!("unexpected variant: {other:?}"),
         }

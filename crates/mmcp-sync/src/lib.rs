@@ -29,8 +29,8 @@ pub mod version;
 
 pub use bump::parse_bump_intent;
 pub use client::{
-    ConflictBody, ManifestResponse, PushRequest, PushResponse, RefEntry, RefsResponse,
-    RemoteGroup, SyncClient,
+    ConflictBody, ManifestResponse, PushRequest, PushResponse, RefEntry, RefsResponse, RemoteGroup,
+    SyncClient,
 };
 pub use engine::{
     FetchReport, FetchedGroup, GroupHandleResolver, PullReport, PushReport, PushedGroup,

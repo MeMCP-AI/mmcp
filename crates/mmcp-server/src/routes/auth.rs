@@ -114,11 +114,13 @@ async fn login(
         .map_err(AuthHttpError::internal)?
         .ok_or(AuthHttpError::Unauthorized("invalid credentials"))?;
 
-    auth_session.login(&user).await.map_err(AuthHttpError::internal)?;
+    auth_session
+        .login(&user)
+        .await
+        .map_err(AuthHttpError::internal)?;
 
     let now = Timestamp::now().as_second();
-    let claims =
-        mmcp_auth::SessionClaims::new_with_lifetime(user.id, Uuid::now_v7(), now, 3600);
+    let claims = mmcp_auth::SessionClaims::new_with_lifetime(user.id, Uuid::now_v7(), now, 3600);
     let token = state
         .token_issuer
         .issue(&claims)
@@ -200,10 +202,7 @@ async fn oauth_callback(
         #[allow(dead_code)]
         token_type: Option<String>,
     }
-    let tokens: TokenResponse = token_resp
-        .json()
-        .await
-        .map_err(AuthHttpError::internal)?;
+    let tokens: TokenResponse = token_resp.json().await.map_err(AuthHttpError::internal)?;
 
     // Fetch user info from the provider.
     let userinfo_resp = http
@@ -230,7 +229,10 @@ async fn oauth_callback(
         .map_err(AuthHttpError::internal)?
         .ok_or(AuthHttpError::Unauthorized("oauth authentication failed"))?;
 
-    auth_session.login(&user).await.map_err(AuthHttpError::internal)?;
+    auth_session
+        .login(&user)
+        .await
+        .map_err(AuthHttpError::internal)?;
 
     Ok((
         StatusCode::OK,
@@ -293,10 +295,7 @@ async fn passkey_register_start(
         .filter_map(|c| serde_json::from_str(&c.credential_json).ok())
         .collect();
 
-    let exclude_creds: Vec<CredentialID> = existing
-        .iter()
-        .map(|pk| pk.cred_id().clone())
-        .collect();
+    let exclude_creds: Vec<CredentialID> = existing.iter().map(|pk| pk.cred_id().clone()).collect();
     let (ccr, reg_state_value) = state
         .webauthn
         .start_passkey_registration(
@@ -328,21 +327,21 @@ async fn passkey_register_finish(
     State(state): State<ServerState>,
     Json(req): Json<PasskeyRegFinishRequest>,
 ) -> Result<Json<serde_json::Value>, AuthHttpError> {
-    let pending = reg_state()
-        .lock()
-        .await
-        .remove(&req.user_id)
-        .ok_or(AuthHttpError::BadRequest(
-            "no pending registration for this user",
-        ))?;
+    let pending =
+        reg_state()
+            .lock()
+            .await
+            .remove(&req.user_id)
+            .ok_or(AuthHttpError::BadRequest(
+                "no pending registration for this user",
+            ))?;
 
     let passkey = state
         .webauthn
         .finish_passkey_registration(&req.response, &pending)
         .map_err(AuthHttpError::internal)?;
 
-    let cred_json =
-        serde_json::to_string(&passkey).map_err(AuthHttpError::internal)?;
+    let cred_json = serde_json::to_string(&passkey).map_err(AuthHttpError::internal)?;
     let now = Timestamp::now().as_millisecond();
     passkey_repo::create(
         state.database.connection(),
@@ -431,20 +430,18 @@ async fn passkey_login_finish(
     for cred_row in &creds {
         if let Ok(mut pk) = serde_json::from_str::<Passkey>(&cred_row.credential_json) {
             if pk.update_credential(&auth_result) == Some(true) {
-                let updated_json =
-                    serde_json::to_string(&pk).map_err(AuthHttpError::internal)?;
+                let updated_json = serde_json::to_string(&pk).map_err(AuthHttpError::internal)?;
                 let now = Timestamp::now().as_millisecond();
-                let _ = passkey_repo::update_after_auth(conn, cred_row.id, updated_json, now)
-                    .await;
+                let _ = passkey_repo::update_after_auth(conn, cred_row.id, updated_json, now).await;
             }
         }
     }
 
     // Look up which credential row was used so we can resolve the
     // user via the auth backend.
-    let matched_cred = creds.first().ok_or(AuthHttpError::Unauthorized(
-        "no matching credential found",
-    ))?;
+    let matched_cred = creds
+        .first()
+        .ok_or(AuthHttpError::Unauthorized("no matching credential found"))?;
 
     let authed_user = auth_session
         .authenticate(Credentials::Passkey {
@@ -495,9 +492,7 @@ impl IntoResponse for AuthHttpError {
             AuthHttpError::BadRequest(msg) => {
                 (StatusCode::BAD_REQUEST, msg.to_string()).into_response()
             }
-            AuthHttpError::Conflict(msg) => {
-                (StatusCode::CONFLICT, msg.to_string()).into_response()
-            }
+            AuthHttpError::Conflict(msg) => (StatusCode::CONFLICT, msg.to_string()).into_response(),
             AuthHttpError::Internal(msg) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
             }

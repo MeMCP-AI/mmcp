@@ -234,11 +234,7 @@ async fn push_and_fetch_round_trip_through_file_url() {
     let (backend_dst, _tmp_dst) = backend_in_tempdir();
     let handle_dst = backend_dst.create_group_repo(&manifest).await.unwrap();
 
-    let refs = vec![mmcp_git::RefSpec::new(
-        "refs/heads/main",
-        "refs/heads/main",
-    )
-    .forced()];
+    let refs = vec![mmcp_git::RefSpec::new("refs/heads/main", "refs/heads/main").forced()];
     let creds = mmcp_git::Credentials::None;
 
     // Push source → remote. Forced to overwrite the manifest commit
@@ -250,9 +246,7 @@ async fn push_and_fetch_round_trip_through_file_url() {
 
     // Fetch remote → destination. Force-update the local main so
     // the remote's tip replaces the destination's bootstrap commit.
-    let fetch_refs = vec![
-        mmcp_git::RefSpec::new("refs/heads/main", "refs/heads/main").forced(),
-    ];
+    let fetch_refs = vec![mmcp_git::RefSpec::new("refs/heads/main", "refs/heads/main").forced()];
     backend_dst
         .fetch(&handle_dst, &remote_url, &fetch_refs, &creds)
         .await
@@ -321,10 +315,7 @@ async fn fast_forward_advances_local_ref_to_target_commit() {
 
     // Child commit on main: adds a file.
     let child_id = backend
-        .write_commit(
-            &repo,
-            sample_commit("alice", "main", "hello.md", "hi"),
-        )
+        .write_commit(&repo, sample_commit("alice", "main", "hello.md", "hi"))
         .await
         .unwrap();
 

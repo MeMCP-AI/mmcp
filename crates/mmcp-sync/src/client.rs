@@ -152,11 +152,7 @@ impl SyncClient {
         }
     }
 
-    fn request_builder(
-        &self,
-        method: reqwest::Method,
-        path: &str,
-    ) -> reqwest::RequestBuilder {
+    fn request_builder(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
         let mut builder = self.inner.http.request(method, self.url(path));
         if let Some(token) = self.inner.bearer_token.as_ref() {
             builder = builder.bearer_auth(token);
@@ -200,14 +196,14 @@ impl SyncClient {
 
         let status = response.status();
         if status.is_success() {
-            return response.json::<PushResponse>().await.map_err(SyncError::transport);
+            return response
+                .json::<PushResponse>()
+                .await
+                .map_err(SyncError::transport);
         }
 
         if status == StatusCode::CONFLICT {
-            let conflict: ConflictBody = response
-                .json()
-                .await
-                .map_err(SyncError::transport)?;
+            let conflict: ConflictBody = response.json().await.map_err(SyncError::transport)?;
             return Err(SyncError::Conflict {
                 memory: conflict.memory_id,
                 local_commit: conflict.local_commit,

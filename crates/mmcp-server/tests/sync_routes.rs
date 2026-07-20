@@ -51,10 +51,7 @@ async fn start_server() -> (SocketAddr, mmcp_server::state::ServerState, TempDir
 
 /// Insert a group row in the server DB and create its bare repo on
 /// disk with the stock manifest commit. Returns the group UUID.
-async fn seed_group(
-    state: &mmcp_server::state::ServerState,
-    slug: &str,
-) -> Uuid {
+async fn seed_group(state: &mmcp_server::state::ServerState, slug: &str) -> Uuid {
     let group_id = GroupId::new();
     let uuid = *group_id.as_uuid();
     let owner = Uuid::now_v7();
@@ -138,10 +135,7 @@ async fn sync_refs_returns_main_tip_for_known_group() {
         .expect("decode json");
     assert_eq!(resp.group_id, group);
     assert_eq!(resp.refs.len(), 1, "main should advertise one ref");
-    assert_eq!(
-        resp.refs[0].name,
-        mmcp_core::conventions::MAIN_BRANCH_REF
-    );
+    assert_eq!(resp.refs[0].name, mmcp_core::conventions::MAIN_BRANCH_REF);
     assert_eq!(resp.refs[0].commit.len(), 40);
 }
 
@@ -230,15 +224,15 @@ async fn sync_push_first_publish_assigns_0_1_0_and_records_tag() {
         .expect("POST push");
     let status = raw.status();
     let text = raw.text().await.expect("read body");
-    assert!(
-        status.is_success(),
-        "push returned {status}: {text}"
-    );
+    assert!(status.is_success(), "push returned {status}: {text}");
     let resp: PushResponse = serde_json::from_str(&text).expect("decode push response");
 
     assert_eq!(resp.group_id, group);
     assert_eq!(resp.memory_id, memory);
-    assert_eq!(resp.assigned_version, "0.1.0", "first publish is always 0.1.0");
+    assert_eq!(
+        resp.assigned_version, "0.1.0",
+        "first publish is always 0.1.0"
+    );
     assert_eq!(resp.tag, "v0.1.0");
 }
 

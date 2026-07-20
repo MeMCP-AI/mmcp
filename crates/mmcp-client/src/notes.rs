@@ -179,10 +179,7 @@ pub fn sync_push_partial_failure_notes(report: &PushReport, server_url: &str) ->
 /// the `mmcp memory write / edit / edit-body` CLI subcommands so
 /// both surfaces emit the same code with the same context shape.
 #[must_use]
-pub fn id_validation_to_notes(
-    validation: &mmcp_store::IdValidation,
-    slug: &str,
-) -> Vec<Note> {
+pub fn id_validation_to_notes(validation: &mmcp_store::IdValidation, slug: &str) -> Vec<Note> {
     match validation {
         mmcp_store::IdValidation::Match => Vec::new(),
         mmcp_store::IdValidation::MismatchAccepted {
@@ -230,11 +227,7 @@ pub fn id_validation_to_notes(
 ///
 /// Returns an empty Vec when everything checks out.
 #[must_use]
-pub fn malformed_frontmatter_notes(
-    slug: &str,
-    filename_id: Uuid,
-    file: &MemoryFile,
-) -> Vec<Note> {
+pub fn malformed_frontmatter_notes(slug: &str, filename_id: Uuid, file: &MemoryFile) -> Vec<Note> {
     let fm = &file.frontmatter;
     let mut notes = Vec::new();
     if fm.name.trim().is_empty() {

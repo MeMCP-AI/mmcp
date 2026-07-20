@@ -175,10 +175,7 @@ mod tests {
         for row in &rows {
             assert!(!row.name.is_empty(), "tool name must not be empty");
             assert!(
-                row.title
-                    .as_deref()
-                    .map(|t| !t.is_empty())
-                    .unwrap_or(false),
+                row.title.as_deref().map(|t| !t.is_empty()).unwrap_or(false),
                 "{}: title must be non-empty",
                 row.name,
             );

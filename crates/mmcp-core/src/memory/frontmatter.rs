@@ -102,11 +102,7 @@ impl MemoryFrontmatter {
     /// so "add one field to MemoryFrontmatter" stays a one-file
     /// change across the workspace.
     #[must_use]
-    pub fn new(
-        name: impl Into<String>,
-        description: impl Into<String>,
-        kind: MemoryKind,
-    ) -> Self {
+    pub fn new(name: impl Into<String>, description: impl Into<String>, kind: MemoryKind) -> Self {
         Self {
             id: None,
             name: name.into(),

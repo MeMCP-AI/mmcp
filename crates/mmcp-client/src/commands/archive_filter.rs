@@ -47,7 +47,11 @@ pub struct MemoryFilterArgs {
     pub search: Option<String>,
 
     /// Keep only mandatory memories.
-    #[arg(long = "mandatory", default_value_t = false, conflicts_with = "non_mandatory")]
+    #[arg(
+        long = "mandatory",
+        default_value_t = false,
+        conflicts_with = "non_mandatory"
+    )]
     pub mandatory: bool,
 
     /// Keep only non-mandatory memories.

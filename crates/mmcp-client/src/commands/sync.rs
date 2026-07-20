@@ -237,7 +237,10 @@ pub async fn run_sync(selector: SyncSelector) -> Result<()> {
         report.pulled.new_groups.len(),
         report.pushed.pushed.len()
     );
-    render_notes_tail(&sync_push_partial_failure_notes(&report.pushed, &server_url));
+    render_notes_tail(&sync_push_partial_failure_notes(
+        &report.pushed,
+        &server_url,
+    ));
     Ok(())
 }
 
