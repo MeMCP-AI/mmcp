@@ -45,7 +45,6 @@ use mmcp_store::home::{MmcpHome, ResolvedAuthor};
 use mmcp_store::memory::ImportError;
 use mmcp_store::sessions::SessionStore;
 
-
 /// Run the MCP stdio server loop until the client disconnects.
 pub async fn run(debug_mode: bool, serve_mode: ServeMode) -> Result<()> {
     if debug_mode {
@@ -74,7 +73,8 @@ struct ClientStateInner {
     #[allow(dead_code)]
     // NOTE: consumed by session-scoped tools once they're wired onto the router.
     sessions: SessionStore,
-    #[allow(dead_code)] // NOTE: held to keep the notify watcher alive for the process lifetime.
+    #[allow(dead_code)]
+    // NOTE: held to keep the notify watcher alive for the process lifetime.
     watcher: WatcherHandle,
     /// Resolved commit author from user config cascade.
     author: ResolvedAuthor,
@@ -1520,8 +1520,7 @@ impl McpServer {
         let output_schema = shared_output_schema();
         for (name, route) in tool_router.map.iter_mut() {
             let name_str = name.as_ref();
-            route.attr.icons =
-                Some(icons_for_category(tool_icon_category(name_str)));
+            route.attr.icons = Some(icons_for_category(tool_icon_category(name_str)));
             route.attr.meta = meta_for_tool(name_str);
             route.attr.output_schema = Some(output_schema.clone());
         }
@@ -1609,15 +1608,10 @@ impl McpServer {
             if !slug_matches_filter(&file.slug, prefix, recursive) {
                 continue;
             }
-            let descriptor = read_memory_descriptor(
-                &self.state.backend,
-                &entry,
-                &file.path,
-                &file.slug,
-                None,
-            )
-            .await
-            .map_err(git_error)?;
+            let descriptor =
+                read_memory_descriptor(&self.state.backend, &entry, &file.path, &file.slug, None)
+                    .await
+                    .map_err(git_error)?;
             memories.push(descriptor);
         }
         Ok(ok_json(json!({
@@ -1705,14 +1699,10 @@ impl McpServer {
         Parameters(args): Parameters<ListVersionsArgs>,
     ) -> Result<CallToolResult, McpError> {
         let entry = self.resolve_group_entry(&args.group).await?;
-        let resolved = mmcp_store::resolve_memory(
-            &self.state.backend,
-            &entry.handle,
-            Some(&args.slug),
-            None,
-        )
-        .await
-        .map_err(map_memory_error_to_mcp)?;
+        let resolved =
+            mmcp_store::resolve_memory(&self.state.backend, &entry.handle, Some(&args.slug), None)
+                .await
+                .map_err(map_memory_error_to_mcp)?;
         let history = self
             .state
             .backend
@@ -2483,9 +2473,9 @@ impl McpServer {
         // slug directories, so we need the same coarsening lock the
         // feature rename takes — Exclusive Group blocks every
         // narrower in-flight memory edit and every new one.
-        let _lock_guards = mmcp_store::lock::acquire_chain(
-            &mmcp_store::lock::coarsen_group_chain(*entry.manifest.group_id.as_uuid()),
-        )
+        let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::coarsen_group_chain(
+            *entry.manifest.group_id.as_uuid(),
+        ))
         .await;
         let outcome = mmcp_store::move_memory_path(
             &self.state.backend,
@@ -3088,7 +3078,9 @@ impl McpServer {
                     .await
                     .map_err(|_| {
                         McpError::invalid_params(
-                            format!("project selector '{query}' does not resolve to a mirrored group"),
+                            format!(
+                                "project selector '{query}' does not resolve to a mirrored group"
+                            ),
                             Some(json!({
                                 "code": "unknown_project",
                                 "query": query,
@@ -3102,8 +3094,7 @@ impl McpServer {
                     Some(p) => Some(std::path::PathBuf::from(p)),
                     None => std::env::current_dir().ok(),
                 };
-                let project_root =
-                    starting_dir.and_then(|dir| find_project_root(&dir));
+                let project_root = starting_dir.and_then(|dir| find_project_root(&dir));
                 let project_cfg = project_root
                     .as_ref()
                     .and_then(|root| load_project_config(root).ok());
@@ -3404,8 +3395,11 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<crate::commands::subscribe::SubscribeMcpArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.apply_subscription_mcp(args, crate::commands::subscribe::SubscriptionAction::Subscribe)
-            .await
+        self.apply_subscription_mcp(
+            args,
+            crate::commands::subscribe::SubscriptionAction::Subscribe,
+        )
+        .await
     }
 
     #[tool(
@@ -3831,13 +3825,13 @@ impl McpServer {
             args.project.as_deref(),
             &cwd,
         )
-            .await
-            .map_err(map_feature_error_to_mcp)?;
+        .await
+        .map_err(map_feature_error_to_mcp)?;
         let status = parse_status_arg(args.status.as_deref())?.unwrap_or_default();
-        let depends_on =
-            mmcp_store::parse_cross_refs(&args.depends_on, "depends_on").map_err(map_xref_error_to_mcp)?;
-        let blocks = mmcp_store::parse_cross_refs(&args.blocks, "blocks")
+        let depends_on = mmcp_store::parse_cross_refs(&args.depends_on, "depends_on")
             .map_err(map_xref_error_to_mcp)?;
+        let blocks =
+            mmcp_store::parse_cross_refs(&args.blocks, "blocks").map_err(map_xref_error_to_mcp)?;
         let refs = parse_wire_refs(args.refs, "refs")?;
         let source = parse_optional_source(args.source.as_deref())?;
         let spec = mmcp_store::features::AddSpec {
@@ -3887,8 +3881,8 @@ impl McpServer {
             args.project.as_deref(),
             &cwd,
         )
-            .await
-            .map_err(map_feature_error_to_mcp)?;
+        .await
+        .map_err(map_feature_error_to_mcp)?;
         let record = mmcp_store::features::read_feature(
             &self.state.backend,
             &entry,
@@ -3910,7 +3904,10 @@ impl McpServer {
             record.superseded_by.as_ref(),
         )
         .await;
-        Ok(ok_json_with_notes(feature_record_to_json(&entry, &record), notes))
+        Ok(ok_json_with_notes(
+            feature_record_to_json(&entry, &record),
+            notes,
+        ))
     }
 
     #[tool(
@@ -3933,8 +3930,8 @@ impl McpServer {
             args.project.as_deref(),
             &cwd,
         )
-            .await
-            .map_err(map_feature_error_to_mcp)?;
+        .await
+        .map_err(map_feature_error_to_mcp)?;
         let status = match args.status.as_deref() {
             Some(raw) => Some(parse_status_arg(Some(raw))?.unwrap_or_default()),
             None => None,
@@ -4030,8 +4027,8 @@ impl McpServer {
             args.project.as_deref(),
             &cwd,
         )
-            .await
-            .map_err(map_feature_error_to_mcp)?;
+        .await
+        .map_err(map_feature_error_to_mcp)?;
         let commit_id = mmcp_store::features::delete_feature(
             &self.state.backend,
             &entry,
@@ -4068,8 +4065,8 @@ impl McpServer {
             args.project.as_deref(),
             &cwd,
         )
-            .await
-            .map_err(map_feature_error_to_mcp)?;
+        .await
+        .map_err(map_feature_error_to_mcp)?;
         let records = mmcp_store::rename_feature(
             &self.state.backend,
             &entry,
@@ -4112,8 +4109,8 @@ impl McpServer {
             args.project.as_deref(),
             &cwd,
         )
-            .await
-            .map_err(map_feature_error_to_mcp)?;
+        .await
+        .map_err(map_feature_error_to_mcp)?;
         let status = parse_status_arg(args.status.as_deref())?;
         let show_all = args.all.unwrap_or(false);
         // FR-048: list-style surfaces return body-free summaries.
@@ -4266,7 +4263,6 @@ impl McpServer {
             Self::sync_tool_attr(),
         ]
     }
-
 }
 
 /// Module-level pub(crate) accessor for the canonical tool list.
@@ -4328,16 +4324,9 @@ fn tool_icon_category(name: &str) -> ToolIconCategory {
         | "bootstrap_context"
         | "status"
         | "describe_tools" => ToolIconCategory::Read,
-        "read_feature"
-        | "list_features"
-        | "add_feature"
-        | "update_feature"
-        | "delete_feature"
+        "read_feature" | "list_features" | "add_feature" | "update_feature" | "delete_feature"
         | "rename_feature" => ToolIconCategory::Feature,
-        "debug_read_file"
-        | "debug_list_tree"
-        | "debug_git_log"
-        | "debug_write_file"
+        "debug_read_file" | "debug_list_tree" | "debug_git_log" | "debug_write_file"
         | "debug_toggle" => ToolIconCategory::Debug,
         "sync_fetch" | "sync_push" | "sync_pull" | "sync" => ToolIconCategory::Sync,
         // Archive export reads the store to produce an artifact;
@@ -4491,8 +4480,10 @@ fn shared_output_schema() -> std::sync::Arc<rmcp::model::JsonObject> {
             // warning notes; absent on tools that never emit any.
             let mut props = serde_json::Map::new();
             let mut notes_schema = serde_json::Map::new();
-            notes_schema
-                .insert("type".to_string(), serde_json::Value::String("array".to_string()));
+            notes_schema.insert(
+                "type".to_string(),
+                serde_json::Value::String("array".to_string()),
+            );
             notes_schema.insert(
                 "description".to_string(),
                 serde_json::Value::String(
@@ -4565,38 +4556,30 @@ pub(crate) fn arg_risk_hints_for(tool_name: &str) -> &'static [ArgRiskHint] {
                 reason: "force: true bypasses the FR-28 filename/frontmatter id-mismatch guard",
             },
         ],
-        "import_memory" => &[
-            ArgRiskHint {
-                arg: "override",
-                risk_when: "true",
-                kind: "destructive",
-                reason: "override: true replaces the colliding-id memory in place",
-            },
-        ],
-        "edit_memory" => &[
-            ArgRiskHint {
-                arg: "force",
-                risk_when: "true",
-                kind: "destructive",
-                reason: "force: true bypasses the FR-28 filename/frontmatter id-mismatch guard on a ByFilename write",
-            },
-        ],
-        "edit_memory_body" => &[
-            ArgRiskHint {
-                arg: "force",
-                risk_when: "true",
-                kind: "destructive",
-                reason: "force: true bypasses the FR-28 filename/frontmatter id-mismatch guard",
-            },
-        ],
-        "import_archive" => &[
-            ArgRiskHint {
-                arg: "overwrite",
-                risk_when: "true",
-                kind: "destructive",
-                reason: "overwrite: true replaces colliding memories in place instead of reporting a conflict",
-            },
-        ],
+        "import_memory" => &[ArgRiskHint {
+            arg: "override",
+            risk_when: "true",
+            kind: "destructive",
+            reason: "override: true replaces the colliding-id memory in place",
+        }],
+        "edit_memory" => &[ArgRiskHint {
+            arg: "force",
+            risk_when: "true",
+            kind: "destructive",
+            reason: "force: true bypasses the FR-28 filename/frontmatter id-mismatch guard on a ByFilename write",
+        }],
+        "edit_memory_body" => &[ArgRiskHint {
+            arg: "force",
+            risk_when: "true",
+            kind: "destructive",
+            reason: "force: true bypasses the FR-28 filename/frontmatter id-mismatch guard",
+        }],
+        "import_archive" => &[ArgRiskHint {
+            arg: "overwrite",
+            risk_when: "true",
+            kind: "destructive",
+            reason: "overwrite: true replaces colliding memories in place instead of reporting a conflict",
+        }],
         _ => &[],
     }
 }
@@ -4694,8 +4677,8 @@ impl McpServer {
 
         let cwd = current_dir_for_mcp()?;
         let explicit = args.path.as_deref().map(Path::new);
-        let project_root = resolve_project_root(explicit, Some(&cwd))
-            .map_err(map_subscribe_error_to_mcp)?;
+        let project_root =
+            resolve_project_root(explicit, Some(&cwd)).map_err(map_subscribe_error_to_mcp)?;
 
         validate_subscription_target(
             &self.state.backend,
@@ -4706,9 +4689,8 @@ impl McpServer {
         .await
         .map_err(map_subscribe_error_to_mcp)?;
 
-        let mut cfg = load_project_config(&project_root).map_err(|e| {
-            McpError::internal_error(format!("loading project config: {e}"), None)
-        })?;
+        let mut cfg = load_project_config(&project_root)
+            .map_err(|e| McpError::internal_error(format!("loading project config: {e}"), None))?;
         let changed = apply_subscription(&mut cfg, args.kind, &args.value, action);
         if changed {
             mmcp_store::config::save(&project_root, &cfg).map_err(|e| {
@@ -4739,10 +4721,9 @@ impl McpServer {
     ) -> Result<(GroupEntry, mmcp_store::ResolvedMemory), McpError> {
         let entry = self.resolve_group_entry(group).await?;
         let id = parse_optional_uuid(id)?;
-        let resolved =
-            mmcp_store::resolve_memory(&self.state.backend, &entry.handle, slug, id)
-                .await
-                .map_err(map_memory_error_to_mcp)?;
+        let resolved = mmcp_store::resolve_memory(&self.state.backend, &entry.handle, slug, id)
+            .await
+            .map_err(map_memory_error_to_mcp)?;
         Ok((entry, resolved))
     }
 
@@ -4894,15 +4875,17 @@ async fn resolve_sync_filter(
         return Ok(mmcp_sync::SyncFilter::Scope(scope.into_core()));
     }
     if let Some(query) = args.group.as_deref() {
-        let entry = mmcp_store::resolve_group(groups, query).await.map_err(|e| {
-            McpError::invalid_params(
-                e.to_string(),
-                Some(json!({
-                    "code": "unknown_group",
-                    "query": query,
-                })),
-            )
-        })?;
+        let entry = mmcp_store::resolve_group(groups, query)
+            .await
+            .map_err(|e| {
+                McpError::invalid_params(
+                    e.to_string(),
+                    Some(json!({
+                        "code": "unknown_group",
+                        "query": query,
+                    })),
+                )
+            })?;
         return Ok(mmcp_sync::SyncFilter::Group(
             *entry.manifest.group_id.as_uuid(),
         ));
@@ -5136,7 +5119,10 @@ fn parse_wire_refs(
     raw: Vec<MemoryRefArg>,
     field: &'static str,
 ) -> Result<Vec<mmcp_core::memory::MemoryRef>, McpError> {
-    let inputs: Vec<_> = raw.into_iter().map(MemoryRefArg::into_store_input).collect();
+    let inputs: Vec<_> = raw
+        .into_iter()
+        .map(MemoryRefArg::into_store_input)
+        .collect();
     mmcp_store::parse_memory_refs(&inputs, field).map_err(map_xref_error_to_mcp)
 }
 
@@ -5308,9 +5294,7 @@ fn map_init_project_error_to_mcp(err: crate::commands::init::InitProjectError) -
 /// bridge refused to produce markdown.
 /// Map a [`crate::commands::subscribe::SubscribeError`] to an
 /// [`McpError`] with a structured `code` payload.
-fn map_subscribe_error_to_mcp(
-    err: crate::commands::subscribe::SubscribeError,
-) -> McpError {
+fn map_subscribe_error_to_mcp(err: crate::commands::subscribe::SubscribeError) -> McpError {
     use crate::commands::subscribe::SubscribeError;
     let message = err.to_string();
     let payload = match &err {
@@ -5604,7 +5588,11 @@ fn map_memory_error_to_mcp(err: ImportError) -> McpError {
             "candidates": candidates.iter().map(|u| u.to_string()).collect::<Vec<_>>(),
             "retry_hint": "pass an explicit id to disambiguate",
         }),
-        ImportError::MemoryIdMismatch { slug, expected, got } => json!({
+        ImportError::MemoryIdMismatch {
+            slug,
+            expected,
+            got,
+        } => json!({
             "code": "memory_id_mismatch",
             "slug": slug,
             "expected": expected.to_string(),
@@ -5693,6 +5681,26 @@ fn map_memory_edit_error_to_mcp(err: mmcp_store::MemoryEditError) -> McpError {
         E::Parse(inner) => json!({
             "code": "body_parse_failed",
             "detail": inner.to_string(),
+        }),
+        E::Splice(inner) => json!({
+            "code": "invalid_splice_range",
+            "detail": inner.to_string(),
+        }),
+        E::PreambleNotUpsertable => json!({
+            "code": "preamble_not_upsertable",
+            "path": mmcp_core::memory::Section::PREAMBLE_PATH,
+        }),
+        E::UpsertPathUnreachable {
+            requested,
+            produced,
+        } => json!({
+            "code": "upsert_path_unreachable",
+            "requested": requested,
+            "produced": produced,
+        }),
+        E::UpsertSectionNotSelfContained { requested } => json!({
+            "code": "upsert_section_not_self_contained",
+            "requested": requested,
         }),
     };
     McpError::invalid_params(message, Some(payload))
@@ -5967,7 +5975,6 @@ fn parse_optional_source(value: Option<&str>) -> Result<Option<Uuid>, McpError> 
     }
 }
 
-
 fn parse_rev(value: Option<&str>) -> Rev {
     match value {
         // Default: resolve via HEAD so repos whose default branch is
@@ -6066,7 +6073,6 @@ fn claude_md_notes(project_root: Option<&std::path::Path>) -> Vec<mmcp_proto::No
     }))]
 }
 
-
 fn frontmatter_to_json(fm: &MemoryFrontmatter) -> serde_json::Value {
     json!({
         "name": fm.name,
@@ -6118,7 +6124,6 @@ fn ok_json_with_notes(
     let text = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
     CallToolResult::success(vec![Content::text(Cow::Owned(text))])
 }
-
 
 // `id_validation_to_notes` was hoisted to `crate::notes` so
 // the CLI memory subcommands can reuse the same FR-45 codes.
@@ -6658,7 +6663,9 @@ mod tests {
             "two overlapping queries must dedupe to one row; got: {hits:?}",
         );
         let entry = &hits[0];
-        let memory = entry.get("memory").expect("multi-mode wraps under `memory`");
+        let memory = entry
+            .get("memory")
+            .expect("multi-mode wraps under `memory`");
         assert_eq!(
             memory.get("slug").and_then(|v| v.as_str()),
             Some("coding-rules")
@@ -6965,9 +6972,7 @@ mod tests {
             .filter_map(|g| g.get("uuid").and_then(|v| v.as_str()))
             .collect();
         assert!(
-            scoped_uuids
-                .iter()
-                .any(|u| *u == global.to_string()),
+            scoped_uuids.iter().any(|u| *u == global.to_string()),
             "Global must always be in scope; saw: {scoped_uuids:?}",
         );
         assert!(
@@ -7892,11 +7897,10 @@ mod tests {
 
     #[test]
     fn map_create_group_error_surfaces_invalid_slug_with_slug_echo() {
-        let err = map_create_group_error_to_mcp(
-            crate::commands::group::CreateGroupError::InvalidSlug {
+        let err =
+            map_create_group_error_to_mcp(crate::commands::group::CreateGroupError::InvalidSlug {
                 slug: "Bad Slug".to_string(),
-            },
-        );
+            });
         let payload = err.data.as_ref().expect("payload");
         assert_eq!(
             payload.get("code").and_then(|v| v.as_str()),
@@ -7957,7 +7961,10 @@ mod tests {
             parsed.get("display_name").and_then(|v| v.as_str()),
             Some("Shared Rules")
         );
-        assert_eq!(parsed.get("protected").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(
+            parsed.get("protected").and_then(|v| v.as_bool()),
+            Some(false)
+        );
         let group_id = parsed
             .get("group_id")
             .and_then(|v| v.as_str())
@@ -8247,7 +8254,10 @@ mod tests {
             .expect("override replaces");
         let parsed = parse_ok_json(res);
         assert_eq!(parsed.get("replaced").and_then(|v| v.as_bool()), Some(true));
-        assert_eq!(parsed.get("id").and_then(|v| v.as_str()), Some(pinned_id.as_str()));
+        assert_eq!(
+            parsed.get("id").and_then(|v| v.as_str()),
+            Some(pinned_id.as_str())
+        );
     }
 
     #[tokio::test]
@@ -8420,11 +8430,7 @@ mod tests {
         // The stored memory must carry the CONVERTED markdown, not
         // the raw adoc source. Re-read it through the store to prove
         // the bridge fired before the commit.
-        let entry = state
-            .groups
-            .get(&group)
-            .await
-            .expect("group indexed");
+        let entry = state.groups.get(&group).await.expect("group indexed");
         let resolved = mmcp_store::resolve_memory(
             &state.backend,
             &entry.handle,
@@ -8622,13 +8628,16 @@ mod tests {
         assert!(
             arr.iter().any(|m| {
                 let slug_is_leaf = m.get("slug").and_then(|v| v.as_str()) == Some("leaf");
-                let path_matches = m
-                    .get("path")
-                    .and_then(|v| v.as_array())
-                    .is_some_and(|segments| {
-                        segments.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>()
-                            == ["nested", "path", "leaf"]
-                    });
+                let path_matches =
+                    m.get("path")
+                        .and_then(|v| v.as_array())
+                        .is_some_and(|segments| {
+                            segments
+                                .iter()
+                                .filter_map(|s| s.as_str())
+                                .collect::<Vec<_>>()
+                                == ["nested", "path", "leaf"]
+                        });
                 slug_is_leaf && path_matches
             }),
             "moved memory must surface under prefix filter; got {arr:?}",
@@ -8677,12 +8686,7 @@ mod tests {
             .await
             .expect("move");
         // Add a sibling under feedback with a shallower path.
-        let entry = server
-            .state
-            .groups
-            .get(&group)
-            .await
-            .expect("group entry");
+        let entry = server.state.groups.get(&group).await.expect("group entry");
         let sibling_id = Uuid::now_v7();
         server
             .state
@@ -9136,6 +9140,68 @@ mod tests {
         );
     }
 
+    /// End-to-end guard on the reported corruption: a stored body
+    /// carries no trailing newline, so an append used to land on the
+    /// last line instead of its own, and a replaced block used to sit
+    /// flush against the following heading.
+    #[tokio::test]
+    async fn edit_memory_body_append_lands_on_its_own_line() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "rules", SECTIONED_MEMORY).await;
+        let server = McpServer::new(state.clone(), ServeMode::Full);
+
+        server
+            .edit_memory_body_unguarded(EditMemoryBodyArgs {
+                group: group.to_string(),
+                slug: Some("rules".into()),
+                id: None,
+                ops: vec![
+                    ToolMemoryEditOp::InsertSectionAfter {
+                        anchor_path: "resolution".into(),
+                        level: 2,
+                        heading: "Tests".into(),
+                        body: "tests body".into(),
+                    },
+                    ToolMemoryEditOp::ReplaceSectionBody {
+                        path: "need".into(),
+                        body: "rewritten need".into(),
+                    },
+                ],
+                message: None,
+                force: false,
+            })
+            .await
+            .expect("edit body");
+
+        let res = server
+            .read_memory(Parameters(ReadMemoryArgs {
+                group: group.to_string(),
+                slug: Some("rules".into()),
+                id: None,
+                version: None,
+            }))
+            .await
+            .expect("read");
+        let parsed = parse_ok_json(res);
+        let body = parsed
+            .get("body")
+            .and_then(|v| v.as_str())
+            .expect("body inline");
+
+        assert!(
+            body.contains("resolution body\n\n## Tests\n\ntests body"),
+            "appended section must open its own block; got:\n{body}",
+        );
+        assert!(
+            body.contains("rewritten need\n\n## Resolution"),
+            "replaced body must not abut the next heading; got:\n{body}",
+        );
+        assert!(
+            !body.contains("bodyrewritten") && !body.contains("body## "),
+            "no line may be merged into its neighbour; got:\n{body}",
+        );
+    }
+
     #[tokio::test]
     async fn edit_memory_body_section_not_found_errors_with_structured_code() {
         let (state, _tmp) = test_state().await;
@@ -9245,10 +9311,7 @@ mod tests {
         }
 
         // Helper that expands the 4-tuple expectation to four args.
-        fn check_bits(
-            tool: Tool,
-            bits: (Option<bool>, Option<bool>, Option<bool>, Option<bool>),
-        ) {
+        fn check_bits(tool: Tool, bits: (Option<bool>, Option<bool>, Option<bool>, Option<bool>)) {
             check(tool, bits.0, bits.1, bits.2, bits.3);
         }
 
@@ -9371,7 +9434,10 @@ mod tests {
     fn tool_icon_category_covers_each_archetype() {
         assert_eq!(tool_icon_category("read_memory"), ToolIconCategory::Read);
         assert_eq!(tool_icon_category("write_memory"), ToolIconCategory::Mutate);
-        assert_eq!(tool_icon_category("read_feature"), ToolIconCategory::Feature);
+        assert_eq!(
+            tool_icon_category("read_feature"),
+            ToolIconCategory::Feature
+        );
         assert_eq!(
             tool_icon_category("debug_read_file"),
             ToolIconCategory::Debug,
@@ -9445,9 +9511,7 @@ mod tests {
                 tool.name,
             );
             assert_eq!(
-                schema
-                    .get("additionalProperties")
-                    .and_then(|v| v.as_bool()),
+                schema.get("additionalProperties").and_then(|v| v.as_bool()),
                 Some(true),
                 "{}: schema must allow additional properties",
                 tool.name,
@@ -9623,7 +9687,10 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name}: title must be present"));
             assert!(!title.is_empty(), "{name}: title must not be empty");
             assert!(entry.get("read_only").is_some(), "{name}: read_only key");
-            assert!(entry.get("destructive").is_some(), "{name}: destructive key");
+            assert!(
+                entry.get("destructive").is_some(),
+                "{name}: destructive key"
+            );
             assert!(entry.get("idempotent").is_some(), "{name}: idempotent key");
             assert!(entry.get("open_world").is_some(), "{name}: open_world key");
         }
