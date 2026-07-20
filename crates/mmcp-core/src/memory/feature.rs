@@ -214,12 +214,8 @@ impl FeatureMetadata {
     pub fn validate_supersede_invariant(&self) -> Result<(), SupersedeInvariantError> {
         match (self.status, self.superseded_by.is_some()) {
             (FeatureStatus::Superseded, true) => Ok(()),
-            (FeatureStatus::Superseded, false) => {
-                Err(SupersedeInvariantError::MissingSupersededBy)
-            }
-            (other, true) => Err(SupersedeInvariantError::UnexpectedSupersededBy {
-                status: other,
-            }),
+            (FeatureStatus::Superseded, false) => Err(SupersedeInvariantError::MissingSupersededBy),
+            (other, true) => Err(SupersedeInvariantError::UnexpectedSupersededBy { status: other }),
             (_, false) => Ok(()),
         }
     }
@@ -301,9 +297,9 @@ mod tests {
         for variant in FeatureStatus::all() {
             let hidden = variant.is_default_hidden();
             match variant {
-                FeatureStatus::Resolved
-                | FeatureStatus::Duplicate
-                | FeatureStatus::Superseded => assert!(hidden, "{variant:?} must be default-hidden"),
+                FeatureStatus::Resolved | FeatureStatus::Duplicate | FeatureStatus::Superseded => {
+                    assert!(hidden, "{variant:?} must be default-hidden")
+                }
                 FeatureStatus::Open | FeatureStatus::Blocked | FeatureStatus::Deferred => {
                     assert!(!hidden, "{variant:?} must stay visible by default")
                 }
@@ -344,8 +340,10 @@ mod tests {
 
     #[test]
     fn supersede_invariant_rejects_status_without_link() {
-        let mut meta = FeatureMetadata::default();
-        meta.status = FeatureStatus::Superseded;
+        let meta = FeatureMetadata {
+            status: FeatureStatus::Superseded,
+            ..Default::default()
+        };
         let err = meta
             .validate_supersede_invariant()
             .expect_err("status without link must fail");
@@ -354,8 +352,10 @@ mod tests {
 
     #[test]
     fn supersede_invariant_rejects_link_without_status() {
-        let mut meta = FeatureMetadata::default();
-        meta.superseded_by = Some(MemoryRef::new(Uuid::now_v7(), forty_char_hex()));
+        let meta = FeatureMetadata {
+            superseded_by: Some(MemoryRef::new(Uuid::now_v7(), forty_char_hex())),
+            ..Default::default()
+        };
         let err = meta
             .validate_supersede_invariant()
             .expect_err("link without status must fail");
@@ -378,7 +378,10 @@ mod tests {
             superseded_by: Some(MemoryRef::new(id, forty_char_hex())),
         };
         let rendered = toml::to_string(&meta).expect("render");
-        assert!(rendered.contains("status = \"superseded\""), "rendered: {rendered}");
+        assert!(
+            rendered.contains("status = \"superseded\""),
+            "rendered: {rendered}"
+        );
         assert!(rendered.contains("[superseded_by]"), "rendered: {rendered}");
         let parsed: FeatureMetadata = toml::from_str(&rendered).expect("parse");
         assert_eq!(parsed, meta);

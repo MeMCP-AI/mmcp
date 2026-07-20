@@ -203,9 +203,9 @@ impl IssueMetadata {
             (IssueStatus::Superseded, false) => {
                 Err(IssueSupersedeInvariantError::MissingSupersededBy)
             }
-            (other, true) => Err(IssueSupersedeInvariantError::UnexpectedSupersededBy {
-                status: other,
-            }),
+            (other, true) => {
+                Err(IssueSupersedeInvariantError::UnexpectedSupersededBy { status: other })
+            }
             (_, false) => Ok(()),
         }
     }
@@ -302,8 +302,10 @@ mod tests {
 
     #[test]
     fn supersede_invariant_rejects_status_without_link() {
-        let mut meta = IssueMetadata::default();
-        meta.status = IssueStatus::Superseded;
+        let meta = IssueMetadata {
+            status: IssueStatus::Superseded,
+            ..Default::default()
+        };
         let err = meta
             .validate_supersede_invariant()
             .expect_err("status without link must fail");
@@ -312,8 +314,10 @@ mod tests {
 
     #[test]
     fn supersede_invariant_rejects_link_without_status() {
-        let mut meta = IssueMetadata::default();
-        meta.superseded_by = Some(MemoryRef::new(Uuid::now_v7(), forty_char_hex()));
+        let meta = IssueMetadata {
+            superseded_by: Some(MemoryRef::new(Uuid::now_v7(), forty_char_hex())),
+            ..Default::default()
+        };
         let err = meta
             .validate_supersede_invariant()
             .expect_err("link without status must fail");

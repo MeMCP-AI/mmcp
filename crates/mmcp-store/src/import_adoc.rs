@@ -197,7 +197,7 @@ fn is_delimiter_line(line: &str, ch: u8) -> bool {
 /// literal / comment / passthrough block. Returns `None` when the
 /// line is a setext heading underline (previous line has content).
 fn detect_listing_opener(lines: &[&str], i: usize) -> Option<u8> {
-    const OPENERS: &[u8] = &[b'-', b'.', b'/', b'+'];
+    const OPENERS: &[u8] = b"-./+";
     let trimmed = lines[i].trim_end();
     let bytes = trimmed.as_bytes();
     let first = *bytes.first()?;
@@ -214,7 +214,7 @@ fn detect_listing_opener(lines: &[&str], i: usize) -> Option<u8> {
     // legal but rare enough that we conservatively let acdc handle
     // it, since [...] attributes always introduce blocks anyway.
     let prev = if i == 0 { "" } else { lines[i - 1].trim_end() };
-    if !prev.is_empty() && !(prev.starts_with('[') && prev.ends_with(']')) {
+    if !(prev.is_empty() || prev.starts_with('[') && prev.ends_with(']')) {
         return None;
     }
     Some(first)
@@ -225,10 +225,7 @@ struct DescriptionListRewrite {
     consumed: usize,
 }
 
-fn description_list_rewrite(
-    lines: &[&str],
-    start: usize,
-) -> Option<DescriptionListRewrite> {
+fn description_list_rewrite(lines: &[&str], start: usize) -> Option<DescriptionListRewrite> {
     let line = lines[start];
     let trimmed = line.trim_end_matches([' ', '\t']);
     let (idx, marker_len) = find_dlist_marker(trimmed)?;
@@ -280,8 +277,7 @@ fn description_list_rewrite(
             j += 1;
             continue;
         }
-        let starts_indented = candidate.starts_with('\t')
-            || candidate.starts_with("  ");
+        let starts_indented = candidate.starts_with('\t') || candidate.starts_with("  ");
         let is_plus = trimmed_c == "+";
         // Hard terminators at column 0 (regardless of `+` state).
         let is_next_label = !starts_indented
@@ -289,9 +285,7 @@ fn description_list_rewrite(
             && !is_attribute_line(trimmed_c);
         let is_section_heading = !starts_indented
             && trimmed_c.starts_with('=')
-            && trimmed_c
-                .trim_start_matches('=')
-                .starts_with(' ');
+            && trimmed_c.trim_start_matches('=').starts_with(' ');
         let is_block_attr = !starts_indented && is_attribute_line(trimmed_c);
         if is_next_label || is_section_heading || is_block_attr {
             break;
@@ -344,7 +338,10 @@ fn description_list_rewrite(
     }
     let body = body_lines.join("\n");
     let rewritten = format!("**{label_t}**\n\n{body}\n");
-    Some(DescriptionListRewrite { rewritten, consumed })
+    Some(DescriptionListRewrite {
+        rewritten,
+        consumed,
+    })
 }
 
 /// Find the position and length of a description-list marker, ignoring
@@ -403,9 +400,7 @@ fn is_attribute_line(label: &str) -> bool {
 fn postprocess_markdown(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for line in raw.lines() {
-        if line.trim_start().starts_with("<!-- Warning:")
-            && line.trim_end().ends_with("-->")
-        {
+        if line.trim_start().starts_with("<!-- Warning:") && line.trim_end().ends_with("-->") {
             // Drop standalone warning-comment lines outright; if a
             // line ever combines a warning comment with content
             // we'd need a finer strip, but acdc only emits them on
@@ -652,7 +647,10 @@ mod tests {
         if !missing.is_empty() {
             eprintln!("body length: {}", markdown.len());
             eprintln!("missing needles: {missing:?}");
-            eprintln!("body tail:\n{}", &markdown[markdown.len().saturating_sub(2000)..]);
+            eprintln!(
+                "body tail:\n{}",
+                &markdown[markdown.len().saturating_sub(2000)..]
+            );
             panic!("real-file conversion lost content");
         }
     }
@@ -843,10 +841,7 @@ HEAD::
         // git's CLI option docs.
         let source = "= Title\n\n--depth::\n\tOnly clone N most recent commits.\n";
         let markdown = convert_adoc_to_markdown(source).expect("convert");
-        assert!(
-            markdown.contains("--depth"),
-            "label survives: {markdown}"
-        );
+        assert!(markdown.contains("--depth"), "label survives: {markdown}");
         assert!(
             markdown.contains("Only clone N most recent commits."),
             "body survives: {markdown}"

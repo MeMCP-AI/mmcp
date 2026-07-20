@@ -221,7 +221,11 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
     // without carrying the full frontmatter around.
     let mut features_by_id: std::collections::HashMap<
         Uuid,
-        (String, mmcp_core::memory::FeatureStatus, Vec<mmcp_core::memory::MemoryRef>),
+        (
+            String,
+            mmcp_core::memory::FeatureStatus,
+            Vec<mmcp_core::memory::MemoryRef>,
+        ),
     > = std::collections::HashMap::new();
 
     // Collected `(slug, superseded_by)` pairs so the post-loop
@@ -405,9 +409,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
 
         // FR-027: every `kind = "feature"` memory should carry a
         // sequential `number`.
-        if fm.kind == MemoryKind::Feature
-            && fm.feature.as_ref().and_then(|f| f.number).is_none()
-        {
+        if fm.kind == MemoryKind::Feature && fm.feature.as_ref().and_then(|f| f.number).is_none() {
             report.findings.push(Finding {
                 group: gid.clone(),
                 slug: Some(mem_slug.to_string()),
@@ -449,11 +451,8 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
         // slip.
         if let Some(feat) = fm.feature.as_ref() {
             let self_id = file_ref.id;
-            for (field, refs) in [
-                ("depends_on", &feat.depends_on),
-                ("blocks", &feat.blocks),
-            ] {
-                if refs.iter().any(|u| *u == self_id) {
+            for (field, refs) in [("depends_on", &feat.depends_on), ("blocks", &feat.blocks)] {
+                if refs.contains(&self_id) {
                     report.findings.push(Finding {
                         group: gid.clone(),
                         slug: Some(mem_slug.to_string()),
@@ -584,8 +583,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
         for slug_dir in slug_dirs {
             let mut valid_memory_files = 0usize;
             for filename in &slug_dir.filenames {
-                let Some(stem) =
-                    filename.strip_suffix(mmcp_core::conventions::MEMORY_EXTENSION)
+                let Some(stem) = filename.strip_suffix(mmcp_core::conventions::MEMORY_EXTENSION)
                 else {
                     report.findings.push(Finding {
                         group: gid.clone(),
@@ -665,14 +663,10 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
             // Dedupe per-group: under the two-level layout a slug
             // with multiple UUIDs is still one slug from the
             // cross-group-duplicate perspective.
-            let mut seen: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
             for file in files {
                 if seen.insert(file.slug.clone()) {
-                    slug_groups
-                        .entry(file.slug)
-                        .or_default()
-                        .push(gid.clone());
+                    slug_groups.entry(file.slug).or_default().push(gid.clone());
                 }
             }
         }
@@ -715,8 +709,7 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
     for entry in &entries {
         let gid = entry.handle.group_id.to_string();
         let rev = Rev::head();
-        let Ok(files) =
-            crate::memory::list_all_memory_files(backend, &entry.handle, &rev).await
+        let Ok(files) = crate::memory::list_all_memory_files(backend, &entry.handle, &rev).await
         else {
             continue;
         };
@@ -748,9 +741,7 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
                 .map(|r| format!("{}/{}", r.group_id, r.slug))
                 .collect();
             for record in records {
-                if let Some(report) =
-                    reports.iter_mut().find(|r| r.group_id == record.group_id)
-                {
+                if let Some(report) = reports.iter_mut().find(|r| r.group_id == record.group_id) {
                     report.findings.push(Finding {
                         group: record.group_id.clone(),
                         slug: Some(record.slug.clone()),
@@ -760,7 +751,9 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
                             "duplicate memory id {uuid} also exists at {}",
                             locations
                                 .iter()
-                                .filter(|loc| *loc != &format!("{}/{}", record.group_id, record.slug))
+                                .filter(
+                                    |loc| *loc != &format!("{}/{}", record.group_id, record.slug)
+                                )
                                 .cloned()
                                 .collect::<Vec<_>>()
                                 .join(", ")
@@ -777,8 +770,7 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
     for entry in &entries {
         let rev = Rev::head();
         let gid = entry.handle.group_id.to_string();
-        let Ok(files) =
-            crate::memory::list_all_memory_files(backend, &entry.handle, &rev).await
+        let Ok(files) = crate::memory::list_all_memory_files(backend, &entry.handle, &rev).await
         else {
             continue;
         };
@@ -801,10 +793,7 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
             let Some(report) = reports.iter_mut().find(|r| r.group_id == gid) else {
                 continue;
             };
-            for (field, refs) in [
-                ("depends_on", &feat.depends_on),
-                ("blocks", &feat.blocks),
-            ] {
+            for (field, refs) in [("depends_on", &feat.depends_on), ("blocks", &feat.blocks)] {
                 for uuid in refs {
                     match by_id.get(uuid) {
                         None => report.findings.push(Finding {

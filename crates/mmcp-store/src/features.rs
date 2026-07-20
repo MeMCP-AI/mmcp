@@ -335,8 +335,7 @@ pub async fn add_feature(
     // nested Memory-leaf write under the same group until we
     // release.
     let group = *entry.manifest.group_id.as_uuid();
-    let _guards =
-        crate::lock::acquire_chain(&crate::lock::create_chain(group)).await;
+    let _guards = crate::lock::acquire_chain(&crate::lock::create_chain(group)).await;
 
     if spec.title.trim().is_empty() && spec.slug.is_none() {
         return Err(FeatureError::TitleRequired);
@@ -620,7 +619,10 @@ pub async fn update_feature(
     // to the *same* memory contend.
     let group = *entry.manifest.group_id.as_uuid();
     let _ancestors = crate::lock::acquire_chain(&[
-        (crate::lock::LockScope::Process, crate::lock::LockMode::Shared),
+        (
+            crate::lock::LockScope::Process,
+            crate::lock::LockMode::Shared,
+        ),
         (
             crate::lock::LockScope::Group(group),
             crate::lock::LockMode::Shared,
@@ -672,7 +674,11 @@ pub async fn update_feature_unlocked(
     // Compose-dedup on the typed refs: remove-side first (by
     // target UUID, ignoring commit), then add-side (dedup by
     // target so add-side wins the commit pin on collision).
-    let refs = compose_refs(current_refs, spec.refs_remove.as_deref(), spec.refs_add.as_deref());
+    let refs = compose_refs(
+        current_refs,
+        spec.refs_remove.as_deref(),
+        spec.refs_add.as_deref(),
+    );
     // `superseded_by`: `Some` replaces, `None` leaves the existing
     // on-disk back-link untouched. Clearing requires a direct
     // frontmatter edit — not yet plumbed to avoid overloading this
@@ -815,7 +821,7 @@ pub async fn rename_feature(
         // Explicit short-circuit so operators don't pay a commit
         // for a no-op. A fresh listing is cheap and matches the
         // semantics callers expect from "rename to the same slug".
-        return Ok(list_features_for_slug(backend, entry, old_slug).await?);
+        return list_features_for_slug(backend, entry, old_slug).await;
     }
 
     let old_dir = format!("{MEMORIES_DIR}/{old_slug}");
@@ -933,7 +939,10 @@ pub async fn delete_feature(
     // the ancestor chain, Exclusive on the per-memory leaf.
     let group = *entry.manifest.group_id.as_uuid();
     let _ancestors = crate::lock::acquire_chain(&[
-        (crate::lock::LockScope::Process, crate::lock::LockMode::Shared),
+        (
+            crate::lock::LockScope::Process,
+            crate::lock::LockMode::Shared,
+        ),
         (
             crate::lock::LockScope::Group(group),
             crate::lock::LockMode::Shared,
@@ -1332,14 +1341,10 @@ mod tests {
         // Explicit status selector wins over the default filter —
         // even with `show_all=false` the caller receives every FR
         // matching the requested status.
-        let opens = list_feature_summaries(
-            scratch.backend(),
-            &entry,
-            Some(FeatureStatus::Open),
-            false,
-        )
-        .await
-        .expect("list open");
+        let opens =
+            list_feature_summaries(scratch.backend(), &entry, Some(FeatureStatus::Open), false)
+                .await
+                .expect("list open");
         let open_slugs: Vec<_> = opens.into_iter().map(|s| s.slug).collect();
         assert_eq!(open_slugs, vec!["fr-a".to_string()]);
 
@@ -1439,11 +1444,7 @@ mod tests {
         let all = list_feature_summaries(scratch.backend(), &entry, None, true)
             .await
             .expect("show_all");
-        assert_eq!(
-            all.len(),
-            2,
-            "show_all must re-include the superseded FR",
-        );
+        assert_eq!(all.len(), 2, "show_all must re-include the superseded FR",);
 
         // Explicit status filter also surfaces it.
         let superseded_only = list_feature_summaries(

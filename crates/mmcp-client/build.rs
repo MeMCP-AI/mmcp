@@ -6,8 +6,11 @@ fn main() {
     // `mmcp.exe` and fail with ERROR_ACCESS_DENIED. Depending
     // on a nonexistent sentinel forces a re-run every build.
     println!("cargo:rerun-if-changed=.mmcp-stash-sentinel-never-exists");
-    if !cfg!(windows) { return; }
-    #[cfg(windows)] win::stash();
+    if !cfg!(windows) {
+        return;
+    }
+    #[cfg(windows)]
+    win::stash();
 }
 
 #[cfg(windows)]
@@ -23,14 +26,16 @@ mod win {
     }
 
     fn exe_name() -> String {
-        let base = env::var("CARGO_BIN_NAME_OVERRIDE").ok()
+        let base = env::var("CARGO_BIN_NAME_OVERRIDE")
+            .ok()
             .or_else(|| {
                 let manifest = env::var("CARGO_MANIFEST_DIR").ok()?;
-                let m = cargo_toml::Manifest::from_path(
-                    PathBuf::from(manifest).join("Cargo.toml")
-                ).ok()?;
+                let m = cargo_toml::Manifest::from_path(PathBuf::from(manifest).join("Cargo.toml"))
+                    .ok()?;
                 // First explicitly-named bin wins; fall back to package name.
-                m.bin.into_iter().find_map(|b| b.name)
+                m.bin
+                    .into_iter()
+                    .find_map(|b| b.name)
                     .or_else(|| m.package.map(|p| p.name))
             })
             .or_else(|| env::var("CARGO_PKG_NAME").ok())
@@ -47,7 +52,9 @@ mod win {
         // Re-run if the override env var changes.
         println!("cargo:rerun-if-env-changed=CARGO_BIN_NAME_OVERRIDE");
 
-        let Some(profile_dir) = target_profile_dir() else { return };
+        let Some(profile_dir) = target_profile_dir() else {
+            return;
+        };
         let target = profile_dir.join(exe_name());
         let prefix = stash_prefix();
 
@@ -56,7 +63,9 @@ mod win {
         // directory doesn't accumulate one leftover per rebuild.
         sweep_unheld_stashes(&prefix);
 
-        if !target.exists() { return; }
+        if !target.exists() {
+            return;
+        }
 
         let stash = match tempfile::Builder::new()
             .prefix(&prefix)
@@ -66,13 +75,15 @@ mod win {
             .make(|p| fs::File::create(p))
         {
             Ok(f) => f.path().to_path_buf(),
-            Err(e) => { println!("cargo:warning=temp create failed: {e}"); return; }
+            Err(e) => {
+                println!("cargo:warning=temp create failed: {e}");
+                return;
+            }
         };
         let _ = fs::remove_file(&stash);
 
         if let Err(e) = fs::rename(&target, &stash) {
             println!("cargo:warning=cannot stash locked exe: {e}");
-            return;
         }
     }
 
