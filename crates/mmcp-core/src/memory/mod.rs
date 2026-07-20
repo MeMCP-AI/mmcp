@@ -18,6 +18,7 @@ mod issue;
 mod kind;
 mod parser;
 mod refs;
+mod splice;
 mod status;
 mod version;
 mod xrefs;
@@ -27,12 +28,11 @@ pub use bump::BumpIntent;
 pub use entry::Memory;
 pub use feature::{FeatureMetadata, FeatureStatus, FeatureStatusParseError};
 pub use frontmatter::MemoryFrontmatter;
-pub use issue::{
-    IssueMetadata, IssueStatus, IssueStatusParseError, IssueSupersedeInvariantError,
-};
+pub use issue::{IssueMetadata, IssueStatus, IssueStatusParseError, IssueSupersedeInvariantError};
 pub use kind::MemoryKind;
 pub use parser::{FrontmatterFormat, MemoryFile, MemoryParseError};
 pub use refs::{InvalidCommit, MemoryRef};
+pub use splice::{SpliceError, line_terminator, splice};
 pub use status::Status;
 pub use version::Version;
 pub use xrefs::{MemoryRefInput, XrefError, parse_cross_refs, parse_memory_refs};
