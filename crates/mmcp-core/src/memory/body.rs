@@ -65,6 +65,26 @@ pub struct Section {
     /// the start line of the next section, or the total line count
     /// when the section is the last one.
     pub line_end: usize,
+
+    /// Zero-based exclusive end line index of the heading construct
+    /// itself, so `line_start..heading_line_end` covers the heading
+    /// and nothing else.
+    ///
+    /// An ATX heading spans one line; a setext heading spans two,
+    /// its text plus its underline. Editing a section's body means
+    /// starting here, never at `line_start + 1`, which silently eats
+    /// a setext underline and demotes the heading to a paragraph.
+    /// The preamble has no heading, so this equals `line_start`.
+    pub heading_line_end: usize,
+
+    /// Number of block quotes and list items enclosing the heading.
+    ///
+    /// Zero means the heading stands at the top level of the
+    /// document. A nested heading belongs to a multi-line container
+    /// construct, so a rewriter must not insert a blank line beside
+    /// it: that would terminate the container and split one block
+    /// into two.
+    pub container_depth: usize,
 }
 
 impl Section {
@@ -87,6 +107,27 @@ pub enum BodyParseError {
     OffsetOutOfRange { offset: usize, total: usize },
 }
 
+/// One heading as it comes off the event stream, still addressed by
+/// byte offset. The span is kept whole because a setext heading is
+/// two lines and only its end offset reveals that.
+struct HeadingScan {
+    start_offset: usize,
+    end_offset: usize,
+    level: u8,
+    text: String,
+    container_depth: usize,
+}
+
+/// The same heading after its byte span has been resolved to line
+/// indices.
+struct HeadingLines {
+    line: usize,
+    heading_line_end: usize,
+    level: u8,
+    text: String,
+    container_depth: usize,
+}
+
 /// Parse `body` into a flat ordered sequence of [`Section`]s.
 ///
 /// Lines are numbered from zero. Empty inputs return a single
@@ -96,18 +137,32 @@ pub fn parse_sections(body: &str) -> Result<Vec<Section>, BodyParseError> {
     let lines: Vec<&str> = split_lines(body);
     let total_lines = lines.len();
 
-    // Collect every heading's byte offset (start of the heading
-    // line), level, and text from pulldown-cmark's event stream.
-    let mut headings: Vec<(usize, u8, String)> = Vec::new();
+    // Collect every heading's byte span, level, text, and container
+    // nesting from pulldown-cmark's event stream. The byte span is
+    // what distinguishes a one-line ATX heading from a two-line
+    // setext one; nesting is tracked because only the parser knows
+    // whether a `#` line sits inside a quote or a list item.
+    let mut headings: Vec<HeadingScan> = Vec::new();
     let mut options = Options::empty();
     options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
     let parser = Parser::new_ext(body, options).into_offset_iter();
 
-    let mut current_heading: Option<(usize, u8, String)> = None;
+    let mut current_heading: Option<HeadingScan> = None;
+    let mut container_depth: usize = 0;
     for (event, range) in parser {
         match event {
+            Event::Start(Tag::BlockQuote(_) | Tag::Item) => container_depth += 1,
+            Event::End(TagEnd::BlockQuote(_) | TagEnd::Item) => {
+                container_depth = container_depth.saturating_sub(1);
+            }
             Event::Start(Tag::Heading { level, .. }) => {
-                current_heading = Some((range.start, heading_level_to_u8(level), String::new()));
+                current_heading = Some(HeadingScan {
+                    start_offset: range.start,
+                    end_offset: range.end,
+                    level: heading_level_to_u8(level),
+                    text: String::new(),
+                    container_depth,
+                });
             }
             Event::End(TagEnd::Heading(_)) => {
                 if let Some(h) = current_heading.take() {
@@ -115,8 +170,8 @@ pub fn parse_sections(body: &str) -> Result<Vec<Section>, BodyParseError> {
                 }
             }
             Event::Text(text) | Event::Code(text) => {
-                if let Some((_, _, acc)) = current_heading.as_mut() {
-                    acc.push_str(&text);
+                if let Some(scan) = current_heading.as_mut() {
+                    scan.text.push_str(&text);
                 }
             }
             _ => {}
@@ -125,22 +180,39 @@ pub fn parse_sections(body: &str) -> Result<Vec<Section>, BodyParseError> {
 
     // Convert heading byte offsets to line indices.
     let line_starts = compute_line_starts(body);
-    let mut heading_lines: Vec<(usize, u8, String)> = Vec::with_capacity(headings.len());
-    for (offset, level, text) in headings {
-        let line = line_index_for_offset(&line_starts, offset, body.len())?;
-        heading_lines.push((line, level, text.trim().to_string()));
+    let mut heading_lines: Vec<HeadingLines> = Vec::with_capacity(headings.len());
+    for scan in headings {
+        let line = line_index_for_offset(&line_starts, scan.start_offset, body.len())?;
+        // The span ends just past the construct's final byte, so the
+        // last line it occupies is the one holding `end_offset - 1`.
+        let last_line = line_index_for_offset(
+            &line_starts,
+            scan.end_offset.saturating_sub(1).max(scan.start_offset),
+            body.len(),
+        )?;
+        heading_lines.push(HeadingLines {
+            line,
+            heading_line_end: last_line + 1,
+            level: scan.level,
+            text: scan.text.trim().to_string(),
+            container_depth: scan.container_depth,
+        });
     }
 
     // Build the section sequence. A synthetic preamble always
     // leads, covering any content before the first heading.
     let mut sections: Vec<Section> = Vec::with_capacity(heading_lines.len() + 1);
-    let preamble_end = heading_lines.first().map_or(total_lines, |h| h.0);
+    let preamble_end = heading_lines.first().map_or(total_lines, |h| h.line);
     sections.push(Section {
         path: Section::PREAMBLE_PATH.to_string(),
         level: 0,
         heading: String::new(),
         line_start: 0,
         line_end: preamble_end,
+        // The preamble has no heading line, so its heading span is
+        // empty and its body starts where the section starts.
+        heading_line_end: 0,
+        container_depth: 0,
     });
 
     // Assign stable path ids using a hierarchical stack of
@@ -150,18 +222,28 @@ pub fn parse_sections(body: &str) -> Result<Vec<Section>, BodyParseError> {
     let mut stack: Vec<(u8, String)> = Vec::new();
     let mut sibling_counts: HashMap<(Vec<String>, String), u32> = HashMap::new();
 
-    for (idx, (line, level, text)) in heading_lines.iter().enumerate() {
-        // Pop stack entries whose level is >= the current heading
-        // — we've left their subtree.
-        while let Some(&(top_level, _)) = stack.last() {
-            if top_level >= *level {
-                stack.pop();
-            } else {
-                break;
+    for (idx, heading) in heading_lines.iter().enumerate() {
+        // A heading inside a block quote or a list item is part of its
+        // container's content, not a node of the document outline, so
+        // it neither closes the section it sits in nor parents the
+        // headings that follow. Letting it onto the stack renamed
+        // every deeper heading after it, which silently invalidated
+        // stored paths whenever an unrelated quote was added.
+        let outlines = heading.container_depth == 0;
+
+        if outlines {
+            // Pop stack entries whose level is >= the current heading
+            // — we've left their subtree.
+            while let Some(&(top_level, _)) = stack.last() {
+                if top_level >= heading.level {
+                    stack.pop();
+                } else {
+                    break;
+                }
             }
         }
 
-        let slug_base = slugify_heading(text);
+        let slug_base = slugify_heading(&heading.text);
         let parent_key: Vec<String> = stack.iter().map(|(_, s)| s.clone()).collect();
         let key = (parent_key.clone(), slug_base.clone());
         let count = sibling_counts
@@ -180,17 +262,21 @@ pub fn parse_sections(body: &str) -> Result<Vec<Section>, BodyParseError> {
 
         let line_end = heading_lines
             .get(idx + 1)
-            .map_or(total_lines, |next| next.0);
+            .map_or(total_lines, |next| next.line);
 
         sections.push(Section {
             path,
-            level: *level,
-            heading: text.clone(),
-            line_start: *line,
+            level: heading.level,
+            heading: heading.text.clone(),
+            line_start: heading.line,
             line_end,
+            heading_line_end: heading.heading_line_end,
+            container_depth: heading.container_depth,
         });
 
-        stack.push((*level, segment));
+        if outlines {
+            stack.push((heading.level, segment));
+        }
     }
 
     Ok(sections)
@@ -381,6 +467,30 @@ second notes
         );
     }
 
+    /// A heading inside a container is content of that container, so
+    /// it must not parent the headings that follow it. Otherwise
+    /// quoting a heading anywhere in a section renames every deeper
+    /// heading after it and invalidates stored paths.
+    #[test]
+    fn a_contained_heading_does_not_parent_what_follows() {
+        let quoted = "## A\n\na\n\n> ## Q\n> q\n\n### Child\n\nc\n\n## B\n\nb\n";
+        let paths: Vec<_> = parse_sections(quoted)
+            .expect("parse")
+            .iter()
+            .map(|s| s.path.clone())
+            .collect();
+        assert_eq!(paths, vec!["preamble", "a", "a.q", "a.child", "b"]);
+
+        // Removing the quote must not move any other heading's path.
+        let plain = "## A\n\na\n\n### Child\n\nc\n\n## B\n\nb\n";
+        let plain_paths: Vec<_> = parse_sections(plain)
+            .expect("parse")
+            .iter()
+            .map(|s| s.path.clone())
+            .collect();
+        assert_eq!(plain_paths, vec!["preamble", "a", "a.child", "b"]);
+    }
+
     #[test]
     fn fenced_code_hashes_are_not_headings() {
         let body = "\
@@ -412,13 +522,15 @@ body
         let total_lines = sections.last().map(|s| s.line_end).unwrap_or(0);
         let mut coverage = vec![false; total_lines];
         for section in &sections {
-            for line in section.line_start..section.line_end {
+            let span = &mut coverage[section.line_start..section.line_end];
+            for (offset, covered) in span.iter_mut().enumerate() {
+                let line = section.line_start + offset;
                 assert!(
-                    !coverage[line],
+                    !*covered,
                     "line {line} is in two sections ({} and ...)",
                     section.path
                 );
-                coverage[line] = true;
+                *covered = true;
             }
         }
         assert!(coverage.iter().all(|&c| c), "every line must be covered");
