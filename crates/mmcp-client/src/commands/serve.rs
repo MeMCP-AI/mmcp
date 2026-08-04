@@ -3824,6 +3824,7 @@ impl McpServer {
     async fn add_feature(
         &self,
         Parameters(args): Parameters<AddFeatureArgs>,
+        peer: Peer<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let cwd = current_dir_for_mcp()?;
         let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
@@ -3833,6 +3834,8 @@ impl McpServer {
         )
         .await
         .map_err(map_feature_error_to_mcp)?;
+        let guard_label = args.slug.clone().unwrap_or_else(|| args.title.clone());
+        confirm_protected_write(&peer, &entry, &guard_label, "add_feature").await?;
         let status = parse_status_arg(args.status.as_deref())?.unwrap_or_default();
         let depends_on = mmcp_store::parse_cross_refs(&args.depends_on, "depends_on")
             .map_err(map_xref_error_to_mcp)?;
@@ -3929,6 +3932,7 @@ impl McpServer {
     async fn update_feature(
         &self,
         Parameters(args): Parameters<UpdateFeatureArgs>,
+        peer: Peer<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let cwd = current_dir_for_mcp()?;
         let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
@@ -3938,6 +3942,7 @@ impl McpServer {
         )
         .await
         .map_err(map_feature_error_to_mcp)?;
+        confirm_protected_write(&peer, &entry, &args.slug, "update_feature").await?;
         let status = match args.status.as_deref() {
             Some(raw) => Some(parse_status_arg(Some(raw))?.unwrap_or_default()),
             None => None,
@@ -4026,6 +4031,7 @@ impl McpServer {
     async fn delete_feature(
         &self,
         Parameters(args): Parameters<DeleteFeatureArgs>,
+        peer: Peer<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let cwd = current_dir_for_mcp()?;
         let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
@@ -4035,6 +4041,7 @@ impl McpServer {
         )
         .await
         .map_err(map_feature_error_to_mcp)?;
+        confirm_protected_write(&peer, &entry, &args.slug, "delete_feature").await?;
         let commit_id = mmcp_store::features::delete_feature(
             &self.state.backend,
             &entry,
@@ -4064,6 +4071,7 @@ impl McpServer {
     async fn rename_feature(
         &self,
         Parameters(args): Parameters<RenameFeatureArgs>,
+        peer: Peer<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let cwd = current_dir_for_mcp()?;
         let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
@@ -4073,6 +4081,7 @@ impl McpServer {
         )
         .await
         .map_err(map_feature_error_to_mcp)?;
+        confirm_protected_write(&peer, &entry, &args.old_slug, "rename_feature").await?;
         let records = mmcp_store::rename_feature(
             &self.state.backend,
             &entry,
@@ -9069,6 +9078,86 @@ mod tests {
             .write_memory_unguarded(write_memory_args(&sibling, "added", false))
             .await
             .expect("write into unprotected sibling must succeed");
+    }
+
+    // ── protected-group guard on the feature-tracker tools ────────
+    //
+    // `add_feature` / `update_feature` / `delete_feature` /
+    // `rename_feature` used to resolve their target group and write
+    // straight through with no `confirm_protected_write` call
+    // anywhere in the path. These mirror the memory-tool suite
+    // above: each asserts the pre-elicitation fallback fires with
+    // the exact action tag the corresponding tool now passes to
+    // `confirm_protected_write`, proving every one of the four call
+    // sites is wired to the guard rather than just the shared helper
+    // being correct in isolation.
+
+    #[tokio::test]
+    async fn add_feature_against_protected_group_is_gated() {
+        let (state, _tmp) = test_state().await;
+        let entry = protected_entry_for(&state, "global").await;
+        let err = ensure_not_protected(&entry, "new-feature", "add_feature")
+            .expect_err("protected-group fallback must gate add_feature");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("protected_requires_elicitation")
+        );
+        assert_eq!(
+            payload.get("action").and_then(|v| v.as_str()),
+            Some("add_feature")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_feature_against_protected_group_is_gated() {
+        let (state, _tmp) = test_state().await;
+        let entry = protected_entry_for(&state, "global").await;
+        let err = ensure_not_protected(&entry, "anchored", "update_feature")
+            .expect_err("protected-group fallback must gate update_feature");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("protected_requires_elicitation")
+        );
+        assert_eq!(
+            payload.get("action").and_then(|v| v.as_str()),
+            Some("update_feature")
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_feature_against_protected_group_is_gated() {
+        let (state, _tmp) = test_state().await;
+        let entry = protected_entry_for(&state, "global").await;
+        let err = ensure_not_protected(&entry, "anchored", "delete_feature")
+            .expect_err("protected-group fallback must gate delete_feature");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("protected_requires_elicitation")
+        );
+        assert_eq!(
+            payload.get("action").and_then(|v| v.as_str()),
+            Some("delete_feature")
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_feature_against_protected_group_is_gated() {
+        let (state, _tmp) = test_state().await;
+        let entry = protected_entry_for(&state, "global").await;
+        let err = ensure_not_protected(&entry, "anchored", "rename_feature")
+            .expect_err("protected-group fallback must gate rename_feature");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("protected_requires_elicitation")
+        );
+        assert_eq!(
+            payload.get("action").and_then(|v| v.as_str()),
+            Some("rename_feature")
+        );
     }
 
     // ── edit_memory_body (FR-026) ─────────────────────────────────
