@@ -4,7 +4,7 @@
   // incoming backlinks. Centralised so layouts don't re-derive
   // the ref/backlink scan per call site.
 
-  import { Hash } from 'lucide-svelte';
+  import { Hash } from '@lucide/svelte';
   import FeatureRelations from '../FeatureRelations.svelte';
   import type { MemoryFile } from '$lib/types';
   import { findBacklinks, resolveRef, type ResolvedRef } from '$lib/utils/graph';

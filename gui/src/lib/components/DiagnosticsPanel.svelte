@@ -5,7 +5,7 @@
   // $lib/utils/diag so nothing here can drift out of sync with
   // the store or the primitives.
 
-  import { LoaderCircle, RefreshCcw, X } from 'lucide-svelte';
+  import { LoaderCircle, RefreshCcw, X } from '@lucide/svelte';
   import type { DiagReport } from '$lib/types';
   import {
     reportTotals,

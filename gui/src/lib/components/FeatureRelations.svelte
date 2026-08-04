@@ -4,7 +4,7 @@
   // resolved against whatever the memories store has cached so
   // each UUID becomes a clickable slug when possible.
 
-  import { ArrowDownCircle, ArrowUpCircle, GitMerge } from 'lucide-svelte';
+  import { ArrowDownCircle, ArrowUpCircle, GitMerge } from '@lucide/svelte';
   import { memoriesStore } from '$lib/stores/memories.svelte';
   import type { FeatureMetadata, MemoryFile } from '$lib/types';
 

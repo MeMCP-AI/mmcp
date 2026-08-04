@@ -12,7 +12,7 @@
     User,
     Waypoints,
     X
-  } from 'lucide-svelte';
+  } from '@lucide/svelte';
   import type { KindStr, LoadedProjectConfig, ProjectConfig, UserConfig } from '$lib/types';
   import type { KindDisplay, ThemeMode } from '$lib/stores/settings.svelte';
 

@@ -10,7 +10,7 @@
     Stethoscope,
     Wifi,
     WifiOff
-  } from 'lucide-svelte';
+  } from '@lucide/svelte';
   import { reachabilityStore } from '$lib/stores/reachability.svelte';
   import { syncStore } from '$lib/stores/sync.svelte';
   import { openDiagnosticsWindow, openSettingsWindow } from '$lib/windows';

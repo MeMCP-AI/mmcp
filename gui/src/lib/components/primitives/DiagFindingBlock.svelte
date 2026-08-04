@@ -11,7 +11,7 @@
   // the severity label so machine-stable identifiers are visible
   // without hovering — useful when filing issues against mmcp.
 
-  import { AlertTriangle, Info, XCircle } from 'lucide-svelte';
+  import { AlertTriangle, Info, XCircle } from '@lucide/svelte';
   import type { Finding } from '$lib/types';
   import { normalizeSeverity, SEVERITY_META } from '$lib/utils/diag';
 

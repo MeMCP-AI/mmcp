@@ -14,7 +14,7 @@
   // inspects a chosen archive.
 
   import { onMount } from 'svelte';
-  import { ChevronDown, ChevronUp } from 'lucide-svelte';
+  import { ChevronDown, ChevronUp } from '@lucide/svelte';
   import { listGroups } from '$lib/api/groups';
   import { listMemorySlugs } from '$lib/api/memory';
   import {

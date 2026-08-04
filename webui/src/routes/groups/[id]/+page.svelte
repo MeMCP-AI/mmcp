@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { ArrowLeft, LoaderCircle } from 'lucide-svelte';
+  import { ArrowLeft, LoaderCircle } from '@lucide/svelte';
   import KindBadge from '$lib/components/KindBadge.svelte';
   import { memoriesStore } from '$lib/stores/memories.svelte';
 

@@ -14,7 +14,7 @@
     Pin,
     PinOff,
     Star
-  } from 'lucide-svelte';
+  } from '@lucide/svelte';
   import FeatureBadge from '../FeatureBadge.svelte';
   import GroupRow from '../primitives/GroupRow.svelte';
   import KindBadge from '../KindBadge.svelte';

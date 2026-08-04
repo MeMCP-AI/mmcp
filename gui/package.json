@@ -1,6 +1,6 @@
 {
   "name": "mmcp-gui",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,20 +14,20 @@
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.10",
     "@sveltejs/kit": "^2.70.2",
-    "@sveltejs/vite-plugin-svelte": "^5.1.1",
+    "@sveltejs/vite-plugin-svelte": "^7.2.0",
     "@tailwindcss/typography": "^0.5.20",
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2.11.4",
-    "@types/node": "^22.20.1",
+    "@types/node": "^26.1.2",
     "svelte": "^5.56.8",
     "svelte-check": "^4.7.4",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.9.3",
-    "vite": "^6.4.3"
+    "vite": "^8.2.0"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
-    "lucide-svelte": "^0.469.0",
-    "marked": "^15.0.12"
+    "@lucide/svelte": "^1.28.0",
+    "marked": "^18.0.9"
   }
 }

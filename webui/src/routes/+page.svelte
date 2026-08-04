@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { LoaderCircle } from 'lucide-svelte';
+  import { LoaderCircle } from '@lucide/svelte';
   import { shortCommit } from '$lib/format';
   import { groupsStore } from '$lib/stores/groups.svelte';
 

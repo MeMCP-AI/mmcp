@@ -3,7 +3,7 @@
   import { goto } from '$app/navigation';
   import { authStore } from '$lib/stores/auth.svelte';
   import { groupsStore } from '$lib/stores/groups.svelte';
-  import { LogIn, LogOut, Server } from 'lucide-svelte';
+  import { LogIn, LogOut, Server } from '@lucide/svelte';
 
   const authed = $derived(authStore.token !== null);
 

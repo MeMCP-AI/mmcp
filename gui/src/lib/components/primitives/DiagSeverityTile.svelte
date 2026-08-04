@@ -5,7 +5,7 @@
   // bucket sizes *and* the control that narrows the view. Avoids
   // the old duplication of separate tiles + pill row.
 
-  import { AlertTriangle, Info, XCircle } from 'lucide-svelte';
+  import { AlertTriangle, Info, XCircle } from '@lucide/svelte';
   import { SEVERITY_META, type Severity, type SeverityFilter } from '$lib/utils/diag';
 
   interface Props {

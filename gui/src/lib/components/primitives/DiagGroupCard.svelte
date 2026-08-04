@@ -6,7 +6,7 @@
   // and a body that renders DiagFindingBlock for every visible
   // finding.
 
-  import { AlertTriangle, ChevronDown, ChevronRight, Info, XCircle } from 'lucide-svelte';
+  import { AlertTriangle, ChevronDown, ChevronRight, Info, XCircle } from '@lucide/svelte';
   import type { Finding } from '$lib/types';
   import {
     accentFor,

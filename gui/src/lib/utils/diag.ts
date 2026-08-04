@@ -3,7 +3,7 @@
 // (store, panel, primitives) agrees on names, colours, and icons —
 // the "inconsistent" UX came from each call site redefining these.
 
-import { AlertTriangle, Info, XCircle } from 'lucide-svelte';
+import { AlertTriangle, Info, XCircle } from '@lucide/svelte';
 import type { DiagReport, Finding, GroupReport } from '$lib/types';
 
 export type Severity = 'error' | 'warning' | 'info';

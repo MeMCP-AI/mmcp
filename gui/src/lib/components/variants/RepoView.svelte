@@ -25,7 +25,7 @@
     Hash,
     LoaderCircle,
     RefreshCw
-  } from 'lucide-svelte';
+  } from '@lucide/svelte';
   import FeatureBadge from '../FeatureBadge.svelte';
   import KindBadge from '../KindBadge.svelte';
   import MandatoryPill from '../primitives/MandatoryPill.svelte';

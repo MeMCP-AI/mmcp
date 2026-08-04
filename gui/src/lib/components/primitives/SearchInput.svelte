@@ -4,7 +4,7 @@
   // optional clear button on the right. Consolidated so a visual
   // tweak applies across every call site.
 
-  import { Search, X } from 'lucide-svelte';
+  import { Search, X } from '@lucide/svelte';
 
   interface Props {
     value: string;

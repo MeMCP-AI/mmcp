@@ -5,7 +5,7 @@
   // a draggable title region, and the min/max/close window
   // controls on the far right.
 
-  import { BrainCircuit, ChevronRight } from 'lucide-svelte';
+  import { BrainCircuit, ChevronRight } from '@lucide/svelte';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { emit } from '@tauri-apps/api/event';
   import { pickDirectory, setReferencePoint } from '$lib/api/workspace';

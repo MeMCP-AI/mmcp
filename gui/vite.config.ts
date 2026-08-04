@@ -22,7 +22,9 @@ export default defineConfig({
   build: {
     // Tauri 2 defaults to ES2022 for the webview; match it.
     target: 'es2022',
-    minify: process.env.TAURI_ENV_DEBUG ? false : 'esbuild',
+    // Vite 8's rolldown-based build no longer bundles esbuild; 'oxc'
+    // is the new built-in Rust minifier and the documented default.
+    minify: process.env.TAURI_ENV_DEBUG ? false : 'oxc',
     sourcemap: !!process.env.TAURI_ENV_DEBUG
   }
 });

@@ -17,7 +17,7 @@
   // Composition-only — every piece of list / card / reader markup
   // lives in primitives; this component just orchestrates state.
 
-  import { ChevronLeft, LoaderCircle } from 'lucide-svelte';
+  import { ChevronLeft, LoaderCircle } from '@lucide/svelte';
   import FeatureBadge from '../FeatureBadge.svelte';
   import KindFilterRow from '../primitives/KindFilterRow.svelte';
   import KindBadge from '../KindBadge.svelte';

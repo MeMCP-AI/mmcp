@@ -4,7 +4,7 @@
   // pin icon for narrow rows; full mode adds the label + optional
   // icon sizing.
 
-  import { Pin } from 'lucide-svelte';
+  import { Pin } from '@lucide/svelte';
 
   interface Props {
     /** `label: false` renders the pin glyph alone for row / card

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { LoaderCircle, Wifi, WifiOff } from 'lucide-svelte';
+  import { LoaderCircle, Wifi, WifiOff } from '@lucide/svelte';
   import { shortCommit } from '$lib/format';
   import type { HealthInfo } from '$lib/types';
 

@@ -2,7 +2,7 @@
   // "Mandatory only" filter toggle. Pair with `KindFilterRow` to
   // form every variant's filter bar.
 
-  import { Pin } from 'lucide-svelte';
+  import { Pin } from '@lucide/svelte';
 
   interface Props {
     value: boolean;

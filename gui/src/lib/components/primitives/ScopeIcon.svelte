@@ -3,7 +3,7 @@
   // layout reaches for. Wrapping lets callers pass just the
   // `scope` enum instead of re-mapping to icon imports each time.
 
-  import { FolderGit2, Globe, Layers } from 'lucide-svelte';
+  import { FolderGit2, Globe, Layers } from '@lucide/svelte';
   import type { GroupScope } from '$lib/types';
 
   interface Props {

@@ -3,7 +3,7 @@
   // pin toggle. Used by Hub home's pinned list and Hub scope's
   // filterable list; consolidating keeps the two in visual sync.
 
-  import { Star } from 'lucide-svelte';
+  import { Star } from '@lucide/svelte';
   import ScopeIcon from './ScopeIcon.svelte';
   import { SCOPE_META } from '$lib/utils/scope';
   import type { GroupEntry } from '$lib/types';

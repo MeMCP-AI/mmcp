@@ -1,6 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { LoaderCircle } from 'lucide-svelte';
+  import { LoaderCircle } from '@lucide/svelte';
   import { login } from '$lib/api/auth';
   import { formatErr } from '$lib/format';
   import { authStore } from '$lib/stores/auth.svelte';

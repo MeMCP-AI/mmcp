@@ -3,7 +3,7 @@
   // the lifecycle state so a glance at a list conveys where each
   // FR stands without expanding it.
 
-  import { Ban, CheckCircle2, Circle, CircleDashed, GitMerge, PauseCircle } from 'lucide-svelte';
+  import { Ban, CheckCircle2, Circle, CircleDashed, GitMerge, PauseCircle } from '@lucide/svelte';
   import type { FeatureStatus } from '$lib/types';
 
   interface Props {

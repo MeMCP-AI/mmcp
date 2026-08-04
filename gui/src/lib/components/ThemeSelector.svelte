@@ -5,7 +5,7 @@
   // Lifted into its own primitive so any "main bar" can drop it
   // in without re-implementing the popover semantics.
 
-  import { Check, CircleDot, Contrast, Monitor, Moon, Sun } from 'lucide-svelte';
+  import { Check, CircleDot, Contrast, Monitor, Moon, Sun } from '@lucide/svelte';
   import { settingsStore, type ThemeMode } from '$lib/stores/settings.svelte';
 
   interface ThemeOption {
