@@ -1,0 +1,40 @@
+# cargo-deny configuration for the mmcp workspace.
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+# Advisories stay on cargo-deny's strict default: any unresolved
+# RUSTSEC advisory is a hard error. This is the load-bearing check.
+[advisories]
+ignore = []
+
+[licenses]
+# Every SPDX license actually present in the resolved dependency
+# graph, confirmed via `cargo deny check licenses` against the
+# built-in strict default before this file existed. AGPL-3.0-only
+# (evalexpr, pulled in transitively via the acdc-parser fork) is
+# deliberately NOT allow-listed here: it is a real, unresolved
+# licensing finding, not config-absence noise, and stays surfaced
+# until the operator decides how to handle it.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[sources]
+# The two deliberately-pinned git forks this workspace tracks (see
+# the root Cargo.toml `git =` dependency and `[patch.crates-io]`
+# entries for the reasoning behind each pin).
+allow-git = [
+    "https://github.com/nlopes/acdc.git",
+    "https://github.com/GGLinnk/gitoxide.git",
+]
