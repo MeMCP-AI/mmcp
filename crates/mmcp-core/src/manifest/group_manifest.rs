@@ -43,11 +43,12 @@ pub struct GroupManifest {
     /// recovery; the server is still the authoritative owner-of-record.
     pub owner: GroupOwnerHint,
 
-    /// When true, any mutation of a memory in this group requires
-    /// user-visible confirmation. Stored in the manifest so the
-    /// flag travels with the repo on pull: a project that syncs a
-    /// protected group inherits the protection automatically
-    /// without any per-project opt-in.
+    /// When true, any mutation of a memory or feature in this group
+    /// requires user-visible confirmation. Stored in the manifest so
+    /// the flag travels with the repo on pull: a project that syncs
+    /// a protected group inherits the protection automatically
+    /// without any per-project opt-in. Set at group-creation time or
+    /// on an existing group via [`GroupManifest::set_protected`].
     ///
     /// Serde-default-false + skip-when-false keeps pre-flag
     /// manifests parsing unchanged and omits the field from
@@ -133,8 +134,8 @@ impl GroupManifest {
     ///
     /// `protected` defaults to false; callers opt a group into
     /// protection via field assignment on the returned manifest
-    /// before `create_group_repo`, or via a future
-    /// `set_protected` path on an existing repo.
+    /// before `create_group_repo`, or via [`Self::set_protected`]
+    /// on an already existing repo's parsed manifest.
     #[must_use]
     pub fn new_user_owned(group_id: GroupId, slug: impl Into<String>, owner: Uuid) -> Self {
         Self {
@@ -185,6 +186,20 @@ impl GroupManifest {
     /// the repo root.
     pub fn to_toml(&self) -> Result<String, ManifestError> {
         Ok(toml::to_string_pretty(self)?)
+    }
+
+    /// Arm or disarm the protected-write guard on an already
+    /// existing manifest.
+    ///
+    /// This is the "future path on an existing repo" this struct's
+    /// doc comment used to promise and nothing implemented: until
+    /// now `protected` could only be set at group-creation time via
+    /// direct field assignment on a freshly built manifest. Callers
+    /// that want to arm protection on a pre-existing group parse the
+    /// committed manifest, call this setter, then re-serialize and
+    /// commit the result through the repo's normal write path.
+    pub fn set_protected(&mut self, protected: bool) {
+        self.protected = protected;
     }
 }
 
