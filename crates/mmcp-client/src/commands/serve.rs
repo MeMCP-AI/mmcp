@@ -1378,6 +1378,231 @@ struct ListFeaturesArgs {
     pub all: Option<bool>,
 }
 
+// ── Issue-tracker tool args ─────────────────────────────────────
+//
+// Sister block to the feature-tracker args above. `add_issue` /
+// `read_issue` / `update_issue` / `delete_issue` / `rename_issue` /
+// `list_issues` route through `mmcp_store::issues`, the parallel
+// CRUD to `mmcp_store::features`. Every mutator here calls
+// `confirm_protected_write` from the start, closing the gap the
+// sibling feature tools currently have.
+
+/// Args for `add_issue`.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct AddIssueArgs {
+    /// Target project group (UUID or slug). When omitted, the
+    /// server falls back to walking `cwd` for a `.mmcp.toml` and
+    /// using whichever project it finds. FR-44.
+    #[serde(default)]
+    pub project: Option<String>,
+
+    /// Stable slug for the issue. Auto-minted from the title when
+    /// omitted; when present must satisfy the memory-slug contract.
+    #[serde(default)]
+    pub slug: Option<String>,
+
+    /// Human-readable title shown in listings. Required unless a
+    /// slug is supplied explicitly.
+    #[serde(default)]
+    pub title: String,
+
+    /// One-line summary, used by listings and relevance inference.
+    #[serde(default)]
+    pub description: String,
+
+    /// Full issue body as freeform markdown. Not parsed by the
+    /// tool — preserved verbatim.
+    #[serde(default)]
+    pub body: String,
+
+    /// Initial status. Defaults to `open` when absent. Wire form is
+    /// the snake_case enum: `open | closed | wontfix | blocked |
+    /// deferred | duplicate | superseded`.
+    #[serde(default)]
+    pub status: Option<String>,
+
+    /// Slugs of memories this issue depends on.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+
+    /// Slugs of memories whose resolution is gated on this issue.
+    #[serde(default)]
+    pub blocks: Vec<String>,
+
+    /// Typed cross-references attached to the new issue. Every
+    /// entry is a `{target, commit}` pair pinning the referenced
+    /// memory to a specific revision. Absent is the common case.
+    #[serde(default)]
+    pub refs: Vec<MemoryRefArg>,
+
+    /// Slug (or UUID) of an existing issue in the same project
+    /// group to supersede. When present, the server runs the
+    /// two-commit supersede flow: commit A writes this new issue
+    /// with its refs auto-populated to include the target; commit
+    /// B re-writes the target issue with `status = superseded` and
+    /// a typed `superseded_by` back-link pointing at commit A.
+    /// Errors: `supersedes_unknown`, `supersedes_invalid_status`.
+    #[serde(default)]
+    pub supersedes: Option<String>,
+
+    /// FR-38 provenance UUID. When set, this issue was filed by an
+    /// agent acting on behalf of the named owner. Absent means the
+    /// project group authored the issue directly. Errors with
+    /// `code: invalid_source` when not parseable as a UUID.
+    #[serde(default)]
+    pub source: Option<String>,
+
+    /// Optional override for the git commit message.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// Args for `read_issue`.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct ReadIssueArgs {
+    /// Target project group (UUID or slug). When omitted, the
+    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    #[serde(default)]
+    pub project: Option<String>,
+
+    /// Slug of the issue to read.
+    pub slug: String,
+
+    /// Branch name, tag, or 40-char commit hex. Defaults to the
+    /// group's `main` when absent.
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
+/// Args for `update_issue`.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct UpdateIssueArgs {
+    /// Target project group (UUID or slug). When omitted, the
+    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    #[serde(default)]
+    pub project: Option<String>,
+
+    /// Slug of the issue to mutate.
+    pub slug: String,
+
+    /// New title; omit to leave unchanged.
+    #[serde(default)]
+    pub title: Option<String>,
+
+    /// New description; omit to leave unchanged.
+    #[serde(default)]
+    pub description: Option<String>,
+
+    /// Replacement body; omit to leave unchanged.
+    #[serde(default)]
+    pub body: Option<String>,
+
+    /// New status; omit to leave unchanged. Wire form matches
+    /// `AddIssueArgs::status`.
+    #[serde(default)]
+    pub status: Option<String>,
+
+    /// Replacement `depends_on` list; omit to leave unchanged.
+    /// Pass `[]` to clear.
+    #[serde(default)]
+    pub depends_on: Option<Vec<String>>,
+
+    /// Replacement `blocks` list; omit to leave unchanged.
+    /// Pass `[]` to clear.
+    #[serde(default)]
+    pub blocks: Option<Vec<String>>,
+
+    /// Typed refs to add or replace. Dedupe is by target UUID;
+    /// entries whose target already appears replace in place
+    /// (add-side commit pin wins on collision).
+    #[serde(default)]
+    pub refs_add: Vec<MemoryRefArg>,
+
+    /// UUIDs to strip from the existing refs list. Commit sha is
+    /// not part of the match.
+    #[serde(default)]
+    pub refs_remove: Vec<String>,
+
+    /// Typed `superseded_by` back-link retry path for when commit
+    /// B of a two-commit `supersedes` flow half-landed. Callers
+    /// pass the new issue's `{target, commit}`; the server flips
+    /// `status` to `superseded` and writes the link. Setting this
+    /// with any other `status` surfaces the invariant error via
+    /// `invalid_memory_ref`.
+    #[serde(default)]
+    pub superseded_by: Option<MemoryRefArg>,
+
+    /// Optional override for the git commit message.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// Args for `delete_issue`.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct DeleteIssueArgs {
+    /// Target project group (UUID or slug). When omitted, the
+    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    #[serde(default)]
+    pub project: Option<String>,
+
+    /// Slug of the issue to delete.
+    pub slug: String,
+
+    /// Optional override for the git commit message.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// Args for `rename_issue`.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct RenameIssueArgs {
+    /// Target project group (UUID or slug). When omitted, the
+    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    #[serde(default)]
+    pub project: Option<String>,
+
+    /// Current slug directory. Every memory under
+    /// `memories/<old_slug>/` moves in one atomic commit.
+    pub old_slug: String,
+
+    /// Target slug directory. UUIDs stay stable across the move
+    /// so cross-refs in other issues continue to resolve.
+    pub new_slug: String,
+
+    /// Optional override for the git commit message.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// Args for `list_issues`.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct ListIssuesArgs {
+    /// Target project group (UUID or slug). When omitted, the
+    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    #[serde(default)]
+    pub project: Option<String>,
+
+    /// Restrict to issues with this status. Wire form matches
+    /// `AddIssueArgs::status`. Explicit selector wins over the
+    /// `all` flag — an operator asking for `closed` issues always
+    /// sees them even when the default hide is on.
+    #[serde(default)]
+    pub status: Option<String>,
+
+    /// When `true`, include issues whose status is not `open`.
+    /// Defaults to `false` — the tool returns only non-terminal
+    /// issues unless `status` selects a different variant or `all`
+    /// is set.
+    #[serde(default)]
+    pub all: Option<bool>,
+}
+
 /// Memory filter facets shared by `export_archive` and
 /// `import_archive`. Every facet is optional; an absent filter matches
 /// every memory.
@@ -4171,6 +4396,419 @@ impl McpServer {
             notes,
         ))
     }
+
+    // ── Issue-tracker tools ─────────────────────────────────────
+    //
+    // Sister block to the feature-tracker tools above, routed
+    // through `mmcp_store::issues` instead of `mmcp_store::features`.
+    // Every mutator here runs `confirm_protected_write` before
+    // touching the group; the public method resolves the entry,
+    // fires the guard, then delegates to a peer-less `_unguarded`
+    // twin (mirroring `write_memory` / `edit_memory`) so tests can
+    // exercise the store-layer behaviour without a mock `Peer`.
+
+    #[tool(
+        description = "File a new issue in the current project's group. Slug is auto-minted from the title when omitted. Status defaults to `open`; supply one of `open | closed | wontfix | blocked | deferred | duplicate | superseded` to override. Errors with code `project_not_found` when no `.mmcp.toml` is on any ancestor of the server's cwd, `invalid_slug` when the supplied or derived slug fails validation, and `memory_already_exists` when the slug collides with an existing memory in the project group.",
+        annotations(
+            title = "Add issue",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
+    )]
+    async fn add_issue(
+        &self,
+        Parameters(args): Parameters<AddIssueArgs>,
+        peer: Peer<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        let guard_slug = args.slug.as_deref().unwrap_or(args.title.as_str());
+        confirm_protected_write(&peer, &entry, guard_slug, "add_issue").await?;
+        self.add_issue_unguarded(args).await
+    }
+
+    /// Peer-less test entry point: re-resolves the entry and commits
+    /// the write WITHOUT firing the elicitation guard. Mirrors
+    /// `write_memory_unguarded`.
+    async fn add_issue_unguarded(&self, args: AddIssueArgs) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        let status = parse_issue_status_arg(args.status.as_deref())?.unwrap_or_default();
+        let depends_on = mmcp_store::parse_cross_refs(&args.depends_on, "depends_on")
+            .map_err(map_xref_error_to_mcp)?;
+        let blocks =
+            mmcp_store::parse_cross_refs(&args.blocks, "blocks").map_err(map_xref_error_to_mcp)?;
+        let refs = parse_wire_refs(args.refs, "refs")?;
+        let source = parse_optional_source(args.source.as_deref())?;
+        let spec = mmcp_store::issues::AddSpec {
+            slug: args.slug,
+            title: args.title,
+            description: args.description,
+            body: args.body,
+            status,
+            depends_on,
+            blocks,
+            refs,
+            supersedes: args.supersedes,
+            source,
+            message: args.message,
+            // Number is server-assigned only, never accepted from
+            // the wire, mirroring FR-37 for the feature tracker.
+            ..mmcp_store::issues::AddSpec::default()
+        };
+        let record =
+            mmcp_store::issues::add_issue(&self.state.backend, &entry, spec, &self.state.author)
+                .await
+                .map_err(map_issue_error_to_mcp)?;
+        Ok(ok_json(issue_record_to_json(&entry, &record)))
+    }
+
+    #[tool(
+        description = "Read an issue by slug from the current project's group. Returns the full issue record (title, description, body, status, depends_on, blocks, commit_id). Set `version` to a branch, tag, or 40-char commit hex to read a specific revision. Errors with `not_an_issue` when the slug resolves to a memory whose kind is not `issue`.",
+        annotations(
+            title = "Read an issue",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn read_issue(
+        &self,
+        Parameters(args): Parameters<ReadIssueArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        let record = mmcp_store::issues::read_issue(
+            &self.state.backend,
+            &entry,
+            &args.slug,
+            args.version.as_deref(),
+        )
+        .await
+        .map_err(map_issue_error_to_mcp)?;
+        let notes = dangling_ref_notes_for(
+            &self.state.backend,
+            &entry,
+            &record.slug,
+            &record.depends_on,
+            &record.blocks,
+            record.superseded_by.as_ref(),
+        )
+        .await;
+        Ok(ok_json_with_notes(
+            issue_record_to_json(&entry, &record),
+            notes,
+        ))
+    }
+
+    #[tool(
+        description = "Apply partial updates to an existing issue and commit the result. Every mutator is optional — omit to leave untouched. `depends_on` and `blocks` are full-list replacements; pass `[]` to clear, omit to preserve. `status` takes the wire form of the status enum. Errors with `memory_not_found` when the slug has no issue, `not_an_issue` when the slug is a non-issue memory, and `invalid_issue_status` when `status` is not one of the seven variants.",
+        annotations(
+            title = "Update issue",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
+    )]
+    async fn update_issue(
+        &self,
+        Parameters(args): Parameters<UpdateIssueArgs>,
+        peer: Peer<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        confirm_protected_write(&peer, &entry, &args.slug, "update_issue").await?;
+        self.update_issue_unguarded(args).await
+    }
+
+    /// Peer-less test entry point. Mirrors `edit_memory_unguarded`.
+    async fn update_issue_unguarded(
+        &self,
+        args: UpdateIssueArgs,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        let status = match args.status.as_deref() {
+            Some(raw) => Some(parse_issue_status_arg(Some(raw))?.unwrap_or_default()),
+            None => None,
+        };
+        let depends_on = args
+            .depends_on
+            .as_deref()
+            .map(|v| mmcp_store::parse_cross_refs(v, "depends_on"))
+            .transpose()
+            .map_err(map_xref_error_to_mcp)?;
+        let blocks = args
+            .blocks
+            .as_deref()
+            .map(|v| mmcp_store::parse_cross_refs(v, "blocks"))
+            .transpose()
+            .map_err(map_xref_error_to_mcp)?;
+        let refs_add = if args.refs_add.is_empty() {
+            None
+        } else {
+            Some(parse_wire_refs(args.refs_add, "refs_add")?)
+        };
+        let refs_remove = if args.refs_remove.is_empty() {
+            None
+        } else {
+            let parsed: Result<Vec<Uuid>, _> = args
+                .refs_remove
+                .iter()
+                .map(|raw| {
+                    Uuid::parse_str(raw).map_err(|_| {
+                        McpError::invalid_params(
+                            format!("refs_remove entry '{raw}' is not a valid UUID"),
+                            Some(json!({
+                                "code": "invalid_memory_ref",
+                                "field": "refs_remove",
+                                "detail": format!("'{raw}' is not a valid UUID"),
+                            })),
+                        )
+                    })
+                })
+                .collect();
+            Some(parsed?)
+        };
+        let superseded_by = match args.superseded_by {
+            None => None,
+            Some(arg) => Some(
+                parse_wire_refs(vec![arg], "superseded_by")?
+                    .into_iter()
+                    .next()
+                    .expect("parse_wire_refs returns one entry per input"),
+            ),
+        };
+        let spec = mmcp_store::issues::UpdateSpec {
+            title: args.title,
+            description: args.description,
+            body: args.body,
+            status,
+            depends_on,
+            blocks,
+            refs_add,
+            refs_remove,
+            superseded_by,
+            message: args.message,
+        };
+        let record = mmcp_store::issues::update_issue(
+            &self.state.backend,
+            &entry,
+            &args.slug,
+            spec,
+            &self.state.author,
+        )
+        .await
+        .map_err(map_issue_error_to_mcp)?;
+        Ok(ok_json(issue_record_to_json(&entry, &record)))
+    }
+
+    #[tool(
+        description = "Delete an issue by slug. The deletion is committed on the group's main branch so the issue is recoverable via `list_versions`. Refuses with `not_an_issue` when the slug points at a non-issue memory so the issue tools never drop unrelated memories.",
+        annotations(
+            title = "Delete issue",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn delete_issue(
+        &self,
+        Parameters(args): Parameters<DeleteIssueArgs>,
+        peer: Peer<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        confirm_protected_write(&peer, &entry, &args.slug, "delete_issue").await?;
+        self.delete_issue_unguarded(args).await
+    }
+
+    /// Peer-less test entry point. Mirrors `delete_feature`'s shape.
+    async fn delete_issue_unguarded(
+        &self,
+        args: DeleteIssueArgs,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        let commit_id = mmcp_store::issues::delete_issue(
+            &self.state.backend,
+            &entry,
+            &args.slug,
+            &self.state.author,
+            args.message.as_deref(),
+        )
+        .await
+        .map_err(map_issue_error_to_mcp)?;
+        Ok(ok_json(json!({
+            "group":     entry.manifest.group_id.to_string(),
+            "slug":      args.slug,
+            "commit_id": commit_id,
+        })))
+    }
+
+    #[tool(
+        description = "Rename every issue memory under `old_slug` to `new_slug` in a single atomic commit. UUIDs stay stable across the rename so cross-references in other issues keep resolving without further rewrites. Duplicate slugs move as a batch — every entry under `memories/<old_slug>/` lands under `memories/<new_slug>/`. Errors with `memory_not_found` when no memory lives at `old_slug` and with `not_an_issue` when the source is a non-issue memory.",
+        annotations(
+            title = "Rename issue",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn rename_issue(
+        &self,
+        Parameters(args): Parameters<RenameIssueArgs>,
+        peer: Peer<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        confirm_protected_write(&peer, &entry, &args.old_slug, "rename_issue").await?;
+        self.rename_issue_unguarded(args).await
+    }
+
+    /// Peer-less test entry point. Mirrors `rename_feature`'s shape.
+    async fn rename_issue_unguarded(
+        &self,
+        args: RenameIssueArgs,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        let records = mmcp_store::issues::rename_issue(
+            &self.state.backend,
+            &entry,
+            &args.old_slug,
+            &args.new_slug,
+            &self.state.author,
+            args.message.as_deref(),
+        )
+        .await
+        .map_err(map_issue_error_to_mcp)?;
+        let issues: Vec<_> = records
+            .iter()
+            .map(|record| issue_record_to_json(&entry, record))
+            .collect();
+        Ok(ok_json(json!({
+            "group":    entry.manifest.group_id.to_string(),
+            "old_slug": args.old_slug,
+            "new_slug": args.new_slug,
+            "renamed":  issues.len(),
+            "issues":   issues,
+        })))
+    }
+
+    #[tool(
+        description = "List issues in the current project's group. By default hides every issue whose status is terminal-ish: `closed`, `wontfix`, `duplicate`, `superseded`. Open, blocked, and deferred issues stay visible so the default listing reads as 'what still needs work'. Pass `all: true` to include every status, or `status: <variant>` to pin a specific lifecycle state (explicit `status` wins over the `all` flag). Non-issue memories in the same group are skipped so the listing stays issue-shaped. Memories whose frontmatter fails to parse are quietly omitted; use `diagnose` to surface those.",
+        annotations(
+            title = "List issues",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn list_issues(
+        &self,
+        Parameters(args): Parameters<ListIssuesArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        let status = parse_issue_status_arg(args.status.as_deref())?;
+        let show_all = args.all.unwrap_or(false);
+        let summaries =
+            mmcp_store::issues::list_issue_summaries(&self.state.backend, &entry, status, show_all)
+                .await
+                .map_err(map_issue_error_to_mcp)?;
+        let mut notes = Vec::new();
+        for summary in &summaries {
+            notes.extend(
+                dangling_ref_notes_for(
+                    &self.state.backend,
+                    &entry,
+                    &summary.slug,
+                    &summary.depends_on,
+                    &summary.blocks,
+                    summary.superseded_by.as_ref(),
+                )
+                .await,
+            );
+        }
+        let issues: Vec<_> = summaries
+            .iter()
+            .map(|summary| issue_summary_to_json(&entry, summary))
+            .collect();
+        Ok(ok_json_with_notes(
+            json!({
+                "group":  entry.manifest.group_id.to_string(),
+                "issues": issues,
+                "count":  summaries.len(),
+            }),
+            notes,
+        ))
+    }
 }
 
 /// Compose the `status` tool response from a cwd + a pre-built
@@ -4249,6 +4887,8 @@ impl McpServer {
             Self::status_tool_attr(),
             Self::read_feature_tool_attr(),
             Self::list_features_tool_attr(),
+            Self::read_issue_tool_attr(),
+            Self::list_issues_tool_attr(),
             Self::describe_tools_tool_attr(),
             // Local mutators (open_world = false).
             Self::write_memory_tool_attr(),
@@ -4258,16 +4898,20 @@ impl McpServer {
             Self::move_memory_tool_attr(),
             Self::debug_write_file_tool_attr(),
             Self::update_feature_tool_attr(),
+            Self::update_issue_tool_attr(),
             Self::delete_memory_tool_attr(),
             Self::init_claude_tool_attr(),
             Self::delete_feature_tool_attr(),
+            Self::delete_issue_tool_attr(),
             Self::debug_toggle_tool_attr(),
             Self::init_project_tool_attr(),
             Self::rename_feature_tool_attr(),
+            Self::rename_issue_tool_attr(),
             Self::subscribe_tool_attr(),
             Self::unsubscribe_tool_attr(),
             Self::create_group_tool_attr(),
             Self::add_feature_tool_attr(),
+            Self::add_issue_tool_attr(),
             // Archive tools (open_world = true).
             Self::export_archive_tool_attr(),
             Self::import_archive_tool_attr(),
@@ -4319,6 +4963,8 @@ pub(crate) enum ToolIconCategory {
     Mutate,
     /// FR-007 feature-request tools (`*_feature`).
     Feature,
+    /// Issue-tracker tools (`*_issue`), sister to `Feature`.
+    Issue,
     /// `debug_*` raw-git escape hatches.
     Debug,
     /// `sync_*` tools that contact the remote server.
@@ -4341,6 +4987,8 @@ fn tool_icon_category(name: &str) -> ToolIconCategory {
         | "describe_tools" => ToolIconCategory::Read,
         "read_feature" | "list_features" | "add_feature" | "update_feature" | "delete_feature"
         | "rename_feature" => ToolIconCategory::Feature,
+        "read_issue" | "list_issues" | "add_issue" | "update_issue" | "delete_issue"
+        | "rename_issue" => ToolIconCategory::Issue,
         "debug_read_file" | "debug_list_tree" | "debug_git_log" | "debug_write_file"
         | "debug_toggle" => ToolIconCategory::Debug,
         "sync_fetch" | "sync_push" | "sync_pull" | "sync" => ToolIconCategory::Sync,
@@ -4361,6 +5009,7 @@ fn icons_for_category(cat: ToolIconCategory) -> Vec<rmcp::model::Icon> {
         ToolIconCategory::Read => READ_ICON_SRC,
         ToolIconCategory::Mutate => MUTATE_ICON_SRC,
         ToolIconCategory::Feature => FEATURE_ICON_SRC,
+        ToolIconCategory::Issue => ISSUE_ICON_SRC,
         ToolIconCategory::Debug => DEBUG_ICON_SRC,
         ToolIconCategory::Sync => SYNC_ICON_SRC,
     };
@@ -4374,6 +5023,7 @@ fn icons_for_category(cat: ToolIconCategory) -> Vec<rmcp::model::Icon> {
 const READ_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F4D6}</text></svg>";
 const MUTATE_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{270F}\u{FE0F}</text></svg>";
 const FEATURE_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F6A9}</text></svg>";
+const ISSUE_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F41E}</text></svg>";
 const DEBUG_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F41B}</text></svg>";
 const SYNC_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F504}</text></svg>";
 
@@ -4394,7 +5044,7 @@ const SYNC_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.o
 /// - `mmcp.protected_group_gated` — tool fires the FR-019
 ///   `confirm_protected_write` elicitation when targeting a
 ///   protected group (write / edit / delete / debug_write_file /
-///   init_claude).
+///   init_claude / the issue-tracker mutators).
 /// - `mmcp.network` — tool reaches outside the local mirror.
 ///   Today only the `sync_*` tools set this, mirroring
 ///   `open_world_hint` but kept distinct so future open-world
@@ -4415,6 +5065,12 @@ fn meta_for_tool(name: &str) -> Option<rmcp::model::Meta> {
             | "update_feature"
             | "delete_feature"
             | "rename_feature"
+            | "read_issue"
+            | "list_issues"
+            | "add_issue"
+            | "update_issue"
+            | "delete_issue"
+            | "rename_issue"
             | "subscribe"
             | "unsubscribe"
     ) {
@@ -4450,6 +5106,10 @@ fn meta_for_tool(name: &str) -> Option<rmcp::model::Meta> {
             | "debug_write_file"
             | "init_claude"
             | "import_archive"
+            | "add_issue"
+            | "update_issue"
+            | "delete_issue"
+            | "rename_issue"
     ) {
         keys.push(("mmcp.protected_group_gated", true));
     }
@@ -5255,6 +5915,120 @@ fn map_feature_error_to_mcp(err: mmcp_store::features::FeatureError) -> McpError
             })),
         ),
         FeatureError::Memory(inner) => map_memory_error_to_mcp(inner),
+    }
+}
+
+/// Parse the wire form of [`IssueStatus`] from an optional string
+/// argument. Mirrors `parse_status_arg` for the issue tracker.
+fn parse_issue_status_arg(
+    raw: Option<&str>,
+) -> Result<Option<mmcp_core::memory::IssueStatus>, McpError> {
+    let Some(s) = raw else {
+        return Ok(None);
+    };
+    mmcp_core::memory::IssueStatus::parse(s)
+        .map(Some)
+        .map_err(|err| {
+            McpError::invalid_params(
+                err.to_string(),
+                Some(json!({
+                    "code":  "invalid_issue_status",
+                    "input": err.input,
+                    "allowed": mmcp_core::memory::IssueStatus::all()
+                        .iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                })),
+            )
+        })
+}
+
+/// Serialize an [`IssueRecord`] to the JSON shape returned by the
+/// issue tools. Mirrors `feature_record_to_json`.
+fn issue_record_to_json(
+    entry: &GroupEntry,
+    record: &mmcp_store::issues::IssueRecord,
+) -> serde_json::Value {
+    json!({
+        "group":         entry.manifest.group_id.to_string(),
+        "slug":          record.slug,
+        "title":         record.title,
+        "description":   record.description,
+        "body":          record.body,
+        "status":        record.status.as_str(),
+        "number":        record.number,
+        "depends_on":    record.depends_on,
+        "blocks":        record.blocks,
+        "superseded_by": record.superseded_by.as_ref().map(memory_ref_to_json),
+        "commit_id":     record.commit_id,
+    })
+}
+
+/// Serialize an [`IssueSummary`] to the body-free JSON shape used
+/// by `list_issues`. Mirrors `feature_summary_to_json`.
+fn issue_summary_to_json(
+    entry: &GroupEntry,
+    summary: &mmcp_store::issues::IssueSummary,
+) -> serde_json::Value {
+    json!({
+        "group":         entry.manifest.group_id.to_string(),
+        "slug":          summary.slug,
+        "title":         summary.title,
+        "description":   summary.description,
+        "status":        summary.status.as_str(),
+        "number":        summary.number,
+        "depends_on":    summary.depends_on,
+        "blocks":        summary.blocks,
+        "superseded_by": summary.superseded_by.as_ref().map(memory_ref_to_json),
+        "commit_id":     summary.commit_id,
+    })
+}
+
+/// Map an [`mmcp_store::issues::IssueError`] onto an [`McpError`]
+/// with a structured `code` payload, mirroring
+/// `map_feature_error_to_mcp` so AI callers see the same shape
+/// across both tracker kinds. Group-resolution failures never
+/// reach this mapper: `resolve_project_group_with_selector`
+/// returns `FeatureError` regardless of tracker kind, so callers
+/// map that half through `map_feature_error_to_mcp` first.
+fn map_issue_error_to_mcp(err: mmcp_store::issues::IssueError) -> McpError {
+    use mmcp_store::issues::IssueError;
+    let message = err.to_string();
+    match err {
+        IssueError::NotAnIssue { slug, kind } => McpError::invalid_params(
+            message,
+            Some(json!({
+                "code": "not_an_issue",
+                "slug": slug,
+                "kind": kind,
+            })),
+        ),
+        IssueError::TitleRequired => {
+            McpError::invalid_params(message, Some(json!({ "code": "issue_title_required" })))
+        }
+        IssueError::Xref(xref) => map_xref_error_to_mcp(xref),
+        IssueError::SupersedesUnknown { query } => McpError::invalid_params(
+            message,
+            Some(json!({
+                "code": "supersedes_unknown",
+                "query": query,
+            })),
+        ),
+        IssueError::SupersedesInvalidStatus {
+            slug,
+            status,
+            existing_link,
+        } => McpError::invalid_params(
+            message,
+            Some(json!({
+                "code": "supersedes_invalid_status",
+                "slug": slug,
+                "status": status.as_str(),
+                "existing_link": existing_link.map(|r| json!({
+                    "target": r.target.to_string(),
+                    "commit": r.commit,
+                })),
+            })),
+        ),
+        IssueError::Memory(inner) => map_memory_error_to_mcp(inner),
     }
 }
 
@@ -6369,6 +7143,237 @@ mod tests {
             "list_features response ({} bytes) must stay much smaller than a single FR body ({} bytes)",
             serialized.len(),
             big_body.len(),
+        );
+    }
+
+    // ── Issue-tracker tools ─────────────────────────────────────
+    //
+    // Sister block to the feature-tracker tests above. Exercises
+    // the `_unguarded` peer-less entry points for the four
+    // mutators (mirroring `write_memory_unguarded` test coverage)
+    // plus the two read-only tools through their public methods.
+
+    #[tokio::test]
+    async fn issue_add_read_update_delete_round_trip() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "issue-crud", "seed-only", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let added = server
+            .add_issue_unguarded(AddIssueArgs {
+                project: Some(group.to_string()),
+                slug: Some("first-bug".into()),
+                title: "First bug".into(),
+                description: "repro steps".into(),
+                body: "## Repro\n\nsteps".into(),
+                ..AddIssueArgs::default()
+            })
+            .await
+            .expect("add_issue");
+        let added = parse_ok_json(added);
+        assert_eq!(
+            added.get("slug").and_then(|v| v.as_str()),
+            Some("first-bug")
+        );
+        assert_eq!(added.get("status").and_then(|v| v.as_str()), Some("open"));
+        assert_eq!(added.get("number").and_then(|v| v.as_u64()), Some(1));
+
+        let read = server
+            .read_issue(Parameters(ReadIssueArgs {
+                project: Some(group.to_string()),
+                slug: "first-bug".into(),
+                version: None,
+            }))
+            .await
+            .expect("read_issue");
+        let read = parse_ok_json(read);
+        assert_eq!(
+            read.get("title").and_then(|v| v.as_str()),
+            Some("First bug")
+        );
+        assert_eq!(
+            read.get("description").and_then(|v| v.as_str()),
+            Some("repro steps")
+        );
+
+        let updated = server
+            .update_issue_unguarded(UpdateIssueArgs {
+                project: Some(group.to_string()),
+                slug: "first-bug".into(),
+                status: Some("closed".into()),
+                ..UpdateIssueArgs::default()
+            })
+            .await
+            .expect("update_issue");
+        let updated = parse_ok_json(updated);
+        assert_eq!(
+            updated.get("status").and_then(|v| v.as_str()),
+            Some("closed")
+        );
+        assert_eq!(
+            updated.get("title").and_then(|v| v.as_str()),
+            Some("First bug"),
+            "update_issue must preserve untouched fields"
+        );
+
+        let deleted = server
+            .delete_issue_unguarded(DeleteIssueArgs {
+                project: Some(group.to_string()),
+                slug: "first-bug".into(),
+                message: None,
+            })
+            .await
+            .expect("delete_issue");
+        let deleted = parse_ok_json(deleted);
+        assert_eq!(
+            deleted.get("slug").and_then(|v| v.as_str()),
+            Some("first-bug")
+        );
+        assert!(deleted.get("commit_id").and_then(|v| v.as_str()).is_some());
+    }
+
+    #[tokio::test]
+    async fn rename_issue_moves_under_new_slug() {
+        let (state, _tmp) = test_state().await;
+        let group =
+            seed_group_with_memory(&state, "issue-rename", "seed-only", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        server
+            .add_issue_unguarded(AddIssueArgs {
+                project: Some(group.to_string()),
+                slug: Some("old-slug".into()),
+                title: "Issue".into(),
+                ..AddIssueArgs::default()
+            })
+            .await
+            .expect("add_issue");
+
+        let renamed = server
+            .rename_issue_unguarded(RenameIssueArgs {
+                project: Some(group.to_string()),
+                old_slug: "old-slug".into(),
+                new_slug: "new-slug".into(),
+                message: None,
+            })
+            .await
+            .expect("rename_issue");
+        let renamed = parse_ok_json(renamed);
+        assert_eq!(renamed.get("renamed").and_then(|v| v.as_u64()), Some(1));
+
+        let read = server
+            .read_issue(Parameters(ReadIssueArgs {
+                project: Some(group.to_string()),
+                slug: "new-slug".into(),
+                version: None,
+            }))
+            .await
+            .expect("read after rename");
+        let read = parse_ok_json(read);
+        assert_eq!(read.get("slug").and_then(|v| v.as_str()), Some("new-slug"));
+    }
+
+    #[tokio::test]
+    async fn list_issues_hides_terminal_statuses_by_default() {
+        let (state, _tmp) = test_state().await;
+        let group =
+            seed_group_with_memory(&state, "issue-listing", "seed-only", SAMPLE_MEMORY).await;
+        let entry = state.groups.get(&group).await.expect("group entry");
+
+        for (slug, status) in [
+            ("issue-open", mmcp_core::memory::IssueStatus::Open),
+            ("issue-closed", mmcp_core::memory::IssueStatus::Closed),
+        ] {
+            let spec = mmcp_store::issues::AddSpec {
+                slug: Some(slug.into()),
+                title: slug.into(),
+                status,
+                ..mmcp_store::issues::AddSpec::default()
+            };
+            mmcp_store::issues::add_issue(&state.backend, &entry, spec, &state.author)
+                .await
+                .expect("seed issue");
+        }
+        state.groups.refresh().await.expect("refresh");
+
+        let server = McpServer::new(state, ServeMode::Full);
+        let res = server
+            .list_issues(Parameters(ListIssuesArgs {
+                project: Some(group.to_string()),
+                status: None,
+                all: None,
+            }))
+            .await
+            .expect("list_issues");
+        let parsed = parse_ok_json(res);
+        let issues = parsed
+            .get("issues")
+            .and_then(|v| v.as_array())
+            .expect("issues array");
+        let slugs: Vec<&str> = issues
+            .iter()
+            .filter_map(|i| i.get("slug").and_then(|v| v.as_str()))
+            .collect();
+        assert!(slugs.contains(&"issue-open"));
+        assert!(!slugs.contains(&"issue-closed"));
+    }
+
+    #[tokio::test]
+    async fn issue_tools_reject_a_feature_slug() {
+        // Mirrors `mmcp_store::issues::delete_refuses_when_slug_is_not_an_issue`
+        // at the MCP tool layer: a memory carrying a `[feature]`
+        // block but no `[issue]` block must be refused by every
+        // issue tool with the `not_an_issue` code, so the issue
+        // tools never touch unrelated tracker memories.
+        let (state, _tmp) = test_state().await;
+        let group =
+            seed_group_with_memory(&state, "issue-not-a-feature", "seed-only", SAMPLE_MEMORY).await;
+        let entry = state.groups.get(&group).await.expect("group entry");
+
+        mmcp_store::features::add_feature(
+            &state.backend,
+            &entry,
+            mmcp_store::features::AddSpec {
+                slug: Some("a-feat".into()),
+                title: "feat".into(),
+                description: "guard test".into(),
+                body: "x".into(),
+                ..mmcp_store::features::AddSpec::default()
+            },
+            &state.author,
+        )
+        .await
+        .expect("seed feature");
+        state.groups.refresh().await.expect("refresh");
+
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let err = server
+            .read_issue(Parameters(ReadIssueArgs {
+                project: Some(group.to_string()),
+                slug: "a-feat".into(),
+                version: None,
+            }))
+            .await
+            .expect_err("read_issue must reject a non-issue slug");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("not_an_issue")
+        );
+
+        let err = server
+            .delete_issue_unguarded(DeleteIssueArgs {
+                project: Some(group.to_string()),
+                slug: "a-feat".into(),
+                message: None,
+            })
+            .await
+            .expect_err("delete_issue must reject a non-issue slug");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("not_an_issue")
         );
     }
 
@@ -9065,6 +10070,80 @@ mod tests {
         );
     }
 
+    // ── Issue-tracker protected-group guard ───────────────────────
+    //
+    // Mirrors the memory-CRUD guard tests above: the four issue
+    // mutators call `confirm_protected_write` from the start (task
+    // requirement), unlike the sibling feature tools' current gap.
+
+    #[tokio::test]
+    async fn add_issue_against_protected_group_is_gated() {
+        let (state, _tmp) = test_state().await;
+        let entry = protected_entry_for(&state, "global").await;
+        let err = ensure_not_protected(&entry, "fresh-issue", "add_issue")
+            .expect_err("protected-group fallback must gate add_issue");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("protected_requires_elicitation")
+        );
+        assert_eq!(
+            payload.get("action").and_then(|v| v.as_str()),
+            Some("add_issue")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_issue_against_protected_group_is_gated() {
+        let (state, _tmp) = test_state().await;
+        let entry = protected_entry_for(&state, "global").await;
+        let err = ensure_not_protected(&entry, "an-issue", "update_issue")
+            .expect_err("protected-group fallback must gate update_issue");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("protected_requires_elicitation")
+        );
+        assert_eq!(
+            payload.get("action").and_then(|v| v.as_str()),
+            Some("update_issue")
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_issue_against_protected_group_is_gated() {
+        let (state, _tmp) = test_state().await;
+        let entry = protected_entry_for(&state, "global").await;
+        let err = ensure_not_protected(&entry, "an-issue", "delete_issue")
+            .expect_err("protected-group fallback must gate delete_issue");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("protected_requires_elicitation")
+        );
+        assert_eq!(
+            payload.get("action").and_then(|v| v.as_str()),
+            Some("delete_issue")
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_issue_against_protected_group_is_gated() {
+        let (state, _tmp) = test_state().await;
+        let entry = protected_entry_for(&state, "global").await;
+        let err = ensure_not_protected(&entry, "an-issue", "rename_issue")
+            .expect_err("protected-group fallback must gate rename_issue");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("protected_requires_elicitation")
+        );
+        assert_eq!(
+            payload.get("action").and_then(|v| v.as_str()),
+            Some("rename_issue")
+        );
+    }
+
     #[tokio::test]
     async fn unprotected_sibling_group_continues_to_accept_writes() {
         // Seed one protected and one unprotected group in the same
@@ -9430,6 +10509,8 @@ mod tests {
         check_bits(McpServer::status_tool_attr(), ro);
         check_bits(McpServer::read_feature_tool_attr(), ro);
         check_bits(McpServer::list_features_tool_attr(), ro);
+        check_bits(McpServer::read_issue_tool_attr(), ro);
+        check_bits(McpServer::list_issues_tool_attr(), ro);
         check_bits(McpServer::describe_tools_tool_attr(), ro);
 
         // ── Local mutation tools (open_world = false) ───────────
@@ -9444,18 +10525,21 @@ mod tests {
         check_bits(McpServer::edit_memory_body_tool_attr(), dmod);
         check_bits(McpServer::debug_write_file_tool_attr(), dmod);
         check_bits(McpServer::update_feature_tool_attr(), dmod);
+        check_bits(McpServer::update_issue_tool_attr(), dmod);
 
         // Destructive + idempotent (delete shapes + init_claude rewrite).
         let ddel = (Some(false), Some(true), Some(true), Some(false));
         check_bits(McpServer::delete_memory_tool_attr(), ddel);
         check_bits(McpServer::init_claude_tool_attr(), ddel);
         check_bits(McpServer::delete_feature_tool_attr(), ddel);
+        check_bits(McpServer::delete_issue_tool_attr(), ddel);
 
         // Non-destructive + idempotent.
         let iden = (Some(false), Some(false), Some(true), Some(false));
         check_bits(McpServer::debug_toggle_tool_attr(), iden);
         check_bits(McpServer::init_project_tool_attr(), iden);
         check_bits(McpServer::rename_feature_tool_attr(), iden);
+        check_bits(McpServer::rename_issue_tool_attr(), iden);
         check_bits(McpServer::move_memory_tool_attr(), iden);
         check_bits(McpServer::subscribe_tool_attr(), iden);
         check_bits(McpServer::unsubscribe_tool_attr(), iden);
@@ -9464,6 +10548,7 @@ mod tests {
         let cre = (Some(false), Some(false), Some(false), Some(false));
         check_bits(McpServer::create_group_tool_attr(), cre);
         check_bits(McpServer::add_feature_tool_attr(), cre);
+        check_bits(McpServer::add_issue_tool_attr(), cre);
 
         // ── Sync tools (open_world = true) ──────────────────────
         // sync_fetch / sync_push: non-destructive, idempotent.
