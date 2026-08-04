@@ -116,10 +116,7 @@ fn parse_request<T: for<'de> Deserialize<'de>>(value: Value) -> Result<T, ToolEr
 }
 
 fn serialize_response<T: Serialize>(value: &T) -> Result<Value, ToolErrorResponse> {
-    serde_json::to_value(value).map_err(|e| ToolErrorResponse {
-        status: StatusCode::INTERNAL_SERVER_ERROR,
-        error: ProtoError::Internal(format!("response serialization failed: {e}")),
-    })
+    serde_json::to_value(value).map_err(into_generic_response)
 }
 
 impl FromInternalError for ToolErrorResponse {
@@ -238,6 +235,48 @@ mod handlers {
             kind: kind_to_string(m.kind),
             mandatory: m.mandatory,
             latest_version: m.latest_version,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Contrived value whose `Serialize` impl always fails, so the
+    /// test can drive `serialize_response`'s error branch directly
+    /// without needing a route handler that produces a genuinely
+    /// unserializable response.
+    struct Unserializable;
+
+    impl Serialize for Unserializable {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            Err(serde::ser::Error::custom("contrived serialization failure"))
+        }
+    }
+
+    /// `serialize_response` must route a real `serde_json` failure
+    /// through the shared generic-message seam, matching every other
+    /// internal-error path in this file, instead of echoing the
+    /// underlying serializer error text.
+    #[test]
+    fn serialize_response_hides_the_real_error_behind_the_generic_message() {
+        let err = serialize_response(&Unserializable)
+            .expect_err("serialization must fail for this contrived type");
+
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        match err.error {
+            ProtoError::Internal(message) => {
+                assert_eq!(message, response::GENERIC_INTERNAL_ERROR_MESSAGE);
+                assert!(
+                    !message.contains("contrived serialization failure"),
+                    "generic message must not leak the real serde error text, got: {message}"
+                );
+            }
+            other => panic!("expected ProtoError::Internal, got {other:?}"),
         }
     }
 }
