@@ -265,9 +265,10 @@
           onClose();
           return;
         }
-        const sum = (pick: (g: (typeof report.groups)[number]) => number) =>
-          report.groups.reduce((n, g) => n + pick(g), 0);
-        result = `Imported ${report.groups.length} group(s): ${sum((g) => g.created)} created, ${sum((g) => g.overwritten)} overwritten, ${sum((g) => g.skipped)} skipped, ${sum((g) => g.conflicts)} conflicts`;
+        const groups = report.groups;
+        const sum = (pick: (g: (typeof groups)[number]) => number) =>
+          groups.reduce((n, g) => n + pick(g), 0);
+        result = `Imported ${groups.length} group(s): ${sum((g) => g.created)} created, ${sum((g) => g.overwritten)} overwritten, ${sum((g) => g.skipped)} skipped, ${sum((g) => g.conflicts)} conflicts`;
       }
     } catch (e) {
       error = errorMessage(e);
