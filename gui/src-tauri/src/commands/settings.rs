@@ -39,10 +39,10 @@ pub async fn load_settings(
     if !path.exists() {
         return Ok(SettingsBlob::default());
     }
-    let text = fs::read_to_string(&path)
-        .map_err(|e| GuiError::Other(format!("read settings: {e}")))?;
-    let value: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| GuiError::Other(format!("parse settings: {e}")))?;
+    let text =
+        fs::read_to_string(&path).map_err(|e| GuiError::Other(format!("read settings: {e}")))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| GuiError::Other(format!("parse settings: {e}")))?;
     Ok(SettingsBlob(value))
 }
 

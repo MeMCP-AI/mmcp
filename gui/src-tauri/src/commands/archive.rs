@@ -8,7 +8,9 @@
 //! archive for import, then calls export / import with the picks.
 
 use mmcp_core::id::GroupId;
-use mmcp_store::{ArchiveManifest, ExportOptions, ImportArchiveOptions, MemoryFilter, parse_memory_kind};
+use mmcp_store::{
+    ArchiveManifest, ExportOptions, ImportArchiveOptions, MemoryFilter, parse_memory_kind,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -73,7 +75,8 @@ fn parse_kinds(values: &[String]) -> GuiResult<Vec<mmcp_core::memory::MemoryKind
     values
         .iter()
         .map(|value| {
-            parse_memory_kind(value).ok_or_else(|| GuiError::Other(format!("unknown kind '{value}'")))
+            parse_memory_kind(value)
+                .ok_or_else(|| GuiError::Other(format!("unknown kind '{value}'")))
         })
         .collect()
 }
@@ -184,7 +187,11 @@ pub async fn pick_import_path(app: AppHandle) -> GuiResult<Option<String>> {
     let picked = rx
         .await
         .map_err(|e| GuiError::Other(format!("dialog channel: {e}")))?;
-    Ok(picked.and_then(|p| p.into_path().ok().map(|pb| pb.to_string_lossy().into_owned())))
+    Ok(picked.and_then(|p| {
+        p.into_path()
+            .ok()
+            .map(|pb| pb.to_string_lossy().into_owned())
+    }))
 }
 
 /// Enumerate an archive's groups and the memory slugs each carries, so
@@ -209,7 +216,10 @@ pub async fn inspect_archive(input: String) -> GuiResult<Vec<ArchiveGroupListing
 /// Distinct tags across the chosen local groups (empty = every group),
 /// for the export dialog's tag autocomplete.
 #[tauri::command]
-pub async fn local_tags(state: State<'_, AppState>, group_ids: Vec<String>) -> GuiResult<Vec<String>> {
+pub async fn local_tags(
+    state: State<'_, AppState>,
+    group_ids: Vec<String>,
+) -> GuiResult<Vec<String>> {
     let groups = if group_ids.is_empty() {
         state.index.list().await
     } else {
@@ -270,7 +280,10 @@ pub async fn import_archive(
 
     // Recreated groups and replayed memories span several group ids, so
     // a null target makes the frontend re-list everything.
-    let _ = app.emit(MIRROR_CHANGED_EVENT, serde_json::json!({ "group_id": null }));
+    let _ = app.emit(
+        MIRROR_CHANGED_EVENT,
+        serde_json::json!({ "group_id": null }),
+    );
 
     Ok(Some(ImportArchiveReportDto {
         input,
@@ -312,11 +325,11 @@ async fn pick_save_path(
         .await
         .map_err(|e| GuiError::Other(format!("dialog channel: {e}")))?;
     match picked {
-        Some(target) => Ok(Some(
-            target
-                .into_path()
-                .map_err(|e| GuiError::Other(format!("dialog path: {e}")))?,
-        )),
+        Some(target) => {
+            Ok(Some(target.into_path().map_err(|e| {
+                GuiError::Other(format!("dialog path: {e}"))
+            })?))
+        }
         None => Ok(None),
     }
 }

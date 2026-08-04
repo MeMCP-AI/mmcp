@@ -63,7 +63,11 @@ pub async fn pick_directory(
         .await
         .map_err(|e| GuiError::Other(format!("dialog channel: {e}")))?;
 
-    Ok(picked.and_then(|p| p.into_path().ok().map(|pb| pb.to_string_lossy().into_owned())))
+    Ok(picked.and_then(|p| {
+        p.into_path()
+            .ok()
+            .map(|pb| pb.to_string_lossy().into_owned())
+    }))
 }
 
 #[tauri::command]

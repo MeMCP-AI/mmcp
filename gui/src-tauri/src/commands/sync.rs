@@ -40,10 +40,7 @@ pub async fn sync_status(state: State<'_, AppState>) -> GuiResult<SyncStatusDto>
 }
 
 #[tauri::command]
-pub async fn sync_pull(
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> GuiResult<PullReportDto> {
+pub async fn sync_pull(app: AppHandle, state: State<'_, AppState>) -> GuiResult<PullReportDto> {
     let guard = state.sync.read().await;
     let bundle = guard.as_ref().ok_or(GuiError::SyncNotConfigured)?;
     // `IndexResolver` implements both `GroupHandleResolver` and

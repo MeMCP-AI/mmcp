@@ -41,11 +41,10 @@ pub async fn list_memory_history(
     state: State<'_, AppState>,
 ) -> GuiResult<Vec<CommitMetaDto>> {
     let gid = group_id_from_str(&group_id)?;
-    let entry = state
-        .index
-        .get(&gid)
-        .await
-        .ok_or_else(|| GuiError::Other(format!("group {group_id} is not in the local mirror")))?;
+    let entry =
+        state.index.get(&gid).await.ok_or_else(|| {
+            GuiError::Other(format!("group {group_id} is not in the local mirror"))
+        })?;
     let resolved = resolve_memory(&state.backend, &entry.handle, Some(&slug), None)
         .await
         .map_err(GuiError::from)?;
@@ -81,11 +80,10 @@ pub async fn load_memory_at(
     state: State<'_, AppState>,
 ) -> GuiResult<MemoryFileDto> {
     let gid = group_id_from_str(&group_id)?;
-    let entry = state
-        .index
-        .get(&gid)
-        .await
-        .ok_or_else(|| GuiError::Other(format!("group {group_id} is not in the local mirror")))?;
+    let entry =
+        state.index.get(&gid).await.ok_or_else(|| {
+            GuiError::Other(format!("group {group_id} is not in the local mirror"))
+        })?;
     let resolved = resolve_memory(&state.backend, &entry.handle, Some(&slug), None)
         .await
         .map_err(GuiError::from)?;
@@ -156,17 +154,20 @@ async fn read_file_at_commit(
     commit: &str,
 ) -> GuiResult<String> {
     let gid = group_id_from_str(group_id)?;
-    let entry = state
-        .index
-        .get(&gid)
-        .await
-        .ok_or_else(|| GuiError::Other(format!("group {group_id} is not in the local mirror")))?;
+    let entry =
+        state.index.get(&gid).await.ok_or_else(|| {
+            GuiError::Other(format!("group {group_id} is not in the local mirror"))
+        })?;
     let resolved = resolve_memory(&state.backend, &entry.handle, Some(slug), None)
         .await
         .map_err(GuiError::from)?;
     let bytes = state
         .backend
-        .read_file(&entry.handle, &resolved.path, &Rev::Commit(commit.to_string()))
+        .read_file(
+            &entry.handle,
+            &resolved.path,
+            &Rev::Commit(commit.to_string()),
+        )
         .await
         .map_err(GuiError::from)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
@@ -219,7 +220,9 @@ pub async fn diff_memory(
                     });
                 }
                 ChangeTag::Delete => {
-                    let Some(o) = change.old_index() else { continue };
+                    let Some(o) = change.old_index() else {
+                        continue;
+                    };
                     deleted += 1;
                     rows.push(DiffRow::Delete {
                         old_lineno: (o + 1) as u32,
@@ -228,7 +231,9 @@ pub async fn diff_memory(
                     });
                 }
                 ChangeTag::Insert => {
-                    let Some(n) = change.new_index() else { continue };
+                    let Some(n) = change.new_index() else {
+                        continue;
+                    };
                     inserted += 1;
                     rows.push(DiffRow::Insert {
                         new_lineno: (n + 1) as u32,

@@ -100,10 +100,7 @@ impl AppState {
     /// a write lock so in-flight pull/push finish first. Returns the
     /// new server URL (if any) so the caller can restart the probe
     /// loop.
-    pub async fn rebuild_sync(
-        &self,
-        reference_point: Option<&Path>,
-    ) -> GuiResult<Option<String>> {
+    pub async fn rebuild_sync(&self, reference_point: Option<&Path>) -> GuiResult<Option<String>> {
         let fresh = build_sync(&self.backend, &self.index, reference_point)?;
         let url = fresh.as_ref().map(|b| b.server_url.clone());
         *self.sync.write().await = fresh;
@@ -134,9 +131,8 @@ fn spawn_mirror_watcher(
         }
     }
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<
-        Vec<notify_debouncer_mini::DebouncedEvent>,
-    >();
+    let (tx, mut rx) =
+        tokio::sync::mpsc::unbounded_channel::<Vec<notify_debouncer_mini::DebouncedEvent>>();
 
     let mut debouncer = new_debouncer(
         Duration::from_millis(500),
@@ -168,10 +164,7 @@ fn spawn_mirror_watcher(
                 let Ok(rel) = event.path.strip_prefix(&root) else {
                     continue;
                 };
-                let first = rel
-                    .components()
-                    .next()
-                    .and_then(|c| c.as_os_str().to_str());
+                let first = rel.components().next().and_then(|c| c.as_os_str().to_str());
                 match first {
                     Some(s) if !s.is_empty() => {
                         groups.insert(s.to_string());
@@ -187,10 +180,7 @@ fn spawn_mirror_watcher(
                 continue;
             }
             for g in groups {
-                let _ = handle.emit(
-                    MIRROR_CHANGED_EVENT,
-                    serde_json::json!({ "group_id": g }),
-                );
+                let _ = handle.emit(MIRROR_CHANGED_EVENT, serde_json::json!({ "group_id": g }));
             }
         }
     });

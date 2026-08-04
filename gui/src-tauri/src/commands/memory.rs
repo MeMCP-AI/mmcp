@@ -168,14 +168,17 @@ pub async fn list_memory_slugs(
     state: State<'_, AppState>,
 ) -> GuiResult<Vec<String>> {
     let gid = group_id_from_str(&group_id)?;
-    let entry = state
-        .index
-        .get(&gid)
-        .await
-        .ok_or_else(|| GuiError::Other(format!("group {group_id} is not in the local mirror")))?;
+    let entry =
+        state.index.get(&gid).await.ok_or_else(|| {
+            GuiError::Other(format!("group {group_id} is not in the local mirror"))
+        })?;
     let mut slugs = state
         .backend
-        .list_subtrees(&entry.handle, mmcp_core::conventions::MEMORIES_DIR, &Rev::head())
+        .list_subtrees(
+            &entry.handle,
+            mmcp_core::conventions::MEMORIES_DIR,
+            &Rev::head(),
+        )
         .await
         .map_err(GuiError::from)?;
     slugs.sort();
@@ -189,11 +192,10 @@ pub async fn load_memory(
     state: State<'_, AppState>,
 ) -> GuiResult<MemoryFileDto> {
     let gid = group_id_from_str(&group_id)?;
-    let entry = state
-        .index
-        .get(&gid)
-        .await
-        .ok_or_else(|| GuiError::Other(format!("group {group_id} is not in the local mirror")))?;
+    let entry =
+        state.index.get(&gid).await.ok_or_else(|| {
+            GuiError::Other(format!("group {group_id} is not in the local mirror"))
+        })?;
     let resolved = resolve_memory(&state.backend, &entry.handle, Some(&slug), None)
         .await
         .map_err(GuiError::from)?;
@@ -225,26 +227,32 @@ fn to_memory_file(dto: MemoryFileDto) -> GuiResult<MemoryFile> {
         version,
         tags: dto.frontmatter.tags,
         bump_intent: None,
-        feature: dto.frontmatter.feature.map(|f| mmcp_core::memory::FeatureMetadata {
-            status: parse_feature_status(&f.status),
-            number: f.number,
-            depends_on: f.depends_on,
-            blocks: f.blocks,
-            superseded_by: f.superseded_by.map(|r| mmcp_core::memory::MemoryRef {
-                target: r.target,
-                commit: r.commit,
+        feature: dto
+            .frontmatter
+            .feature
+            .map(|f| mmcp_core::memory::FeatureMetadata {
+                status: parse_feature_status(&f.status),
+                number: f.number,
+                depends_on: f.depends_on,
+                blocks: f.blocks,
+                superseded_by: f.superseded_by.map(|r| mmcp_core::memory::MemoryRef {
+                    target: r.target,
+                    commit: r.commit,
+                }),
             }),
-        }),
-        issue: dto.frontmatter.issue.map(|i| mmcp_core::memory::IssueMetadata {
-            status: parse_issue_status(&i.status),
-            number: i.number,
-            depends_on: i.depends_on,
-            blocks: i.blocks,
-            superseded_by: i.superseded_by.map(|r| mmcp_core::memory::MemoryRef {
-                target: r.target,
-                commit: r.commit,
+        issue: dto
+            .frontmatter
+            .issue
+            .map(|i| mmcp_core::memory::IssueMetadata {
+                status: parse_issue_status(&i.status),
+                number: i.number,
+                depends_on: i.depends_on,
+                blocks: i.blocks,
+                superseded_by: i.superseded_by.map(|r| mmcp_core::memory::MemoryRef {
+                    target: r.target,
+                    commit: r.commit,
+                }),
             }),
-        }),
         refs: dto
             .frontmatter
             .refs
@@ -275,11 +283,10 @@ pub async fn create_memory(
     state: State<'_, AppState>,
 ) -> GuiResult<String> {
     let gid = group_id_from_str(&group_id)?;
-    let entry = state
-        .index
-        .get(&gid)
-        .await
-        .ok_or_else(|| GuiError::Other(format!("group {group_id} is not in the local mirror")))?;
+    let entry =
+        state.index.get(&gid).await.ok_or_else(|| {
+            GuiError::Other(format!("group {group_id} is not in the local mirror"))
+        })?;
     let mut file = to_memory_file(memory)?;
     let id = file.frontmatter.id.unwrap_or_else(Uuid::now_v7);
     file.frontmatter = file.frontmatter.clone().with_id(id);
@@ -311,11 +318,10 @@ pub async fn update_memory(
     state: State<'_, AppState>,
 ) -> GuiResult<String> {
     let gid = group_id_from_str(&group_id)?;
-    let entry = state
-        .index
-        .get(&gid)
-        .await
-        .ok_or_else(|| GuiError::Other(format!("group {group_id} is not in the local mirror")))?;
+    let entry =
+        state.index.get(&gid).await.ok_or_else(|| {
+            GuiError::Other(format!("group {group_id} is not in the local mirror"))
+        })?;
     let resolved = resolve_memory(&state.backend, &entry.handle, Some(&slug), None)
         .await
         .map_err(GuiError::from)?;
@@ -346,11 +352,10 @@ pub async fn delete_memory(
     state: State<'_, AppState>,
 ) -> GuiResult<String> {
     let gid = group_id_from_str(&group_id)?;
-    let entry = state
-        .index
-        .get(&gid)
-        .await
-        .ok_or_else(|| GuiError::Other(format!("group {group_id} is not in the local mirror")))?;
+    let entry =
+        state.index.get(&gid).await.ok_or_else(|| {
+            GuiError::Other(format!("group {group_id} is not in the local mirror"))
+        })?;
     let resolved = resolve_memory(&state.backend, &entry.handle, Some(&slug), None)
         .await
         .map_err(GuiError::from)?;

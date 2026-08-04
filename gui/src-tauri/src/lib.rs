@@ -85,7 +85,8 @@ pub fn run() {
                             .as_ref()
                             .map(|s| s.server_url.clone());
                         if let Some(url) = server_url {
-                            let probe = tauri::async_runtime::spawn(probe_loop(handle.clone(), url));
+                            let probe =
+                                tauri::async_runtime::spawn(probe_loop(handle.clone(), url));
                             *state.probe.lock().await = Some(probe);
                         }
                         handle.manage(state);
