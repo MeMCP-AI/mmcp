@@ -2929,9 +2929,9 @@ dependencies = [
 
 [[package]]
 name = "kqueue"
-version = "1.2.0"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "273c0752728918e0ac4976f2b275b6fefb9ecd400585dec929419f3844cd87b5"
+checksum = "8d763e5b24120b4ddf50de6c92308156765aabfbbccebf401da7cff2d70a41ea"
 dependencies = [
  "kqueue-sys",
  "libc",
@@ -3127,39 +3127,32 @@ dependencies = [
 
 [[package]]
 name = "mmcp-auth"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "argon2",
  "axum-login",
  "jiff",
- "mmcp-core",
  "mmcp-db",
  "rusty_paseto",
  "sea-orm",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
- "tokio",
  "uuid",
- "webauthn-rs",
 ]
 
 [[package]]
 name = "mmcp-client"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "assert_cmd",
  "cargo_toml",
  "clap",
- "gix",
  "inquire",
- "jiff",
- "mmcp-auth",
  "mmcp-core",
  "mmcp-git",
  "mmcp-proto",
- "mmcp-session",
  "mmcp-store",
  "mmcp-sync",
  "notify",
@@ -3171,7 +3164,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
- "toml",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -3179,7 +3171,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-core"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "gray_matter",
  "jiff",
@@ -3197,11 +3189,10 @@ dependencies = [
 
 [[package]]
 name = "mmcp-db"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "async-trait",
  "libsqlite3-sys",
- "mmcp-core",
  "sea-orm",
  "sea-orm-migration",
  "serde",
@@ -3212,7 +3203,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-git"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3228,9 +3219,8 @@ dependencies = [
 
 [[package]]
 name = "mmcp-proto"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
- "mmcp-core",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -3239,7 +3229,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-server"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "axum",
@@ -3255,7 +3245,6 @@ dependencies = [
  "mmcp-db",
  "mmcp-git",
  "mmcp-proto",
- "mmcp-session",
  "mmcp-sync",
  "reqwest 0.12.28",
  "sea-orm",
@@ -3264,7 +3253,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
- "tower",
  "tower-http",
  "tower-sessions",
  "tracing",
@@ -3276,7 +3264,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-session"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "serde",
  "sha2 0.11.0",
@@ -3286,7 +3274,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-store"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "acdc-converters-core",
  "acdc-converters-markdown",
@@ -3300,7 +3288,6 @@ dependencies = [
  "mmcp-session",
  "mmcp-sync",
  "serde",
- "serde_json",
  "slug",
  "tar",
  "tempfile",
@@ -3313,16 +3300,13 @@ dependencies = [
 
 [[package]]
 name = "mmcp-sync"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
- "jiff",
  "mmcp-core",
  "mmcp-git",
- "mmcp-proto",
  "reqwest 0.12.28",
  "semver",
  "serde",
- "serde_json",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
@@ -4048,9 +4032,9 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.17"
+version = "0.4.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca71a6a1a566e01ad6b3b87edcbf9bd3374c27e31978c1b4e38c9fa6412557d2"
+checksum = "ad8553b9b26413251cbf30e620595c7a41b3887f03da04579c0e6b0d6a06b4b2"
 dependencies = [
  "aho-corasick",
  "memchr",
