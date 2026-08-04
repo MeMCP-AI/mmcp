@@ -47,65 +47,67 @@ notify-debouncer-mini = "0.4"
 # Redirect every gitoxide crate to the GGLinnk/gitoxide fork.
 # mmcp-git declares `gix` features (`serve-upload-pack`,
 # `serve-receive-pack`) that only exist in the fork — crates.io
-# `gix` 0.81 doesn't know them. The root workspace Cargo.toml applies
-# the same patch for workspace members, but this crate is excluded
-# from the workspace (it's the Tauri backend), so the patch has to
-# be repeated here. Remove both copies once the fork's push + serve
-# work lands on crates.io (handoff plan in the fork's
-# GITOXIDE_UPSTREAM_HANDOFF.md).
+# `gix` 0.81 doesn't know them. Pinned to an exact commit (matching
+# the root workspace Cargo.toml) rather than the branch tip, which
+# has since moved past a revision exposing those features. The root
+# workspace Cargo.toml applies the same patch for workspace members,
+# but this crate is excluded from the workspace (it's the Tauri
+# backend), so the patch has to be repeated here. Remove both copies
+# once the fork's push + serve work lands on crates.io (handoff plan
+# in the fork's GITOXIDE_UPSTREAM_HANDOFF.md).
 [patch.crates-io]
-gix = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-actor = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-archive = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-attributes = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-bitmap = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-blame = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-chunk = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-command = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-commitgraph = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-config = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-config-value = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-credentials = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-date = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-diff = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-dir = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-discover = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-error = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-features = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-filter = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-fs = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-glob = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-hash = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-hashtable = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-ignore = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-index = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-lock = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-merge = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-negotiate = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-object = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-odb = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-pack = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-packetline = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-path = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-pathspec = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-prompt = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-protocol = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-quote = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-ref = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-refspec = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-revision = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-revwalk = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-sec = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-shallow = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-status = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-submodule = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-tempfile = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-trace = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-transport = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-traverse = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-url = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-utils = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-validate = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-worktree = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-worktree-state = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
-gix-worktree-stream = { git = "https://github.com/GGLinnk/gitoxide.git", branch = "2026-04-18_gix-push" }
+gix = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-actor = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-archive = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-attributes = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-bitmap = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-blame = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-chunk = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-command = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-commitgraph = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-config = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-config-value = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-credentials = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-date = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-diff = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-dir = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-discover = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-error = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-features = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-filter = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-fs = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-glob = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-hash = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-hashtable = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-ignore = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-index = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-lock = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-merge = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-negotiate = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-object = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-odb = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-pack = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-packetline = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-path = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-pathspec = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-prompt = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-protocol = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-quote = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-ref = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-refspec = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-revision = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-revwalk = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-sec = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-shallow = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-status = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-submodule = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-tempfile = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-trace = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-transport = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-traverse = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-url = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-utils = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-validate = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-worktree = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-worktree-state = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
+gix-worktree-stream = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }

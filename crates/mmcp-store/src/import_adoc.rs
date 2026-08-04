@@ -34,7 +34,7 @@
 //! will pick up after conversion) or supply
 //! [`crate::memory::SynthFrontmatter`] via the import CLI flags.
 
-use acdc_converters_core::{Converter, Options as ConverterOptions};
+use acdc_converters_core::{Converter, Diagnostics, Options as ConverterOptions};
 use acdc_converters_markdown::{MarkdownVariant, Processor};
 use acdc_parser::{Options as ParserOptions, Parser};
 use thiserror::Error;
@@ -100,15 +100,18 @@ pub enum AdocConvertError {
 pub fn convert_adoc_to_markdown(source: &str) -> Result<String, AdocConvertError> {
     let normalized = preprocess_adoc(source);
     let parser_options = ParserOptions::builder().with_setext().build();
-    let document = Parser::new(&normalized)
+    let parsed = Parser::new(&normalized)
         .with_options(parser_options)
         .parse()
         .map_err(|e| AdocConvertError::Parse(e.to_string()))?;
     let processor = Processor::new(ConverterOptions::default(), Default::default())
         .with_variant(MarkdownVariant::CommonMark);
     let mut out = Vec::new();
+    let warning_source = processor.warning_source();
+    let mut warnings = Vec::new();
+    let mut diagnostics = Diagnostics::new(&warning_source, &mut warnings);
     processor
-        .write_to(&document, &mut out, None)
+        .write_to(parsed.document(), &mut out, None, None, &mut diagnostics)
         .map_err(|e| AdocConvertError::Render(e.to_string()))?;
     let raw = String::from_utf8(out).map_err(|e| AdocConvertError::Utf8(e.to_string()))?;
     Ok(postprocess_markdown(&raw))
