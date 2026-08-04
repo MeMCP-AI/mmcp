@@ -22,7 +22,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Gabriel GRONDIN"]
@@ -139,10 +139,18 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # path so operators can import `.adoc` / `.asciidoc` source files
 # alongside markdown. The Markdown converter is not yet published
 # on crates.io; the parser is (0.8.0) but we pull both from the
-# same git revision for API compatibility.
-acdc-parser = { git = "https://github.com/nlopes/acdc.git", branch = "main", features = ["setext"] }
-acdc-converters-core = { git = "https://github.com/nlopes/acdc.git", branch = "main" }
-acdc-converters-markdown = { git = "https://github.com/nlopes/acdc.git", branch = "main" }
+# same git revision for API compatibility. Pinned to an exact commit
+# (rather than tracking `branch = "main"`) because `gui/src-tauri` is
+# excluded from this workspace and resolves through its own separate
+# Cargo.lock: an unpinned branch reference lets the two lockfiles
+# independently drift to different commits, and the acdc branch tip
+# has already moved past API `mmcp-store/src/import_adoc.rs` depends
+# on (removed `Diagnostics` export, removed `warning_source()` /
+# `document()` methods, changed `write_to()` arity). Pinning both
+# resolutions to the same commit keeps them in agreement.
+acdc-parser = { git = "https://github.com/nlopes/acdc.git", rev = "34ee1ffe35f573673de7e7bdfca8bc153a8b94ea", features = ["setext"] }
+acdc-converters-core = { git = "https://github.com/nlopes/acdc.git", rev = "34ee1ffe35f573673de7e7bdfca8bc153a8b94ea" }
+acdc-converters-markdown = { git = "https://github.com/nlopes/acdc.git", rev = "34ee1ffe35f573673de7e7bdfca8bc153a8b94ea" }
 
 # HTTP mocking for tests
 wiremock = "0.6"
@@ -153,10 +161,27 @@ unsafe_code = "forbid"
 # Redirect every gitoxide crate to the GGLinnk/gitoxide fork, which
 # carries the pre-upstream implementation of client push and
 # server-side Smart HTTP. Pinned to an exact commit (rather than
-# tracking the branch tip) because the branch has since moved past a
-# revision that still exposes the serve-upload-pack /
-# serve-receive-pack features this workspace depends on; re-pin to a
-# newer commit only after confirming those features still resolve.
+# tracking the branch tip) because the branch has been rewritten more
+# than once and its tip does not currently build.
+#
+# Investigated 2026-08-04: the old pin (d70d0a1) is no longer an
+# ancestor of the branch tip (12d7bbd8) at all, its whole line having
+# been rebased away. The current tip's own history restores both
+# features on a fresh line: 0858d418f ("feat(gix): add Remote::push,
+# serve-pack endpoints, in-process transport") is the first commit
+# with serve-upload-pack / serve-receive-pack again, and 12d7bbd8
+# (tip) is a docs-only commit recording both as complete in
+# crate-status.md. But `cargo check --workspace` against 12d7bbd8
+# fails to compile: gix-pack's push.rs (data/output/count/push.rs
+# lines 156, 204, 232) still calls TagRefIter::from_bytes,
+# CommitRefIter::from_bytes and TreeRefIter::from_bytes with one
+# argument, while gix-object at the same revision requires a second
+# `gix_hash::Kind` argument since d4439cd5b ("Limit Commit and Tag
+# parsing to a given gix_hash::Kind") landed earlier on the same
+# branch; no later commit on the branch fixes gix-pack's call sites,
+# and 12d7bbd8 is confirmed to be the branch tip (matches `git
+# ls-remote`). Re-pin to a newer commit only after confirming both
+# features resolve AND the workspace actually compiles against it.
 # Covers direct and transitive gix-* resolution so nothing slips back
 # to crates.io. Remove this block once the push + serve work lands in
 # a released gix on crates.io (handoff plan lives in the fork's own

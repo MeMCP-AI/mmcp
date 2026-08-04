@@ -1,6 +1,18 @@
+# An empty `[workspace]` table makes this crate its own workspace
+# root, so Cargo's upward directory walk for workspace discovery
+# stops here instead of continuing past this manifest. Without it,
+# Cargo keeps walking past the root workspace's `exclude` entry for
+# this path and, when this worktree is nested inside the main
+# checkout's own directory tree (`.claude/worktrees/<id>/...`), lands
+# on the MAIN checkout's root Cargo.toml instead — which does not
+# recognize this deeply-nested path as its own excluded member and
+# errors with "current package believes it's in a workspace when it's
+# not". This table is the fix Cargo's own error message recommends.
+[workspace]
+
 [package]
 name = "mmcp-gui-tauri"
-version = "0.1.1"
+version = "0.1.2"
 description = "mmcp-gui: Tauri 2 backend wrapping mmcp-store for the SvelteKit desktop client."
 authors = ["Gabriel GRONDIN"]
 edition = "2024"
@@ -48,13 +60,15 @@ notify-debouncer-mini = "0.4"
 # mmcp-git declares `gix` features (`serve-upload-pack`,
 # `serve-receive-pack`) that only exist in the fork — crates.io
 # `gix` 0.81 doesn't know them. Pinned to an exact commit (matching
-# the root workspace Cargo.toml) rather than the branch tip, which
-# has since moved past a revision exposing those features. The root
-# workspace Cargo.toml applies the same patch for workspace members,
-# but this crate is excluded from the workspace (it's the Tauri
-# backend), so the patch has to be repeated here. Remove both copies
-# once the fork's push + serve work lands on crates.io (handoff plan
-# in the fork's GITOXIDE_UPSTREAM_HANDOFF.md).
+# the root workspace Cargo.toml) rather than the branch tip, since the
+# branch has been rewritten more than once and its tip does not
+# currently build. See the root Cargo.toml's patch block comment for
+# the investigated evidence behind this specific revision.
+# The root workspace Cargo.toml applies the same patch for workspace
+# members, but this crate is excluded from the workspace (it's the
+# Tauri backend), so the patch has to be repeated here. Remove both
+# copies once the fork's push + serve work lands on crates.io (handoff
+# plan in the fork's GITOXIDE_UPSTREAM_HANDOFF.md).
 [patch.crates-io]
 gix = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }
 gix-actor = { git = "https://github.com/GGLinnk/gitoxide.git", rev = "d70d0a1b7c0eb9872a0eb49a755d4b8a7af25b61" }

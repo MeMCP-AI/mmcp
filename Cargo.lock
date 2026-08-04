@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "acdc-converters-core"
 version = "0.1.0"
-source = "git+https://github.com/nlopes/acdc.git?branch=main#34ee1ffe35f573673de7e7bdfca8bc153a8b94ea"
+source = "git+https://github.com/nlopes/acdc.git?rev=34ee1ffe35f573673de7e7bdfca8bc153a8b94ea#34ee1ffe35f573673de7e7bdfca8bc153a8b94ea"
 dependencies = [
  "acdc-parser",
  "bitflags 2.13.1",
@@ -16,7 +16,7 @@ dependencies = [
 [[package]]
 name = "acdc-converters-markdown"
 version = "0.1.0"
-source = "git+https://github.com/nlopes/acdc.git?branch=main#34ee1ffe35f573673de7e7bdfca8bc153a8b94ea"
+source = "git+https://github.com/nlopes/acdc.git?rev=34ee1ffe35f573673de7e7bdfca8bc153a8b94ea#34ee1ffe35f573673de7e7bdfca8bc153a8b94ea"
 dependencies = [
  "acdc-converters-core",
  "acdc-parser",
@@ -27,7 +27,7 @@ dependencies = [
 [[package]]
 name = "acdc-parser"
 version = "0.9.0"
-source = "git+https://github.com/nlopes/acdc.git?branch=main#34ee1ffe35f573673de7e7bdfca8bc153a8b94ea"
+source = "git+https://github.com/nlopes/acdc.git?rev=34ee1ffe35f573673de7e7bdfca8bc153a8b94ea#34ee1ffe35f573673de7e7bdfca8bc153a8b94ea"
 dependencies = [
  "bitflags 2.13.1",
  "bumpalo",
@@ -3127,7 +3127,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-auth"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "argon2",
  "axum-login",
@@ -3146,7 +3146,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-client"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -3179,7 +3179,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "gray_matter",
  "jiff",
@@ -3197,7 +3197,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-db"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "libsqlite3-sys",
@@ -3212,7 +3212,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-git"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3228,7 +3228,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-proto"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "mmcp-core",
  "serde",
@@ -3239,7 +3239,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-server"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -3276,7 +3276,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-session"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "sha2 0.11.0",
@@ -3286,7 +3286,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-store"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "acdc-converters-core",
  "acdc-converters-markdown",
@@ -3313,7 +3313,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-sync"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "jiff",
  "mmcp-core",
