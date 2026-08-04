@@ -3264,7 +3264,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-core"
-version = "0.1.10"
+version = "0.1.14"
 dependencies = [
  "gray_matter",
  "jiff",
@@ -3281,7 +3281,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-git"
-version = "0.1.10"
+version = "0.1.14"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3318,19 +3318,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "mmcp-proto"
-version = "0.1.10"
-dependencies = [
- "mmcp-core",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "uuid",
-]
-
-[[package]]
 name = "mmcp-session"
-version = "0.1.10"
+version = "0.1.14"
 dependencies = [
  "serde",
  "sha2 0.11.0",
@@ -3339,7 +3328,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-store"
-version = "0.1.10"
+version = "0.1.14"
 dependencies = [
  "acdc-converters-core",
  "acdc-converters-markdown",
@@ -3353,7 +3342,6 @@ dependencies = [
  "mmcp-session",
  "mmcp-sync",
  "serde",
- "serde_json",
  "slug",
  "tar",
  "thiserror 2.0.18",
@@ -3365,16 +3353,13 @@ dependencies = [
 
 [[package]]
 name = "mmcp-sync"
-version = "0.1.10"
+version = "0.1.14"
 dependencies = [
- "jiff",
  "mmcp-core",
  "mmcp-git",
- "mmcp-proto",
  "reqwest 0.12.28",
  "semver",
  "serde",
- "serde_json",
  "thiserror 2.0.18",
  "uuid",
 ]
