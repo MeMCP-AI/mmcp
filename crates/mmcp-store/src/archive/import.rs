@@ -17,7 +17,7 @@ use crate::groups::{GroupEntry, GroupIndex};
 use crate::home::ResolvedAuthor;
 use crate::lock;
 use crate::memory::{
-    ImportError, import_memory, resolve_group, resolve_memory, write_file_at_path,
+    ImportError, WriteFileOptions, import_memory, resolve_group, resolve_memory, write_file_at_path,
 };
 
 use super::error::ArchiveError;
@@ -620,9 +620,11 @@ async fn import_one_memory(
                     &existing.path,
                     &prepared,
                     author,
-                    existing.addressing_mode,
-                    true,
-                    None,
+                    WriteFileOptions {
+                        addressing_mode: existing.addressing_mode,
+                        force: true,
+                        ..Default::default()
+                    },
                 )
                 .await?;
                 outcome.overwritten += 1;

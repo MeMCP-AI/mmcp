@@ -253,7 +253,7 @@ pub async fn list_all_memory_files(
 /// writes accept with a `malformed_frontmatter` warning note, and
 /// slug-only queries skip the mismatch check because no id was
 /// provided to compare against.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum AddressingMode {
     /// Reached via the filename fast path — file at
     /// `memories/<slug>/<id>.md` exists AND its frontmatter id
@@ -270,7 +270,11 @@ pub enum AddressingMode {
     ByFrontmatter,
     /// Reached via slug-only resolution; no id was supplied, so
     /// there is no filename/frontmatter comparison to make. Writes
-    /// branch through this mode the same way they always have.
+    /// branch through this mode the same way they always have. The
+    /// default: the mismatch check is a no-op without an id to
+    /// compare against, so it is the safe "off" sentinel for a
+    /// `Default`-derived options struct.
+    #[default]
     BySlugOnly,
 }
 
@@ -662,13 +666,30 @@ fn parse_frontmatter_id(bytes: &[u8]) -> Option<Uuid> {
     file.frontmatter.id
 }
 
+/// Optional config for [`write_file_at_path`]. The mandatory
+/// inputs (`backend`, `handle`, `path`, `rendered`, `author`) stay
+/// positional; this bundles the addressing/override knobs most
+/// callers thread straight through from a resolver or CLI args.
+///
+/// `addressing_mode` and `force` drive the FR-28 / D4 id-mismatch
+/// check; `message` overrides the auto-generated commit message.
+/// Construct with field-init shorthand plus `..Default::default()`
+/// so adding a field later is non-breaking for callers taking the
+/// default.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WriteFileOptions<'a> {
+    pub addressing_mode: AddressingMode,
+    pub force: bool,
+    pub message: Option<&'a str>,
+}
+
 /// Commit a write of `rendered` at an explicit repo-relative
 /// `path` after running the FR-28 / D4 id-mismatch check. The
 /// validation compares the filename UUID encoded in `path` to the
 /// frontmatter `id` in `rendered` and applies the rules from
 /// [`validate_id_mismatch`]. Callers thread the
 /// `addressing_mode` from their resolver and `force` from their
-/// tool args.
+/// tool args via [`WriteFileOptions`].
 ///
 /// On success returns the commit id and the [`IdValidation`]
 /// outcome so the caller can surface `id_mismatch_*` FR-45 notes.
@@ -679,10 +700,13 @@ pub async fn write_file_at_path(
     path: &str,
     rendered: &str,
     author: &ResolvedAuthor,
-    addressing_mode: AddressingMode,
-    force: bool,
-    message: Option<&str>,
+    options: WriteFileOptions<'_>,
 ) -> Result<(String, IdValidation), ImportError> {
+    let WriteFileOptions {
+        addressing_mode,
+        force,
+        message,
+    } = options;
     let validation = validate_id_mismatch(path, rendered, addressing_mode, force)?;
     let commit_message = message
         .map(str::to_string)
@@ -824,10 +848,25 @@ pub async fn move_memory_path(
     })
 }
 
+/// Optional config for [`write_memory_by_id`]. Wraps the
+/// [`WriteFileOptions`] tail (`addressing_mode`, `force`,
+/// `message`) delegated to [`write_file_at_path`] plus the
+/// create-or-override toggle this entry point owns. Same
+/// field-init-shorthand-plus-`..Default::default()` construction
+/// pattern.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WriteMemoryOptions<'a> {
+    pub override_existing: bool,
+    pub addressing_mode: AddressingMode,
+    pub force: bool,
+    pub message: Option<&'a str>,
+}
+
 /// Write a memory at the two-level `memories/<slug>/<id>.md` path
 /// with create-or-override semantics. Delegates the FR-28 / D4
 /// id-mismatch check to [`write_file_at_path`] so callers thread
-/// `addressing_mode` and `force` through both primitives.
+/// `addressing_mode` and `force` through both primitives via
+/// [`WriteMemoryOptions`].
 ///
 /// Returns [`ImportError::MemoryAlreadyExists`] on collision when
 /// `override_existing` is `false`; otherwise overwrites in place.
@@ -838,11 +877,14 @@ pub async fn write_memory_by_id(
     id: Uuid,
     rendered: &str,
     author: &ResolvedAuthor,
-    override_existing: bool,
-    addressing_mode: AddressingMode,
-    force: bool,
-    message: Option<&str>,
+    options: WriteMemoryOptions<'_>,
 ) -> Result<(String, IdValidation), ImportError> {
+    let WriteMemoryOptions {
+        override_existing,
+        addressing_mode,
+        force,
+        message,
+    } = options;
     validate_slug(slug)?;
     let path = mmcp_core::conventions::memory_path(slug, id);
     let exists = match backend.read_file(handle, &path, &Rev::head()).await {
@@ -868,9 +910,11 @@ pub async fn write_memory_by_id(
         &path,
         rendered,
         author,
-        addressing_mode,
-        force,
-        Some(&commit_message),
+        WriteFileOptions {
+            addressing_mode,
+            force,
+            message: Some(&commit_message),
+        },
     )
     .await
 }
@@ -940,10 +984,12 @@ pub async fn import_memory(
         id,
         &rendered,
         author,
-        override_existing,
-        AddressingMode::BySlugOnly,
-        false,
-        Some(&message),
+        WriteMemoryOptions {
+            override_existing,
+            addressing_mode: AddressingMode::BySlugOnly,
+            message: Some(&message),
+            ..Default::default()
+        },
     )
     .await?;
 
@@ -2090,10 +2136,10 @@ mod tests {
             filename,
             &rendered,
             &author,
-            false,
-            AddressingMode::ByFilename,
-            false,
-            None,
+            WriteMemoryOptions {
+                addressing_mode: AddressingMode::ByFilename,
+                ..Default::default()
+            },
         )
         .await
         .expect_err("rejection");
@@ -2117,10 +2163,11 @@ mod tests {
             filename,
             &rendered,
             &author,
-            false,
-            AddressingMode::ByFilename,
-            true,
-            None,
+            WriteMemoryOptions {
+                addressing_mode: AddressingMode::ByFilename,
+                force: true,
+                ..Default::default()
+            },
         )
         .await
         .expect("forced write");

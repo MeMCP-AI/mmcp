@@ -37,8 +37,8 @@ use crate::config::{find_project_root, load as load_project_config};
 use crate::groups::{GroupEntry, GroupIndex};
 use crate::home::ResolvedAuthor;
 use crate::memory::{
-    AddressingMode, ImportError, delete_file_at_path, resolve_memory, slugify_filename,
-    validate_slug, write_file_at_path, write_memory_by_id,
+    AddressingMode, ImportError, WriteFileOptions, WriteMemoryOptions, delete_file_at_path,
+    resolve_memory, slugify_filename, validate_slug, write_file_at_path, write_memory_by_id,
 };
 
 /// Errors specific to feature-request operations.
@@ -416,10 +416,11 @@ pub async fn add_feature(
         id,
         &rendered,
         author,
-        false,
-        AddressingMode::BySlugOnly,
-        false,
-        Some(&message),
+        WriteMemoryOptions {
+            addressing_mode: AddressingMode::BySlugOnly,
+            message: Some(&message),
+            ..Default::default()
+        },
     )
     .await?;
 
@@ -725,9 +726,11 @@ pub async fn update_feature_unlocked(
         &resolved.path,
         &rendered,
         author,
-        resolved.addressing_mode,
-        false,
-        Some(&message),
+        WriteFileOptions {
+            addressing_mode: resolved.addressing_mode,
+            message: Some(&message),
+            ..Default::default()
+        },
     )
     .await?;
 

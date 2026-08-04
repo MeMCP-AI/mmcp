@@ -24,9 +24,9 @@ use mmcp_core::memory::{
 use mmcp_git::{GitBackend, NativeBackend, Rev};
 use mmcp_store::home::MmcpHome;
 use mmcp_store::{
-    AddressingMode, GroupEntry, MemoryEditOp, apply_ops, delete_file_at_path,
-    list_all_memory_files, parse_kind, resolve_group, resolve_memory, write_file_at_path,
-    write_memory_by_id,
+    AddressingMode, GroupEntry, MemoryEditOp, WriteFileOptions, WriteMemoryOptions, apply_ops,
+    delete_file_at_path, list_all_memory_files, parse_kind, resolve_group, resolve_memory,
+    write_file_at_path, write_memory_by_id,
 };
 use uuid::Uuid;
 
@@ -782,10 +782,12 @@ async fn run_write(args: WriteArgs) -> Result<()> {
         id,
         &rendered,
         &author,
-        args.override_,
-        AddressingMode::ByFilename,
-        args.force,
-        None,
+        WriteMemoryOptions {
+            override_existing: args.override_,
+            addressing_mode: AddressingMode::ByFilename,
+            force: args.force,
+            ..Default::default()
+        },
     )
     .await
     .map_err(anyhow::Error::from)?;
@@ -887,9 +889,11 @@ async fn run_edit(args: EditArgs) -> Result<()> {
         &resolved.path,
         &rendered,
         &author,
-        resolved.addressing_mode,
-        args.force,
-        Some(&commit_message),
+        WriteFileOptions {
+            addressing_mode: resolved.addressing_mode,
+            force: args.force,
+            message: Some(&commit_message),
+        },
     )
     .await
     .map_err(anyhow::Error::from)?;
@@ -951,9 +955,11 @@ async fn run_edit_body(args: EditBodyArgs) -> Result<()> {
         &resolved.path,
         &rendered,
         &author,
-        resolved.addressing_mode,
-        args.force,
-        Some(&commit_message),
+        WriteFileOptions {
+            addressing_mode: resolved.addressing_mode,
+            force: args.force,
+            message: Some(&commit_message),
+        },
     )
     .await
     .map_err(anyhow::Error::from)?;

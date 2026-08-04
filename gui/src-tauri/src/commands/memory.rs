@@ -4,7 +4,8 @@ use mmcp_core::id::GroupId;
 use mmcp_core::memory::{MemoryFile, MemoryFrontmatter, MemoryKind};
 use mmcp_git::{GitBackend, Rev};
 use mmcp_store::{
-    AddressingMode, delete_file_at_path, resolve_memory, write_file_at_path, write_memory_by_id,
+    AddressingMode, WriteFileOptions, WriteMemoryOptions, delete_file_at_path, resolve_memory,
+    write_file_at_path, write_memory_by_id,
 };
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -300,10 +301,10 @@ pub async fn create_memory(
         id,
         &rendered,
         &*state.author.read().await,
-        false,
-        AddressingMode::ByFilename,
-        false,
-        None,
+        WriteMemoryOptions {
+            addressing_mode: AddressingMode::ByFilename,
+            ..Default::default()
+        },
     )
     .await
     .map_err(GuiError::from)?;
@@ -336,9 +337,10 @@ pub async fn update_memory(
         &resolved.path,
         &rendered,
         &*state.author.read().await,
-        resolved.addressing_mode,
-        false,
-        None,
+        WriteFileOptions {
+            addressing_mode: resolved.addressing_mode,
+            ..Default::default()
+        },
     )
     .await
     .map_err(GuiError::from)?;

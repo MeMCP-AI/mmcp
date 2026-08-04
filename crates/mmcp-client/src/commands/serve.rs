@@ -2004,10 +2004,12 @@ impl McpServer {
             id,
             &rendered,
             &self.state.author,
-            args.override_,
-            mmcp_store::AddressingMode::ByFilename,
-            args.force,
-            None,
+            mmcp_store::WriteMemoryOptions {
+                override_existing: args.override_,
+                addressing_mode: mmcp_store::AddressingMode::ByFilename,
+                force: args.force,
+                ..Default::default()
+            },
         )
         .await
         .map_err(map_memory_error_to_mcp)?;
@@ -2407,9 +2409,11 @@ impl McpServer {
             &resolved.path,
             &rendered,
             &self.state.author,
-            resolved.addressing_mode,
-            args.force,
-            Some(&commit_message),
+            mmcp_store::WriteFileOptions {
+                addressing_mode: resolved.addressing_mode,
+                force: args.force,
+                message: Some(&commit_message),
+            },
         )
         .await
         .map_err(map_memory_error_to_mcp)?;
@@ -2694,9 +2698,11 @@ impl McpServer {
             &resolved.path,
             &rendered,
             &self.state.author,
-            resolved.addressing_mode,
-            args.force,
-            Some(&commit_message),
+            mmcp_store::WriteFileOptions {
+                addressing_mode: resolved.addressing_mode,
+                force: args.force,
+                message: Some(&commit_message),
+            },
         )
         .await
         .map_err(map_memory_error_to_mcp)?;

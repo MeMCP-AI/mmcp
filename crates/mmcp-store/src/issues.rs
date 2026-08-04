@@ -30,8 +30,8 @@ use uuid::Uuid;
 use crate::groups::GroupEntry;
 use crate::home::ResolvedAuthor;
 use crate::memory::{
-    AddressingMode, ImportError, delete_file_at_path, resolve_memory, slugify_filename,
-    validate_slug, write_file_at_path, write_memory_by_id,
+    AddressingMode, ImportError, WriteFileOptions, WriteMemoryOptions, delete_file_at_path,
+    resolve_memory, slugify_filename, validate_slug, write_file_at_path, write_memory_by_id,
 };
 
 /// Errors specific to issue-tracker operations.
@@ -264,10 +264,11 @@ pub async fn add_issue(
         id,
         &rendered,
         author,
-        false,
-        AddressingMode::BySlugOnly,
-        false,
-        Some(&message),
+        WriteMemoryOptions {
+            addressing_mode: AddressingMode::BySlugOnly,
+            message: Some(&message),
+            ..Default::default()
+        },
     )
     .await?;
 
@@ -478,9 +479,11 @@ pub async fn update_issue_unlocked(
         &resolved.path,
         &rendered,
         author,
-        resolved.addressing_mode,
-        false,
-        Some(&message),
+        WriteFileOptions {
+            addressing_mode: resolved.addressing_mode,
+            message: Some(&message),
+            ..Default::default()
+        },
     )
     .await?;
 
