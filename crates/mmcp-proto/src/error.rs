@@ -23,10 +23,12 @@ pub enum ProtoError {
     #[error("not found: {0}")]
     NotFound(String),
 
-    /// A mandatory memory has not been read this session. The
-    /// message lists the outstanding memories.
-    #[error("mandatory memories unread: {0}")]
-    MandatoryUnread(String),
+    /// One or more mandatory memories have not been read this
+    /// session. Each entry is the unread memory's slug, so callers
+    /// can act on the list programmatically instead of re-parsing a
+    /// joined string.
+    #[error("mandatory memories unread: {}", .slugs.join(", "))]
+    MandatoryUnread { slugs: Vec<String> },
 
     /// Request payload did not match the schema.
     #[error("invalid request: {0}")]
@@ -63,6 +65,40 @@ mod tests {
     fn not_implemented_round_trips_through_json() {
         let err = ProtoError::NotImplemented("diff_memory is wired by the client".to_string());
         let json = serde_json::to_string(&err).unwrap();
+        let parsed: ProtoError = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, err);
+    }
+
+    #[test]
+    fn mandatory_unread_carries_the_slug_list_as_a_structured_field() {
+        let err = ProtoError::MandatoryUnread {
+            slugs: vec![
+                "global-coding-rules".to_string(),
+                "global-git-conventions".to_string(),
+            ],
+        };
+        match &err {
+            ProtoError::MandatoryUnread { slugs } => {
+                assert_eq!(slugs, &["global-coding-rules", "global-git-conventions"]);
+            }
+            other => panic!("expected MandatoryUnread, got {other:?}"),
+        }
+        assert_eq!(
+            err.to_string(),
+            "mandatory memories unread: global-coding-rules, global-git-conventions"
+        );
+    }
+
+    #[test]
+    fn mandatory_unread_round_trips_through_json_as_a_slug_array() {
+        let err = ProtoError::MandatoryUnread {
+            slugs: vec!["global-coding-rules".to_string()],
+        };
+        let json = serde_json::to_string(&err).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"mandatory_unread","message":{"slugs":["global-coding-rules"]}}"#
+        );
         let parsed: ProtoError = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, err);
     }
