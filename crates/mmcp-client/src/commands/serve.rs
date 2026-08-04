@@ -1412,7 +1412,7 @@ struct AddIssueArgs {
     pub description: String,
 
     /// Full issue body as freeform markdown. Not parsed by the
-    /// tool — preserved verbatim.
+    /// tool, preserved verbatim.
     #[serde(default)]
     pub body: String,
 
@@ -1590,13 +1590,13 @@ struct ListIssuesArgs {
 
     /// Restrict to issues with this status. Wire form matches
     /// `AddIssueArgs::status`. Explicit selector wins over the
-    /// `all` flag — an operator asking for `closed` issues always
+    /// `all` flag: an operator asking for `closed` issues always
     /// sees them even when the default hide is on.
     #[serde(default)]
     pub status: Option<String>,
 
     /// When `true`, include issues whose status is not `open`.
-    /// Defaults to `false` — the tool returns only non-terminal
+    /// Defaults to `false`, so the tool returns only non-terminal
     /// issues unless `status` selects a different variant or `all`
     /// is set.
     #[serde(default)]
@@ -4522,7 +4522,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Apply partial updates to an existing issue and commit the result. Every mutator is optional — omit to leave untouched. `depends_on` and `blocks` are full-list replacements; pass `[]` to clear, omit to preserve. `status` takes the wire form of the status enum. Errors with `memory_not_found` when the slug has no issue, `not_an_issue` when the slug is a non-issue memory, and `invalid_issue_status` when `status` is not one of the seven variants.",
+        description = "Apply partial updates to an existing issue and commit the result. Every mutator is optional, omit to leave untouched. `depends_on` and `blocks` are full-list replacements; pass `[]` to clear, omit to preserve. `status` takes the wire form of the status enum. Errors with `memory_not_found` when the slug has no issue, `not_an_issue` when the slug is a non-issue memory, and `invalid_issue_status` when `status` is not one of the seven variants.",
         annotations(
             title = "Update issue",
             read_only_hint = false,
@@ -4693,7 +4693,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Rename every issue memory under `old_slug` to `new_slug` in a single atomic commit. UUIDs stay stable across the rename so cross-references in other issues keep resolving without further rewrites. Duplicate slugs move as a batch — every entry under `memories/<old_slug>/` lands under `memories/<new_slug>/`. Errors with `memory_not_found` when no memory lives at `old_slug` and with `not_an_issue` when the source is a non-issue memory.",
+        description = "Rename every issue memory under `old_slug` to `new_slug` in a single atomic commit. UUIDs stay stable across the rename so cross-references in other issues keep resolving without further rewrites. Duplicate slugs move as a batch: every entry under `memories/<old_slug>/` lands under `memories/<new_slug>/`. Errors with `memory_not_found` when no memory lives at `old_slug` and with `not_an_issue` when the source is a non-issue memory.",
         annotations(
             title = "Rename issue",
             read_only_hint = false,
@@ -4864,10 +4864,15 @@ impl McpServer {
     ///
     /// Single source of truth for `describe_tools` (FR-31), the
     /// `mmcp tools` CLI (FR-33), and the `diagnose` annotation-
-    /// coverage check (FR-34). The FR-29 conformance test keeps its
-    /// own hard-coded matrix so a new tool appearing here without a
-    /// matching matrix entry still trips the test, preserving the
-    /// double-entry safeguard.
+    /// coverage check (FR-34). `serve_mode_full_registers_every_tool`
+    /// and `describe_tools_lists_every_registered_tool` compare the
+    /// live `tool_router` and `describe_tools` counts against
+    /// `registered_tool_attrs().len()`, catching a `#[tool]` site
+    /// missing from this list or a stale entry with no live site.
+    /// `tool_annotations_match_fr029_matrix` separately hard-codes
+    /// each named tool's expected annotation bits; it does not walk
+    /// this list, so it alone cannot catch a wholly new tool that
+    /// omits an entry both here and in that test.
     fn registered_tool_attrs() -> Vec<rmcp::model::Tool> {
         vec![
             // Read-only tools.
@@ -4933,7 +4938,7 @@ impl McpServer {
 /// FR-49: every entry is decorated with category-derived icons so
 /// `describe_tools`, the `mmcp tools` CLI, and (via the live
 /// `tool_router` in `McpServer::new`) `tools/list` all surface the
-/// same per-tool glyph without 37 separate `icons = ...` macro
+/// same per-tool glyph without 46 separate `icons = ...` macro
 /// arguments at every `#[tool]` site.
 pub(crate) fn registered_tool_attrs() -> Vec<rmcp::model::Tool> {
     let mut tools = McpServer::registered_tool_attrs();
@@ -5041,10 +5046,10 @@ const SYNC_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.o
 ///   `[sync]` block in `.mmcp.toml` (every `sync_*` tool).
 /// - `mmcp.debug_gated` — tool refuses unless `debug_toggle(true)`
 ///   has been called this session (every `debug_*` tool).
-/// - `mmcp.protected_group_gated` — tool fires the FR-019
+/// - `mmcp.protected_group_gated` - tool fires the FR-019
 ///   `confirm_protected_write` elicitation when targeting a
 ///   protected group (write / edit / delete / debug_write_file /
-///   init_claude / the issue-tracker mutators).
+///   the feature-tracker mutators / the issue-tracker mutators).
 /// - `mmcp.network` — tool reaches outside the local mirror.
 ///   Today only the `sync_*` tools set this, mirroring
 ///   `open_world_hint` but kept distinct so future open-world
@@ -5104,8 +5109,11 @@ fn meta_for_tool(name: &str) -> Option<rmcp::model::Meta> {
             | "move_memory"
             | "delete_memory"
             | "debug_write_file"
-            | "init_claude"
             | "import_archive"
+            | "add_feature"
+            | "update_feature"
+            | "delete_feature"
+            | "rename_feature"
             | "add_issue"
             | "update_issue"
             | "delete_issue"
@@ -5127,10 +5135,10 @@ fn meta_for_tool(name: &str) -> Option<rmcp::model::Meta> {
 /// FR-45: every registered tool receives a permissive object
 /// `output_schema` so MCP clients can validate that responses are
 /// JSON objects (with optional `notes` channel) and surface the
-/// shape in autocomplete UIs. Per-tool typed schemas — the FR's
-/// stretch goal — are deferred to a follow-up: replacing the
+/// shape in autocomplete UIs. Per-tool typed schemas, the FR's
+/// stretch goal, are deferred to a follow-up: replacing the
 /// `json!({...})` payloads with typed structs deriving `JsonSchema`
-/// is a 37-tool refactor of its own that doesn't compose cleanly
+/// is a 46-tool refactor of its own that doesn't compose cleanly
 /// inside this metadata-sweep streak.
 ///
 /// Cached behind a `OnceLock` so the same `Arc<JsonObject>` reaches
@@ -10178,15 +10186,19 @@ mod tests {
     // `add_feature` / `update_feature` / `delete_feature` /
     // `rename_feature` used to resolve their target group and write
     // straight through with no `confirm_protected_write` call
-    // anywhere in the path. These mirror the memory-tool suite
-    // above: each asserts the pre-elicitation fallback fires with
-    // the exact action tag the corresponding tool now passes to
-    // `confirm_protected_write`, proving every one of the four call
-    // sites is wired to the guard rather than just the shared helper
-    // being correct in isolation.
+    // anywhere in the path. `confirm_protected_write` takes a
+    // `Peer<RoleServer>`, which needs a live MCP transport this
+    // crate has no test harness to construct, so these tests (like
+    // the memory-tool suite above) exercise only the pre-elicitation
+    // fallback helper, `ensure_not_protected`, each with the exact
+    // action tag its corresponding tool now passes to
+    // `confirm_protected_write`. That the four call sites actually
+    // pass those tags is a source-level fact (see serve.rs around
+    // add_feature/update_feature/delete_feature/rename_feature),
+    // not something these helper-level tests observe directly.
 
     #[tokio::test]
-    async fn add_feature_against_protected_group_is_gated() {
+    async fn ensure_not_protected_gates_add_feature_action_tag() {
         let (state, _tmp) = test_state().await;
         let entry = protected_entry_for(&state, "global").await;
         let err = ensure_not_protected(&entry, "new-feature", "add_feature")
@@ -10203,7 +10215,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_feature_against_protected_group_is_gated() {
+    async fn ensure_not_protected_gates_update_feature_action_tag() {
         let (state, _tmp) = test_state().await;
         let entry = protected_entry_for(&state, "global").await;
         let err = ensure_not_protected(&entry, "anchored", "update_feature")
@@ -10220,7 +10232,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_feature_against_protected_group_is_gated() {
+    async fn ensure_not_protected_gates_delete_feature_action_tag() {
         let (state, _tmp) = test_state().await;
         let entry = protected_entry_for(&state, "global").await;
         let err = ensure_not_protected(&entry, "anchored", "delete_feature")
@@ -10237,7 +10249,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rename_feature_against_protected_group_is_gated() {
+    async fn ensure_not_protected_gates_rename_feature_action_tag() {
         let (state, _tmp) = test_state().await;
         let entry = protected_entry_for(&state, "global").await;
         let err = ensure_not_protected(&entry, "anchored", "rename_feature")
@@ -10689,7 +10701,7 @@ mod tests {
 
     /// FR-45: every registered tool surfaces a permissive object
     /// `output_schema` so MCP clients can validate that the
-    /// response is a JSON object without 37 separate typed
+    /// response is a JSON object without 46 separate typed
     /// response structs landing in this commit.
     #[test]
     fn registered_tools_carry_output_schema() {
