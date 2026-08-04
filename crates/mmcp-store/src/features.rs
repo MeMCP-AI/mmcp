@@ -38,7 +38,8 @@ use crate::groups::{GroupEntry, GroupIndex};
 use crate::home::ResolvedAuthor;
 use crate::memory::{
     AddressingMode, ImportError, WriteFileOptions, WriteMemoryOptions, delete_file_at_path,
-    resolve_memory, slugify_filename, validate_slug, write_file_at_path, write_memory_by_id,
+    resolve_commit_message, resolve_memory, slugify_filename, validate_slug, write_file_at_path,
+    write_memory_by_id,
 };
 
 /// Errors specific to feature-request operations.
@@ -801,7 +802,8 @@ fn compose_refs(
 /// duplicate-slug support), every entry moves in the same commit.
 /// When no memory lives at `old_slug`, returns
 /// [`ImportError::MemoryNotFound`] so callers don't silently
-/// succeed on a non-existent rename.
+/// succeed on a non-existent rename. An explicit `message` override
+/// is bounded via [`resolve_commit_message`].
 pub async fn rename_feature(
     backend: &NativeBackend,
     entry: &GroupEntry,
@@ -885,17 +887,14 @@ pub async fn rename_feature(
         }));
     }
 
-    let fallback = format!("rename feature {old_slug} -> {new_slug}");
-    let commit_message = message.unwrap_or(fallback.as_str());
+    let commit_message = resolve_commit_message(message, || {
+        format!("rename feature {old_slug} -> {new_slug}")
+    })
+    .map_err(FeatureError::Memory)?;
     backend
         .write_commit(
             &entry.handle,
-            mmcp_git::CommitSpec::mmcp_commit(
-                commit_message.to_string(),
-                moves,
-                &author.name,
-                &author.email,
-            ),
+            mmcp_git::CommitSpec::mmcp_commit(commit_message, moves, &author.name, &author.email),
         )
         .await
         .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?;
@@ -1670,6 +1669,82 @@ mod tests {
             ),
             "old slug must be gone after rename: got {missing:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn rename_feature_rejects_oversized_message() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("msg-src".into()),
+                title: "Original".into(),
+                body: "body".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed");
+
+        let oversized = "a".repeat(mmcp_core::memory::MAX_MESSAGE_LENGTH + 1);
+        let err = rename_feature(
+            scratch.backend(),
+            &entry,
+            "msg-src",
+            "msg-dst",
+            scratch.author(),
+            Some(&oversized),
+        )
+        .await
+        .expect_err("oversized message rejected");
+        assert!(matches!(
+            err,
+            FeatureError::Memory(ImportError::FieldTooLong(_))
+        ));
+        // Rejected before any commit: the feature is still at its
+        // original slug.
+        read_feature(scratch.backend(), &entry, "msg-src", None)
+            .await
+            .expect("still at original slug");
+    }
+
+    #[tokio::test]
+    async fn rename_feature_accepts_message_within_bound() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("msg-src-ok".into()),
+                title: "Original".into(),
+                body: "body".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed");
+
+        let bounded = "a".repeat(mmcp_core::memory::MAX_MESSAGE_LENGTH);
+        let moved = rename_feature(
+            scratch.backend(),
+            &entry,
+            "msg-src-ok",
+            "msg-dst-ok",
+            scratch.author(),
+            Some(&bounded),
+        )
+        .await
+        .expect("bounded message accepted");
+        assert_eq!(moved[0].slug, "msg-dst-ok");
     }
 
     #[tokio::test]

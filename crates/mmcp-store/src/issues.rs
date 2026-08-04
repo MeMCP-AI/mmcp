@@ -31,7 +31,8 @@ use crate::groups::GroupEntry;
 use crate::home::ResolvedAuthor;
 use crate::memory::{
     AddressingMode, ImportError, WriteFileOptions, WriteMemoryOptions, delete_file_at_path,
-    resolve_memory, slugify_filename, validate_slug, write_file_at_path, write_memory_by_id,
+    resolve_commit_message, resolve_memory, slugify_filename, validate_slug, write_file_at_path,
+    write_memory_by_id,
 };
 
 /// Errors specific to issue-tracker operations.
@@ -535,7 +536,8 @@ fn compose_refs(
 }
 
 /// Rename every issue under `old_slug` to `new_slug` in one atomic
-/// commit. UUIDs stay stable across the rename.
+/// commit. UUIDs stay stable across the rename. An explicit
+/// `message` override is bounded via [`resolve_commit_message`].
 pub async fn rename_issue(
     backend: &NativeBackend,
     entry: &GroupEntry,
@@ -606,17 +608,13 @@ pub async fn rename_issue(
         }));
     }
 
-    let fallback = format!("rename issue {old_slug} -> {new_slug}");
-    let commit_message = message.unwrap_or(fallback.as_str());
+    let commit_message =
+        resolve_commit_message(message, || format!("rename issue {old_slug} -> {new_slug}"))
+            .map_err(IssueError::Memory)?;
     backend
         .write_commit(
             &entry.handle,
-            mmcp_git::CommitSpec::mmcp_commit(
-                commit_message.to_string(),
-                moves,
-                &author.name,
-                &author.email,
-            ),
+            mmcp_git::CommitSpec::mmcp_commit(commit_message, moves, &author.name, &author.email),
         )
         .await
         .map_err(|e| IssueError::Memory(ImportError::Git(e)))?;
@@ -1047,5 +1045,87 @@ mod tests {
             .await
             .expect("read");
         assert_eq!(loaded.slug, "new-slug");
+    }
+
+    #[tokio::test]
+    async fn rename_issue_rejects_oversized_message() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("issue-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        add_issue(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("msg-src".into()),
+                title: "Issue".into(),
+                description: "rename message test".into(),
+                body: "x".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed");
+
+        let oversized = "a".repeat(mmcp_core::memory::MAX_MESSAGE_LENGTH + 1);
+        let err = rename_issue(
+            scratch.backend(),
+            &entry,
+            "msg-src",
+            "msg-dst",
+            scratch.author(),
+            Some(&oversized),
+        )
+        .await
+        .expect_err("oversized message rejected");
+        assert!(matches!(
+            err,
+            IssueError::Memory(ImportError::FieldTooLong(_))
+        ));
+        // Rejected before any commit: the issue is still at its
+        // original slug.
+        read_issue(scratch.backend(), &entry, "msg-src", None)
+            .await
+            .expect("still at original slug");
+    }
+
+    #[tokio::test]
+    async fn rename_issue_accepts_message_within_bound() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("issue-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        add_issue(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("msg-src-ok".into()),
+                title: "Issue".into(),
+                description: "rename message test".into(),
+                body: "x".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed");
+
+        let bounded = "a".repeat(mmcp_core::memory::MAX_MESSAGE_LENGTH);
+        rename_issue(
+            scratch.backend(),
+            &entry,
+            "msg-src-ok",
+            "msg-dst-ok",
+            scratch.author(),
+            Some(&bounded),
+        )
+        .await
+        .expect("bounded message accepted");
+
+        let loaded = read_issue(scratch.backend(), &entry, "msg-dst-ok", None)
+            .await
+            .expect("read");
+        assert_eq!(loaded.slug, "msg-dst-ok");
     }
 }

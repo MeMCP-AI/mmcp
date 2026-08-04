@@ -693,30 +693,54 @@ pub struct WriteFileOptions<'a> {
 }
 
 /// Enforce the bounded-length invariants `global-security-rules`
-/// mandates on every write that reaches [`write_file_at_path`]:
-/// parse `rendered` and check its frontmatter (`name`,
-/// `description`, `tags`) and body against `mmcp_core::memory`'s
-/// named maxima, then check the optional commit-message override
-/// the same way.
+/// mandates on the rendered content of every write that reaches
+/// [`write_file_at_path`]: parse `rendered` and check its
+/// frontmatter (`name`, `description`, `tags`) and body against
+/// `mmcp_core::memory`'s named maxima.
 ///
-/// This is the single choke point every memory write — create,
-/// update, `edit_memory_body`, feature/issue create and update,
-/// and archive import — commits through (see [`write_file_at_path`]
-/// and [`write_memory_by_id`]), so the check runs exactly once per
-/// write regardless of which higher-level entry point triggered
-/// it, per the SSOT/DRY rule and the "validation runs at the
-/// boundary" clause of `global-security-rules`.
-fn validate_write_content_lengths(
-    rendered: &str,
-    message: Option<&str>,
-) -> Result<(), ImportError> {
+/// This is the single choke point every memory write with rendered
+/// content — create, update, `edit_memory_body`, feature/issue
+/// create and update, and archive import — commits through (see
+/// [`write_file_at_path`] and [`write_memory_by_id`]), so the check
+/// runs exactly once per write regardless of which higher-level
+/// entry point triggered it, per the SSOT/DRY rule and the
+/// "validation runs at the boundary" clause of
+/// `global-security-rules`. Commit-message validation is a separate
+/// concern handled uniformly by [`resolve_commit_message`], which
+/// every commit-producing entry point in this crate (including the
+/// ones with no rendered content, like delete and move) calls
+/// instead of building its message inline.
+fn validate_write_content_lengths(rendered: &str) -> Result<(), ImportError> {
     let file = MemoryFile::parse(rendered)?;
     mmcp_core::memory::validate_frontmatter_lengths(&file.frontmatter)?;
     mmcp_core::memory::validate_body_length(&file.body)?;
-    if let Some(msg) = message {
-        mmcp_core::memory::validate_message_length(msg)?;
-    }
     Ok(())
+}
+
+/// Resolve the commit message for a write in this crate: validate
+/// an explicit caller-supplied override against
+/// [`mmcp_core::memory::validate_message_length`], or synthesize
+/// one from `fallback` when the caller supplied none.
+///
+/// The single choke point every commit-producing entry point in
+/// this crate resolves its message through before calling
+/// `NativeBackend::write_commit`: [`write_file_at_path`],
+/// [`delete_file_at_path`], [`move_memory_path`],
+/// `features::rename_feature`, and `issues::rename_issue` all call
+/// this instead of building their message inline, so a
+/// caller-supplied override can never reach git unbounded
+/// regardless of which entry point produced it.
+pub fn resolve_commit_message(
+    message: Option<&str>,
+    fallback: impl FnOnce() -> String,
+) -> Result<String, ImportError> {
+    match message {
+        Some(msg) => {
+            mmcp_core::memory::validate_message_length(msg)?;
+            Ok(msg.to_string())
+        }
+        None => Ok(fallback()),
+    }
 }
 
 /// Commit a write of `rendered` at an explicit repo-relative
@@ -743,11 +767,9 @@ pub async fn write_file_at_path(
         force,
         message,
     } = options;
-    validate_write_content_lengths(rendered, message)?;
+    validate_write_content_lengths(rendered)?;
     let validation = validate_id_mismatch(path, rendered, addressing_mode, force)?;
-    let commit_message = message
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("write {path}"));
+    let commit_message = resolve_commit_message(message, || format!("write {path}"))?;
     let commit_id = backend
         .write_commit(
             handle,
@@ -771,12 +793,7 @@ pub async fn delete_file_at_path(
     author: &ResolvedAuthor,
     message: Option<&str>,
 ) -> Result<String, ImportError> {
-    if let Some(msg) = message {
-        mmcp_core::memory::validate_message_length(msg)?;
-    }
-    let commit_message = message
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("delete {path}"));
+    let commit_message = resolve_commit_message(message, || format!("delete {path}"))?;
     let commit_id = backend
         .write_commit(
             handle,
@@ -813,7 +830,10 @@ pub struct MoveMemoryOutcome {
 /// Validation: both slugs must pass [`validate_memory_slug`]. The
 /// source memory is resolved via [`resolve_memory`] so callers may
 /// address it by `slug + id`, slug only, or id only. Refuses to
-/// overwrite an existing memory at `new_slug` with the same id.
+/// overwrite an existing memory at `new_slug` with the same id. An
+/// explicit `message` override is bounded via
+/// [`resolve_commit_message`], same as every other commit-producing
+/// entry point in this crate.
 ///
 /// Same-slug moves short-circuit and return without committing —
 /// the operation is a no-op.
@@ -859,16 +879,17 @@ pub async fn move_memory_path(
     let bytes = backend
         .read_file(handle, &resolved.path, &Rev::head())
         .await?;
-    let fallback = format!(
-        "move memory {} -> {} ({})",
-        resolved.slug, new_slug, resolved.id
-    );
-    let commit_message = message.unwrap_or(fallback.as_str());
+    let commit_message = resolve_commit_message(message, || {
+        format!(
+            "move memory {} -> {} ({})",
+            resolved.slug, new_slug, resolved.id
+        )
+    })?;
     let commit_id = backend
         .write_commit(
             handle,
             CommitSpec::mmcp_commit(
-                commit_message.to_string(),
+                commit_message,
                 vec![
                     (new_path.clone(), Some(bytes.to_vec())),
                     (resolved.path.clone(), None),
@@ -1903,6 +1924,67 @@ mod tests {
         assert!(matches!(err, ImportError::InvalidSlug(_)));
     }
 
+    #[tokio::test]
+    async fn move_memory_path_rejects_oversized_message() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let content = "+++\nname = \"m\"\ndescription = \"m\"\nkind = \"rule\"\n+++\n\n";
+        let imported = import_memory(&backend, &handle, "msg-src", content, None, &author, false)
+            .await
+            .expect("import");
+        let oversized = "a".repeat(mmcp_core::memory::MAX_MESSAGE_LENGTH + 1);
+        let err = move_memory_path(
+            &backend,
+            &handle,
+            Some("msg-src"),
+            Some(imported.id),
+            "msg-dst",
+            &author,
+            Some(&oversized),
+        )
+        .await
+        .expect_err("oversized message rejected");
+        assert!(matches!(err, ImportError::FieldTooLong(_)));
+        // Rejected before any commit: the memory is still at its
+        // original slug.
+        let resolved = resolve_memory(&backend, &handle, None, Some(imported.id))
+            .await
+            .expect("still resolvable");
+        assert_eq!(resolved.slug, "msg-src");
+    }
+
+    #[tokio::test]
+    async fn move_memory_path_accepts_message_within_bound() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let content = "+++\nname = \"m\"\ndescription = \"m\"\nkind = \"rule\"\n+++\n\n";
+        let imported = import_memory(
+            &backend,
+            &handle,
+            "msg-src-ok",
+            content,
+            None,
+            &author,
+            false,
+        )
+        .await
+        .expect("import");
+        let bounded = "a".repeat(mmcp_core::memory::MAX_MESSAGE_LENGTH);
+        let outcome = move_memory_path(
+            &backend,
+            &handle,
+            Some("msg-src-ok"),
+            Some(imported.id),
+            "msg-dst-ok",
+            &author,
+            Some(&bounded),
+        )
+        .await
+        .expect("bounded message accepted");
+        assert_eq!(outcome.new_slug, "msg-dst-ok");
+        assert!(!outcome.commit_id.is_empty());
+    }
+
     /// Seed an arbitrary file at an arbitrary path. Used by the
     /// addressing-mode tests to construct hand-crafted layouts the
     /// regular `import_memory` path won't produce on its own.
@@ -2233,9 +2315,7 @@ mod tests {
             vec!["a".repeat(mmcp_core::memory::MAX_TAG_LENGTH)],
             &"a".repeat(mmcp_core::memory::MAX_BODY_LENGTH),
         );
-        assert!(validate_write_content_lengths(&rendered, None).is_ok());
-        let message = "a".repeat(mmcp_core::memory::MAX_MESSAGE_LENGTH);
-        assert!(validate_write_content_lengths(&rendered, Some(&message)).is_ok());
+        assert!(validate_write_content_lengths(&rendered).is_ok());
     }
 
     #[test]
@@ -2246,7 +2326,7 @@ mod tests {
             vec![],
             "body",
         );
-        let err = validate_write_content_lengths(&rendered, None).unwrap_err();
+        let err = validate_write_content_lengths(&rendered).unwrap_err();
         assert!(matches!(err, ImportError::FieldTooLong(_)));
     }
 
@@ -2258,7 +2338,7 @@ mod tests {
             vec![],
             "body",
         );
-        let err = validate_write_content_lengths(&rendered, None).unwrap_err();
+        let err = validate_write_content_lengths(&rendered).unwrap_err();
         assert!(matches!(err, ImportError::FieldTooLong(_)));
     }
 
@@ -2270,7 +2350,7 @@ mod tests {
             vec!["a".repeat(mmcp_core::memory::MAX_TAG_LENGTH + 1)],
             "body",
         );
-        let err = validate_write_content_lengths(&rendered, None).unwrap_err();
+        let err = validate_write_content_lengths(&rendered).unwrap_err();
         assert!(matches!(err, ImportError::FieldTooLong(_)));
     }
 
@@ -2280,7 +2360,7 @@ mod tests {
             .map(|i| format!("t{i}"))
             .collect();
         let rendered = rendered_with("n", "d", too_many, "body");
-        let err = validate_write_content_lengths(&rendered, None).unwrap_err();
+        let err = validate_write_content_lengths(&rendered).unwrap_err();
         assert!(matches!(err, ImportError::FieldTooLong(_)));
     }
 
@@ -2292,16 +2372,31 @@ mod tests {
             vec![],
             &"a".repeat(mmcp_core::memory::MAX_BODY_LENGTH + 1),
         );
-        let err = validate_write_content_lengths(&rendered, None).unwrap_err();
+        let err = validate_write_content_lengths(&rendered).unwrap_err();
         assert!(matches!(err, ImportError::FieldTooLong(_)));
     }
 
     #[test]
-    fn validate_write_content_lengths_rejects_oversized_message() {
-        let rendered = rendered_with("n", "d", vec![], "body");
+    fn resolve_commit_message_accepts_override_at_limit() {
+        let message = "a".repeat(mmcp_core::memory::MAX_MESSAGE_LENGTH);
+        let resolved = resolve_commit_message(Some(&message), || unreachable!("override supplied"))
+            .expect("at-limit message accepted");
+        assert_eq!(resolved, message);
+    }
+
+    #[test]
+    fn resolve_commit_message_rejects_oversized_override() {
         let message = "a".repeat(mmcp_core::memory::MAX_MESSAGE_LENGTH + 1);
-        let err = validate_write_content_lengths(&rendered, Some(&message)).unwrap_err();
+        let err = resolve_commit_message(Some(&message), || unreachable!("override supplied"))
+            .unwrap_err();
         assert!(matches!(err, ImportError::FieldTooLong(_)));
+    }
+
+    #[test]
+    fn resolve_commit_message_uses_fallback_when_absent() {
+        let resolved =
+            resolve_commit_message(None, || "synthesized".to_string()).expect("fallback used");
+        assert_eq!(resolved, "synthesized");
     }
 
     /// End-to-end: `import_memory` (the primitive backing the MCP
