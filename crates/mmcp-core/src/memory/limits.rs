@@ -18,52 +18,81 @@
 //! [`validate_frontmatter_lengths`] / [`validate_body_length`] /
 //! [`validate_message_length`] are the checks that enforce them.
 //! Callers apply these at the write boundary, before the checked
-//! value becomes a committed domain value (see
-//! `mmcp_store::memory::write_file_at_path`, the single choke
-//! point every memory write commits through).
+//! value becomes a committed domain value. `mmcp_store::memory`
+//! validates frontmatter and body at `write_file_at_path`, and
+//! resolves every commit message (write, delete, move, and the
+//! feature/issue renames) through its own
+//! `resolve_commit_message`, so a caller-supplied message can
+//! never reach git unbounded regardless of entry point.
+//!
+//! The maxima below were re-audited against real data already
+//! committed to this project's own mmcp mirror (global group
+//! `019d9567-748a-73c3-afc4-546e976ea1e0` and project group
+//! `019d955d-4cce-77f2-a0b3-0b79ed394612`) rather than picked from
+//! assumption, after a bound tighter than existing data was found
+//! to make that data un-editable. See each constant's doc comment
+//! for the observed maximum and the margin chosen above it.
 
 use crate::memory::MemoryFrontmatter;
 
 /// Maximum byte length of a memory's `name` (the human-readable
-/// title shown in listings and the WebUI). 200 bytes comfortably
-/// covers the longest realistic title — a full sentence-length
-/// heading — while staying far below anything a UI would
+/// title shown in listings and the WebUI). Re-audited 2026-08-04:
+/// the longest real name across the global and mmcp project groups
+/// is 145 bytes
+/// (`git-checkout-collision-forces-cherry-pick-fallback-when-worker-branches-stay-checked-out-2026-08-01`'s
+/// title). 256 bytes keeps roughly 1.75x headroom above that
+/// observed maximum while staying far below anything a UI would
 /// reasonably render on a single line.
-pub const MAX_NAME_LENGTH: usize = 200;
+pub const MAX_NAME_LENGTH: usize = 256;
 
 /// Maximum byte length of a memory's `description` (the one-line
 /// summary the AI uses for relevance inference, per
-/// [`MemoryFrontmatter`]'s own doc comment). 500 bytes is several
-/// sentences: generous for a "one-line" field while remaining
-/// bounded.
-pub const MAX_DESCRIPTION_LENGTH: usize = 500;
+/// [`MemoryFrontmatter`]'s own doc comment). Re-audited 2026-08-04
+/// after the previous 500-byte bound was found to reject data
+/// already committed to this project's own mirror: the longest real
+/// description observed is 1084 bytes
+/// (`infra-weekly-api-limit-hit-2026-08-01-resets-2026-08-05`), with
+/// multiple others above 600-900 bytes. 2048 bytes keeps roughly
+/// 1.9x headroom above that observed maximum: a real bound meant to
+/// stop pathological input, not the project's own descriptive
+/// prose.
+pub const MAX_DESCRIPTION_LENGTH: usize = 2048;
 
 /// Maximum byte length of a single tag. Tags are short
-/// classification labels, not free text, so 64 bytes comfortably
-/// exceeds the longest tag slug in current use while bounding
-/// pathological input.
+/// classification labels, not free text. Re-audited 2026-08-04: the
+/// longest real tag observed is 21 bytes (`improvement-candidate`),
+/// so 64 bytes keeps roughly 3x headroom while bounding pathological
+/// input.
 pub const MAX_TAG_LENGTH: usize = 64;
 
-/// Maximum number of tags a single memory may carry. 32 is far
-/// more than any legitimate classification scheme needs (existing
-/// memories use at most a handful) while bounding an unbounded-list
-/// attack on the frontmatter.
+/// Maximum number of tags a single memory may carry. Re-audited
+/// 2026-08-04: the most tags any real memory carries is 8, so 32
+/// keeps 4x headroom above that observed maximum while bounding an
+/// unbounded-list attack on the frontmatter.
 pub const MAX_TAG_COUNT: usize = 32;
 
 /// Maximum byte length of a memory body. Memories are Markdown
-/// documents, not blob storage: 512 KiB (`512 * 1024` bytes) is
-/// generous for even a long-form design document or a large
-/// generated report, while keeping a single memory from becoming a
-/// multi-gigabyte, permanent, non-reclaimable git blob.
+/// documents, not blob storage. Re-audited 2026-08-04: the longest
+/// real bodies observed (multi-section rule memories such as
+/// `global-worktree-orchestration`) run to a few tens of KiB, so the
+/// existing 512 KiB (`512 * 1024` bytes) bound is untouched by real
+/// data and stays generous for even a long-form design document or a
+/// large generated report, while keeping a single memory from
+/// becoming a multi-gigabyte, permanent, non-reclaimable git blob.
 pub const MAX_BODY_LENGTH: usize = 512 * 1024;
 
 /// Maximum byte length of an explicit commit-message override
 /// accepted by `write_memory` / `edit_memory` / `import_memory` /
-/// `add_feature`. 1024 bytes is far beyond a conventional commit
-/// subject-plus-body while still bounding the field; when the
-/// caller omits a message the server synthesizes one and this check
-/// never runs.
-pub const MAX_MESSAGE_LENGTH: usize = 1024;
+/// `add_feature` / `move_memory` / `rename_feature` / `rename_issue`.
+/// Re-audited 2026-08-04 after the previous 1024-byte bound was
+/// found to reject a real commit already in this project's own
+/// mirror: the longest real commit message observed is 1110 bytes
+/// (subject + body of `resolve(fr-45): notes channel ships across
+/// MCP + CLI`), which the mandatory multi-bullet commit-body
+/// convention routinely produces. 4096 bytes keeps roughly 3.7x
+/// headroom above that observed maximum; when the caller omits a
+/// message the server synthesizes one and this check never runs.
+pub const MAX_MESSAGE_LENGTH: usize = 4096;
 
 /// A bounded external string or list field exceeded its maximum.
 #[derive(Debug, thiserror::Error)]
