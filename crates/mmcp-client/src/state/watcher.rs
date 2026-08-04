@@ -47,17 +47,17 @@ pub fn spawn_watcher(
                 let _ = forward_tx.send(WatcherMessage::Error(err.to_string()));
             }
         })
-        .map_err(|e| StoreError::Io(format!("notify init: {e}")))?;
+        .map_err(std::io::Error::other)?;
 
     watcher
         .watch(&repos_root, RecursiveMode::NonRecursive)
-        .map_err(|e| StoreError::Io(format!("watch {}: {e}", repos_root.display())))?;
+        .map_err(std::io::Error::other)?;
     if let Some(path) = project_config_path.as_ref()
         && path.exists()
     {
         watcher
             .watch(path, RecursiveMode::NonRecursive)
-            .map_err(|e| StoreError::Io(format!("watch {}: {e}", path.display())))?;
+            .map_err(std::io::Error::other)?;
     }
 
     let index_for_task = index.clone();

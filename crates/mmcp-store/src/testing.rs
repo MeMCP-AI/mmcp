@@ -60,15 +60,10 @@ impl ScratchHome {
     /// tempdir), so most call sites `.expect("scratch home")` and
     /// move on.
     pub async fn new() -> Result<Self, StoreError> {
-        let tmp =
-            TempDir::new().map_err(|e| StoreError::Io(format!("tempdir for scratch home: {e}")))?;
+        let tmp = TempDir::new()?;
         let home = MmcpHome::from_root(tmp.path().join("mmcp-home"));
-        std::fs::create_dir_all(home.repos_root())
-            .map_err(|e| StoreError::Io(format!("repos_root: {e}")))?;
-        let (backend, groups) = home
-            .init_backend()
-            .await
-            .map_err(|e| StoreError::Io(format!("init_backend: {e}")))?;
+        std::fs::create_dir_all(home.repos_root())?;
+        let (backend, groups) = home.init_backend().await.map_err(std::io::Error::other)?;
         let sessions = SessionStore::open(home.sessions_root())?;
         let author = ephemeral_author();
         Ok(Self {

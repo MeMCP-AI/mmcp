@@ -19,11 +19,15 @@ use thiserror::Error;
 pub enum StoreError {
     /// I/O failure while reading or writing a state file.
     #[error("store I/O error: {0}")]
-    Io(String),
+    Io(#[from] std::io::Error),
 
-    /// TOML parse or serialize failure.
-    #[error("store TOML error: {0}")]
-    Toml(String),
+    /// TOML parse failure while loading a state file.
+    #[error("store TOML parse error: {0}")]
+    TomlParse(#[from] toml::de::Error),
+
+    /// TOML serialize failure while writing a state file.
+    #[error("store TOML serialize error: {0}")]
+    TomlSerialize(#[from] toml::ser::Error),
 
     /// Git backend failure while opening a repository, reading a
     /// manifest, or committing a write.
@@ -44,4 +48,53 @@ pub enum StoreError {
     /// store's `check_transcript` path.
     #[error("transcript signature error: {0}")]
     Transcript(#[from] mmcp_session::SessionError),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error as _;
+
+    use super::*;
+
+    #[test]
+    fn io_variant_carries_the_real_source() {
+        let source = std::io::Error::new(std::io::ErrorKind::NotFound, "missing.toml");
+        let err: StoreError = source.into();
+
+        assert!(matches!(err, StoreError::Io(_)));
+        let chained = err
+            .source()
+            .and_then(|s| s.downcast_ref::<std::io::Error>())
+            .expect("io source must be preserved");
+        assert_eq!(chained.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn toml_parse_variant_carries_the_real_source() {
+        let parse_err = toml::from_str::<toml::Value>("not = [valid").unwrap_err();
+        let err: StoreError = parse_err.into();
+
+        assert!(matches!(err, StoreError::TomlParse(_)));
+        assert!(
+            err.source()
+                .and_then(|s| s.downcast_ref::<toml::de::Error>())
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn toml_serialize_variant_carries_the_real_source() {
+        // A TOML document's top level must be a table; serializing a
+        // bare scalar is the simplest value the `toml` crate's
+        // serializer genuinely rejects.
+        let ser_err = toml::to_string(&"not a table").unwrap_err();
+        let err: StoreError = ser_err.into();
+
+        assert!(matches!(err, StoreError::TomlSerialize(_)));
+        assert!(
+            err.source()
+                .and_then(|s| s.downcast_ref::<toml::ser::Error>())
+                .is_some()
+        );
+    }
 }

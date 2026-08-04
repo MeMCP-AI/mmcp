@@ -109,8 +109,7 @@ impl SessionStore {
     /// not already exist.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, StoreError> {
         let root = root.into();
-        std::fs::create_dir_all(&root)
-            .map_err(|e| StoreError::Io(format!("create {}: {e}", root.display())))?;
+        std::fs::create_dir_all(&root)?;
         Ok(Self { root })
     }
 
@@ -132,12 +131,11 @@ impl SessionStore {
         let path = self.path_for(session_id);
         match std::fs::read_to_string(&path) {
             Ok(text) => {
-                let state: SessionState = toml::from_str(&text)
-                    .map_err(|e| StoreError::Toml(format!("parse {}: {e}", path.display())))?;
+                let state: SessionState = toml::from_str(&text)?;
                 Ok(Some(state))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(StoreError::Io(format!("read {}: {e}", path.display()))),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -146,18 +144,11 @@ impl SessionStore {
     /// path so concurrent readers never observe a partial file.
     pub fn save(&self, state: &SessionState) -> Result<(), StoreError> {
         let path = self.path_for(&state.session_id);
-        let text = toml::to_string_pretty(state)
-            .map_err(|e| StoreError::Toml(format!("serialize {}: {e}", path.display())))?;
+        let text = toml::to_string_pretty(state)?;
         let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, text.as_bytes())
-            .map_err(|e| StoreError::Io(format!("write {}: {e}", tmp.display())))?;
-        std::fs::rename(&tmp, &path).map_err(|e| {
+        std::fs::write(&tmp, text.as_bytes())?;
+        std::fs::rename(&tmp, &path).inspect_err(|_e| {
             let _ = std::fs::remove_file(&tmp);
-            StoreError::Io(format!(
-                "rename {} -> {}: {e}",
-                tmp.display(),
-                path.display()
-            ))
         })?;
         Ok(())
     }
