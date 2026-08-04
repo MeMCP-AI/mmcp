@@ -52,7 +52,7 @@ pub async fn sync_pull(app: AppHandle, state: State<'_, AppState>) -> GuiResult<
         .engine
         .pull(SyncFilter::All, &bundle.resolver, &bundle.resolver)
         .await
-        .map_err(|e| GuiError::Sync(e.to_string()))?;
+        .map_err(GuiError::from)?;
     // A pull touched one or more groups' refs — tell every frontend
     // listener so views refresh silently. We don't itemise which
     // groups changed because the pull report isn't per-group here;
@@ -75,7 +75,7 @@ pub async fn sync_push(state: State<'_, AppState>) -> GuiResult<PushReportDto> {
         .engine
         .push(SyncFilter::All, &bundle.resolver, &bundle.resolver)
         .await
-        .map_err(|e| GuiError::Sync(e.to_string()))?;
+        .map_err(GuiError::from)?;
     Ok(PushReportDto {
         pushed: report.pushed.len(),
     })

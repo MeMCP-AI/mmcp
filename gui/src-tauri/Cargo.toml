@@ -12,7 +12,7 @@
 
 [package]
 name = "mmcp-gui-tauri"
-version = "0.1.2"
+version = "0.1.3"
 description = "mmcp-gui: Tauri 2 backend wrapping mmcp-store for the SvelteKit desktop client."
 authors = ["Gabriel GRONDIN"]
 edition = "2024"
