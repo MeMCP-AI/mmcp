@@ -77,6 +77,65 @@ async fn seed_group(state: &mmcp_server::state::ServerState, slug: &str) -> Uuid
     uuid
 }
 
+/// Insert a group row in the server DB WITHOUT creating its backing
+/// bare git repo on disk, so any handler that reads the repo hits a
+/// real `GitError::RepoNotFound` carrying the tempdir's absolute
+/// server filesystem path.
+async fn seed_group_without_repo(state: &mmcp_server::state::ServerState, slug: &str) -> Uuid {
+    let group_id = GroupId::new();
+    let uuid = *group_id.as_uuid();
+    let owner = Uuid::now_v7();
+    group_repo::create(
+        state.database.connection(),
+        group_repo::NewGroup {
+            id: uuid,
+            slug: slug.into(),
+            owner_kind: OwnerKind::User,
+            owner_id: owner,
+            display_name: None,
+            created_at: jiff::Timestamp::now().as_second(),
+        },
+    )
+    .await
+    .expect("insert group row");
+    uuid
+}
+
+/// `global-security-rules` forbids HTTP error responses from
+/// carrying internal exception text. Seed a group row with no
+/// backing bare repo so `GET /sync/refs/{group}` hits a real
+/// `GitError::RepoNotFound(<tempdir path>)` and assert the 500 body
+/// contains neither the server filesystem path nor the underlying
+/// error's own message text, only the shared generic message.
+#[tokio::test]
+async fn sync_refs_500_body_omits_internal_error_detail() {
+    let (addr, state, tmp) = start_server().await;
+    let group = seed_group_without_repo(&state, "team-rust").await;
+
+    let resp = reqwest::get(format!("http://{addr}/sync/refs/{group}"))
+        .await
+        .expect("GET refs");
+    assert_eq!(resp.status(), 500);
+    let text = resp.text().await.expect("read body");
+
+    let tmp_path = tmp.path().to_string_lossy().into_owned();
+    assert!(
+        !text.contains(&tmp_path),
+        "500 body must not leak the server's repo root path, got: {text}"
+    );
+    assert!(
+        !text.to_lowercase().contains("repository not found"),
+        "500 body must not leak the underlying GitError text, got: {text}"
+    );
+
+    let body: serde_json::Value = serde_json::from_str(&text).expect("decode json");
+    assert_eq!(
+        body["error"]["message"],
+        mmcp_server::routes::response::GENERIC_INTERNAL_ERROR_MESSAGE,
+        "500 body must carry only the shared generic message, got: {text}"
+    );
+}
+
 #[tokio::test]
 async fn sync_manifest_returns_empty_list_when_no_groups_exist() {
     let (addr, _state, _tmp) = start_server().await;
