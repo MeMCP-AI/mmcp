@@ -6428,6 +6428,20 @@ fn map_memory_error_to_mcp(err: ImportError) -> McpError {
             "frontmatter": frontmatter.to_string(),
             "retry_hint": "pass force: true to override (filename UUID stays; the rejected frontmatter id is the new source of truth)",
         }),
+        ImportError::FieldTooLong(inner) => match inner {
+            mmcp_core::memory::FieldLengthError::TooLong { field, max, actual } => json!({
+                "code": "field_too_long",
+                "field": field,
+                "max": max,
+                "actual": actual,
+            }),
+            mmcp_core::memory::FieldLengthError::TooMany { field, max, actual } => json!({
+                "code": "field_too_many",
+                "field": field,
+                "max": max,
+                "actual": actual,
+            }),
+        },
     };
     McpError::invalid_params(message, Some(payload))
 }

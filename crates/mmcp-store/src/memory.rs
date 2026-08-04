@@ -133,6 +133,15 @@ pub enum ImportError {
     /// requires at least one addressing key.
     #[error("resolve_memory requires at least one of slug or id")]
     ResolveArgsMissing,
+
+    /// A user-supplied string field (body, name, description, a
+    /// tag, or an explicit commit-message override) exceeded its
+    /// bounded maximum length. See `mmcp_core::memory` for the
+    /// named constants (`MAX_BODY_LENGTH`, `MAX_NAME_LENGTH`,
+    /// `MAX_DESCRIPTION_LENGTH`, `MAX_TAG_LENGTH`, `MAX_TAG_COUNT`,
+    /// `MAX_MESSAGE_LENGTH`).
+    #[error("field too long: {0}")]
+    FieldTooLong(#[from] mmcp_core::memory::FieldLengthError),
 }
 
 /// Per-file reference to a memory on disk. Returned by
@@ -683,6 +692,33 @@ pub struct WriteFileOptions<'a> {
     pub message: Option<&'a str>,
 }
 
+/// Enforce the bounded-length invariants `global-security-rules`
+/// mandates on every write that reaches [`write_file_at_path`]:
+/// parse `rendered` and check its frontmatter (`name`,
+/// `description`, `tags`) and body against `mmcp_core::memory`'s
+/// named maxima, then check the optional commit-message override
+/// the same way.
+///
+/// This is the single choke point every memory write — create,
+/// update, `edit_memory_body`, feature/issue create and update,
+/// and archive import — commits through (see [`write_file_at_path`]
+/// and [`write_memory_by_id`]), so the check runs exactly once per
+/// write regardless of which higher-level entry point triggered
+/// it, per the SSOT/DRY rule and the "validation runs at the
+/// boundary" clause of `global-security-rules`.
+fn validate_write_content_lengths(
+    rendered: &str,
+    message: Option<&str>,
+) -> Result<(), ImportError> {
+    let file = MemoryFile::parse(rendered)?;
+    mmcp_core::memory::validate_frontmatter_lengths(&file.frontmatter)?;
+    mmcp_core::memory::validate_body_length(&file.body)?;
+    if let Some(msg) = message {
+        mmcp_core::memory::validate_message_length(msg)?;
+    }
+    Ok(())
+}
+
 /// Commit a write of `rendered` at an explicit repo-relative
 /// `path` after running the FR-28 / D4 id-mismatch check. The
 /// validation compares the filename UUID encoded in `path` to the
@@ -707,6 +743,7 @@ pub async fn write_file_at_path(
         force,
         message,
     } = options;
+    validate_write_content_lengths(rendered, message)?;
     let validation = validate_id_mismatch(path, rendered, addressing_mode, force)?;
     let commit_message = message
         .map(str::to_string)
@@ -734,6 +771,9 @@ pub async fn delete_file_at_path(
     author: &ResolvedAuthor,
     message: Option<&str>,
 ) -> Result<String, ImportError> {
+    if let Some(msg) = message {
+        mmcp_core::memory::validate_message_length(msg)?;
+    }
     let commit_message = message
         .map(str::to_string)
         .unwrap_or_else(|| format!("delete {path}"));
@@ -2173,5 +2213,142 @@ mod tests {
         .expect("forced write");
         assert!(!commit.is_empty());
         assert!(matches!(validation, IdValidation::MismatchForced { .. }));
+    }
+
+    fn rendered_with(name: &str, description: &str, tags: Vec<String>, body: &str) -> String {
+        let file = MemoryFile {
+            frontmatter: MemoryFrontmatter::new(name, description, MemoryKind::Rule)
+                .with_tags(tags),
+            body: body.to_string(),
+            format: mmcp_core::memory::FrontmatterFormat::TomlPlus,
+        };
+        file.to_string().expect("render")
+    }
+
+    #[test]
+    fn validate_write_content_lengths_accepts_values_at_limit() {
+        let rendered = rendered_with(
+            &"a".repeat(mmcp_core::memory::MAX_NAME_LENGTH),
+            &"a".repeat(mmcp_core::memory::MAX_DESCRIPTION_LENGTH),
+            vec!["a".repeat(mmcp_core::memory::MAX_TAG_LENGTH)],
+            &"a".repeat(mmcp_core::memory::MAX_BODY_LENGTH),
+        );
+        assert!(validate_write_content_lengths(&rendered, None).is_ok());
+        let message = "a".repeat(mmcp_core::memory::MAX_MESSAGE_LENGTH);
+        assert!(validate_write_content_lengths(&rendered, Some(&message)).is_ok());
+    }
+
+    #[test]
+    fn validate_write_content_lengths_rejects_oversized_name() {
+        let rendered = rendered_with(
+            &"a".repeat(mmcp_core::memory::MAX_NAME_LENGTH + 1),
+            "d",
+            vec![],
+            "body",
+        );
+        let err = validate_write_content_lengths(&rendered, None).unwrap_err();
+        assert!(matches!(err, ImportError::FieldTooLong(_)));
+    }
+
+    #[test]
+    fn validate_write_content_lengths_rejects_oversized_description() {
+        let rendered = rendered_with(
+            "n",
+            &"a".repeat(mmcp_core::memory::MAX_DESCRIPTION_LENGTH + 1),
+            vec![],
+            "body",
+        );
+        let err = validate_write_content_lengths(&rendered, None).unwrap_err();
+        assert!(matches!(err, ImportError::FieldTooLong(_)));
+    }
+
+    #[test]
+    fn validate_write_content_lengths_rejects_oversized_tag() {
+        let rendered = rendered_with(
+            "n",
+            "d",
+            vec!["a".repeat(mmcp_core::memory::MAX_TAG_LENGTH + 1)],
+            "body",
+        );
+        let err = validate_write_content_lengths(&rendered, None).unwrap_err();
+        assert!(matches!(err, ImportError::FieldTooLong(_)));
+    }
+
+    #[test]
+    fn validate_write_content_lengths_rejects_too_many_tags() {
+        let too_many: Vec<String> = (0..=mmcp_core::memory::MAX_TAG_COUNT)
+            .map(|i| format!("t{i}"))
+            .collect();
+        let rendered = rendered_with("n", "d", too_many, "body");
+        let err = validate_write_content_lengths(&rendered, None).unwrap_err();
+        assert!(matches!(err, ImportError::FieldTooLong(_)));
+    }
+
+    #[test]
+    fn validate_write_content_lengths_rejects_oversized_body() {
+        let rendered = rendered_with(
+            "n",
+            "d",
+            vec![],
+            &"a".repeat(mmcp_core::memory::MAX_BODY_LENGTH + 1),
+        );
+        let err = validate_write_content_lengths(&rendered, None).unwrap_err();
+        assert!(matches!(err, ImportError::FieldTooLong(_)));
+    }
+
+    #[test]
+    fn validate_write_content_lengths_rejects_oversized_message() {
+        let rendered = rendered_with("n", "d", vec![], "body");
+        let message = "a".repeat(mmcp_core::memory::MAX_MESSAGE_LENGTH + 1);
+        let err = validate_write_content_lengths(&rendered, Some(&message)).unwrap_err();
+        assert!(matches!(err, ImportError::FieldTooLong(_)));
+    }
+
+    /// End-to-end: `import_memory` (the primitive backing the MCP
+    /// `write_memory` tool) rejects an oversized body through the
+    /// real write path, proving the check is actually wired at the
+    /// public entry point and not just on the private helper.
+    #[tokio::test]
+    async fn import_memory_rejects_oversized_body_end_to_end() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let content = rendered_with(
+            "n",
+            "d",
+            vec![],
+            &"a".repeat(mmcp_core::memory::MAX_BODY_LENGTH + 1),
+        );
+        let err = import_memory(
+            &backend,
+            &handle,
+            "oversized",
+            &content,
+            None,
+            &author,
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ImportError::FieldTooLong(_)));
+    }
+
+    /// Same end-to-end check on the accept side: a body exactly at
+    /// the limit is written successfully.
+    #[tokio::test]
+    async fn import_memory_accepts_body_at_limit_end_to_end() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let content = rendered_with(
+            "n",
+            "d",
+            vec![],
+            &"a".repeat(mmcp_core::memory::MAX_BODY_LENGTH),
+        );
+        let result = import_memory(
+            &backend, &handle, "at-limit", &content, None, &author, false,
+        )
+        .await
+        .expect("write at the limit succeeds");
+        assert!(!result.commit_id.is_empty());
     }
 }
