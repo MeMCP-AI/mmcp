@@ -167,6 +167,77 @@ pub async fn create_standalone_group(
     })
 }
 
+/// Successful outcome of [`set_group_protected`].
+#[derive(Debug, Clone)]
+pub struct SetProtectedReport {
+    pub group_id: GroupId,
+    pub slug: String,
+    pub protected: bool,
+    pub commit_id: String,
+}
+
+/// Structured failures emitted by [`set_group_protected`].
+#[derive(Debug, Error)]
+pub enum SetProtectedError {
+    #[error("no group found for identifier `{identifier}`")]
+    GroupNotFound { identifier: String },
+
+    #[error("git backend error: {0}")]
+    GitBackend(String),
+
+    #[error("group index refresh failed: {0}")]
+    IndexRefreshFailed(String),
+}
+
+/// Arm or disarm the FR-019 protected-write guard on an already
+/// existing group.
+///
+/// The manifest's `protected` flag used to be settable only at
+/// group-creation time (see [`create_standalone_group`]); this is
+/// the "future path on an existing repo" that
+/// [`GroupManifest::set_protected`]'s doc comment promised. Resolves
+/// `identifier` (UUID or slug) against the local mirror, re-reads
+/// the manifest from the repo's current tip, flips `protected`, and
+/// commits the result through [`GitBackend::write_manifest`]. The
+/// [`GroupIndex`] is refreshed before returning so the protected-
+/// write guard itself sees the new value on the very next mutation.
+pub async fn set_group_protected(
+    backend: &Arc<NativeBackend>,
+    groups: &GroupIndex,
+    identifier: &str,
+    protected: bool,
+) -> Result<SetProtectedReport, SetProtectedError> {
+    let entry =
+        resolve_group(groups, identifier)
+            .await
+            .map_err(|_| SetProtectedError::GroupNotFound {
+                identifier: identifier.to_string(),
+            })?;
+
+    let mut manifest = backend
+        .read_manifest(&entry.handle)
+        .await
+        .map_err(|e| SetProtectedError::GitBackend(e.to_string()))?;
+    manifest.set_protected(protected);
+
+    let commit_id = backend
+        .write_manifest(&entry.handle, &manifest)
+        .await
+        .map_err(|e| SetProtectedError::GitBackend(e.to_string()))?;
+
+    groups
+        .refresh()
+        .await
+        .map_err(|e| SetProtectedError::IndexRefreshFailed(e.to_string()))?;
+
+    Ok(SetProtectedReport {
+        group_id: manifest.group_id,
+        slug: manifest.slug,
+        protected,
+        commit_id,
+    })
+}
+
 // ── CLI surface ─────────────────────────────────────────────────
 //
 // `mmcp group <verb>` mirrors the `mcp:list_groups`,
@@ -195,6 +266,9 @@ pub enum GroupCommand {
     Info(InfoArgs),
     /// Bootstrap a fresh standalone group under ~/.mmcp/repos.
     Create(CreateArgs),
+    /// Arm or disarm the FR-019 protected-write guard on an
+    /// already existing group.
+    Protect(ProtectArgs),
 }
 
 #[derive(Debug, Args)]
@@ -224,6 +298,16 @@ pub struct CreateArgs {
     pub protected: bool,
 }
 
+#[derive(Debug, Args)]
+pub struct ProtectArgs {
+    /// Group UUID or slug.
+    pub group: String,
+
+    /// Disarm protection instead of arming it.
+    #[arg(long)]
+    pub unprotect: bool,
+}
+
 pub async fn run(args: GroupArgs) -> Result<()> {
     match args.cmd {
         // `arg_required_else_help` prints help before this branch
@@ -233,6 +317,7 @@ pub async fn run(args: GroupArgs) -> Result<()> {
         Some(GroupCommand::List) => run_list().await,
         Some(GroupCommand::Info(a)) => run_info(a).await,
         Some(GroupCommand::Create(a)) => run_create(a).await,
+        Some(GroupCommand::Protect(a)) => run_protect(a).await,
     }
 }
 
@@ -341,6 +426,20 @@ async fn run_create(args: CreateArgs) -> Result<()> {
         scope_str(&report.scope),
         report.protected,
         report.repo_path.display(),
+    );
+    Ok(())
+}
+
+async fn run_protect(args: ProtectArgs) -> Result<()> {
+    let home = MmcpHome::discover()?;
+    let (backend, groups) = home.init_backend().await?;
+    let protected = !args.unprotect;
+    let report = set_group_protected(&backend, &groups, &args.group, protected)
+        .await
+        .map_err(anyhow::Error::from)?;
+    println!(
+        "group `{}` ({})\n  protected: {}\n  commit: {}",
+        report.slug, report.group_id, report.protected, report.commit_id,
     );
     Ok(())
 }
@@ -502,5 +601,88 @@ mod tests {
             "committed manifest must carry the protected flag"
         );
         assert_eq!(entry.manifest.group_id, report.group_id);
+    }
+
+    #[tokio::test]
+    async fn set_group_protected_arms_an_existing_unprotected_group() {
+        let (_tmp, backend, groups) = scratch_state().await;
+
+        let created = create_standalone_group(
+            &backend,
+            &groups,
+            &CreateGroupOptions {
+                slug: "team-rust".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create");
+        assert!(!created.protected, "must start out unprotected");
+
+        let report = set_group_protected(&backend, &groups, "team-rust", true)
+            .await
+            .expect("arm protection");
+        assert!(report.protected);
+        assert_eq!(report.group_id, created.group_id);
+
+        let entry = groups
+            .list()
+            .await
+            .into_iter()
+            .find(|e| e.manifest.group_id == created.group_id)
+            .expect("must be indexed");
+        assert!(
+            entry.manifest.protected,
+            "re-read manifest must reflect the arm"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_group_protected_disarms_a_protected_group() {
+        let (_tmp, backend, groups) = scratch_state().await;
+
+        let created = create_standalone_group(
+            &backend,
+            &groups,
+            &CreateGroupOptions {
+                slug: "global-rules".into(),
+                protected: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create");
+        assert!(created.protected);
+
+        let report = set_group_protected(&backend, &groups, &created.group_id.to_string(), false)
+            .await
+            .expect("disarm protection");
+        assert!(!report.protected);
+
+        let entry = groups
+            .list()
+            .await
+            .into_iter()
+            .find(|e| e.manifest.group_id == created.group_id)
+            .expect("must be indexed");
+        assert!(
+            !entry.manifest.protected,
+            "re-read manifest must reflect the disarm"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_group_protected_rejects_unknown_group() {
+        let (_tmp, backend, groups) = scratch_state().await;
+
+        let err = set_group_protected(&backend, &groups, "does-not-exist", true)
+            .await
+            .expect_err("unknown group must error");
+        match err {
+            SetProtectedError::GroupNotFound { identifier } => {
+                assert_eq!(identifier, "does-not-exist");
+            }
+            other => panic!("expected GroupNotFound, got {other:?}"),
+        }
     }
 }
