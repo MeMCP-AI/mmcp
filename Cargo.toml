@@ -22,7 +22,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Gabriel GRONDIN"]
@@ -157,6 +157,10 @@ wiremock = "0.6"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+warnings = "deny"
+
+[workspace.lints.clippy]
+all = "deny"
 
 # Redirect every gitoxide crate to the GGLinnk/gitoxide fork, which
 # carries the pre-upstream implementation of client push and
