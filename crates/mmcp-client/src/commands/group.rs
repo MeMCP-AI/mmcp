@@ -23,12 +23,13 @@ use std::sync::Arc;
 
 use mmcp_core::id::GroupId;
 use mmcp_core::manifest::{GroupManifest, GroupScope};
-use mmcp_git::{GitBackend, NativeBackend};
+use mmcp_git::{GitBackend, GitError, NativeBackend};
 use thiserror::Error;
 use uuid::Uuid;
 
+use mmcp_store::StoreError;
 use mmcp_store::groups::GroupIndex;
-use mmcp_store::memory::validate_slug_segment;
+use mmcp_store::memory::{ImportError, validate_slug_segment};
 
 /// Options accepted by [`create_standalone_group`].
 ///
@@ -179,14 +180,29 @@ pub struct SetProtectedReport {
 /// Structured failures emitted by [`set_group_protected`].
 #[derive(Debug, Error)]
 pub enum SetProtectedError {
+    /// No group in the local mirror matches `identifier`, neither as
+    /// a UUID nor as a slug.
     #[error("no group found for identifier `{identifier}`")]
-    GroupNotFound { identifier: String },
+    GroupNotFound {
+        identifier: String,
+        #[source]
+        source: ImportError,
+    },
 
-    #[error("git backend error: {0}")]
-    GitBackend(String),
+    /// The manifest could not be re-read from the repository's
+    /// current tip before flipping `protected`.
+    #[error("failed to read group manifest")]
+    ReadManifest(#[source] GitError),
 
-    #[error("group index refresh failed: {0}")]
-    IndexRefreshFailed(String),
+    /// The flipped manifest could not be committed back to the
+    /// repository.
+    #[error("failed to write group manifest")]
+    WriteManifest(#[source] GitError),
+
+    /// The in-memory group index could not be refreshed after the
+    /// protected flag was committed.
+    #[error("group index refresh failed")]
+    IndexRefresh(#[source] StoreError),
 }
 
 /// Arm or disarm the FR-019 protected-write guard on an already
@@ -207,28 +223,28 @@ pub async fn set_group_protected(
     identifier: &str,
     protected: bool,
 ) -> Result<SetProtectedReport, SetProtectedError> {
-    let entry =
-        resolve_group(groups, identifier)
-            .await
-            .map_err(|_| SetProtectedError::GroupNotFound {
-                identifier: identifier.to_string(),
-            })?;
+    let entry = resolve_group(groups, identifier).await.map_err(|source| {
+        SetProtectedError::GroupNotFound {
+            identifier: identifier.to_string(),
+            source,
+        }
+    })?;
 
     let mut manifest = backend
         .read_manifest(&entry.handle)
         .await
-        .map_err(|e| SetProtectedError::GitBackend(e.to_string()))?;
+        .map_err(SetProtectedError::ReadManifest)?;
     manifest.set_protected(protected);
 
     let commit_id = backend
         .write_manifest(&entry.handle, &manifest)
         .await
-        .map_err(|e| SetProtectedError::GitBackend(e.to_string()))?;
+        .map_err(SetProtectedError::WriteManifest)?;
 
     groups
         .refresh()
         .await
-        .map_err(|e| SetProtectedError::IndexRefreshFailed(e.to_string()))?;
+        .map_err(SetProtectedError::IndexRefresh)?;
 
     Ok(SetProtectedReport {
         group_id: manifest.group_id,
@@ -678,11 +694,55 @@ mod tests {
         let err = set_group_protected(&backend, &groups, "does-not-exist", true)
             .await
             .expect_err("unknown group must error");
-        match err {
-            SetProtectedError::GroupNotFound { identifier } => {
+        match &err {
+            SetProtectedError::GroupNotFound { identifier, source } => {
                 assert_eq!(identifier, "does-not-exist");
+                assert!(
+                    matches!(source, ImportError::GroupNotFound(_)),
+                    "source must be the real resolve_group failure, got {source:?}"
+                );
             }
             other => panic!("expected GroupNotFound, got {other:?}"),
         }
+        // The source chain must be walkable via `std::error::Error`,
+        // not just accessible through the enum's own field.
+        let source = std::error::Error::source(&err).expect("must chain a source");
+        assert!(
+            source.downcast_ref::<ImportError>().is_some(),
+            "chained source must downcast to the real ImportError, not a stringified copy"
+        );
+    }
+
+    #[test]
+    fn set_protected_error_read_manifest_preserves_the_git_source_chain() {
+        let source = GitError::RepoNotFound("missing.git".into());
+        let err = SetProtectedError::ReadManifest(source);
+
+        let chained = std::error::Error::source(&err)
+            .and_then(|s| s.downcast_ref::<GitError>())
+            .expect("ReadManifest must chain the real GitError, not a stringified copy");
+        assert!(matches!(chained, GitError::RepoNotFound(_)));
+    }
+
+    #[test]
+    fn set_protected_error_write_manifest_preserves_the_git_source_chain() {
+        let source = GitError::Unsupported("push");
+        let err = SetProtectedError::WriteManifest(source);
+
+        let chained = std::error::Error::source(&err)
+            .and_then(|s| s.downcast_ref::<GitError>())
+            .expect("WriteManifest must chain the real GitError, not a stringified copy");
+        assert!(matches!(chained, GitError::Unsupported(_)));
+    }
+
+    #[test]
+    fn set_protected_error_index_refresh_preserves_the_store_source_chain() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "repos root vanished");
+        let err = SetProtectedError::IndexRefresh(StoreError::Io(io_err));
+
+        let chained = std::error::Error::source(&err)
+            .and_then(|s| s.downcast_ref::<StoreError>())
+            .expect("IndexRefresh must chain the real StoreError, not a stringified copy");
+        assert!(matches!(chained, StoreError::Io(_)));
     }
 }
