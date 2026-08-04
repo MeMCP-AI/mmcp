@@ -30,6 +30,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 use webauthn_rs::prelude::*;
 
+use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
 
 pub fn router() -> Router<ServerState> {
@@ -69,7 +70,7 @@ async fn register(
     State(state): State<ServerState>,
     Json(req): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<RegisterResponse>), AuthHttpError> {
-    let hash = hash_password(&req.password).map_err(AuthHttpError::internal)?;
+    let hash = hash_password(&req.password).map_err(into_generic_response)?;
     let user_id = Uuid::now_v7();
     user_repo::create(
         state.database.connection(),
@@ -111,20 +112,20 @@ async fn login(
             password: req.password,
         })
         .await
-        .map_err(AuthHttpError::internal)?
+        .map_err(into_generic_response)?
         .ok_or(AuthHttpError::Unauthorized("invalid credentials"))?;
 
     auth_session
         .login(&user)
         .await
-        .map_err(AuthHttpError::internal)?;
+        .map_err(into_generic_response)?;
 
     let now = Timestamp::now().as_second();
     let claims = mmcp_auth::SessionClaims::new_with_lifetime(user.id, Uuid::now_v7(), now, 3600);
     let token = state
         .token_issuer
         .issue(&claims)
-        .map_err(AuthHttpError::internal)?;
+        .map_err(into_generic_response)?;
     Ok(Json(LoginResponse {
         token,
         user_id: user.id,
@@ -194,7 +195,7 @@ async fn oauth_callback(
         ])
         .send()
         .await
-        .map_err(AuthHttpError::internal)?;
+        .map_err(into_generic_response)?;
 
     #[derive(Deserialize)]
     struct TokenResponse {
@@ -202,7 +203,7 @@ async fn oauth_callback(
         #[allow(dead_code)]
         token_type: Option<String>,
     }
-    let tokens: TokenResponse = token_resp.json().await.map_err(AuthHttpError::internal)?;
+    let tokens: TokenResponse = token_resp.json().await.map_err(into_generic_response)?;
 
     // Fetch user info from the provider.
     let userinfo_resp = http
@@ -211,11 +212,11 @@ async fn oauth_callback(
         .header("User-Agent", "mmcp-server")
         .send()
         .await
-        .map_err(AuthHttpError::internal)?;
+        .map_err(into_generic_response)?;
     let gh_user: GitHubUser = userinfo_resp
         .json()
         .await
-        .map_err(AuthHttpError::internal)?;
+        .map_err(into_generic_response)?;
 
     let user = auth_session
         .authenticate(Credentials::OAuth {
@@ -226,13 +227,13 @@ async fn oauth_callback(
             refresh_token: None,
         })
         .await
-        .map_err(AuthHttpError::internal)?
+        .map_err(into_generic_response)?
         .ok_or(AuthHttpError::Unauthorized("oauth authentication failed"))?;
 
     auth_session
         .login(&user)
         .await
-        .map_err(AuthHttpError::internal)?;
+        .map_err(into_generic_response)?;
 
     Ok((
         StatusCode::OK,
@@ -283,13 +284,13 @@ async fn passkey_register_start(
     let conn = state.database.connection();
     let user = user_repo::find_by_id(conn, req.user_id)
         .await
-        .map_err(AuthHttpError::internal)?
+        .map_err(into_generic_response)?
         .ok_or(AuthHttpError::NotFound("user not found"))?;
 
     // Load existing credentials so the server can exclude them.
     let existing_creds = passkey_repo::find_by_user(conn, user.id)
         .await
-        .map_err(AuthHttpError::internal)?;
+        .map_err(into_generic_response)?;
     let existing: Vec<Passkey> = existing_creds
         .iter()
         .filter_map(|c| serde_json::from_str(&c.credential_json).ok())
@@ -308,7 +309,7 @@ async fn passkey_register_start(
                 Some(exclude_creds)
             },
         )
-        .map_err(AuthHttpError::internal)?;
+        .map_err(into_generic_response)?;
 
     // Stash the registration state so `finish` can complete it.
     reg_state().lock().await.insert(user.id, reg_state_value);
@@ -339,9 +340,9 @@ async fn passkey_register_finish(
     let passkey = state
         .webauthn
         .finish_passkey_registration(&req.response, &pending)
-        .map_err(AuthHttpError::internal)?;
+        .map_err(into_generic_response)?;
 
-    let cred_json = serde_json::to_string(&passkey).map_err(AuthHttpError::internal)?;
+    let cred_json = serde_json::to_string(&passkey).map_err(into_generic_response)?;
     let now = Timestamp::now().as_millisecond();
     passkey_repo::create(
         state.database.connection(),
@@ -352,7 +353,7 @@ async fn passkey_register_finish(
         now,
     )
     .await
-    .map_err(AuthHttpError::internal)?;
+    .map_err(into_generic_response)?;
 
     Ok(Json(serde_json::json!({ "status": "registered" })))
 }
@@ -369,12 +370,12 @@ async fn passkey_login_start(
     let conn = state.database.connection();
     let user = user_repo::find_by_handle(conn, &req.handle)
         .await
-        .map_err(AuthHttpError::internal)?
+        .map_err(into_generic_response)?
         .ok_or(AuthHttpError::NotFound("user not found"))?;
 
     let creds = passkey_repo::find_by_user(conn, user.id)
         .await
-        .map_err(AuthHttpError::internal)?;
+        .map_err(into_generic_response)?;
     if creds.is_empty() {
         return Err(AuthHttpError::BadRequest("no passkeys registered"));
     }
@@ -386,7 +387,7 @@ async fn passkey_login_start(
     let (rcr, auth_state_value) = state
         .webauthn
         .start_passkey_authentication(&passkeys)
-        .map_err(AuthHttpError::internal)?;
+        .map_err(into_generic_response)?;
 
     auth_state().lock().await.insert(user.id, auth_state_value);
 
@@ -407,7 +408,7 @@ async fn passkey_login_finish(
     let conn = state.database.connection();
     let user = user_repo::find_by_handle(conn, &req.handle)
         .await
-        .map_err(AuthHttpError::internal)?
+        .map_err(into_generic_response)?
         .ok_or(AuthHttpError::NotFound("user not found"))?;
 
     let pending = auth_state()
@@ -421,16 +422,16 @@ async fn passkey_login_finish(
     let auth_result = state
         .webauthn
         .finish_passkey_authentication(&req.response, &pending)
-        .map_err(AuthHttpError::internal)?;
+        .map_err(into_generic_response)?;
 
     // Update the credential counter in the DB to prevent replay.
     let creds = passkey_repo::find_by_user(conn, user.id)
         .await
-        .map_err(AuthHttpError::internal)?;
+        .map_err(into_generic_response)?;
     for cred_row in &creds {
         if let Ok(mut pk) = serde_json::from_str::<Passkey>(&cred_row.credential_json) {
             if pk.update_credential(&auth_result) == Some(true) {
-                let updated_json = serde_json::to_string(&pk).map_err(AuthHttpError::internal)?;
+                let updated_json = serde_json::to_string(&pk).map_err(into_generic_response)?;
                 let now = Timestamp::now().as_millisecond();
                 let _ = passkey_repo::update_after_auth(conn, cred_row.id, updated_json, now).await;
             }
@@ -448,13 +449,13 @@ async fn passkey_login_finish(
             credential_row_id: matched_cred.id,
         })
         .await
-        .map_err(AuthHttpError::internal)?
+        .map_err(into_generic_response)?
         .ok_or(AuthHttpError::Unauthorized("passkey authentication failed"))?;
 
     auth_session
         .login(&authed_user)
         .await
-        .map_err(AuthHttpError::internal)?;
+        .map_err(into_generic_response)?;
 
     Ok(Json(serde_json::json!({
         "user_id": authed_user.id,
@@ -474,9 +475,9 @@ enum AuthHttpError {
     Internal(String),
 }
 
-impl AuthHttpError {
-    fn internal<E: std::fmt::Display>(err: E) -> Self {
-        AuthHttpError::Internal(err.to_string())
+impl FromInternalError for AuthHttpError {
+    fn from_internal_error() -> Self {
+        AuthHttpError::Internal(response::GENERIC_INTERNAL_ERROR_MESSAGE.to_string())
     }
 }
 

@@ -37,6 +37,7 @@ use serde::Deserialize;
 use tokio_util::io::{ReaderStream, StreamReader, SyncIoBridge};
 use uuid::Uuid;
 
+use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
 
 pub fn router() -> Router<ServerState> {
@@ -65,7 +66,7 @@ async fn ensure_group(state: &ServerState, group_id: Uuid) -> Result<PathBuf, Gi
     let conn = state.database.connection();
     let row = group_repo::find_by_id(conn, group_id)
         .await
-        .map_err(GitHttpError::internal)?
+        .map_err(into_generic_response)?
         .ok_or(GitHttpError::NotFound("group not found"))?;
     let _ = row;
     Ok(state.group_repo_path(group_id))
@@ -112,7 +113,7 @@ async fn info_refs(
     let body =
         tokio::task::spawn_blocking(move || advertise_refs(&repo_path, &service, protocol_version))
             .await
-            .map_err(GitHttpError::internal)??;
+            .map_err(into_generic_response)??;
 
     Ok((
         StatusCode::OK,
@@ -132,23 +133,23 @@ fn advertise_refs(
     service: &str,
     protocol_version: u8,
 ) -> Result<Vec<u8>, GitHttpError> {
-    let repo = gix::open(repo_path).map_err(GitHttpError::internal)?;
+    let repo = gix::open(repo_path).map_err(into_generic_response)?;
     let mut out = service_announcement(service);
     match (service, protocol_version) {
         ("git-upload-pack", 2) => {
             let opts = gix::protocol::upload_pack::OptionsV2::default();
             repo.serve_upload_pack_info_refs_v2(&mut out, &opts)
-                .map_err(GitHttpError::internal)?;
+                .map_err(into_generic_response)?;
         }
         ("git-upload-pack", _) => {
             let opts = gix::protocol::upload_pack::Options::default();
             repo.serve_upload_pack_info_refs(&mut out, &opts)
-                .map_err(GitHttpError::internal)?;
+                .map_err(into_generic_response)?;
         }
         ("git-receive-pack", _) => {
             let opts = gix::protocol::receive_pack::advertisement::Options::default();
             repo.serve_receive_pack_info_refs(&mut out, &opts)
-                .map_err(GitHttpError::internal)?;
+                .map_err(into_generic_response)?;
         }
         _ => return Err(GitHttpError::NotFound("unknown git service")),
     }
@@ -364,9 +365,9 @@ enum GitHttpError {
     Forbidden(&'static str),
 }
 
-impl GitHttpError {
-    fn internal<E: std::fmt::Display>(err: E) -> Self {
-        GitHttpError::Internal(err.to_string())
+impl FromInternalError for GitHttpError {
+    fn from_internal_error() -> Self {
+        GitHttpError::Internal(response::GENERIC_INTERNAL_ERROR_MESSAGE.to_string())
     }
 }
 

@@ -21,6 +21,7 @@ use mmcp_proto::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
 
 pub fn router() -> Router<ServerState> {
@@ -57,21 +58,21 @@ async fn dispatch(
             let req: ListMemoriesRequest = parse_request(envelope.request)?;
             let res = handlers::list_memories(&state, req)
                 .await
-                .map_err(internal_error)?;
+                .map_err(into_generic_response)?;
             serialize_response(&res)?
         }
         ToolName::ListVersions => {
             let req: ListVersionsRequest = parse_request(envelope.request)?;
             let res = handlers::list_versions(&state, req)
                 .await
-                .map_err(internal_error)?;
+                .map_err(into_generic_response)?;
             serialize_response(&res)?
         }
         ToolName::GroupInfo => {
             let req: GroupInfoRequest = parse_request(envelope.request)?;
             let res = handlers::group_info(&state, req)
                 .await
-                .map_err(internal_error)?;
+                .map_err(into_generic_response)?;
             serialize_response(&res)?
         }
         ToolName::ReadMemory
@@ -121,10 +122,12 @@ fn serialize_response<T: Serialize>(value: &T) -> Result<Value, ToolErrorRespons
     })
 }
 
-fn internal_error(err: anyhow::Error) -> ToolErrorResponse {
-    ToolErrorResponse {
-        status: StatusCode::INTERNAL_SERVER_ERROR,
-        error: ProtoError::Internal(err.to_string()),
+impl FromInternalError for ToolErrorResponse {
+    fn from_internal_error() -> Self {
+        ToolErrorResponse {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            error: ProtoError::Internal(response::GENERIC_INTERNAL_ERROR_MESSAGE.to_string()),
+        }
     }
 }
 

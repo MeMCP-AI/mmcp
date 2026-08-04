@@ -30,6 +30,7 @@ use sea_orm::EntityTrait;
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
 
 pub fn router() -> Router<ServerState> {
@@ -53,10 +54,12 @@ impl IntoResponse for SyncErrorResponse {
     }
 }
 
-fn internal<E: std::fmt::Display>(err: E) -> SyncErrorResponse {
-    SyncErrorResponse {
-        status: StatusCode::INTERNAL_SERVER_ERROR,
-        error: ProtoError::Internal(err.to_string()),
+impl FromInternalError for SyncErrorResponse {
+    fn from_internal_error() -> Self {
+        SyncErrorResponse {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            error: ProtoError::Internal(response::GENERIC_INTERNAL_ERROR_MESSAGE.to_string()),
+        }
     }
 }
 
@@ -89,7 +92,7 @@ async fn get_manifest(
     let rows = mmcp_db::entities::group::Entity::find()
         .all(conn)
         .await
-        .map_err(internal)?;
+        .map_err(into_generic_response)?;
 
     let mut groups = Vec::with_capacity(rows.len());
     for row in rows {
@@ -136,7 +139,7 @@ async fn get_refs(
     let conn = state.database.connection();
     let _group = group_repo::find_by_id(conn, group_uuid)
         .await
-        .map_err(internal)?
+        .map_err(into_generic_response)?
         .ok_or_else(|| not_found("group"))?;
 
     let handle = RepoHandle::new(
@@ -150,7 +153,7 @@ async fn get_refs(
         .git
         .walk_history(&handle, ".mmcp.toml")
         .await
-        .map_err(internal)?
+        .map_err(into_generic_response)?
         .into_iter()
         .next()
         .map(|c| c.id);
@@ -190,7 +193,7 @@ async fn post_push(
     let conn = state.database.connection();
     let group = group_repo::find_by_id(conn, req.group_id)
         .await
-        .map_err(internal)?
+        .map_err(into_generic_response)?
         .ok_or_else(|| not_found("group"))?;
 
     // Look up (or create) the memory row. For a first publish of
@@ -198,7 +201,7 @@ async fn post_push(
     // client can push without a preceding "create memory" call.
     let memory = match memory_repo::find_by_id(conn, req.memory_id)
         .await
-        .map_err(internal)?
+        .map_err(into_generic_response)?
     {
         Some(m) => m,
         None => {
@@ -216,13 +219,13 @@ async fn post_push(
                 },
             )
             .await
-            .map_err(internal)?
+            .map_err(into_generic_response)?
         }
     };
 
     let bump = parse_bump(&req.bump);
     let next_version = mmcp_sync::negotiate_next_version(memory.latest_version.as_deref(), bump)
-        .map_err(internal)?;
+        .map_err(into_generic_response)?;
     let version_str = next_version.to_string();
 
     let now = Timestamp::now().as_millisecond();
@@ -239,10 +242,10 @@ async fn post_push(
     };
     memory_repo::record_version(conn, version_row)
         .await
-        .map_err(internal)?;
+        .map_err(into_generic_response)?;
     memory_repo::set_latest_version(conn, memory.id, version_str.clone(), now)
         .await
-        .map_err(internal)?;
+        .map_err(into_generic_response)?;
 
     let tag_name = format!("v{version_str}");
     let handle = RepoHandle::new(
