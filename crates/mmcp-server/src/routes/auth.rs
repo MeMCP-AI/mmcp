@@ -213,10 +213,7 @@ async fn oauth_callback(
         .send()
         .await
         .map_err(into_generic_response)?;
-    let gh_user: GitHubUser = userinfo_resp
-        .json()
-        .await
-        .map_err(into_generic_response)?;
+    let gh_user: GitHubUser = userinfo_resp.json().await.map_err(into_generic_response)?;
 
     let user = auth_session
         .authenticate(Credentials::OAuth {
