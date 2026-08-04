@@ -7,7 +7,6 @@ rust-version.workspace = true
 authors.workspace = true
 
 [dependencies]
-mmcp-core = { workspace = true }
 thiserror = { workspace = true }
 sea-orm = { workspace = true }
 sea-orm-migration = { workspace = true }
@@ -24,3 +23,11 @@ tokio = { workspace = true }
 
 [lints]
 workspace = true
+
+# cargo-machete flags libsqlite3-sys as unused because it is never
+# referenced by name in Rust source; it is pulled in purely to force
+# the `bundled` Cargo feature onto the transitive sqlx-sqlite driver
+# (see the dependency comment above), which is a legitimate
+# feature-only dependency, not dead code.
+[package.metadata.cargo-machete]
+ignored = ["libsqlite3-sys"]

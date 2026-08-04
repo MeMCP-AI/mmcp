@@ -7,7 +7,6 @@ rust-version.workspace = true
 authors.workspace = true
 
 [dependencies]
-mmcp-core = { workspace = true }
 mmcp-db = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
@@ -18,8 +17,6 @@ serde_json = "1"
 jiff = { workspace = true }
 axum-login = { workspace = true }
 sea-orm = { workspace = true }
-tokio = { workspace = true }
-webauthn-rs = { workspace = true }
 
 [lints]
 workspace = true

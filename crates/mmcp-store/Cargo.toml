@@ -24,7 +24,6 @@ anyhow = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
-serde_json = "1"
 uuid = { workspace = true }
 jiff = { workspace = true }
 slug = { workspace = true }

@@ -22,7 +22,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Gabriel GRONDIN"]
@@ -122,7 +122,6 @@ webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"]
 
 # HTTP framework
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "macros", "query"] }
-tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 
 # Async stream <-> AsyncRead bridging (used by git smart-HTTP streaming)

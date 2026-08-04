@@ -7,7 +7,6 @@ rust-version.workspace = true
 authors.workspace = true
 
 [dependencies]
-mmcp-core = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
