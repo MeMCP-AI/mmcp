@@ -142,9 +142,13 @@ mod tests {
         assert_eq!(cfg.repo_root, PathBuf::from("data/repos"));
         assert_eq!(cfg.origin, "http://localhost:8787");
         assert!(cfg.oauth_providers.is_empty());
-        // A fallback key is still 32 bytes — only the bit pattern is
-        // machine-dependent (OS CSPRNG), so we only check length.
+        // A dead/no-op CSPRNG would silently leave the buffer
+        // zero-initialized; the length check alone can never catch
+        // that (it is a compile-time invariant of `[u8; 32]`), so
+        // assert the actual bit pattern is non-zero to prove
+        // `getrandom::fill` really ran.
         assert_eq!(cfg.token_key.len(), 32);
+        assert_ne!(cfg.token_key, [0u8; 32]);
     }
 
     #[test]
@@ -194,9 +198,15 @@ mod tests {
     #[test]
     fn invalid_token_key_hex_falls_back_to_random() {
         // Wrong length: fallback kicks in silently and still yields
-        // 32 bytes.
-        let cfg = from_map(&[("MMCP_TOKEN_KEY_HEX", "deadbeef")]);
-        assert_eq!(cfg.token_key.len(), 32);
+        // 32 non-zero bytes. Two independent fallback calls must
+        // also differ from each other, proving the CSPRNG generates
+        // fresh randomness per call rather than a fixed or zeroed
+        // buffer that would happen to be non-zero once.
+        let cfg_a = from_map(&[("MMCP_TOKEN_KEY_HEX", "deadbeef")]);
+        let cfg_b = from_map(&[("MMCP_TOKEN_KEY_HEX", "deadbeef")]);
+        assert_eq!(cfg_a.token_key.len(), 32);
+        assert_ne!(cfg_a.token_key, [0u8; 32]);
+        assert_ne!(cfg_a.token_key, cfg_b.token_key);
     }
 
     #[test]
@@ -205,6 +215,7 @@ mod tests {
         let bad = "z".repeat(64);
         let cfg = from_map(&[("MMCP_TOKEN_KEY_HEX", bad.as_str())]);
         assert_eq!(cfg.token_key.len(), 32);
+        assert_ne!(cfg.token_key, [0u8; 32]);
     }
 
     #[test]
