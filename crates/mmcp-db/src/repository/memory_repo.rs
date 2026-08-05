@@ -1,6 +1,6 @@
 //! Memory table repository.
 
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, ExprTrait, QueryFilter, Set};
 use uuid::Uuid;
 
 use crate::entities::memory::{ActiveModel, Column, Entity, MemoryKind, Model};

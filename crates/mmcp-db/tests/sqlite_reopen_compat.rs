@@ -33,7 +33,7 @@ async fn migration_rows(conn: &DatabaseConnection) -> Vec<MigrationRow> {
         DbBackend::Sqlite,
         "SELECT version, applied_at FROM seaql_migrations ORDER BY version".to_owned(),
     );
-    conn.query_all(stmt)
+    conn.query_all_raw(stmt)
         .await
         .expect("query seaql_migrations")
         .into_iter()
