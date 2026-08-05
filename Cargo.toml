@@ -92,7 +92,7 @@ sea-orm-migration = { version = "2.0", default-features = false, features = ["sq
 # runtime image (which ships no shared sqlite) can open `sqlite::`
 # URLs. Features are additive, so pulling this in from mmcp-db is
 # enough to force bundled linking across every transitive use.
-libsqlite3-sys = { version = "0.30", features = ["bundled"] }
+libsqlite3-sys = { version = "0.37", features = ["bundled"] }
 
 # Git backend (gitoxide). Transport features enable clone/fetch/push
 # over HTTP via reqwest+rustls, and the `serve-*` features light up the
