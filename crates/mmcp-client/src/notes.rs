@@ -117,22 +117,22 @@ pub async fn dangling_ref_notes_for(
             );
         }
     }
-    if let Some(link) = superseded_by {
-        if !known.contains(&link.target) {
-            notes.push(
-                Note::warn(
-                    "dangling_ref",
-                    format!("feature `{slug}` superseded_by target does not resolve locally"),
-                )
-                .with_context(json!({
-                    "slug": slug,
-                    "field": "superseded_by",
-                    "target": link.target.to_string(),
-                    "commit": link.commit,
-                    "group": entry.manifest.group_id.to_string(),
-                })),
-            );
-        }
+    if let Some(link) = superseded_by
+        && !known.contains(&link.target)
+    {
+        notes.push(
+            Note::warn(
+                "dangling_ref",
+                format!("feature `{slug}` superseded_by target does not resolve locally"),
+            )
+            .with_context(json!({
+                "slug": slug,
+                "field": "superseded_by",
+                "target": link.target.to_string(),
+                "commit": link.commit,
+                "group": entry.manifest.group_id.to_string(),
+            })),
+        );
     }
     notes
 }

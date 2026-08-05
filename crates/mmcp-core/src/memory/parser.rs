@@ -99,10 +99,10 @@ impl MemoryFile {
                 .strip_prefix("---")
                 .and_then(|s| s.strip_prefix('\n').or(s.strip_prefix("\r\n")))
                 .unwrap_or("");
-            if after_fence.trim_start().starts_with('{') {
-                if let Ok(file) = Self::parse_with::<JSON>(input, "---", FrontmatterFormat::Json) {
-                    return Ok(file);
-                }
+            if after_fence.trim_start().starts_with('{')
+                && let Ok(file) = Self::parse_with::<JSON>(input, "---", FrontmatterFormat::Json)
+            {
+                return Ok(file);
             }
             // YAML is the default for --- fences
             if let Ok(file) = Self::parse_with::<YAML>(input, "---", FrontmatterFormat::Yaml) {

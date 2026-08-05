@@ -83,10 +83,8 @@ pub fn spawn_watcher(
                     None => break,
                 }
             }
-            if pending {
-                if let Err(err) = index_for_task.refresh().await {
-                    tracing::warn!(error = %err, "group index refresh failed");
-                }
+            if pending && let Err(err) = index_for_task.refresh().await {
+                tracing::warn!(error = %err, "group index refresh failed");
             }
         }
     });

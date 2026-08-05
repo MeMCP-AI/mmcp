@@ -675,15 +675,15 @@ async fn run_search(args: SearchArgs) -> Result<()> {
         if hits >= limit {
             break;
         }
-        if let Some(target) = group_filter {
-            if entry.manifest.group_id != target {
-                continue;
-            }
+        if let Some(target) = group_filter
+            && entry.manifest.group_id != target
+        {
+            continue;
         }
-        if let Some(target) = scope_filter {
-            if entry.manifest.scope != target {
-                continue;
-            }
+        if let Some(target) = scope_filter
+            && entry.manifest.scope != target
+        {
+            continue;
         }
         let files = list_all_memory_files(&backend, &entry.handle, &Rev::head())
             .await

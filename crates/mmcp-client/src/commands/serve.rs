@@ -2076,15 +2076,15 @@ impl McpServer {
             if hits.len() >= limit {
                 break;
             }
-            if let Some(target) = group_filter {
-                if entry.manifest.group_id != target {
-                    continue;
-                }
+            if let Some(target) = group_filter
+                && entry.manifest.group_id != target
+            {
+                continue;
             }
-            if let Some(target) = scope_filter {
-                if entry.manifest.scope != target {
-                    continue;
-                }
+            if let Some(target) = scope_filter
+                && entry.manifest.scope != target
+            {
+                continue;
             }
             let files = list_memory_files(&self.state.backend, &entry).await?;
             for file in files {
@@ -6927,11 +6927,11 @@ fn ok_json_with_notes(
     mut value: serde_json::Value,
     notes: Vec<mmcp_proto::Note>,
 ) -> CallToolResult {
-    if !notes.is_empty() {
-        if let Some(obj) = value.as_object_mut() {
-            let serialised = serde_json::to_value(&notes).unwrap_or(json!([]));
-            obj.insert("notes".to_string(), serialised);
-        }
+    if !notes.is_empty()
+        && let Some(obj) = value.as_object_mut()
+    {
+        let serialised = serde_json::to_value(&notes).unwrap_or(json!([]));
+        obj.insert("notes".to_string(), serialised);
     }
     let text = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
     CallToolResult::success(vec![ContentBlock::text(Cow::Owned(text))])

@@ -426,12 +426,12 @@ async fn passkey_login_finish(
         .await
         .map_err(into_generic_response)?;
     for cred_row in &creds {
-        if let Ok(mut pk) = serde_json::from_str::<Passkey>(&cred_row.credential_json) {
-            if pk.update_credential(&auth_result) == Some(true) {
-                let updated_json = serde_json::to_string(&pk).map_err(into_generic_response)?;
-                let now = Timestamp::now().as_millisecond();
-                let _ = passkey_repo::update_after_auth(conn, cred_row.id, updated_json, now).await;
-            }
+        if let Ok(mut pk) = serde_json::from_str::<Passkey>(&cred_row.credential_json)
+            && pk.update_credential(&auth_result) == Some(true)
+        {
+            let updated_json = serde_json::to_string(&pk).map_err(into_generic_response)?;
+            let now = Timestamp::now().as_millisecond();
+            let _ = passkey_repo::update_after_auth(conn, cred_row.id, updated_json, now).await;
         }
     }
 

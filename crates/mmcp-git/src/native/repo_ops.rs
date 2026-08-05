@@ -805,11 +805,11 @@ pub fn walk_history(repo_path: &Path, path: &str) -> Result<Vec<CommitMeta>, Git
                 .map_err(gix_err)?
                 .into_owned()
                 .map_err(gix_err)?;
-            if let Some(parent_blob) = find_blob_in_tree(&repo, parent_commit.tree, path)? {
-                if parent_blob == current_blob {
-                    matches_parent = true;
-                    break;
-                }
+            if let Some(parent_blob) = find_blob_in_tree(&repo, parent_commit.tree, path)?
+                && parent_blob == current_blob
+            {
+                matches_parent = true;
+                break;
             }
         }
         if matches_parent {

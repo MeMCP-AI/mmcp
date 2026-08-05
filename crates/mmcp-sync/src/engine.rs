@@ -195,37 +195,37 @@ impl SyncEngine {
             // `refs/remotes/origin/main` still points at whatever
             // prior fetch left it at - advancing from that is
             // harmless at best and misleading at worst.
-            if fetched_group.ref_updated {
-                if let Some(handle) = group_handles.resolve(fetched_group.group_id) {
-                    match self
-                        .backend
-                        .fast_forward(
-                            &handle,
-                            mmcp_core::conventions::MAIN_BRANCH_REF,
-                            mmcp_core::conventions::MAIN_REMOTE_TRACKING_REF,
-                        )
-                        .await
-                    {
-                        Ok(mmcp_git::FastForwardOutcome::AlreadyAt { .. })
-                        | Ok(mmcp_git::FastForwardOutcome::Advanced { .. }) => {}
-                        // Divergence: local has commits the remote
-                        // does not. Git-symmetric `git pull --ff-only`
-                        // failure. Raise so the operator can resolve
-                        // before any more groups get touched.
-                        Ok(mmcp_git::FastForwardOutcome::NotFastForward { local, target }) => {
-                            return Err(SyncError::PullDiverged {
-                                group: fetched_group.group_id,
-                                local,
-                                target,
-                            });
-                        }
-                        // Missing tracking ref on first fetch of a
-                        // freshly-cloned repo: benign, the local
-                        // `main` is already at the target anyway.
-                        Err(mmcp_git::GitError::RevNotFound(_)) => {}
-                        Err(mmcp_git::GitError::Unsupported(_)) => {}
-                        Err(other) => return Err(SyncError::Git(other)),
+            if fetched_group.ref_updated
+                && let Some(handle) = group_handles.resolve(fetched_group.group_id)
+            {
+                match self
+                    .backend
+                    .fast_forward(
+                        &handle,
+                        mmcp_core::conventions::MAIN_BRANCH_REF,
+                        mmcp_core::conventions::MAIN_REMOTE_TRACKING_REF,
+                    )
+                    .await
+                {
+                    Ok(mmcp_git::FastForwardOutcome::AlreadyAt { .. })
+                    | Ok(mmcp_git::FastForwardOutcome::Advanced { .. }) => {}
+                    // Divergence: local has commits the remote
+                    // does not. Git-symmetric `git pull --ff-only`
+                    // failure. Raise so the operator can resolve
+                    // before any more groups get touched.
+                    Ok(mmcp_git::FastForwardOutcome::NotFastForward { local, target }) => {
+                        return Err(SyncError::PullDiverged {
+                            group: fetched_group.group_id,
+                            local,
+                            target,
+                        });
                     }
+                    // Missing tracking ref on first fetch of a
+                    // freshly-cloned repo: benign, the local
+                    // `main` is already at the target anyway.
+                    Err(mmcp_git::GitError::RevNotFound(_)) => {}
+                    Err(mmcp_git::GitError::Unsupported(_)) => {}
+                    Err(other) => return Err(SyncError::Git(other)),
                 }
             }
             updated.push(crate::client::RemoteGroup {
