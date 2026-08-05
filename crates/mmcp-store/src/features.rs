@@ -34,6 +34,7 @@ use mmcp_git::{GitBackend, NativeBackend, Rev};
 use uuid::Uuid;
 
 use crate::config::{find_project_root, load as load_project_config};
+use crate::diagnostics::Finding;
 use crate::groups::{GroupEntry, GroupIndex};
 use crate::home::ResolvedAuthor;
 use crate::memory::{
@@ -1008,15 +1009,19 @@ pub async fn delete_feature(
 /// Non-FR memories in the same group are skipped silently — FRs
 /// share the group with rules / snapshots / logs / references /
 /// scratch notes, and listing would otherwise return a confused
-/// shape. Memories whose frontmatter fails to parse are also
-/// skipped; the generic `diagnose` tool is the canonical surface
-/// for surfacing parse errors.
+/// shape. A memory that IS a feature but whose frontmatter fails to
+/// parse is NOT skipped silently: it is excluded from the returned
+/// records (a mis-parsed record cannot be trusted) but reported back
+/// as a [`Finding`] (`frontmatter_parse_failed`, matching the code
+/// `check_health` already uses for the identical failure) so callers
+/// can surface it through the FR-45 notes channel instead of the
+/// listing quietly lying about the group's true FR count.
 pub async fn list_features(
     backend: &NativeBackend,
     entry: &GroupEntry,
     status_filter: Option<FeatureStatus>,
     show_all: bool,
-) -> Result<Vec<FeatureRecord>, FeatureError> {
+) -> Result<(Vec<FeatureRecord>, Vec<Finding>), FeatureError> {
     // Every memory lives at `memories/<slug>/<uuid>.md`, so slug
     // leaf directories are the enumeration surface. FR-41-aware:
     // nested slug paths surface alongside flat ones.
@@ -1025,6 +1030,7 @@ pub async fn list_features(
         .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?;
 
     let mut out = Vec::new();
+    let mut findings = Vec::new();
     for slug_dir in slug_dirs {
         match read_feature(backend, entry, &slug_dir.slug, None).await {
             Ok(record) => {
@@ -1037,12 +1043,25 @@ pub async fn list_features(
                     out.push(record);
                 }
             }
+            // `NotAFeature` is an *expected* non-match — the slug is
+            // a rule / snapshot / log / reference / scratch memory,
+            // not a corruption signal — so the loop continues past
+            // it without a finding.
             Err(FeatureError::NotAFeature { .. }) => {}
-            // A parse error here propagates so listing doesn't lie
-            // about missing FRs due to transient on-disk corruption.
-            // The loop still continues past `NotAFeature` because
-            // those are *expected* non-matches, not errors.
-            Err(FeatureError::Memory(ImportError::Parse(_))) => {}
+            // A genuine parse error does NOT silently drop the
+            // memory from view: it is surfaced as a finding so a
+            // corrupt-on-disk FR is loud instead of invisible, while
+            // one bad memory still does not take the whole group's
+            // listing down.
+            Err(FeatureError::Memory(ImportError::Parse(err))) => {
+                findings.push(Finding {
+                    group: entry.manifest.group_id.to_string(),
+                    slug: Some(slug_dir.slug.clone()),
+                    severity: "error",
+                    code: "frontmatter_parse_failed",
+                    message: format!("frontmatter parse failed: {err}"),
+                });
+            }
             Err(other) => return Err(other),
         }
     }
@@ -1055,13 +1074,15 @@ pub async fn list_features(
         (None, Some(_)) => std::cmp::Ordering::Greater,
         (None, None) => a.slug.cmp(&b.slug),
     });
-    Ok(out)
+    Ok((out, findings))
 }
 
 /// Body-free counterpart to [`list_features`] for listing surfaces
 /// (MCP `list_features` tool, `mmcp feature list` CLI). Returns
 /// per-FR metadata only; callers that need a body fetch the
-/// individual record via [`read_feature`].
+/// individual record via [`read_feature`]. Also forwards
+/// [`list_features`]'s per-memory parse-error findings unchanged, so
+/// callers surface them through the FR-45 notes channel.
 ///
 /// Filter precedence and sort order match [`list_features`]
 /// exactly — this is a wire-shape change, not a semantics change.
@@ -1076,12 +1097,13 @@ pub async fn list_feature_summaries(
     entry: &GroupEntry,
     status_filter: Option<FeatureStatus>,
     show_all: bool,
-) -> Result<Vec<FeatureSummary>, FeatureError> {
-    let records = list_features(backend, entry, status_filter, show_all).await?;
-    Ok(records
+) -> Result<(Vec<FeatureSummary>, Vec<Finding>), FeatureError> {
+    let (records, findings) = list_features(backend, entry, status_filter, show_all).await?;
+    let summaries = records
         .into_iter()
         .map(FeatureSummary::from_record)
-        .collect())
+        .collect();
+    Ok((summaries, findings))
 }
 
 /// Resolve the group whose UUID is stored in the project's
@@ -1343,14 +1365,15 @@ mod tests {
         // Explicit status selector wins over the default filter —
         // even with `show_all=false` the caller receives every FR
         // matching the requested status.
-        let opens =
+        let (opens, opens_findings) =
             list_feature_summaries(scratch.backend(), &entry, Some(FeatureStatus::Open), false)
                 .await
                 .expect("list open");
+        assert!(opens_findings.is_empty());
         let open_slugs: Vec<_> = opens.into_iter().map(|s| s.slug).collect();
         assert_eq!(open_slugs, vec!["fr-a".to_string()]);
 
-        let resolved = list_feature_summaries(
+        let (resolved, _resolved_findings) = list_feature_summaries(
             scratch.backend(),
             &entry,
             Some(FeatureStatus::Resolved),
@@ -1364,7 +1387,7 @@ mod tests {
             "explicit status filter wins over the default hide",
         );
 
-        let duplicate = list_feature_summaries(
+        let (duplicate, _duplicate_findings) = list_feature_summaries(
             scratch.backend(),
             &entry,
             Some(FeatureStatus::Duplicate),
@@ -1385,7 +1408,7 @@ mod tests {
         let scratch = ScratchHome::new().await.expect("scratch home");
         let entry = seed_mixed_status_fixture(&scratch).await;
 
-        let visible = list_feature_summaries(scratch.backend(), &entry, None, false)
+        let (visible, _findings) = list_feature_summaries(scratch.backend(), &entry, None, false)
             .await
             .expect("default list");
         let mut slugs: Vec<_> = visible.into_iter().map(|s| s.slug).collect();
@@ -1433,7 +1456,7 @@ mod tests {
         .await
         .expect("add with supersedes");
 
-        let visible = list_feature_summaries(scratch.backend(), &entry, None, false)
+        let (visible, _findings) = list_feature_summaries(scratch.backend(), &entry, None, false)
             .await
             .expect("default list");
         let slugs: Vec<_> = visible.into_iter().map(|s| s.slug).collect();
@@ -1443,13 +1466,13 @@ mod tests {
             "Superseded FR must drop out of the default listing",
         );
 
-        let all = list_feature_summaries(scratch.backend(), &entry, None, true)
+        let (all, _all_findings) = list_feature_summaries(scratch.backend(), &entry, None, true)
             .await
             .expect("show_all");
         assert_eq!(all.len(), 2, "show_all must re-include the superseded FR",);
 
         // Explicit status filter also surfaces it.
-        let superseded_only = list_feature_summaries(
+        let (superseded_only, _superseded_findings) = list_feature_summaries(
             scratch.backend(),
             &entry,
             Some(FeatureStatus::Superseded),
@@ -1468,7 +1491,7 @@ mod tests {
         let scratch = ScratchHome::new().await.expect("scratch home");
         let entry = seed_mixed_status_fixture(&scratch).await;
 
-        let all = list_feature_summaries(scratch.backend(), &entry, None, true)
+        let (all, _findings) = list_feature_summaries(scratch.backend(), &entry, None, true)
             .await
             .expect("list show_all");
         assert_eq!(
@@ -1476,6 +1499,73 @@ mod tests {
             4,
             "show_all must re-include every FR regardless of status",
         );
+    }
+
+    #[tokio::test]
+    async fn list_features_surfaces_parse_error_as_finding_not_silent_drop() {
+        // Regression test for the swallowed-parse-error bug: a
+        // feature memory with corrupt frontmatter must not simply
+        // vanish from the listing with no trace. It is excluded
+        // from `records` (it cannot be trusted) but reported back
+        // as a `Finding` so the caller knows the group's FR count
+        // is not the full on-disk truth.
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("good".into()),
+                title: "Good".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed good FR");
+
+        // Seed a memory whose frontmatter is a genuine parse
+        // failure (no `+++` fences at all), not merely an
+        // edge-case-but-valid value.
+        let bad_id = Uuid::now_v7();
+        let author = scratch.author();
+        scratch
+            .backend()
+            .write_commit(
+                &entry.handle,
+                mmcp_git::CommitSpec::mmcp_commit(
+                    "seed corrupt/bad".to_string(),
+                    vec![(
+                        memory_path("corrupt", bad_id),
+                        Some(b"not a memory file at all\n".to_vec()),
+                    )],
+                    &author.name,
+                    &author.email,
+                ),
+            )
+            .await
+            .expect("seed corrupt memory");
+
+        let (records, findings) = list_features(scratch.backend(), &entry, None, true)
+            .await
+            .expect("list must not fail the whole group over one corrupt memory");
+
+        let slugs: Vec<_> = records.iter().map(|r| r.slug.as_str()).collect();
+        assert_eq!(
+            slugs,
+            vec!["good"],
+            "the corrupt memory must not appear as a trustworthy record",
+        );
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "the corrupt memory must be reported, not silently dropped",
+        );
+        assert_eq!(findings[0].code, "frontmatter_parse_failed");
+        assert_eq!(findings[0].slug.as_deref(), Some("corrupt"));
     }
 
     #[tokio::test]
@@ -1826,9 +1916,10 @@ mod tests {
             .expect("seed");
         }
 
-        let records = list_features(scratch.backend(), &entry, None, true)
+        let (records, findings) = list_features(scratch.backend(), &entry, None, true)
             .await
             .expect("list");
+        assert!(findings.is_empty());
         let slugs: Vec<_> = records.iter().map(|r| r.slug.as_str()).collect();
         assert_eq!(slugs, vec!["first", "second", "third"]);
     }
@@ -1860,9 +1951,10 @@ mod tests {
             .expect("seed");
         }
 
-        let summaries = list_feature_summaries(scratch.backend(), &entry, None, true)
+        let (summaries, findings) = list_feature_summaries(scratch.backend(), &entry, None, true)
             .await
             .expect("list summaries");
+        assert!(findings.is_empty());
 
         // Sort + status filter come from list_features and stay
         // unchanged: ascending by number, then slug.

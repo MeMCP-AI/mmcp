@@ -4358,7 +4358,7 @@ impl McpServer {
         // Bodies fly back through `read_feature` only, keeping the
         // response well under the MCP client token cap on populated
         // FR groups.
-        let summaries = mmcp_store::features::list_feature_summaries(
+        let (summaries, findings) = mmcp_store::features::list_feature_summaries(
             &self.state.backend,
             &entry,
             status,
@@ -4369,8 +4369,10 @@ impl McpServer {
         // FR-45 `dangling_ref`: aggregate dangling-ref notes
         // across every record in the listing so callers see a
         // single pane of reference-integrity warnings alongside
-        // the listing itself.
-        let mut notes = Vec::new();
+        // the listing itself. Per-memory parse-error findings
+        // (frontmatter_parse_failed) ride the same channel so a
+        // corrupt memory is loud instead of silently vanishing.
+        let mut notes = findings_to_notes(&findings);
         for summary in &summaries {
             notes.extend(
                 dangling_ref_notes_for(

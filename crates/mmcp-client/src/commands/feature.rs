@@ -17,7 +17,7 @@ use mmcp_store::features::{
 };
 use mmcp_store::home::MmcpHome;
 
-use crate::notes::{dangling_ref_notes_for, render_notes_tail};
+use crate::notes::{dangling_ref_notes_for, findings_to_notes, render_notes_tail};
 
 // ── Clap surface ────────────────────────────────────────────────
 
@@ -381,7 +381,7 @@ async fn run_list(args: ListArgs) -> Result<()> {
         .map_err(anyhow::Error::from)?;
 
     let status_filter = parse_status_cli(args.status.as_deref())?;
-    let summaries = list_feature_summaries(&backend, &entry, status_filter, args.all)
+    let (summaries, findings) = list_feature_summaries(&backend, &entry, status_filter, args.all)
         .await
         .map_err(anyhow::Error::from)?;
 
@@ -393,6 +393,7 @@ async fn run_list(args: ListArgs) -> Result<()> {
                 "no open feature requests in this project; pass --all to include closed ones"
             ),
         }
+        render_notes_tail(&findings_to_notes(&findings));
         return Ok(());
     }
 
@@ -401,7 +402,7 @@ async fn run_list(args: ListArgs) -> Result<()> {
     }
     println!("\n{} feature(s)", summaries.len());
 
-    let mut notes: Vec<Note> = Vec::new();
+    let mut notes: Vec<Note> = findings_to_notes(&findings);
     for summary in &summaries {
         notes.extend(
             dangling_ref_notes_for(
