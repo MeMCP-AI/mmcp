@@ -163,7 +163,7 @@ Not Rust crates, but required by the project.
 
 ## 5. Version Policy
 
-- **Rust**: latest stable, MSRV pinned in the workspace `Cargo.toml` (`rust-version = "1.85"` today). Toolchain upgrades happen on the next stable release; the pin moves with them and is verified in CI.
+- **Rust**: latest stable, MSRV pinned in the workspace `Cargo.toml` (`rust-version = "1.88"` today). Toolchain upgrades happen on the next stable release; the pin moves with them and is verified in CI.
 - **Crate versions**: use latest stable for all dependencies. Bump on `cargo update` cycles, not piecemeal.
 - **PASETO version**: v4 only. v1/v2/v3 are not supported.
 - **MCP spec version**: track whatever `rmcp` supports. Currently `2025-06-18`.

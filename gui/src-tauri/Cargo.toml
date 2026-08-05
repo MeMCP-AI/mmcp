@@ -26,7 +26,7 @@ version = "0.1.4"
 description = "mmcp-gui: Tauri 2 backend wrapping mmcp-store for the SvelteKit desktop client."
 authors = ["Gabriel GRONDIN"]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [lints]
 workspace = true
