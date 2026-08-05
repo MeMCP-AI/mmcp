@@ -82,7 +82,7 @@ jiff = { version = "0.2", features = ["serde"] }
 semver = { version = "1", features = ["serde"] }
 
 # TOML parsing and rendering
-toml = "0.9"
+toml = "1.1"
 
 # Database (SeaORM with sqlx backend)
 sea-orm = { version = "2.0", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls", "macros", "with-uuid"] }
