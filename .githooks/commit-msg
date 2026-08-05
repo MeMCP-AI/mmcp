@@ -1,0 +1,6 @@
+#!/bin/sh
+# commit-msg git hook installed by `check-commit-msg install`.
+# Git passes the drafted message's file path as the sole argument ($1).
+set -eu
+
+exec check-commit-msg "$1"
