@@ -4699,9 +4699,9 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rusty_paseto"
-version = "0.7.2"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05501841a4cac5c065cb6a501a62207c4c235e37d2882579a2505a2aa2837826"
+checksum = "b23be9a89285428532551a6b46d303bb00321afceac9919058b995394553eece"
 dependencies = [
  "base64 0.22.1",
  "blake2",
@@ -4710,11 +4710,12 @@ dependencies = [
  "erased-serde",
  "hex",
  "iso8601",
- "rand_core 0.6.4",
+ "rand_core 0.9.5",
  "ring",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "subtle",
+ "thiserror 2.0.19",
  "time",
  "zeroize",
 ]
