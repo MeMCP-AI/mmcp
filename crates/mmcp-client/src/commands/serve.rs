@@ -21,7 +21,8 @@ use rmcp::{
     ErrorData as McpError, Peer, RoleServer, ServerHandler, ServiceExt, elicit_safe,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CallToolResult, Content, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo,
+        CallToolResult, ContentBlock, Implementation, ProtocolVersion, ServerCapabilities,
+        ServerInfo,
     },
     schemars::JsonSchema,
     service::ElicitationError,
@@ -6910,7 +6911,7 @@ fn owner_hint_to_json(owner: &mmcp_core::manifest::GroupOwnerHint) -> serde_json
 
 fn ok_json(value: serde_json::Value) -> CallToolResult {
     let text = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
-    CallToolResult::success(vec![Content::text(Cow::Owned(text))])
+    CallToolResult::success(vec![ContentBlock::text(Cow::Owned(text))])
 }
 
 /// FR-45 notes channel: wrap a JSON response payload and attach a
@@ -6933,7 +6934,7 @@ fn ok_json_with_notes(
         }
     }
     let text = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
-    CallToolResult::success(vec![Content::text(Cow::Owned(text))])
+    CallToolResult::success(vec![ContentBlock::text(Cow::Owned(text))])
 }
 
 // `id_validation_to_notes` was hoisted to `crate::notes` so
