@@ -5056,7 +5056,7 @@ const SYNC_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.o
 ///   `open_world_hint` but kept distinct so future open-world
 ///   tools that don't sync (e.g. a future fetch-from-URL)
 ///   classify cleanly.
-fn meta_for_tool(name: &str) -> Option<rmcp::model::Meta> {
+fn meta_for_tool(name: &str) -> Option<rmcp::model::MetaObject> {
     let mut keys: Vec<(&'static str, bool)> = Vec::new();
 
     // Tools that auto-resolve a project from cwd and error out
@@ -5126,7 +5126,7 @@ fn meta_for_tool(name: &str) -> Option<rmcp::model::Meta> {
     if keys.is_empty() {
         return None;
     }
-    let mut meta = rmcp::model::Meta::new();
+    let mut meta = rmcp::model::MetaObject::new();
     for (k, v) in keys {
         meta.0.insert(k.to_string(), serde_json::Value::Bool(v));
     }
