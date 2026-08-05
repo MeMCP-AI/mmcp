@@ -1162,7 +1162,7 @@ struct AddFeatureArgs {
     pub body: String,
 
     /// Initial status. Defaults to `open` when absent. Wire form is
-    /// the snake_case enum: `open | resolved | blocked | deferred | duplicate`.
+    /// the snake_case enum: `open | resolved | blocked | deferred | duplicate | superseded`.
     #[serde(default)]
     pub status: Option<String>,
 
@@ -4038,7 +4038,7 @@ impl McpServer {
     // `init_project` or ask the user to `cd` into the repo.
 
     #[tool(
-        description = "File a new feature request in the current project's group. Slug is auto-minted from the title when omitted. Status defaults to `open`; supply one of `open | resolved | blocked | deferred | duplicate` to override. Errors with code `project_not_found` when no `.mmcp.toml` is on any ancestor of the server's cwd, `invalid_slug` when the supplied or derived slug fails validation, and `memory_already_exists` when the slug collides with an existing memory in the project group.",
+        description = "File a new feature request in the current project's group. Slug is auto-minted from the title when omitted. Status defaults to `open`; supply one of `open | resolved | blocked | deferred | duplicate | superseded` to override. Errors with code `project_not_found` when no `.mmcp.toml` is on any ancestor of the server's cwd, `invalid_slug` when the supplied or derived slug fails validation, and `memory_already_exists` when the slug collides with an existing memory in the project group.",
         annotations(
             title = "Add feature request",
             read_only_hint = false,
@@ -4146,7 +4146,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Apply partial updates to an existing feature request and commit the result. Every mutator is optional — omit to leave untouched. `depends_on` and `blocks` are full-list replacements; pass `[]` to clear, omit to preserve. `status` takes the wire form of the status enum. Errors with `memory_not_found` when the slug has no FR, `not_a_feature` when the slug is a non-FR memory, and `invalid_feature_status` when `status` is not one of the five variants.",
+        description = "Apply partial updates to an existing feature request and commit the result. Every mutator is optional — omit to leave untouched. `depends_on` and `blocks` are full-list replacements; pass `[]` to clear, omit to preserve. `status` takes the wire form of the status enum. Errors with `memory_not_found` when the slug has no FR, `not_a_feature` when the slug is a non-FR memory, and `invalid_feature_status` when `status` is not one of the six variants.",
         annotations(
             title = "Update feature request",
             read_only_hint = false,
