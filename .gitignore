@@ -22,9 +22,10 @@ Cargo.lock.bak
 mutants.out
 mutants.out.old
 
-# Claude Code worktree-isolation scratch (`.claude/worktrees/<agent-id>/...`).
-# Per-agent working copies used for parallel agent sessions; local to the
-# machine running the session and never part of the tracked project state.
+# Claude Code directory: agent definitions, project-scoped settings,
+# and per-agent worktree-isolation scratch (`.claude/worktrees/<agent-id>/...`).
+# All of it is machine-local tooling wiring, never part of the tracked
+# project state.
 .claude/
 
 # cargo-llvm-cov profile/HTML output. Regenerated on every run; the
