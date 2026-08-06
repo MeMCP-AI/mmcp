@@ -78,7 +78,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use thiserror::Error;
 use uuid::Uuid;
 
-use mmcp_core::memory::MemoryFile;
+use mmcp_core::memory::{FeatureStatusParseError, MemoryFile};
 
 use crate::home::MmcpHome;
 
@@ -101,6 +101,19 @@ pub enum CacheError {
     /// Walking a group's memory tree to rebuild the index failed.
     #[error("walking group repository: {0}")]
     Git(#[from] mmcp_git::GitError),
+
+    /// A `kind = 'feature'` row's stored status string does not
+    /// parse as a [`mmcp_core::memory::FeatureStatus`]. Surfaced
+    /// instead of silently excluded from a rollup fold (see
+    /// `mmcp_store::rollup::compute`), so a milestone never reports
+    /// `Completed` while a real, merely un-migrated `Blocked`
+    /// feature is invisible to the count.
+    #[error("feature status {raw:?} in the local content cache does not parse: {source}")]
+    UnparseableFeatureStatus {
+        raw: String,
+        #[source]
+        source: FeatureStatusParseError,
+    },
 }
 
 /// One row of the local content cache: everything about a memory

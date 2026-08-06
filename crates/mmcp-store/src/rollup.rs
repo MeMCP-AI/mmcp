@@ -127,6 +127,17 @@ pub async fn compute(
 /// Query-only half of [`compute`], split out so the fold logic
 /// itself (the part with the actual rule, and the part worth unit
 /// testing in isolation) never needs a live pool.
+///
+/// A row with no status at all (`NULL`) is skipped: `kind = 'feature'`
+/// rows are only ever written without a status by data that predates
+/// the column, which the schema doc already treats as a legitimate
+/// absence, not corruption. A row that DOES carry a status string
+/// that fails [`FeatureStatus::parse`] is a different case entirely —
+/// a real feature whose lifecycle state cannot be read — and is
+/// surfaced as [`CacheError::UnparseableFeatureStatus`] instead of
+/// silently excluded, so a rollup never reports a milestone
+/// `Completed` while a real `Blocked` feature is invisible to the
+/// fold because its status string no longer parses.
 async fn fetch_feature_statuses(
     pool: &SqlitePool,
     milestone_id: Uuid,
@@ -137,10 +148,13 @@ async fn fetch_feature_statuses(
     .bind(milestone_id.to_string())
     .fetch_all(pool)
     .await?;
-    Ok(rows
-        .into_iter()
-        .filter_map(|(raw,)| raw.and_then(|s| FeatureStatus::parse(&s).ok()))
-        .collect())
+    rows.into_iter()
+        .filter_map(|(raw,)| raw)
+        .map(|raw| {
+            FeatureStatus::parse(&raw)
+                .map_err(|source| CacheError::UnparseableFeatureStatus { raw, source })
+        })
+        .collect()
 }
 
 /// The rollup rule itself. See the module doc for the full
@@ -243,5 +257,46 @@ mod tests {
         assert_eq!(RollupStatus::Planning.as_str(), "planning");
         assert_eq!(RollupStatus::Blocked.as_str(), "blocked");
         assert_eq!(RollupStatus::Completed.as_str(), "completed");
+    }
+
+    #[tokio::test]
+    async fn fetch_feature_statuses_surfaces_a_row_whose_status_fails_to_parse() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let pool = crate::cache::open_pool(&tmp.path().join("index.sqlite3"))
+            .await
+            .expect("open pool");
+        let milestone_id = Uuid::now_v7();
+
+        sqlx::query(
+            "INSERT INTO indexed_memory \
+               (group_id, id, slug, kind, name, description, tags, body, path, \
+                commit_id, updated_at, status, milestone) \
+             VALUES (?, ?, ?, 'feature', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::now_v7().to_string())
+        .bind(Uuid::now_v7().to_string())
+        .bind("broken-feature")
+        .bind("broken feature")
+        .bind("a feature with a status this cache cannot parse")
+        .bind("[]")
+        .bind("")
+        .bind("memories/broken-feature/x.md")
+        .bind("HEAD")
+        .bind("2026-08-06T00:00:00Z")
+        .bind("not-a-real-status")
+        .bind(milestone_id.to_string())
+        .execute(&pool)
+        .await
+        .expect("seed row with unparseable status");
+
+        let err = fetch_feature_statuses(&pool, milestone_id)
+            .await
+            .expect_err("an unparseable status must surface as an error, not be dropped");
+        match err {
+            CacheError::UnparseableFeatureStatus { raw, .. } => {
+                assert_eq!(raw, "not-a-real-status");
+            }
+            other => panic!("expected UnparseableFeatureStatus, got {other:?}"),
+        }
     }
 }
