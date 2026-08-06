@@ -303,7 +303,9 @@ fn print_record_full(record: &MilestoneRecord) {
             String::new()
         }
     );
-    if record.status == MilestoneStatus::Completed && record.rollup.status != RollupStatus::Completed {
+    if record.status == MilestoneStatus::Completed
+        && record.rollup.status != RollupStatus::Completed
+    {
         println!("            ! stale: editorial status is completed but the live rollup is not");
     }
     if !record.description.is_empty() {

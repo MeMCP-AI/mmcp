@@ -9071,8 +9071,7 @@ mod tests {
 
     #[test]
     fn resolve_milestone_update_neither_leaves_unchanged() {
-        let resolved =
-            resolve_milestone_update(None, false).expect("neither set must succeed");
+        let resolved = resolve_milestone_update(None, false).expect("neither set must succeed");
         assert_eq!(resolved, None);
     }
 
