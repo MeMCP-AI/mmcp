@@ -270,7 +270,7 @@ fn print_listing_row(record: &MilestoneRecord) {
         record.title.as_str()
     };
     println!(
-        "[{} / rollup:{}] {} — {} ({}/{} completed{})",
+        "[{} / rollup:{}] {} - {} ({}/{} completed{})",
         record.status.as_str(),
         record.rollup.status.as_str(),
         record.slug,
