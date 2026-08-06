@@ -15,37 +15,42 @@ use uuid::Uuid;
 
 use crate::memory::{MemoryRef, Status};
 
-/// Lifecycle state of a feature request.
+/// Lifecycle state of a feature.
 ///
-/// Deliberately richer than a boolean `completed` flag so blocked and
-/// deferred requests stay visible — they are closed in the sense
+/// Four-state lifecycle (`Requested -> Approved -> Pending ->
+/// Completed`) alongside the side-states below, so a feature that is
+/// blocked or deferred stays visible — it is closed in the sense
 /// that no immediate work is expected, but a future sweep may revive
-/// them.
+/// it.
 ///
 /// `Duplicate` and `Superseded` sound similar but mean different
 /// things. `Duplicate` = "this was filed twice by accident, see the
 /// surviving slug in the body". `Superseded` = "this idea evolved;
-/// a newer, better-scoped FR replaces it and the supersede flow
+/// a newer, better-scoped feature replaces it and the supersede flow
 /// recorded a typed back-link in `FeatureMetadata::superseded_by`".
 /// The two statuses are kept distinct so listings can surface the
 /// supersede lineage without conflating it with accidental dupes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum FeatureStatus {
-    /// Active request; not yet resolved, not yet blocked.
+    /// Freshly filed; not yet reviewed or agreed.
     #[default]
-    Open,
+    Requested,
+    /// Reviewed and agreed; the body is now an authoritative spec.
+    Approved,
+    /// Work underway.
+    Pending,
     /// Work landed. The memory stays in the group for history.
-    Resolved,
-    /// Waiting on an external prerequisite (another FR, a server
-    /// deployment, an upstream design decision).
+    Completed,
+    /// Waiting on an external prerequisite (another feature, a
+    /// server deployment, an upstream design decision).
     Blocked,
     /// Intentionally postponed. Not being worked on, but still valid.
     Deferred,
-    /// Duplicate of another FR. Body usually carries a pointer to
-    /// the surviving slug in the first paragraph.
+    /// Duplicate of another feature. Body usually carries a pointer
+    /// to the surviving slug in the first paragraph.
     Duplicate,
-    /// Replaced by a newer FR via the typed supersede flow.
+    /// Replaced by a newer feature via the typed supersede flow.
     /// [`FeatureMetadata::superseded_by`] points at the replacement.
     Superseded,
 }
@@ -56,8 +61,10 @@ impl FeatureStatus {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            FeatureStatus::Open => "open",
-            FeatureStatus::Resolved => "resolved",
+            FeatureStatus::Requested => "requested",
+            FeatureStatus::Approved => "approved",
+            FeatureStatus::Pending => "pending",
+            FeatureStatus::Completed => "completed",
             FeatureStatus::Blocked => "blocked",
             FeatureStatus::Deferred => "deferred",
             FeatureStatus::Duplicate => "duplicate",
@@ -70,8 +77,10 @@ impl FeatureStatus {
     #[must_use]
     pub const fn all() -> &'static [FeatureStatus] {
         &[
-            FeatureStatus::Open,
-            FeatureStatus::Resolved,
+            FeatureStatus::Requested,
+            FeatureStatus::Approved,
+            FeatureStatus::Pending,
+            FeatureStatus::Completed,
             FeatureStatus::Blocked,
             FeatureStatus::Deferred,
             FeatureStatus::Duplicate,
@@ -91,7 +100,7 @@ impl FeatureStatus {
     pub const fn is_default_hidden(self) -> bool {
         matches!(
             self,
-            FeatureStatus::Resolved | FeatureStatus::Duplicate | FeatureStatus::Superseded,
+            FeatureStatus::Completed | FeatureStatus::Duplicate | FeatureStatus::Superseded,
         )
     }
 
@@ -102,8 +111,10 @@ impl FeatureStatus {
     /// context.
     pub fn parse(raw: &str) -> Result<Self, FeatureStatusParseError> {
         match raw {
-            "open" => Ok(FeatureStatus::Open),
-            "resolved" => Ok(FeatureStatus::Resolved),
+            "requested" => Ok(FeatureStatus::Requested),
+            "approved" => Ok(FeatureStatus::Approved),
+            "pending" => Ok(FeatureStatus::Pending),
+            "completed" => Ok(FeatureStatus::Completed),
             "blocked" => Ok(FeatureStatus::Blocked),
             "deferred" => Ok(FeatureStatus::Deferred),
             "duplicate" => Ok(FeatureStatus::Duplicate),
@@ -120,7 +131,7 @@ impl FeatureStatus {
 /// map it onto their respective error shapes.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "invalid feature status '{input}': expected one of open / resolved / blocked / deferred / duplicate / superseded"
+    "invalid feature status '{input}': expected one of requested / approved / pending / completed / blocked / deferred / duplicate / superseded"
 )]
 pub struct FeatureStatusParseError {
     /// The offending input string, echoed back for user-facing errors.
@@ -257,9 +268,9 @@ mod tests {
     }
 
     #[test]
-    fn default_metadata_is_open_with_empty_cross_refs() {
+    fn default_metadata_is_requested_with_empty_cross_refs() {
         let meta = FeatureMetadata::default();
-        assert_eq!(meta.status, FeatureStatus::Open);
+        assert_eq!(meta.status, FeatureStatus::Requested);
         assert!(meta.depends_on.is_empty());
         assert!(meta.blocks.is_empty());
         assert_eq!(meta.number, None);
@@ -269,7 +280,7 @@ mod tests {
     #[test]
     fn number_field_round_trips_through_toml() {
         let meta = FeatureMetadata {
-            status: FeatureStatus::Open,
+            status: FeatureStatus::Requested,
             number: Some(42),
             depends_on: Vec::new(),
             blocks: Vec::new(),
@@ -293,14 +304,18 @@ mod tests {
     }
 
     #[test]
-    fn is_default_hidden_covers_resolved_duplicate_superseded() {
+    fn is_default_hidden_covers_completed_duplicate_superseded() {
         for variant in FeatureStatus::all() {
             let hidden = variant.is_default_hidden();
             match variant {
-                FeatureStatus::Resolved | FeatureStatus::Duplicate | FeatureStatus::Superseded => {
+                FeatureStatus::Completed | FeatureStatus::Duplicate | FeatureStatus::Superseded => {
                     assert!(hidden, "{variant:?} must be default-hidden")
                 }
-                FeatureStatus::Open | FeatureStatus::Blocked | FeatureStatus::Deferred => {
+                FeatureStatus::Requested
+                | FeatureStatus::Approved
+                | FeatureStatus::Pending
+                | FeatureStatus::Blocked
+                | FeatureStatus::Deferred => {
                     assert!(!hidden, "{variant:?} must stay visible by default")
                 }
             }
@@ -362,7 +377,7 @@ mod tests {
         assert_eq!(
             err,
             SupersedeInvariantError::UnexpectedSupersededBy {
-                status: FeatureStatus::Open,
+                status: FeatureStatus::Requested,
             }
         );
     }
