@@ -50,6 +50,10 @@ tempfile = { version = "3", optional = true }
 tar = "0.4"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
+# Local content/semantic cache storage (see `src/cache/`).
+sqlx = { workspace = true }
+serde_json = { workspace = true }
+
 [dev-dependencies]
 tempfile = "3"
 

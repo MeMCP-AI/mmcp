@@ -41,6 +41,7 @@
 #![forbid(unsafe_code)]
 
 pub mod archive;
+pub mod cache;
 pub mod config;
 pub mod diagnostics;
 pub mod error;

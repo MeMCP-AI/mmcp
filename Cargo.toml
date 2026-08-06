@@ -22,7 +22,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.27"
+version = "0.1.28"
 edition = "2024"
 rust-version = "1.94"
 authors = ["Gabriel GRONDIN"]
@@ -87,6 +87,16 @@ toml = "1.1"
 # Database (SeaORM with sqlx backend)
 sea-orm = { version = "2.0", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls", "macros", "with-uuid"] }
 sea-orm-migration = { version = "2.0", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls", "with-uuid"] }
+
+# Raw sqlx (same backend sea-orm already pulls in) for mmcp-store's
+# local content cache. The cache is a small, fully-owned, freely
+# rebuildable derived index -- a couple of tables this crate creates
+# and drops on demand -- so it talks to SQLite directly instead of
+# through sea-orm's entity/migration ceremony, while staying on the
+# exact same underlying SQLite build (bundled libsqlite3-sys) sea-orm
+# already resolves, so no second copy of the C library enters the
+# graph.
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "sqlite", "macros", "uuid"] }
 
 # Statically link libsqlite3 into our binaries so the distroless
 # runtime image (which ships no shared sqlite) can open `sqlite::`

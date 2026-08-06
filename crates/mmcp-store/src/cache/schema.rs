@@ -1,0 +1,108 @@
+//! SQLite schema for the local content cache.
+//!
+//! The cache is a fully derived, freely rebuildable index over the
+//! memory content already stored as source of truth in each group's
+//! git repository. That is why this module hand-rolls its DDL as a
+//! couple of `CREATE TABLE IF NOT EXISTS` statements instead of
+//! pulling in `sea-orm-migration`'s versioned migration runner:
+//! there is no user data to migrate forward, only a schema to
+//! (re)create. If a future schema change is ever needed, the
+//! simplest and safest upgrade path is `DROP TABLE` + a full
+//! rebuild (see [`super::index::rebuild_full`]), not a migration
+//! chain.
+
+use sqlx::sqlite::SqlitePool;
+
+use super::CacheError;
+
+const CREATE_INDEXED_MEMORY: &str = r#"
+CREATE TABLE IF NOT EXISTS indexed_memory (
+    group_id    TEXT NOT NULL,
+    id          TEXT NOT NULL,
+    slug        TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    description TEXT NOT NULL,
+    tags        TEXT NOT NULL,
+    body        TEXT NOT NULL,
+    path        TEXT NOT NULL,
+    commit_id   TEXT NOT NULL,
+    embedding   BLOB,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (group_id, id)
+)
+"#;
+
+const CREATE_SLUG_INDEX: &str =
+    "CREATE INDEX IF NOT EXISTS idx_indexed_memory_slug ON indexed_memory(group_id, slug)";
+
+const CREATE_KIND_INDEX: &str =
+    "CREATE INDEX IF NOT EXISTS idx_indexed_memory_kind ON indexed_memory(kind)";
+
+const CREATE_CACHE_META: &str = r#"
+CREATE TABLE IF NOT EXISTS cache_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+)
+"#;
+
+/// The `cache_meta` key recording the timestamp of the last
+/// successful [`super::index::rebuild_full`] run. Its presence (not
+/// row count in `indexed_memory`) is exactly the "index built"
+/// signal the lazy-build-on-read path checks via [`is_built`]: a
+/// mirror with zero local memories is a legitimately empty, already
+/// -built index, not a missing one, and a plain "is the table
+/// empty" check would wrongly rebuild it forever.
+pub const LAST_FULL_REBUILD_KEY: &str = "last_full_rebuild_at";
+
+/// Create every table and index this module owns if they do not
+/// already exist. Safe to call on every pool open — `IF NOT EXISTS`
+/// makes it a no-op against an already-initialised database.
+pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), CacheError> {
+    sqlx::query(CREATE_INDEXED_MEMORY).execute(pool).await?;
+    sqlx::query(CREATE_SLUG_INDEX).execute(pool).await?;
+    sqlx::query(CREATE_KIND_INDEX).execute(pool).await?;
+    sqlx::query(CREATE_CACHE_META).execute(pool).await?;
+    Ok(())
+}
+
+/// Whether the index has ever completed a full rebuild, per
+/// [`LAST_FULL_REBUILD_KEY`].
+pub async fn is_built(pool: &SqlitePool) -> Result<bool, CacheError> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT value FROM cache_meta WHERE key = ?")
+        .bind(LAST_FULL_REBUILD_KEY)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.is_some())
+}
+
+/// Stamp [`LAST_FULL_REBUILD_KEY`] with `at` (an RFC 3339
+/// timestamp), marking the index as built.
+pub async fn mark_built(pool: &SqlitePool, at: &str) -> Result<(), CacheError> {
+    sqlx::query(
+        "INSERT INTO cache_meta (key, value) VALUES (?, ?) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(LAST_FULL_REBUILD_KEY)
+    .bind(at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn fresh_pool_is_not_built_until_marked() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let db_path = tmp.path().join("index.sqlite3");
+        let pool = super::super::open_pool(&db_path).await.expect("open pool");
+        assert!(!is_built(&pool).await.expect("is_built"));
+        mark_built(&pool, "2026-08-06T00:00:00Z")
+            .await
+            .expect("mark_built");
+        assert!(is_built(&pool).await.expect("is_built"));
+    }
+}
