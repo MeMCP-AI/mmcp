@@ -231,6 +231,21 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // Best-effort: start the local content cache's process-global
+    // pool before dispatching to the resolved subcommand, so every
+    // write path (CLI `mmcp memory` / `mmcp feature` / ... commands,
+    // all of which eventually call `write_file_at_path`) gets the
+    // write-trigger hook for free. A failure here (e.g. an unwritable
+    // home directory) never blocks the CLI itself — the cache is a
+    // derived artifact, not source-of-truth state. Runs after
+    // `Cli::parse()` so `--help` / bad-arg invocations never touch
+    // the filesystem at all.
+    if let Ok(home) = mmcp_store::home::MmcpHome::discover()
+        && let Err(err) = mmcp_store::cache::init_from_home(&home).await
+    {
+        tracing::warn!(error = %err, "failed to initialise local content cache");
+    }
+
     match cli.command {
         Command::Serve { debug, mode } => commands::serve::run(debug, mode).await?,
         Command::Check { group } => commands::health::run_check(group).await?,

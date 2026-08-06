@@ -108,6 +108,12 @@ impl ClientState {
 
         let (backend, groups) = home.init_backend().await?;
 
+        // Best-effort, same rationale as the CLI's `main`: a cache
+        // init failure never blocks the MCP server from starting.
+        if let Err(err) = mmcp_store::cache::init_from_home(&home).await {
+            tracing::warn!(error = %err, "failed to initialise local content cache");
+        }
+
         let sessions_root = home.sessions_root();
         let sessions = SessionStore::open(&sessions_root)
             .with_context(|| format!("opening session store at {}", sessions_root.display()))?;
