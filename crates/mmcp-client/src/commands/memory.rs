@@ -25,8 +25,8 @@ use mmcp_git::{GitBackend, NativeBackend, Rev};
 use mmcp_store::home::MmcpHome;
 use mmcp_store::{
     AddressingMode, GroupEntry, MemoryEditOp, WriteFileOptions, WriteMemoryOptions, apply_ops,
-    delete_file_at_path, list_all_memory_files, parse_kind, resolve_group, resolve_memory,
-    write_file_at_path, write_memory_by_id,
+    delete_file_at_path, list_all_memory_files, parse_creatable_kind, resolve_group,
+    resolve_memory, write_file_at_path, write_memory_by_id,
 };
 use uuid::Uuid;
 
@@ -736,7 +736,7 @@ async fn run_search(args: SearchArgs) -> Result<()> {
 
 async fn run_write(args: WriteArgs) -> Result<()> {
     let body = read_body_input(&args.body)?;
-    let kind = parse_kind(&args.kind).map_err(anyhow::Error::from)?;
+    let kind = parse_creatable_kind(&args.kind).map_err(anyhow::Error::from)?;
     let id = match args.id.as_deref() {
         Some(s) => Uuid::parse_str(s).context("--id is not a valid UUID")?,
         None => Uuid::now_v7(),
@@ -837,7 +837,7 @@ async fn run_edit(args: EditArgs) -> Result<()> {
         file.frontmatter.description = description;
     }
     if let Some(kind_str) = args.kind {
-        file.frontmatter.kind = parse_kind(&kind_str).map_err(anyhow::Error::from)?;
+        file.frontmatter.kind = parse_creatable_kind(&kind_str).map_err(anyhow::Error::from)?;
     }
     if let Some(mandatory) = args.mandatory {
         file.frontmatter.mandatory = mandatory;

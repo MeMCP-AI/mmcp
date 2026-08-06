@@ -142,6 +142,18 @@ pub enum ImportError {
     /// `MAX_MESSAGE_LENGTH`).
     #[error("field too long: {0}")]
     FieldTooLong(#[from] mmcp_core::memory::FieldLengthError),
+
+    /// [`parse_creatable_kind`] was pointed at a tracked kind
+    /// (`feature` / `issue` / `milestone`). Tracked kinds carry a
+    /// structured metadata subtable (`[feature]` / `[issue]` /
+    /// `[milestone]`) this plain memory-write path never populates;
+    /// accepting one here would silently create a memory `diagnose`
+    /// then flags as defective and every tracked-kind routing entry
+    /// point (`read_milestone` etc.) rejects as `not_a_*`.
+    #[error(
+        "kind '{kind}' is a tracked kind and cannot be created via memory create/edit; use the dedicated add_{kind} command instead"
+    )]
+    NotACreatableKind { kind: String },
 }
 
 /// Per-file reference to a memory on disk. Returned by
@@ -1205,12 +1217,47 @@ fn strip_known_import_extension(filename: &str) -> &str {
     filename
 }
 
-/// Parse a kind string into `MemoryKind`. Delegates to the canonical
-/// [`MemoryKind::from_str`](std::str::FromStr) parser so every
-/// caller of this create-time entry point accepts exactly the same
-/// kind set as the archive filter and the GUI DTO converter.
+/// Parse a kind string into `MemoryKind` for SYNTAX only. Delegates
+/// to the canonical [`MemoryKind::from_str`](std::str::FromStr)
+/// parser, so every caller accepts exactly the same kind set (all
+/// eight, tracked kinds included) as the archive filter and the GUI
+/// DTO converter. Used directly by contexts that legitimately need
+/// every kind, such as archive re-import; a plain memory CREATE /
+/// `edit --kind` entry point should call [`parse_creatable_kind`]
+/// instead, which layers the create-time policy on top.
 pub fn parse_kind(s: &str) -> Result<MemoryKind, ImportError> {
     Ok(s.parse::<MemoryKind>()?)
+}
+
+/// The five kinds a plain memory CREATE (or `edit --kind`) may
+/// target. Tracked kinds are deliberately excluded: they are created
+/// through their own dedicated command (`add_feature` / `add_issue`
+/// / `add_milestone`), which populates the structured metadata
+/// subtable this path never does.
+const CREATABLE_KINDS: &[MemoryKind] = &[
+    MemoryKind::Rule,
+    MemoryKind::Snapshot,
+    MemoryKind::Log,
+    MemoryKind::Reference,
+    MemoryKind::Scratch,
+];
+
+/// Parse a kind string for `mmcp memory create` / `mmcp memory edit
+/// --kind`. Delegates to [`parse_kind`] for syntax (so the error
+/// text on a genuinely unknown kind matches every other kind-parsing
+/// call site), then re-applies the create-time policy restriction to
+/// [`CREATABLE_KINDS`], returning [`ImportError::NotACreatableKind`]
+/// for a syntactically valid but tracked kind instead of silently
+/// creating a memory the tracked-kind tooling will reject.
+pub fn parse_creatable_kind(s: &str) -> Result<MemoryKind, ImportError> {
+    let kind = parse_kind(s)?;
+    if CREATABLE_KINDS.contains(&kind) {
+        Ok(kind)
+    } else {
+        Err(ImportError::NotACreatableKind {
+            kind: kind.as_str().to_string(),
+        })
+    }
 }
 
 /// Resolve a group by UUID or slug.
@@ -1343,12 +1390,48 @@ mod tests {
         assert_eq!(parse_kind("rule").unwrap(), MemoryKind::Rule);
         assert_eq!(parse_kind("reference").unwrap(), MemoryKind::Reference);
         // Delegating to the canonical MemoryKind::from_str widens
-        // this create-time parser to accept every kind, matching the
-        // archive filter and GUI decoders instead of silently
-        // rejecting `feature` / `issue` through this one path only.
+        // this syntax-only parser to accept every kind, matching the
+        // archive filter and GUI decoders. A memory CREATE / `edit
+        // --kind` entry point must go through `parse_creatable_kind`
+        // instead, which re-applies the narrower policy below.
         assert_eq!(parse_kind("feature").unwrap(), MemoryKind::Feature);
         assert_eq!(parse_kind("issue").unwrap(), MemoryKind::Issue);
         assert!(parse_kind("bogus").is_err());
+    }
+
+    #[test]
+    fn parse_creatable_kind_accepts_the_five_non_tracked_kinds() {
+        assert_eq!(parse_creatable_kind("rule").unwrap(), MemoryKind::Rule);
+        assert_eq!(
+            parse_creatable_kind("snapshot").unwrap(),
+            MemoryKind::Snapshot
+        );
+        assert_eq!(parse_creatable_kind("log").unwrap(), MemoryKind::Log);
+        assert_eq!(
+            parse_creatable_kind("reference").unwrap(),
+            MemoryKind::Reference
+        );
+        assert_eq!(
+            parse_creatable_kind("scratch").unwrap(),
+            MemoryKind::Scratch
+        );
+    }
+
+    #[test]
+    fn parse_creatable_kind_rejects_every_tracked_kind() {
+        for tracked in ["feature", "issue", "milestone"] {
+            let err = parse_creatable_kind(tracked)
+                .expect_err("a tracked kind must not be creatable via memory create/edit");
+            match &err {
+                ImportError::NotACreatableKind { kind } => assert_eq!(kind, tracked),
+                other => panic!("unexpected error for {tracked}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn parse_creatable_kind_still_rejects_a_syntactically_unknown_kind() {
+        assert!(parse_creatable_kind("bogus").is_err());
     }
 
     #[tokio::test]

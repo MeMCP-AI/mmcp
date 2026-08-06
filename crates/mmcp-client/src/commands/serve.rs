@@ -6940,6 +6940,11 @@ fn map_memory_error_to_mcp(err: ImportError) -> McpError {
                 "actual": actual,
             }),
         },
+        ImportError::NotACreatableKind { kind } => json!({
+            "code": "not_a_creatable_kind",
+            "kind": kind,
+            "retry_hint": format!("use the dedicated add_{kind} tool instead"),
+        }),
     };
     McpError::invalid_params(message, Some(payload))
 }
