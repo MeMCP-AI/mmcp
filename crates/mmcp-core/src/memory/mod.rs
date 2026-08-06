@@ -39,7 +39,7 @@ pub use limits::{
 };
 pub use milestone::{MilestoneMetadata, MilestoneStatus, MilestoneStatusParseError};
 pub use parser::{FrontmatterFormat, MemoryFile, MemoryParseError};
-pub use refs::{InvalidCommit, MemoryRef};
+pub use refs::{COMMIT_SHA_HEX_LEN, InvalidCommit, MemoryRef, looks_like_commit_sha};
 pub use splice::{SpliceError, line_terminator, splice};
 pub use status::Status;
 pub use version::Version;

@@ -187,7 +187,7 @@ pub async fn read_milestone(
         .map_err(MilestoneError::Memory)?;
     let git_rev = match rev {
         Some(v) => {
-            if v.len() == 40 && v.chars().all(|c| c.is_ascii_hexdigit()) {
+            if mmcp_core::memory::looks_like_commit_sha(v) {
                 Rev::Commit(v.to_string())
             } else {
                 Rev::Branch(v.to_string())

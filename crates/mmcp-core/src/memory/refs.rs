@@ -87,6 +87,26 @@ pub struct InvalidCommit {
     pub input: String,
 }
 
+/// Number of hex characters in a full (non-abbreviated) git commit
+/// sha.
+pub const COMMIT_SHA_HEX_LEN: usize = 40;
+
+/// Whether `s` is SHAPED like a full git commit sha: exactly
+/// [`COMMIT_SHA_HEX_LEN`] ASCII hex digits, either case.
+///
+/// The shared disambiguator every caller-supplied "revision" string
+/// needs before choosing between `Rev::Commit` and `Rev::Branch` (a
+/// bare slug/branch name never happens to be 40 hex characters in
+/// practice). Deliberately laxer than
+/// [`MemoryRef::validate_commit_shape`] (which also rejects
+/// uppercase): a stored, canonical [`MemoryRef::commit`] must be
+/// exact, but a caller picking a `Rev` variant only needs a shape
+/// test, not a validated reference.
+#[must_use]
+pub fn looks_like_commit_sha(s: &str) -> bool {
+    s.len() == COMMIT_SHA_HEX_LEN && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +172,26 @@ mod tests {
         assert!(rendered.contains("commit = "), "rendered: {rendered}");
         let parsed: Wrapper = toml::from_str(&rendered).expect("parse");
         assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn looks_like_commit_sha_accepts_forty_char_hex_either_case() {
+        assert!(looks_like_commit_sha(forty_char_hex()));
+        assert!(looks_like_commit_sha(
+            "0123456789ABCDEF0123456789ABCDEF01234567"
+        ));
+    }
+
+    #[test]
+    fn looks_like_commit_sha_rejects_a_branch_name() {
+        assert!(!looks_like_commit_sha("main"));
+        assert!(!looks_like_commit_sha("feature/cross-group-milestone"));
+    }
+
+    #[test]
+    fn looks_like_commit_sha_rejects_wrong_length_hex() {
+        assert!(!looks_like_commit_sha("abc1234"));
+        assert!(!looks_like_commit_sha(""));
     }
 
     #[test]
