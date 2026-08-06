@@ -155,18 +155,30 @@ pub fn build_record(
     }
 }
 
-/// Insert or replace one memory's row.
+/// Insert or replace one memory's row, recomputing its embedding
+/// (see [`super::embed`]) from the current name, description, tags,
+/// and body every time — an edit that changes the text must not
+/// leave a stale embedding behind.
 pub async fn upsert_record(pool: &SqlitePool, record: &IndexedRecord) -> Result<(), CacheError> {
     let tags_json = serde_json::to_string(&record.tags).unwrap_or_default();
     let now = Timestamp::now().to_string();
+    let embedding_text = format!(
+        "{} {} {} {}",
+        record.name,
+        record.description,
+        record.tags.join(" "),
+        record.body
+    );
+    let embedding = super::embed::vector_to_bytes(&super::embed::embed_text(&embedding_text));
     sqlx::query(
         "INSERT INTO indexed_memory \
-           (group_id, id, slug, kind, name, description, tags, body, path, commit_id, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+           (group_id, id, slug, kind, name, description, tags, body, path, commit_id, embedding, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(group_id, id) DO UPDATE SET \
            slug = excluded.slug, kind = excluded.kind, name = excluded.name, \
            description = excluded.description, tags = excluded.tags, body = excluded.body, \
-           path = excluded.path, commit_id = excluded.commit_id, updated_at = excluded.updated_at",
+           path = excluded.path, commit_id = excluded.commit_id, embedding = excluded.embedding, \
+           updated_at = excluded.updated_at",
     )
     .bind(record.group_id.to_string())
     .bind(record.id.to_string())
@@ -178,6 +190,7 @@ pub async fn upsert_record(pool: &SqlitePool, record: &IndexedRecord) -> Result<
     .bind(&record.body)
     .bind(&record.path)
     .bind(&record.commit_id)
+    .bind(embedding)
     .bind(now)
     .execute(pool)
     .await?;

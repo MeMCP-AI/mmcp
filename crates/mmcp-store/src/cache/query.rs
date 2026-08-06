@@ -42,6 +42,72 @@ pub async fn keyword_search(
     rows.into_iter().map(Row::into_hit).collect()
 }
 
+/// Semantic-similarity lookup: embed `query` (see [`super::embed`])
+/// and rank every indexed memory by cosine similarity against its
+/// stored embedding, returning the top `limit` matches with their
+/// score. A brute-force scan over every row rather than an
+/// approximate-nearest-neighbour index — appropriate at the "modest
+/// local dataset" scale this cache targets; see the module docs on
+/// [`super::embed`] for why an ANN index is deliberately not used
+/// here.
+///
+/// Lazy-build-on-read, same as [`keyword_search`].
+pub async fn semantic_search(
+    pool: &SqlitePool,
+    backend: &NativeBackend,
+    groups: &GroupIndex,
+    query: &str,
+    limit: u32,
+) -> Result<Vec<SearchHit>, CacheError> {
+    ensure_built(pool, backend, groups).await?;
+
+    let query_embedding = super::embed::embed_text(query);
+    let rows: Vec<EmbeddingRow> = sqlx::query_as(
+        "SELECT group_id, id, slug, kind, name, description, path, embedding FROM indexed_memory",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut scored: Vec<(f32, Row)> = rows
+        .into_iter()
+        .filter_map(|row| {
+            let embedding = row
+                .embedding
+                .as_deref()
+                .map(super::embed::bytes_to_vector)?;
+            let score = super::embed::cosine_similarity(&query_embedding, &embedding);
+            Some((
+                score,
+                Row {
+                    group_id: row.group_id,
+                    id: row.id,
+                    slug: row.slug,
+                    kind: row.kind,
+                    name: row.name,
+                    description: row.description,
+                    path: row.path,
+                },
+            ))
+        })
+        .collect();
+    // Descending by score; `total_cmp` handles the all-`f32` sort
+    // key correctly (including the `NaN`-from-empty-vector edge
+    // case `cosine_similarity` never actually produces, since it
+    // returns `0.0` rather than dividing by zero).
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+
+    scored
+        .into_iter()
+        .take(limit as usize)
+        .map(|(score, row)| {
+            row.into_hit().map(|mut hit| {
+                hit.score = Some(score);
+                hit
+            })
+        })
+        .collect()
+}
+
 /// Run [`super::index::rebuild_full`] iff the index has never
 /// completed a build. Returns `true` when a rebuild actually ran.
 /// The shared lazy-build primitive every cache query entry point
@@ -67,6 +133,22 @@ struct Row {
     name: String,
     description: String,
     path: String,
+}
+
+/// Same shape as [`Row`] plus the raw embedding BLOB, used only by
+/// [`semantic_search`]'s scan (the plain [`keyword_search`] query
+/// never needs to decode an embedding, so it stays on the lighter
+/// [`Row`] projection).
+#[derive(sqlx::FromRow)]
+struct EmbeddingRow {
+    group_id: String,
+    id: String,
+    slug: String,
+    kind: String,
+    name: String,
+    description: String,
+    path: String,
+    embedding: Option<Vec<u8>>,
 }
 
 impl Row {
@@ -181,5 +263,55 @@ mod tests {
             .expect("keyword_search again");
         assert_eq!(hits_again.len(), 1);
         assert_eq!(hits_again[0].slug, "capybara-notes");
+    }
+
+    #[tokio::test]
+    async fn semantic_search_ranks_the_lexically_closer_memory_first() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch
+            .seed_group("cache-semantic-test")
+            .await
+            .expect("seed group");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        write_sample(
+            &scratch,
+            &entry.handle,
+            "quokka-notes",
+            "the quokka is a small marsupial native to Australia",
+        )
+        .await;
+        write_sample(
+            &scratch,
+            &entry.handle,
+            "finance-notes",
+            "quarterly earnings and the stock market closed higher today",
+        )
+        .await;
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let pool = super::super::open_pool(&tmp.path().join("index.sqlite3"))
+            .await
+            .expect("open pool");
+
+        // A query that never contains the literal word "quokka"
+        // still ranks the marsupial memory first because it shares
+        // more vocabulary with the query than the finance memory
+        // does. This is what distinguishes semantic_search from a
+        // plain keyword LIKE scan.
+        let hits = semantic_search(
+            &pool,
+            scratch.backend(),
+            scratch.groups(),
+            "marsupials found in Australia",
+            10,
+        )
+        .await
+        .expect("semantic_search");
+
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].slug, "quokka-notes");
+        let score = hits[0].score.expect("semantic hit carries a score");
+        assert!(score > hits[1].score.expect("second hit also scored"));
     }
 }

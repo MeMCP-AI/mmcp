@@ -64,9 +64,9 @@
 //!
 //! ## Semantic search
 //!
-//! Lands in a follow-up commit alongside its own `embed` module,
-//! which documents the embedding approach and its rationale.
+//! See [`embed`] for the embedding approach and its rationale.
 
+pub mod embed;
 pub mod index;
 pub mod query;
 pub mod schema;
@@ -283,4 +283,4 @@ pub async fn notify_pull(
 // / `cache::keyword_search(...)` instead of reaching into the
 // submodule that happens to own the implementation.
 pub use index::{RebuildStats, build_record, rebuild_full, rebuild_groups, upsert_record};
-pub use query::{ensure_built, keyword_search};
+pub use query::{ensure_built, keyword_search, semantic_search};

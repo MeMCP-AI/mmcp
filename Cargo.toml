@@ -22,7 +22,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.32"
+version = "0.1.33"
 edition = "2024"
 rust-version = "1.94"
 authors = ["Gabriel GRONDIN"]
@@ -97,6 +97,22 @@ sea-orm-migration = { version = "2.0", default-features = false, features = ["sq
 # already resolves, so no second copy of the C library enters the
 # graph.
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "sqlite", "macros", "uuid"] }
+
+# Local embedding vectorizer for the content cache's semantic search
+# (see `crates/mmcp-store/src/cache/embed.rs` for the full rationale):
+# tokenizes memory text into Unicode words (pure Rust, locale-free
+# word-boundary rules) ahead of feature-hashing them into a vector.
+unicode-segmentation = "1"
+
+# Pure-Rust, non-cryptographic hash used by the same embedding path
+# to turn each token into a fixed-size vector bucket (the "hashing
+# trick" / feature hashing, the same technique scikit-learn's
+# HashingVectorizer and Vowpal Wabbit use).
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+# Vector container + dot-product/norm ops for cosine similarity, so
+# the embedding/query path never hand-rolls the actual vector math.
+ndarray = "0.16"
 
 # Statically link libsqlite3 into our binaries so the distroless
 # runtime image (which ships no shared sqlite) can open `sqlite::`
