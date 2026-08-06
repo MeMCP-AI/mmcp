@@ -1167,8 +1167,8 @@ struct AddFeatureArgs {
     #[serde(default)]
     pub body: String,
 
-    /// Initial status. Defaults to `open` when absent. Wire form is
-    /// the snake_case enum: `open | resolved | blocked | deferred | duplicate | superseded`.
+    /// Initial status. Defaults to `requested` when absent. Wire form
+    /// is the snake_case enum: `requested | approved | pending | completed | blocked | deferred | duplicate | superseded`.
     #[serde(default)]
     pub status: Option<String>,
 
@@ -1372,15 +1372,15 @@ struct ListFeaturesArgs {
 
     /// Restrict to FRs with this status. Wire form matches
     /// `AddFeatureArgs::status`. Explicit selector wins over the
-    /// `all` flag — an operator asking for `resolved` FRs always
+    /// `all` flag — an operator asking for `completed` FRs always
     /// sees them even when the default hide is on.
     #[serde(default)]
     pub status: Option<String>,
 
-    /// When `true`, include FRs whose status is not `open`.
-    /// Defaults to `false` — the tool returns only `open` FRs
-    /// unless `status` selects a different variant or `all` is set.
-    /// FR-024.
+    /// When `true`, include FRs whose status is default-hidden
+    /// (`completed`, `duplicate`, `superseded`). Defaults to `false`
+    /// — the tool hides those statuses unless `status` selects a
+    /// different variant or `all` is set. FR-024.
     #[serde(default)]
     pub all: Option<bool>,
 }
@@ -4052,7 +4052,7 @@ impl McpServer {
     // `init_project` or ask the user to `cd` into the repo.
 
     #[tool(
-        description = "File a new feature request in the current project's group. Slug is auto-minted from the title when omitted. Status defaults to `open`; supply one of `open | resolved | blocked | deferred | duplicate | superseded` to override. Errors with code `project_not_found` when no `.mmcp.toml` is on any ancestor of the server's cwd, `invalid_slug` when the supplied or derived slug fails validation, and `memory_already_exists` when the slug collides with an existing memory in the project group.",
+        description = "File a new feature request in the current project's group. Slug is auto-minted from the title when omitted. Status defaults to `requested`; supply one of `requested | approved | pending | completed | blocked | deferred | duplicate | superseded` to override. Errors with code `project_not_found` when no `.mmcp.toml` is on any ancestor of the server's cwd, `invalid_slug` when the supplied or derived slug fails validation, and `memory_already_exists` when the slug collides with an existing memory in the project group.",
         annotations(
             title = "Add feature request",
             read_only_hint = false,
@@ -4160,7 +4160,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Apply partial updates to an existing feature request and commit the result. Every mutator is optional — omit to leave untouched. `depends_on` and `blocks` are full-list replacements; pass `[]` to clear, omit to preserve. `status` takes the wire form of the status enum. Errors with `memory_not_found` when the slug has no FR, `not_a_feature` when the slug is a non-FR memory, and `invalid_feature_status` when `status` is not one of the six variants.",
+        description = "Apply partial updates to an existing feature request and commit the result. Every mutator is optional — omit to leave untouched. `depends_on` and `blocks` are full-list replacements; pass `[]` to clear, omit to preserve. `status` takes the wire form of the status enum. Errors with `memory_not_found` when the slug has no FR, `not_a_feature` when the slug is a non-FR memory, and `invalid_feature_status` when `status` is not one of the eight variants.",
         annotations(
             title = "Update feature request",
             read_only_hint = false,
@@ -4346,7 +4346,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List feature requests in the current project's group. By default hides every FR whose status is terminal-ish: `resolved`, `duplicate`, `superseded`. Open, blocked, and deferred FRs stay visible so the default listing reads as 'what still needs work'. Pass `all: true` to include every status, or `status: <variant>` to pin a specific lifecycle state (explicit `status` wins over the `all` flag). Non-FR memories in the same group are skipped so the listing stays FR-shaped. Memories whose frontmatter fails to parse are quietly omitted; use `diagnose` to surface those.",
+        description = "List feature requests in the current project's group. By default hides every FR whose status is terminal-ish: `completed`, `duplicate`, `superseded`. Requested, approved, pending, blocked, and deferred FRs stay visible so the default listing reads as 'what still needs work'. Pass `all: true` to include every status, or `status: <variant>` to pin a specific lifecycle state (explicit `status` wins over the `all` flag). Non-FR memories in the same group are skipped so the listing stays FR-shaped. Memories whose frontmatter fails to parse are quietly omitted; use `diagnose` to surface those.",
         annotations(
             title = "List feature requests",
             read_only_hint = true,

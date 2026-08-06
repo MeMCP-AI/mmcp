@@ -294,7 +294,7 @@ fn feature_add_list_read_round_trips_inside_project() {
         .assert()
         .success()
         .stdout(predicate::str::contains("created feature `fr-first`"))
-        .stdout(predicate::str::contains("status: open"));
+        .stdout(predicate::str::contains("status: requested"));
 
     mmcp()
         .args(["feature", "list"])
@@ -303,7 +303,7 @@ fn feature_add_list_read_round_trips_inside_project() {
         .assert()
         .success()
         .stdout(predicate::str::contains("fr-first"))
-        .stdout(predicate::str::contains("[open]"))
+        .stdout(predicate::str::contains("[requested]"))
         .stdout(predicate::str::contains("1 feature"));
 
     mmcp()
@@ -313,30 +313,30 @@ fn feature_add_list_read_round_trips_inside_project() {
         .assert()
         .success()
         .stdout(predicate::str::contains("slug        : fr-first"))
-        .stdout(predicate::str::contains("status      : open"))
+        .stdout(predicate::str::contains("status      : requested"))
         .stdout(predicate::str::contains("Test the CLI FR path."));
 
     mmcp()
-        .args(["feature", "update", "fr-first", "--status", "resolved"])
+        .args(["feature", "update", "fr-first", "--status", "completed"])
         .current_dir(tmp.path())
         .env("MMCP_HOME", &mmcp_home)
         .assert()
         .success()
         .stdout(predicate::str::contains("updated feature `fr-first`"))
-        .stdout(predicate::str::contains("status: resolved"));
+        .stdout(predicate::str::contains("status: completed"));
 
     mmcp()
-        .args(["feature", "list", "--status", "open"])
+        .args(["feature", "list", "--status", "requested"])
         .current_dir(tmp.path())
         .env("MMCP_HOME", &mmcp_home)
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "no feature requests with status `open`",
+            "no feature requests with status `requested`",
         ));
 
     // FR-024: default listing now hides closed-like FRs. The
-    // resolved entry above must drop out, and the help text has to
+    // completed entry above must drop out, and the help text has to
     // point operators at `--all` so the hide is self-documenting.
     mmcp()
         .args(["feature", "list"])
@@ -348,7 +348,7 @@ fn feature_add_list_read_round_trips_inside_project() {
             "no open feature requests in this project; pass --all to include closed ones",
         ));
 
-    // `--all` re-includes the resolved FR with its status marker.
+    // `--all` re-includes the completed FR with its status marker.
     mmcp()
         .args(["feature", "list", "--all"])
         .current_dir(tmp.path())
@@ -356,7 +356,7 @@ fn feature_add_list_read_round_trips_inside_project() {
         .assert()
         .success()
         .stdout(predicate::str::contains("fr-first"))
-        .stdout(predicate::str::contains("[resolved]"))
+        .stdout(predicate::str::contains("[completed]"))
         .stdout(predicate::str::contains("1 feature"));
 }
 
