@@ -6,7 +6,7 @@ use mmcp_git::{GitBackend, NativeBackend, Rev};
 use sqlx::sqlite::SqlitePool;
 use uuid::Uuid;
 
-use crate::groups::GroupIndex;
+use crate::groups::{GroupEntry, GroupIndex};
 use crate::memory::list_all_memory_files;
 
 use super::{CacheError, IndexedRecord};
@@ -36,41 +36,96 @@ pub async fn rebuild_full(
 
     for entry in groups.list().await {
         stats.groups_scanned += 1;
-        let rev = Rev::head();
-        let files = list_all_memory_files(backend, &entry.handle, &rev).await?;
-        for file_ref in files {
-            let bytes = match backend.read_file(&entry.handle, &file_ref.path, &rev).await {
-                Ok(bytes) => bytes,
-                // Raced with a concurrent delete/move between the
-                // listing and the read: skip rather than fail the
-                // whole rebuild over one vanished file.
-                Err(mmcp_git::GitError::PathNotFound(_)) => continue,
-                Err(err) => return Err(CacheError::Git(err)),
-            };
-            let text = String::from_utf8_lossy(&bytes);
-            let Ok(memory_file) = MemoryFile::parse(&text) else {
-                // A corrupt or non-conforming memory file should not
-                // sink the whole rebuild; `diagnose` / `check_health`
-                // already own surfacing parse errors as first-class
-                // findings, the cache just skips it.
-                continue;
-            };
-            let record = build_record(
-                entry.handle.group_id,
-                file_ref.id,
-                &file_ref.slug,
-                &file_ref.path,
-                "HEAD",
-                &memory_file,
-            );
-            upsert_record(pool, &record).await?;
-            stats.memories_indexed += 1;
-        }
+        stats.memories_indexed += index_group(pool, backend, &entry).await?;
     }
 
     let now = Timestamp::now().to_string();
     super::schema::mark_built(pool, &now).await?;
     Ok(stats)
+}
+
+/// Re-index every memory in exactly the groups named by `group_ids`,
+/// leaving every other group's rows untouched. Used by the sync
+/// pull-trigger hook (see `mmcp-client`'s `commands/sync.rs` and
+/// `commands/serve.rs`): re-walking only the groups a pull actually
+/// advanced is cheap and precise, unlike [`rebuild_full`]'s
+/// whole-mirror sweep. A no-op (not an error) if the index has never
+/// completed its first build — a pull-triggered partial update on
+/// top of a cache that was never built would leave every other
+/// local group looking indexed when it is not; the next read simply
+/// pays for the full lazy build instead.
+pub async fn rebuild_groups(
+    pool: &SqlitePool,
+    backend: &NativeBackend,
+    groups: &GroupIndex,
+    group_ids: &[Uuid],
+) -> Result<RebuildStats, CacheError> {
+    let mut stats = RebuildStats::default();
+    if group_ids.is_empty() || !super::schema::is_built(pool).await? {
+        return Ok(stats);
+    }
+    for group_id in group_ids {
+        let Some(entry) = groups
+            .get(&mmcp_core::id::GroupId::from_uuid(*group_id))
+            .await
+        else {
+            // Advertised by the pull report but not (yet) resolvable
+            // through the live index -- benign race with a
+            // concurrent index refresh; the next lazy or debug
+            // rebuild picks it up.
+            continue;
+        };
+        sqlx::query("DELETE FROM indexed_memory WHERE group_id = ?")
+            .bind(group_id.to_string())
+            .execute(pool)
+            .await?;
+        stats.groups_scanned += 1;
+        stats.memories_indexed += index_group(pool, backend, &entry).await?;
+    }
+    Ok(stats)
+}
+
+/// Read and upsert every memory currently in `entry`'s group at
+/// `HEAD`. Returns the number of memories indexed. Shared body for
+/// [`rebuild_full`] and [`rebuild_groups`]; callers own clearing any
+/// stale rows for the group before calling this.
+async fn index_group(
+    pool: &SqlitePool,
+    backend: &NativeBackend,
+    entry: &GroupEntry,
+) -> Result<usize, CacheError> {
+    let mut indexed = 0usize;
+    let rev = Rev::head();
+    let files = list_all_memory_files(backend, &entry.handle, &rev).await?;
+    for file_ref in files {
+        let bytes = match backend.read_file(&entry.handle, &file_ref.path, &rev).await {
+            Ok(bytes) => bytes,
+            // Raced with a concurrent delete/move between the
+            // listing and the read: skip rather than fail the whole
+            // rebuild over one vanished file.
+            Err(mmcp_git::GitError::PathNotFound(_)) => continue,
+            Err(err) => return Err(CacheError::Git(err)),
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        let Ok(memory_file) = MemoryFile::parse(&text) else {
+            // A corrupt or non-conforming memory file should not
+            // sink the whole rebuild; `diagnose` / `check_health`
+            // already own surfacing parse errors as first-class
+            // findings, the cache just skips it.
+            continue;
+        };
+        let record = build_record(
+            entry.handle.group_id,
+            file_ref.id,
+            &file_ref.slug,
+            &file_ref.path,
+            "HEAD",
+            &memory_file,
+        );
+        upsert_record(pool, &record).await?;
+        indexed += 1;
+    }
+    Ok(indexed)
 }
 
 /// Build an [`IndexedRecord`] from a parsed memory file plus the

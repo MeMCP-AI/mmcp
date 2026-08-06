@@ -3726,6 +3726,10 @@ impl McpServer {
             .pull(filter, &resolver, &resolver)
             .await
             .map_err(map_sync_error_to_mcp)?;
+        let updated_group_ids: Vec<uuid::Uuid> =
+            report.updated.iter().map(|g| g.group_id).collect();
+        mmcp_store::cache::notify_pull(&self.state.backend, &self.state.groups, &updated_group_ids)
+            .await;
         Ok(ok_json(json!({
             "updated": report.updated,
             "new_groups": report.new_groups,
@@ -3806,6 +3810,10 @@ impl McpServer {
             .sync(filter, &resolver, &resolver)
             .await
             .map_err(map_sync_error_to_mcp)?;
+        let updated_group_ids: Vec<uuid::Uuid> =
+            report.pulled.updated.iter().map(|g| g.group_id).collect();
+        mmcp_store::cache::notify_pull(&self.state.backend, &self.state.groups, &updated_group_ids)
+            .await;
         Ok(ok_json(json!({
             "pulled": {
                 "updated": report.pulled.updated,

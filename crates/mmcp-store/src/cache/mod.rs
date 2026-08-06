@@ -259,8 +259,28 @@ pub async fn notify_write(
     }
 }
 
+/// Pull-trigger hook: called by the CLI (`mmcp pull` / `mmcp sync`)
+/// and MCP (`sync_pull`) call sites right after
+/// `mmcp_sync::SyncEngine::pull` reports which groups advanced.
+/// Best-effort, same rationale as [`notify_write`]: re-indexes
+/// exactly `updated_group_ids` via [`rebuild_groups`], and swallows
+/// any failure after a `tracing::warn!` rather than failing the
+/// sync itself.
+pub async fn notify_pull(
+    backend: &mmcp_git::NativeBackend,
+    groups: &crate::groups::GroupIndex,
+    updated_group_ids: &[Uuid],
+) {
+    let Some(pool) = active_pool() else {
+        return;
+    };
+    if let Err(err) = index::rebuild_groups(&pool, backend, groups, updated_group_ids).await {
+        tracing::warn!(error = %err, "cache pull-trigger: failed to re-index pulled groups");
+    }
+}
+
 // Flattened re-exports so callers write `cache::rebuild_full(...)`
 // / `cache::keyword_search(...)` instead of reaching into the
 // submodule that happens to own the implementation.
-pub use index::{RebuildStats, build_record, rebuild_full, upsert_record};
+pub use index::{RebuildStats, build_record, rebuild_full, rebuild_groups, upsert_record};
 pub use query::{ensure_built, keyword_search};

@@ -147,6 +147,7 @@ async fn prepare(
     mmcp_sync::SyncEngine,
     mmcp_store::sync::IndexResolver,
     mmcp_sync::SyncFilter,
+    std::sync::Arc<mmcp_git::NativeBackend>,
 )> {
     let cwd = std::env::current_dir().context("reading current working directory")?;
     let root = find_project_root(&cwd)
@@ -163,18 +164,22 @@ async fn prepare(
     let mmcp_home = MmcpHome::discover()?;
     let (backend, group_index) = mmcp_home.init_backend().await?;
     let filter = resolve_sync_filter(selector, &group_index).await?;
+    // Keep our own handle on the backend for the pull-trigger cache
+    // hook below; `build_engine` takes ownership of a clone.
+    let backend_for_cache = backend.clone();
     let (engine, resolver) = build_engine(backend, group_index, &server_url)?;
-    Ok((server_url, engine, resolver, filter))
+    Ok((server_url, engine, resolver, filter, backend_for_cache))
 }
 
 /// Run `mmcp pull`: fetch each in-scope group's remote head into
 /// the local tracking ref, then fast-forward local `main`.
 pub async fn run_pull(selector: SyncSelector) -> Result<()> {
-    let (server_url, engine, resolver, filter) = prepare(&selector).await?;
+    let (server_url, engine, resolver, filter, backend) = prepare(&selector).await?;
     let report = engine
         .pull(filter, &resolver, &resolver)
         .await
         .map_err(to_anyhow)?;
+    notify_cache_of_pull(&backend, &resolver.index, &report).await;
     tracing::info!(
         server = %server_url,
         updated = report.updated.len(),
@@ -193,7 +198,7 @@ pub async fn run_pull(selector: SyncSelector) -> Result<()> {
 /// Run `mmcp push`: walk each in-scope group and ship local `main`
 /// to the remote.
 pub async fn run_push(selector: SyncSelector) -> Result<()> {
-    let (server_url, engine, resolver, filter) = prepare(&selector).await?;
+    let (server_url, engine, resolver, filter, _backend) = prepare(&selector).await?;
     let report = engine
         .push(filter, &resolver, &resolver)
         .await
@@ -218,11 +223,12 @@ pub async fn run_push(selector: SyncSelector) -> Result<()> {
 /// an `anyhow::Error` carrying `SyncError::Conflict` on conflict
 /// (caller maps to exit 2), any other `anyhow::Error` generic (1).
 pub async fn run_sync(selector: SyncSelector) -> Result<()> {
-    let (server_url, engine, resolver, filter) = prepare(&selector).await?;
+    let (server_url, engine, resolver, filter, backend) = prepare(&selector).await?;
     let report = engine
         .sync(filter, &resolver, &resolver)
         .await
         .map_err(to_anyhow)?;
+    notify_cache_of_pull(&backend, &resolver.index, &report.pulled).await;
     tracing::info!(
         server = %server_url,
         updated = report.pulled.updated.len(),
@@ -246,4 +252,17 @@ pub async fn run_sync(selector: SyncSelector) -> Result<()> {
 
 fn to_anyhow(err: SyncError) -> anyhow::Error {
     anyhow::Error::from(err)
+}
+
+/// Pull-trigger wiring for the local content cache: re-index
+/// exactly the groups `report` says advanced. Best-effort via
+/// [`mmcp_store::cache::notify_pull`] — never fails the `pull` /
+/// `sync` command it observes.
+async fn notify_cache_of_pull(
+    backend: &mmcp_git::NativeBackend,
+    groups: &mmcp_store::GroupIndex,
+    report: &mmcp_sync::PullReport,
+) {
+    let updated: Vec<uuid::Uuid> = report.updated.iter().map(|g| g.group_id).collect();
+    mmcp_store::cache::notify_pull(backend, groups, &updated).await;
 }
