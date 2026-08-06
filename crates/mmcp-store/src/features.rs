@@ -105,7 +105,7 @@ pub enum FeatureError {
     SupersedesUnknown { query: String },
 
     /// `supersedes` pointed at an FR whose current status rules out
-    /// supersession: `Resolved`, `Duplicate`, or `Superseded`. The
+    /// supersession: `Duplicate` or `Superseded`. The
     /// already-superseded case carries the typed back-link so
     /// callers can chase to the tip of the chain.
     #[error("supersedes target '{slug}' has status '{}' which cannot be superseded", status.as_str())]
@@ -309,8 +309,8 @@ impl FeatureSummary {
 /// supersede flow:
 ///
 /// 1. Resolve the old FR in the same group. Reject when the old
-///    FR is in a status that cannot be superseded (`Resolved`,
-///    `Duplicate`, `Superseded`).
+///    FR is in a status that cannot be superseded (`Duplicate`,
+///    `Superseded`).
 /// 2. Commit A: write the new FR. Its `refs` list auto-receives
 ///    an entry pointing at the old FR pinned to that FR's
 ///    pre-supersede HEAD commit.
@@ -497,16 +497,18 @@ async fn resolve_supersede_target(
         Err(other) => return Err(other),
     };
 
-    // FR-51: Resolved targets are now allowed so a redesign that
+    // FR-51: Completed targets are now allowed so a redesign that
     // replaces a landed feature can capture the relationship as a
     // typed `superseded_by` chain instead of prose-only references.
     // Duplicate keeps its own redirect semantics; Superseded already
     // carries a back-link the caller should chase to the tip.
     match record.status {
-        FeatureStatus::Open
+        FeatureStatus::Requested
+        | FeatureStatus::Approved
+        | FeatureStatus::Pending
         | FeatureStatus::Blocked
         | FeatureStatus::Deferred
-        | FeatureStatus::Resolved => {}
+        | FeatureStatus::Completed => {}
         FeatureStatus::Superseded => {
             return Err(FeatureError::SupersedesInvalidStatus {
                 slug: record.slug,
@@ -926,13 +928,13 @@ pub async fn delete_feature(
 /// Filter precedence (FR-024 + supersede follow-up):
 /// 1. `status_filter = Some(x)` → include every FR whose status
 ///    matches, regardless of `show_all`. Explicit selector wins so
-///    a caller asking for `resolved` or `superseded` FRs always
+///    a caller asking for `completed` or `superseded` FRs always
 ///    sees them.
 /// 2. `status_filter = None` + `show_all = true` → include every
 ///    FR. The "show me literally everything" escape hatch.
 /// 3. `status_filter = None` + `show_all = false` → hide every
 ///    status marked [`FeatureStatus::is_default_hidden`]
-///    (`Resolved`, `Duplicate`, `Superseded`). Default listing
+///    (`Completed`, `Duplicate`, `Superseded`). Default listing
 ///    matches the "what still needs work?" mental model operators
 ///    reach for; the closed-ish statuses only come back via the
 ///    `show_all` escape hatch or an explicit `status` selector.
@@ -1158,7 +1160,7 @@ mod tests {
             title: "Round trip".into(),
             description: "Sanity test for the add/read round trip".into(),
             body: "## Need\n\nA round trip.\n".into(),
-            status: FeatureStatus::Open,
+            status: FeatureStatus::Requested,
             depends_on: vec![prior_id],
             blocks: vec![later_id],
             ..AddSpec::default()
@@ -1167,7 +1169,7 @@ mod tests {
             .await
             .expect("add");
         assert_eq!(created.slug, "fr-round-trip");
-        assert_eq!(created.status, FeatureStatus::Open);
+        assert_eq!(created.status, FeatureStatus::Requested);
         assert_eq!(created.depends_on, vec![prior_id]);
 
         let loaded = read_feature(scratch.backend(), &entry, "fr-round-trip", None)
@@ -1226,7 +1228,7 @@ mod tests {
             &entry,
             "fr-upd",
             UpdateSpec {
-                status: Some(FeatureStatus::Resolved),
+                status: Some(FeatureStatus::Completed),
                 ..UpdateSpec::default()
             },
             scratch.author(),
@@ -1234,7 +1236,7 @@ mod tests {
         .await
         .expect("update");
 
-        assert_eq!(updated.status, FeatureStatus::Resolved);
+        assert_eq!(updated.status, FeatureStatus::Completed);
         assert_eq!(updated.title, "Before", "title preserved across update");
         assert_eq!(
             updated.description, "unchanged",
@@ -1250,16 +1252,16 @@ mod tests {
         let seeded = scratch.seed_group("fr-group").await.expect("seed");
         let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
 
-        // Cover the visibility matrix: two visible (Open +
-        // Blocked), two default-hidden (Resolved + Duplicate).
+        // Cover the visibility matrix: two visible (Requested +
+        // Blocked), two default-hidden (Completed + Duplicate).
         // Superseded is intentionally omitted from this fixture
         // because it only reaches the on-disk state via the
         // two-commit supersede flow, which is exercised
         // separately by `list_default_hides_superseded_fr`
         // below.
         for (slug, status) in [
-            ("fr-a", FeatureStatus::Open),
-            ("fr-b", FeatureStatus::Resolved),
+            ("fr-a", FeatureStatus::Requested),
+            ("fr-b", FeatureStatus::Completed),
             ("fr-c", FeatureStatus::Blocked),
             ("fr-d", FeatureStatus::Duplicate),
         ] {
@@ -1290,24 +1292,28 @@ mod tests {
         // Explicit status selector wins over the default filter —
         // even with `show_all=false` the caller receives every FR
         // matching the requested status.
-        let (opens, opens_findings) =
-            list_feature_summaries(scratch.backend(), &entry, Some(FeatureStatus::Open), false)
-                .await
-                .expect("list open");
-        assert!(opens_findings.is_empty());
-        let open_slugs: Vec<_> = opens.into_iter().map(|s| s.slug).collect();
-        assert_eq!(open_slugs, vec!["fr-a".to_string()]);
-
-        let (resolved, _resolved_findings) = list_feature_summaries(
+        let (requested, requested_findings) = list_feature_summaries(
             scratch.backend(),
             &entry,
-            Some(FeatureStatus::Resolved),
+            Some(FeatureStatus::Requested),
             false,
         )
         .await
-        .expect("list resolved with show_all=false still returns matches");
+        .expect("list requested");
+        assert!(requested_findings.is_empty());
+        let requested_slugs: Vec<_> = requested.into_iter().map(|s| s.slug).collect();
+        assert_eq!(requested_slugs, vec!["fr-a".to_string()]);
+
+        let (completed, _completed_findings) = list_feature_summaries(
+            scratch.backend(),
+            &entry,
+            Some(FeatureStatus::Completed),
+            false,
+        )
+        .await
+        .expect("list completed with show_all=false still returns matches");
         assert_eq!(
-            resolved.len(),
+            completed.len(),
             1,
             "explicit status filter wins over the default hide",
         );
@@ -1324,12 +1330,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_default_hides_resolved_and_duplicate_but_keeps_blocked() {
+    async fn list_default_hides_completed_and_duplicate_but_keeps_blocked() {
         // Default listing (status=None, show_all=false) hides only
-        // the terminal-ish statuses: Resolved, Duplicate,
+        // the terminal-ish statuses: Completed, Duplicate,
         // Superseded. In-progress-but-gated statuses (Blocked,
         // Deferred) stay visible so operators can still see what
-        // is waiting on them. Open stays visible.
+        // is waiting on them. Requested stays visible.
         let scratch = ScratchHome::new().await.expect("scratch home");
         let entry = seed_mixed_status_fixture(&scratch).await;
 
@@ -1341,7 +1347,7 @@ mod tests {
         assert_eq!(
             slugs,
             vec!["fr-a".to_string(), "fr-c".to_string()],
-            "default listing must keep Open + Blocked and drop Resolved + Duplicate",
+            "default listing must keep Requested + Blocked and drop Completed + Duplicate",
         );
     }
 
@@ -2075,15 +2081,16 @@ mod tests {
         }
     }
 
-    /// FR-51: superseding a Resolved FR captures the redesign-
+    /// FR-51: superseding a Completed feature captures the redesign-
     /// replaces-landed-design relationship as a typed
     /// `superseded_by` chain. The two-commit flow runs and the
-    /// back-link symmetry holds — old FR flips to `Superseded`,
-    /// new FR carries a ref pointing at the old FR's pre-supersede
-    /// commit. Duplicate and Superseded targets stay rejected (see
+    /// back-link symmetry holds — old feature flips to `Superseded`,
+    /// new feature carries a ref pointing at the old feature's
+    /// pre-supersede commit. Duplicate and Superseded targets stay
+    /// rejected (see
     /// `add_feature_supersedes_already_superseded_fr_chains_the_link`).
     #[tokio::test]
-    async fn add_feature_can_supersede_resolved_target() {
+    async fn add_feature_can_supersede_completed_target() {
         let scratch = ScratchHome::new().await.expect("scratch home");
         let seeded = scratch.seed_group("fr-group").await.expect("seed");
         let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
@@ -2092,15 +2099,15 @@ mod tests {
             scratch.backend(),
             &entry,
             AddSpec {
-                slug: Some("old-resolved".into()),
+                slug: Some("old-completed".into()),
                 title: "Old".into(),
-                status: FeatureStatus::Resolved,
+                status: FeatureStatus::Completed,
                 ..AddSpec::default()
             },
             scratch.author(),
         )
         .await
-        .expect("seed resolved FR");
+        .expect("seed completed FR");
 
         let new_record = add_feature(
             scratch.backend(),
@@ -2108,15 +2115,15 @@ mod tests {
             AddSpec {
                 slug: Some("new-fr".into()),
                 title: "New".into(),
-                supersedes: Some("old-resolved".into()),
+                supersedes: Some("old-completed".into()),
                 ..AddSpec::default()
             },
             scratch.author(),
         )
         .await
-        .expect("supersede flow against Resolved target succeeds");
+        .expect("supersede flow against Completed target succeeds");
 
-        let old_after = read_feature(scratch.backend(), &entry, "old-resolved", None)
+        let old_after = read_feature(scratch.backend(), &entry, "old-completed", None)
             .await
             .expect("re-read old after supersede");
         assert_eq!(old_after.status, FeatureStatus::Superseded);
