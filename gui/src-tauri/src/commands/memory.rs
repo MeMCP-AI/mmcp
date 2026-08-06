@@ -120,42 +120,9 @@ impl From<&MemoryFile> for MemoryFileDto {
     }
 }
 
-fn parse_feature_status(s: &str) -> mmcp_core::memory::FeatureStatus {
-    use mmcp_core::memory::FeatureStatus;
-    match s {
-        "resolved" => FeatureStatus::Resolved,
-        "blocked" => FeatureStatus::Blocked,
-        "deferred" => FeatureStatus::Deferred,
-        "duplicate" => FeatureStatus::Duplicate,
-        "superseded" => FeatureStatus::Superseded,
-        _ => FeatureStatus::Open,
-    }
-}
-
-fn parse_issue_status(s: &str) -> mmcp_core::memory::IssueStatus {
-    use mmcp_core::memory::IssueStatus;
-    match s {
-        "closed" => IssueStatus::Closed,
-        "wontfix" => IssueStatus::Wontfix,
-        "blocked" => IssueStatus::Blocked,
-        "deferred" => IssueStatus::Deferred,
-        "duplicate" => IssueStatus::Duplicate,
-        "superseded" => IssueStatus::Superseded,
-        _ => IssueStatus::Open,
-    }
-}
-
 fn parse_kind(s: &str) -> GuiResult<MemoryKind> {
-    match s {
-        "rule" => Ok(MemoryKind::Rule),
-        "snapshot" => Ok(MemoryKind::Snapshot),
-        "log" => Ok(MemoryKind::Log),
-        "reference" => Ok(MemoryKind::Reference),
-        "scratch" => Ok(MemoryKind::Scratch),
-        "feature" | "fr" => Ok(MemoryKind::Feature),
-        "issue" => Ok(MemoryKind::Issue),
-        other => Err(GuiError::Other(format!("unknown kind: {other}"))),
-    }
+    s.parse::<MemoryKind>()
+        .map_err(|e| GuiError::Other(e.to_string()))
 }
 
 fn group_id_from_str(s: &str) -> GuiResult<GroupId> {
@@ -231,29 +198,37 @@ fn to_memory_file(dto: MemoryFileDto) -> GuiResult<MemoryFile> {
         feature: dto
             .frontmatter
             .feature
-            .map(|f| mmcp_core::memory::FeatureMetadata {
-                status: parse_feature_status(&f.status),
-                number: f.number,
-                depends_on: f.depends_on,
-                blocks: f.blocks,
-                superseded_by: f.superseded_by.map(|r| mmcp_core::memory::MemoryRef {
-                    target: r.target,
-                    commit: r.commit,
-                }),
-            }),
+            .map(|f| -> GuiResult<mmcp_core::memory::FeatureMetadata> {
+                Ok(mmcp_core::memory::FeatureMetadata {
+                    status: mmcp_core::memory::FeatureStatus::parse(&f.status)
+                        .map_err(|e| GuiError::Other(e.to_string()))?,
+                    number: f.number,
+                    depends_on: f.depends_on,
+                    blocks: f.blocks,
+                    superseded_by: f.superseded_by.map(|r| mmcp_core::memory::MemoryRef {
+                        target: r.target,
+                        commit: r.commit,
+                    }),
+                })
+            })
+            .transpose()?,
         issue: dto
             .frontmatter
             .issue
-            .map(|i| mmcp_core::memory::IssueMetadata {
-                status: parse_issue_status(&i.status),
-                number: i.number,
-                depends_on: i.depends_on,
-                blocks: i.blocks,
-                superseded_by: i.superseded_by.map(|r| mmcp_core::memory::MemoryRef {
-                    target: r.target,
-                    commit: r.commit,
-                }),
-            }),
+            .map(|i| -> GuiResult<mmcp_core::memory::IssueMetadata> {
+                Ok(mmcp_core::memory::IssueMetadata {
+                    status: mmcp_core::memory::IssueStatus::parse(&i.status)
+                        .map_err(|e| GuiError::Other(e.to_string()))?,
+                    number: i.number,
+                    depends_on: i.depends_on,
+                    blocks: i.blocks,
+                    superseded_by: i.superseded_by.map(|r| mmcp_core::memory::MemoryRef {
+                        target: r.target,
+                        commit: r.commit,
+                    }),
+                })
+            })
+            .transpose()?,
         refs: dto
             .frontmatter
             .refs
