@@ -34,6 +34,12 @@ pub enum DebugCommand {
     ReadFile(ReadFileArgs),
     /// Write raw bytes to a file in the repo (commits the result).
     WriteFile(WriteFileArgs),
+    /// Force a full rebuild of the local content cache, regardless
+    /// of whether it already looks built. Reach for this after
+    /// suspecting the cache has drifted from the git mirrors (e.g.
+    /// a manual edit under `~/.mmcp/repos` outside the normal write
+    /// path) rather than deleting the cache database by hand.
+    CacheRebuild,
 }
 
 #[derive(Debug, Args)]
@@ -114,7 +120,29 @@ pub async fn run(args: DebugArgs) -> Result<()> {
         Some(DebugCommand::ListTree(a)) => run_list_tree(a).await,
         Some(DebugCommand::ReadFile(a)) => run_read_file(a).await,
         Some(DebugCommand::WriteFile(a)) => run_write_file(a).await,
+        Some(DebugCommand::CacheRebuild) => run_cache_rebuild().await,
     }
+}
+
+/// Force a full rebuild of the local content cache across every
+/// locally-mirrored group, regardless of whether the cache already
+/// looks built. Unlike the lazy-build-on-read path (which only ever
+/// runs once, the first time a query finds the index missing), this
+/// always re-walks every group.
+async fn run_cache_rebuild() -> Result<()> {
+    let home = MmcpHome::discover()?;
+    let (backend, groups) = home.init_backend().await?;
+    let pool = mmcp_store::cache::open_pool(&mmcp_store::cache::default_db_path(&home))
+        .await
+        .context("opening local content cache database")?;
+    let stats = mmcp_store::cache::rebuild_full(&pool, &backend, &groups)
+        .await
+        .context("rebuilding local content cache")?;
+    println!(
+        "cache rebuild complete: {} group(s) scanned, {} memory/memories indexed",
+        stats.groups_scanned, stats.memories_indexed
+    );
+    Ok(())
 }
 
 async fn run_git_log(args: GitLogArgs) -> Result<()> {

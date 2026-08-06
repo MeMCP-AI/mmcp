@@ -359,3 +359,39 @@ fn feature_add_list_read_round_trips_inside_project() {
         .stdout(predicate::str::contains("[resolved]"))
         .stdout(predicate::str::contains("1 feature"));
 }
+
+#[test]
+fn debug_cache_rebuild_forces_a_full_reindex() {
+    // `init project` without `--config-only` creates a real local
+    // bare group repo -- no remote needed -- so the rebuild below
+    // has a real group to walk.
+    let tmp = tempfile::tempdir().unwrap();
+    let mmcp_home = tmp.path().join("mmcp-home");
+    mmcp()
+        .args(["init", "project", "--slug", "cache-rebuild-smoke"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+
+    mmcp()
+        .args(["debug", "cache-rebuild"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cache rebuild complete"))
+        .stdout(predicate::str::contains("1 group(s) scanned"));
+
+    // The debug rebuild opens its own pool directly rather than
+    // reusing the process-global one, so the on-disk file it wrote
+    // to is exactly `default_db_path` -- assert on that path
+    // directly rather than re-deriving it, so a future change to
+    // the layout breaks this test instead of silently drifting.
+    let db_path = mmcp_home.join("cache").join("index.sqlite3");
+    assert!(
+        db_path.exists(),
+        "cache-rebuild must create the cache database at {}",
+        db_path.display()
+    );
+}
