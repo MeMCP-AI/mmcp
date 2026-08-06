@@ -4,7 +4,9 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::memory::{BumpIntent, FeatureMetadata, IssueMetadata, MemoryKind, MemoryRef, MilestoneMetadata};
+use crate::memory::{
+    BumpIntent, FeatureMetadata, IssueMetadata, MemoryKind, MemoryRef, MilestoneMetadata,
+};
 
 /// User-visible metadata written in the `+++`-delimited TOML block at
 /// the top of a memory file.

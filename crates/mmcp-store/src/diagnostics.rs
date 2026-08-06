@@ -875,13 +875,13 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
         for entry in &entries {
             let rev = Rev::head();
             let gid = entry.handle.group_id.to_string();
-            let Ok(files) = crate::memory::list_all_memory_files(backend, &entry.handle, &rev).await
+            let Ok(files) =
+                crate::memory::list_all_memory_files(backend, &entry.handle, &rev).await
             else {
                 continue;
             };
             for file_ref in files {
-                let Ok(bytes) = backend.read_file(&entry.handle, &file_ref.path, &rev).await
-                else {
+                let Ok(bytes) = backend.read_file(&entry.handle, &file_ref.path, &rev).await else {
                     continue;
                 };
                 let Ok(text) = std::str::from_utf8(&bytes) else {
@@ -911,12 +911,12 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
                         slug: Some(file_ref.slug.clone()),
                         severity: "info",
                         code: "milestone_rollup_empty",
-                        message:
-                            "no locally-mirrored feature currently targets this milestone"
-                                .to_string(),
+                        message: "no locally-mirrored feature currently targets this milestone"
+                            .to_string(),
                     });
                 }
-                let editorial_completed = meta.status == mmcp_core::memory::MilestoneStatus::Completed;
+                let editorial_completed =
+                    meta.status == mmcp_core::memory::MilestoneStatus::Completed;
                 let rollup_completed = computed.status == crate::rollup::RollupStatus::Completed;
                 if editorial_completed != rollup_completed {
                     report.findings.push(Finding {
@@ -1100,7 +1100,10 @@ mod milestone_reference_tests {
     #[tokio::test]
     async fn dangling_milestone_reference_is_flagged() {
         let scratch = ScratchHome::new().await.expect("scratch home");
-        let seeded = scratch.seed_group("diag-milestone-group").await.expect("seed");
+        let seeded = scratch
+            .seed_group("diag-milestone-group")
+            .await
+            .expect("seed");
         let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
 
         crate::features::add_feature(
@@ -1138,7 +1141,10 @@ mod milestone_reference_tests {
     #[tokio::test]
     async fn milestone_reference_pointing_at_wrong_kind_is_flagged() {
         let scratch = ScratchHome::new().await.expect("scratch home");
-        let seeded = scratch.seed_group("diag-milestone-group").await.expect("seed");
+        let seeded = scratch
+            .seed_group("diag-milestone-group")
+            .await
+            .expect("seed");
         let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
 
         crate::features::add_feature(
@@ -1200,7 +1206,10 @@ mod milestone_reference_tests {
     #[tokio::test]
     async fn milestone_with_no_dangling_ref_stays_clean() {
         let scratch = ScratchHome::new().await.expect("scratch home");
-        let seeded = scratch.seed_group("diag-milestone-group").await.expect("seed");
+        let seeded = scratch
+            .seed_group("diag-milestone-group")
+            .await
+            .expect("seed");
         let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
 
         let milestone = crate::milestones::add_milestone(

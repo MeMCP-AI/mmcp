@@ -80,7 +80,9 @@ pub const LAST_FULL_REBUILD_KEY: &str = "last_full_rebuild_at";
 pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), CacheError> {
     sqlx::query(CREATE_INDEXED_MEMORY).execute(pool).await?;
     if !has_column(pool, "indexed_memory", "milestone").await? {
-        sqlx::query("DROP TABLE indexed_memory").execute(pool).await?;
+        sqlx::query("DROP TABLE indexed_memory")
+            .execute(pool)
+            .await?;
         sqlx::query(CREATE_CACHE_META).execute(pool).await?;
         sqlx::query("DELETE FROM cache_meta WHERE key = ?")
             .bind(LAST_FULL_REBUILD_KEY)

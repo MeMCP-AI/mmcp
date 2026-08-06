@@ -6520,15 +6520,13 @@ fn map_milestone_error_to_mcp(err: mmcp_store::milestones::MilestoneError) -> Mc
                 "kind": kind,
             })),
         ),
-        MilestoneError::TitleRequired => McpError::invalid_params(
-            message,
-            Some(json!({ "code": "milestone_title_required" })),
-        ),
+        MilestoneError::TitleRequired => {
+            McpError::invalid_params(message, Some(json!({ "code": "milestone_title_required" })))
+        }
         MilestoneError::Memory(inner) => map_memory_error_to_mcp(inner),
-        MilestoneError::Cache(_) => McpError::internal_error(
-            message,
-            Some(json!({ "code": "cache_unavailable" })),
-        ),
+        MilestoneError::Cache(_) => {
+            McpError::internal_error(message, Some(json!({ "code": "cache_unavailable" })))
+        }
     }
 }
 
@@ -8971,9 +8969,13 @@ mod tests {
     #[tokio::test]
     async fn milestone_tools_reject_a_feature_slug() {
         let (state, _tmp) = test_state().await;
-        let group =
-            seed_group_with_memory(&state, "milestone-not-a-feature", "seed-only", SAMPLE_MEMORY)
-                .await;
+        let group = seed_group_with_memory(
+            &state,
+            "milestone-not-a-feature",
+            "seed-only",
+            SAMPLE_MEMORY,
+        )
+        .await;
         let entry = state.groups.get(&group).await.expect("group entry");
 
         mmcp_store::features::add_feature(

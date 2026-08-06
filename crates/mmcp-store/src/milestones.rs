@@ -122,7 +122,9 @@ pub async fn add_milestone(
     validate_slug(&slug).map_err(MilestoneError::Memory)?;
 
     let id = Uuid::now_v7();
-    let metadata = MilestoneMetadata { status: spec.status };
+    let metadata = MilestoneMetadata {
+        status: spec.status,
+    };
     let mut file = build_memory_file(
         spec.title.clone(),
         spec.description.clone(),
