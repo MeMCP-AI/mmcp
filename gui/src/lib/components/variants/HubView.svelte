@@ -194,7 +194,7 @@
     allCachedEntries.filter(
       (e) =>
         classifyMemoryKind(e.body.frontmatter.kind) === 'issue' &&
-        e.body.frontmatter.feature?.status === 'open'
+        e.body.frontmatter.feature?.status === 'requested'
     )
   );
 

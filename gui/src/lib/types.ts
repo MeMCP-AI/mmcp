@@ -28,8 +28,10 @@ export interface MemoryRef {
 }
 
 export type FeatureStatus =
-  | 'open'
-  | 'resolved'
+  | 'requested'
+  | 'approved'
+  | 'pending'
+  | 'completed'
   | 'blocked'
   | 'deferred'
   | 'duplicate'

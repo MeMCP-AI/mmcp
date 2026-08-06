@@ -3,7 +3,16 @@
   // the lifecycle state so a glance at a list conveys where each
   // FR stands without expanding it.
 
-  import { Ban, CheckCircle2, Circle, CircleDashed, GitMerge, PauseCircle } from '@lucide/svelte';
+  import {
+    Ban,
+    CheckCircle2,
+    Circle,
+    CircleDashed,
+    GitMerge,
+    Hourglass,
+    PauseCircle,
+    ThumbsUp
+  } from '@lucide/svelte';
   import type { FeatureStatus } from '$lib/types';
 
   interface Props {
@@ -21,13 +30,23 @@
     FeatureStatus,
     { label: string; Icon: typeof Circle; cls: string }
   > = {
-    open: {
-      label: 'Open',
+    requested: {
+      label: 'Requested',
       Icon: Circle,
       cls: 'bg-sky-500/15 text-sky-300 ring-sky-500/40'
     },
-    resolved: {
-      label: 'Resolved',
+    approved: {
+      label: 'Approved',
+      Icon: ThumbsUp,
+      cls: 'bg-indigo-500/15 text-indigo-300 ring-indigo-500/40'
+    },
+    pending: {
+      label: 'Pending',
+      Icon: Hourglass,
+      cls: 'bg-cyan-500/15 text-cyan-300 ring-cyan-500/40'
+    },
+    completed: {
+      label: 'Completed',
       Icon: CheckCircle2,
       cls: 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/40'
     },

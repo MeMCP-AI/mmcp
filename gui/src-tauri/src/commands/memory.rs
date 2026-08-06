@@ -22,9 +22,10 @@ pub struct MemoryRefDto {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FeatureMetadataDto {
-    /// Serde-snake-case: open, resolved, blocked, deferred,
-    /// duplicate, superseded. Kept as a String on the wire so the
-    /// frontend doesn't have to re-declare the enum variants.
+    /// Serde-snake-case: requested, approved, pending, completed,
+    /// blocked, deferred, duplicate, superseded. Kept as a String on
+    /// the wire so the frontend doesn't have to re-declare the enum
+    /// variants.
     pub status: String,
     pub number: Option<u32>,
     #[serde(default)]
