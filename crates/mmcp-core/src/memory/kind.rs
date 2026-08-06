@@ -39,11 +39,6 @@ pub enum MemoryKind {
     /// frontmatter (status, depends_on, blocks) so the feature
     /// lifecycle tools can filter and cross-reference without
     /// parsing the body.
-    ///
-    /// The `fr` serde alias keeps pre-FR-027 memories readable;
-    /// writers emit `feature` so a rewrite on the next edit
-    /// auto-upgrades the on-disk wire form.
-    #[serde(alias = "fr")]
     Feature,
 
     /// Issue tracker entry. Sister kind to `Feature`. Carries a
@@ -57,8 +52,9 @@ pub enum MemoryKind {
 impl MemoryKind {
     /// The canonical string representation of this kind, matching
     /// the serde `snake_case` serialization. FR-027 renamed the
-    /// former `Fr` variant to `Feature`; the wire emits `feature`
-    /// while the `fr` serde alias preserves read compatibility.
+    /// former `Fr` variant to `Feature`; the `migrate_fr_slugs`
+    /// one-time migration rewrote every on-disk memory to the new
+    /// spelling, so `feature` is the only wire form accepted now.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -143,12 +139,14 @@ mod tests {
     }
 
     #[test]
-    fn feature_kind_accepts_fr_serde_alias_for_read_compat() {
-        // Pre-FR-027 memories on disk carry `kind = "fr"`; the
-        // alias keeps them readable without a migration so the
-        // rename can land before the disk rewrite.
-        let parsed: MemoryKind = serde_json::from_str("\"fr\"").expect("fr alias");
-        assert_eq!(parsed, MemoryKind::Feature);
+    fn feature_kind_rejects_legacy_fr_alias() {
+        // The `fr` serde alias was retired: `migrate_fr_slugs` ran
+        // months ago and rewrote every on-disk memory to the
+        // canonical `feature` spelling, so legacy code is code to
+        // delete. A `kind = "fr"` memory must now fail to parse
+        // rather than silently round-tripping through a dead alias.
+        let result: Result<MemoryKind, _> = serde_json::from_str("\"fr\"");
+        assert!(result.is_err());
     }
 
     #[test]
