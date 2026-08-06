@@ -694,4 +694,167 @@ mod tests {
         assert_eq!(record.rollup.counted, 1);
         let _ = milestone;
     }
+
+    #[tokio::test]
+    async fn mixed_status_features_from_two_groups_fold_into_in_progress() {
+        // Direct exercise of the gate scenario: a milestone with
+        // features assigned from TWO DIFFERENT local groups, whose
+        // statuses genuinely differ, must fold into one coherent
+        // cross-group rollup rather than only seeing one side.
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let milestone_group = scratch
+            .seed_group("gate-milestone-group")
+            .await
+            .expect("seed milestone group");
+        let group_a = scratch
+            .seed_group("gate-feature-group-a")
+            .await
+            .expect("seed group a");
+        let group_b = scratch
+            .seed_group("gate-feature-group-b")
+            .await
+            .expect("seed group b");
+        let milestone_entry = scratch
+            .groups()
+            .get(&milestone_group.group_id)
+            .await
+            .expect("milestone entry");
+        let entry_a = scratch
+            .groups()
+            .get(&group_a.group_id)
+            .await
+            .expect("entry a");
+        let entry_b = scratch
+            .groups()
+            .get(&group_b.group_id)
+            .await
+            .expect("entry b");
+        let (_tmp, pool) = scratch_pool().await;
+
+        add_milestone(
+            scratch.backend(),
+            &milestone_entry,
+            AddSpec {
+                slug: Some("gate-milestone".into()),
+                title: "Gate Milestone".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed milestone");
+        let milestone_id = crate::memory::resolve_memory(
+            scratch.backend(),
+            &milestone_entry.handle,
+            Some("gate-milestone"),
+            None,
+        )
+        .await
+        .expect("resolve milestone")
+        .id;
+
+        // Group A: one Completed feature.
+        crate::features::add_feature(
+            scratch.backend(),
+            &entry_a,
+            crate::features::AddSpec {
+                slug: Some("feat-a-done".into()),
+                title: "done in group a".into(),
+                description: "gate test".into(),
+                body: "x".into(),
+                status: mmcp_core::memory::FeatureStatus::Completed,
+                milestone: Some(milestone_id),
+                ..crate::features::AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed group a feature");
+
+        // Group B: one still-in-progress feature.
+        crate::features::add_feature(
+            scratch.backend(),
+            &entry_b,
+            crate::features::AddSpec {
+                slug: Some("feat-b-pending".into()),
+                title: "pending in group b".into(),
+                description: "gate test".into(),
+                body: "x".into(),
+                status: mmcp_core::memory::FeatureStatus::Pending,
+                milestone: Some(milestone_id),
+                ..crate::features::AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed group b feature");
+
+        let record = read_milestone(
+            scratch.backend(),
+            &milestone_entry,
+            &pool,
+            scratch.groups(),
+            "gate-milestone",
+            None,
+        )
+        .await
+        .expect("read milestone");
+        assert_eq!(
+            record.rollup.status,
+            RollupStatus::InProgress,
+            "a completed feature in one group plus a pending feature in another must fold into InProgress: {:?}",
+            record.rollup
+        );
+        assert_eq!(
+            record.rollup.counted, 2,
+            "both cross-group features must count"
+        );
+        assert_eq!(record.rollup.completed, 1);
+
+        // Now flip group B's feature to Blocked and confirm the
+        // rollup updates to reflect the mixed set correctly again.
+        crate::features::update_feature(
+            scratch.backend(),
+            &entry_b,
+            "feat-b-pending",
+            crate::features::UpdateSpec {
+                status: Some(mmcp_core::memory::FeatureStatus::Blocked),
+                ..crate::features::UpdateSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("flip group b feature to blocked");
+        // This test opens its OWN cache pool (`scratch_pool`) rather
+        // than the process-global one `cache::notify_write` pushes
+        // incremental updates through (see `cache::mod`'s doc on
+        // `ACTIVE_POOL`), so `ensure_built` alone would keep
+        // reading the snapshot from the first `read_milestone` call
+        // above. A real CLI/MCP process wires the write-trigger hook
+        // to the SAME pool it queries, so this manual rebuild only
+        // stands in for that already-tested live-update path; the
+        // fold logic under test is identical either way.
+        crate::cache::rebuild_full(&pool, scratch.backend(), scratch.groups())
+            .await
+            .expect("rebuild cache after status flip");
+
+        let record = read_milestone(
+            scratch.backend(),
+            &milestone_entry,
+            &pool,
+            scratch.groups(),
+            "gate-milestone",
+            None,
+        )
+        .await
+        .expect("read milestone after status flip");
+        assert_eq!(
+            record.rollup.status,
+            RollupStatus::Blocked,
+            "the blocked feature in group b must win the fold: {:?}",
+            record.rollup
+        );
+        assert_eq!(record.rollup.blocked, 1);
+        assert_eq!(record.rollup.counted, 2);
+    }
 }
