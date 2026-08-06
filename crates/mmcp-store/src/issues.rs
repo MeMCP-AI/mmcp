@@ -442,7 +442,7 @@ pub async fn update_issue_unlocked(
     let number = current.number;
     let depends_on = spec.depends_on.unwrap_or(current.depends_on);
     let blocks = spec.blocks.unwrap_or(current.blocks);
-    let refs = compose_refs(
+    let refs = crate::tracker::compose_refs(
         current_refs,
         spec.refs_remove.as_deref(),
         spec.refs_add.as_deref(),
@@ -517,24 +517,6 @@ async fn read_memory_refs(
     Ok(file.frontmatter.refs)
 }
 
-fn compose_refs(
-    current: Vec<MemoryRef>,
-    remove: Option<&[Uuid]>,
-    add: Option<&[MemoryRef]>,
-) -> Vec<MemoryRef> {
-    let mut out = current;
-    if let Some(remove) = remove {
-        out.retain(|r| !remove.contains(&r.target));
-    }
-    if let Some(add) = add {
-        for new in add {
-            out.retain(|r| r.target != new.target);
-            out.push(new.clone());
-        }
-    }
-    out
-}
-
 /// Rename every issue under `old_slug` to `new_slug` in one atomic
 /// commit. UUIDs stay stable across the rename. An explicit
 /// `message` override is bounded via [`resolve_commit_message`].
@@ -556,57 +538,19 @@ pub async fn rename_issue(
         return list_issues_for_slug(backend, entry, old_slug).await;
     }
 
-    let old_dir = format!("{}/{old_slug}", mmcp_core::conventions::MEMORIES_DIR);
-    let entries = backend
-        .list_tree(&entry.handle, &old_dir, &Rev::head())
-        .await
-        .map_err(|e| IssueError::Memory(ImportError::Git(e)))?;
-    if entries.is_empty() {
-        return Err(IssueError::Memory(ImportError::MemoryNotFound {
-            slug: Some(old_slug.to_string()),
-            id: None,
-        }));
-    }
-
-    let mut moves: Vec<(String, Option<Vec<u8>>)> = Vec::with_capacity(entries.len() * 2);
-    let mut moved = 0usize;
-    for filename in &entries {
-        let Some(stem) = filename.strip_suffix(mmcp_core::conventions::MEMORY_EXTENSION) else {
-            continue;
-        };
-        let Ok(id) = Uuid::parse_str(stem) else {
-            continue;
-        };
-        let old_path = mmcp_core::conventions::memory_path(old_slug, id);
-        let new_path = mmcp_core::conventions::memory_path(new_slug, id);
-        let bytes = backend
-            .read_file(&entry.handle, &old_path, &Rev::head())
-            .await
-            .map_err(|e| IssueError::Memory(ImportError::Git(e)))?;
-
-        let text = String::from_utf8_lossy(&bytes).into_owned();
-        let file =
-            MemoryFile::parse(&text).map_err(|e| IssueError::Memory(ImportError::Parse(e)))?;
-        // Refuse rename when the source memory does not carry an
-        // [issue] block. Mirrors the feature side's
-        // not-a-feature guard.
+    // Refuse rename when a source memory does not carry an [issue]
+    // block. Mirrors the feature side's not-a-feature guard.
+    let planned = crate::tracker::plan_slug_rename(backend, entry, old_slug, new_slug, |file| {
         if file.frontmatter.issue.is_none() {
-            return Err(IssueError::NotAnIssue {
+            Some(IssueError::NotAnIssue {
                 slug: old_slug.to_string(),
                 kind: file.frontmatter.kind.as_str().to_string(),
-            });
+            })
+        } else {
+            None
         }
-
-        moves.push((new_path, Some(bytes.to_vec())));
-        moves.push((old_path, None));
-        moved += 1;
-    }
-    if moved == 0 {
-        return Err(IssueError::Memory(ImportError::MemoryNotFound {
-            slug: Some(old_slug.to_string()),
-            id: None,
-        }));
-    }
+    })
+    .await?;
 
     let commit_message =
         resolve_commit_message(message, || format!("rename issue {old_slug} -> {new_slug}"))
@@ -614,7 +558,7 @@ pub async fn rename_issue(
     backend
         .write_commit(
             &entry.handle,
-            mmcp_git::CommitSpec::mmcp_commit(commit_message, moves, &author.name, &author.email),
+            mmcp_git::CommitSpec::mmcp_commit(commit_message, planned, &author.name, &author.email),
         )
         .await
         .map_err(|e| IssueError::Memory(ImportError::Git(e)))?;
@@ -627,21 +571,12 @@ async fn list_issues_for_slug(
     entry: &GroupEntry,
     slug: &str,
 ) -> Result<Vec<IssueRecord>, IssueError> {
-    let dir = format!("{}/{slug}", mmcp_core::conventions::MEMORIES_DIR);
-    let filenames = backend
-        .list_tree(&entry.handle, &dir, &Rev::head())
+    let count = crate::tracker::count_slug_entries(backend, entry, slug)
         .await
-        .map_err(|e| IssueError::Memory(ImportError::Git(e)))?;
-    let mut out = Vec::with_capacity(filenames.len());
-    for filename in filenames {
-        let Some(stem) = filename.strip_suffix(mmcp_core::conventions::MEMORY_EXTENSION) else {
-            continue;
-        };
-        if Uuid::parse_str(stem).is_err() {
-            continue;
-        }
-        let record = read_issue(backend, entry, slug, None).await?;
-        out.push(record);
+        .map_err(IssueError::Memory)?;
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        out.push(read_issue(backend, entry, slug, None).await?);
     }
     Ok(out)
 }
