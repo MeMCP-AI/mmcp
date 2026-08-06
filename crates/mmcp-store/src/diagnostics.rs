@@ -826,6 +826,112 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
                     }
                 }
             }
+
+            // Milestone reference: `feature.milestone` must resolve
+            // to an existing memory, and that memory must itself be
+            // a milestone. Cross-group by design (D3), so `by_id`
+            // (already built cross-group above) is exactly the
+            // right registry to check against — no extra git walk
+            // needed.
+            if let Some(milestone_id) = feat.milestone {
+                match by_id.get(&milestone_id) {
+                    None => report.findings.push(Finding {
+                        group: gid.clone(),
+                        slug: Some(file_ref.slug.clone()),
+                        severity: "warning",
+                        code: "milestone_ref_dangling",
+                        message: format!(
+                            "feature `milestone` references unknown memory {milestone_id} — orphaned milestone reference"
+                        ),
+                    }),
+                    Some(records) => {
+                        if let Some(record) = records.first()
+                            && record.kind != MemoryKind::Milestone
+                        {
+                            report.findings.push(Finding {
+                                group: gid.clone(),
+                                slug: Some(file_ref.slug.clone()),
+                                severity: "warning",
+                                code: "milestone_ref_wrong_kind",
+                                message: format!(
+                                    "feature `milestone` points at {milestone_id} which is kind = \"{}\", not `milestone` — stale milestone reference",
+                                    record.kind.as_str()
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Rollup-derived milestone findings: the second consumer of
+    // `mmcp_store::rollup`, alongside `milestones::list_milestones`.
+    // Best-effort against the process-global cache pool: the cache
+    // is a derived artifact, so its absence (e.g. a consumer that
+    // never called `cache::init_from_home`) is never a reason to
+    // fail the rest of `diagnose`.
+    if let Some(pool) = crate::cache::active_pool() {
+        for entry in &entries {
+            let rev = Rev::head();
+            let gid = entry.handle.group_id.to_string();
+            let Ok(files) = crate::memory::list_all_memory_files(backend, &entry.handle, &rev).await
+            else {
+                continue;
+            };
+            for file_ref in files {
+                let Ok(bytes) = backend.read_file(&entry.handle, &file_ref.path, &rev).await
+                else {
+                    continue;
+                };
+                let Ok(text) = std::str::from_utf8(&bytes) else {
+                    continue;
+                };
+                let Ok(mf) = MemoryFile::parse(text) else {
+                    continue;
+                };
+                if mf.frontmatter.kind != MemoryKind::Milestone {
+                    continue;
+                }
+                let Some(meta) = mf.frontmatter.milestone else {
+                    continue;
+                };
+                let Some(id) = mf.frontmatter.id else {
+                    continue;
+                };
+                let Ok(computed) = crate::rollup::compute(&pool, backend, groups, id).await else {
+                    continue;
+                };
+                let Some(report) = reports.iter_mut().find(|r| r.group_id == gid) else {
+                    continue;
+                };
+                if computed.counted == 0 {
+                    report.findings.push(Finding {
+                        group: gid.clone(),
+                        slug: Some(file_ref.slug.clone()),
+                        severity: "info",
+                        code: "milestone_rollup_empty",
+                        message:
+                            "no locally-mirrored feature currently targets this milestone"
+                                .to_string(),
+                    });
+                }
+                let editorial_completed = meta.status == mmcp_core::memory::MilestoneStatus::Completed;
+                let rollup_completed = computed.status == crate::rollup::RollupStatus::Completed;
+                if editorial_completed != rollup_completed {
+                    report.findings.push(Finding {
+                        group: gid.clone(),
+                        slug: Some(file_ref.slug.clone()),
+                        severity: "warning",
+                        code: "milestone_status_stale",
+                        message: format!(
+                            "milestone status is '{}' but the live rollup over its features is '{}' — stale milestone status",
+                            meta.status.as_str(),
+                            computed.status.as_str()
+                        ),
+                    });
+                }
+            }
         }
     }
 
@@ -984,4 +1090,171 @@ fn tokens_overlap(a: &str, b: &str) -> bool {
     let at = tokenize(a);
     let bt = tokenize(b);
     at.iter().any(|t| bt.iter().any(|u| u == t))
+}
+
+#[cfg(test)]
+mod milestone_reference_tests {
+    use super::*;
+    use crate::testing::ScratchHome;
+
+    #[tokio::test]
+    async fn dangling_milestone_reference_is_flagged() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("diag-milestone-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        crate::features::add_feature(
+            scratch.backend(),
+            &entry,
+            crate::features::AddSpec {
+                slug: Some("dangling-feat".into()),
+                title: "feat".into(),
+                description: "dangling milestone ref test".into(),
+                body: "x".into(),
+                milestone: Some(Uuid::now_v7()),
+                ..crate::features::AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed feature");
+
+        let report = diagnose_all(scratch.backend(), scratch.groups()).await;
+        let group_report = report
+            .groups
+            .iter()
+            .find(|r| r.group_id == entry.handle.group_id.to_string())
+            .expect("group report present");
+        assert!(
+            group_report
+                .findings
+                .iter()
+                .any(|f| f.code == "milestone_ref_dangling"),
+            "findings: {:?}",
+            group_report.findings
+        );
+    }
+
+    #[tokio::test]
+    async fn milestone_reference_pointing_at_wrong_kind_is_flagged() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("diag-milestone-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        crate::features::add_feature(
+            scratch.backend(),
+            &entry,
+            crate::features::AddSpec {
+                slug: Some("target-feat".into()),
+                title: "target feat".into(),
+                description: "wrong kind target".into(),
+                body: "x".into(),
+                ..crate::features::AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed target feature");
+        let target_id = crate::memory::resolve_memory(
+            scratch.backend(),
+            &entry.handle,
+            Some("target-feat"),
+            None,
+        )
+        .await
+        .expect("resolve target")
+        .id;
+
+        crate::features::add_feature(
+            scratch.backend(),
+            &entry,
+            crate::features::AddSpec {
+                slug: Some("pointing-feat".into()),
+                title: "pointing feat".into(),
+                description: "stale milestone ref test".into(),
+                body: "x".into(),
+                milestone: Some(target_id),
+                ..crate::features::AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed pointing feature");
+
+        let report = diagnose_all(scratch.backend(), scratch.groups()).await;
+        let group_report = report
+            .groups
+            .iter()
+            .find(|r| r.group_id == entry.handle.group_id.to_string())
+            .expect("group report present");
+        assert!(
+            group_report
+                .findings
+                .iter()
+                .any(|f| f.code == "milestone_ref_wrong_kind"),
+            "findings: {:?}",
+            group_report.findings
+        );
+    }
+
+    #[tokio::test]
+    async fn milestone_with_no_dangling_ref_stays_clean() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("diag-milestone-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        let milestone = crate::milestones::add_milestone(
+            scratch.backend(),
+            &entry,
+            crate::milestones::AddSpec {
+                slug: Some("clean-milestone".into()),
+                title: "Clean".into(),
+                ..crate::milestones::AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed milestone");
+        let milestone_id = crate::memory::resolve_memory(
+            scratch.backend(),
+            &entry.handle,
+            Some("clean-milestone"),
+            None,
+        )
+        .await
+        .expect("resolve milestone")
+        .id;
+
+        crate::features::add_feature(
+            scratch.backend(),
+            &entry,
+            crate::features::AddSpec {
+                slug: Some("clean-feat".into()),
+                title: "clean feat".into(),
+                description: "valid milestone ref".into(),
+                body: "x".into(),
+                milestone: Some(milestone_id),
+                ..crate::features::AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed feature");
+
+        let report = diagnose_all(scratch.backend(), scratch.groups()).await;
+        let group_report = report
+            .groups
+            .iter()
+            .find(|r| r.group_id == entry.handle.group_id.to_string())
+            .expect("group report present");
+        assert!(
+            !group_report
+                .findings
+                .iter()
+                .any(|f| f.code == "milestone_ref_dangling" || f.code == "milestone_ref_wrong_kind"),
+            "a valid milestone reference must not be flagged: {:?}",
+            group_report.findings
+        );
+        let _ = milestone;
+    }
 }
