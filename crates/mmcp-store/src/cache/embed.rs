@@ -47,6 +47,8 @@
 //! [`unicode_segmentation`]: https://docs.rs/unicode-segmentation
 //! [`xxhash_rust`]: https://docs.rs/xxhash-rust
 
+use std::mem::size_of;
+
 use ndarray::Array1;
 use unicode_segmentation::UnicodeSegmentation;
 use xxhash_rust::xxh3::xxh3_64;
@@ -56,6 +58,11 @@ use xxhash_rust::xxh3::xxh3_64;
 /// buckets that unrelated tokens rarely collide for the vocabulary
 /// size a single mmcp mirror realistically carries.
 pub const EMBED_DIM: usize = 128;
+
+/// Bit position of the sign bit within a 64-bit `xxh3_64` hash.
+/// Derived from `u64::BITS` rather than a bare `63` literal so the
+/// intent ("the top bit of the hash") stays self-evident.
+const HASH_SIGN_BIT_SHIFT: u32 = u64::BITS - 1;
 
 /// Embed `text` into an [`EMBED_DIM`]-dimensional, L2-normalized
 /// vector via feature hashing. See the module docs for the
@@ -73,7 +80,11 @@ pub fn embed_text(text: &str) -> Vec<f32> {
         // single hash call decides both placement and polarity; the
         // standard hashing-trick construction to keep collisions
         // from systematically biasing any one bucket upward.
-        let sign = if (hash >> 63) & 1 == 1 { 1.0 } else { -1.0 };
+        let sign = if (hash >> HASH_SIGN_BIT_SHIFT) & 1 == 1 {
+            1.0
+        } else {
+            -1.0
+        };
         buckets[bucket] += sign;
     }
     let vector = Array1::from_vec(buckets.to_vec());
@@ -115,13 +126,19 @@ pub fn vector_to_bytes(vector: &[f32]) -> Vec<u8> {
 }
 
 /// Inverse of [`vector_to_bytes`]. Ignores a trailing partial `f32`
-/// (a BLOB whose length is not a multiple of 4 can only come from
-/// external tampering, never from `vector_to_bytes`).
+/// (a BLOB whose length is not a multiple of `size_of::<f32>()` can
+/// only come from external tampering, never from `vector_to_bytes`).
 #[must_use]
 pub fn bytes_to_vector(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .chunks_exact(size_of::<f32>())
+        .map(|chunk| {
+            f32::from_le_bytes(
+                chunk
+                    .try_into()
+                    .expect("chunks_exact(size_of::<f32>()) yields exactly that many bytes"),
+            )
+        })
         .collect()
 }
 

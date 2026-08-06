@@ -167,6 +167,13 @@ pub struct SearchHit {
 const CACHE_SUBDIR: &str = "cache";
 const CACHE_DB_FILE: &str = "index.sqlite3";
 
+/// Maximum number of pooled SQLite connections held open against the
+/// cache database. A single local-machine cache under light,
+/// same-process concurrency (a handful of MCP tool handlers plus the
+/// write/pull hooks) does not need a large pool; this stays small on
+/// purpose to bound the number of open file handles and WAL readers.
+const CACHE_POOL_MAX_CONNECTIONS: u32 = 4;
+
 /// Default on-disk location of the cache database:
 /// `<mmcp-home>/cache/index.sqlite3`.
 #[must_use]
@@ -191,7 +198,7 @@ pub async fn open_pool(path: &Path) -> Result<SqlitePool, CacheError> {
         .filename(path)
         .create_if_missing(true);
     let pool = SqlitePoolOptions::new()
-        .max_connections(4)
+        .max_connections(CACHE_POOL_MAX_CONNECTIONS)
         .connect_with(options)
         .await
         .map_err(|source| CacheError::Open {
