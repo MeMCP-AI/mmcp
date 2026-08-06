@@ -122,13 +122,13 @@ fn spawn_mirror_watcher(
     // above normally creates it, but in a fresh home the directory
     // can briefly be absent — create it eagerly here so the watcher
     // always has something to observe.
-    if !repos_root.exists() {
-        if let Err(err) = std::fs::create_dir_all(repos_root) {
-            return Err(GuiError::Other(format!(
-                "create repos_root {}: {err}",
-                repos_root.display()
-            )));
-        }
+    if !repos_root.exists()
+        && let Err(err) = std::fs::create_dir_all(repos_root)
+    {
+        return Err(GuiError::Other(format!(
+            "create repos_root {}: {err}",
+            repos_root.display()
+        )));
     }
 
     let (tx, mut rx) =
