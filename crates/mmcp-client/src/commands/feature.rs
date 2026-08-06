@@ -76,6 +76,12 @@ pub struct AddArgs {
     #[arg(long = "blocks")]
     pub blocks: Vec<String>,
 
+    /// UUID of the milestone this feature counts toward. Cross-group
+    /// by design (D3): the milestone does not have to live in this
+    /// project's group.
+    #[arg(long)]
+    pub milestone: Option<String>,
+
     /// Override for the git commit message.
     #[arg(long)]
     pub message: Option<String>,
@@ -130,6 +136,16 @@ pub struct UpdateArgs {
     /// Clear the `blocks` list. Mutually exclusive with `--blocks`.
     #[arg(long, conflicts_with = "blocks")]
     pub blocks_clear: bool,
+
+    /// Replacement milestone UUID. Omit to leave unchanged; pass
+    /// `--milestone-clear` to unlink.
+    #[arg(long, conflicts_with = "milestone_clear")]
+    pub milestone: Option<String>,
+
+    /// Clear the milestone link. Mutually exclusive with
+    /// `--milestone`.
+    #[arg(long)]
+    pub milestone_clear: bool,
 
     /// Override for the git commit message.
     #[arg(long)]
@@ -241,6 +257,7 @@ async fn run_add(args: AddArgs) -> Result<()> {
         .map_err(anyhow::Error::from)?;
     let blocks =
         mmcp_store::parse_cross_refs(&args.blocks, "blocks").map_err(anyhow::Error::from)?;
+    let milestone = parse_milestone_cli(args.milestone.as_deref())?;
     let spec = AddSpec {
         slug: args.slug,
         title: args.title.unwrap_or_default(),
@@ -249,6 +266,7 @@ async fn run_add(args: AddArgs) -> Result<()> {
         status,
         depends_on,
         blocks,
+        milestone,
         message: args.message,
         // `refs`, `supersedes`, and `number` are not exposed on the
         // CLI. FR-37 makes `number` server-assigned only. Refs and
@@ -325,6 +343,14 @@ async fn run_update(args: UpdateArgs) -> Result<()> {
     } else {
         Some(mmcp_store::parse_cross_refs(&args.blocks, "blocks").map_err(anyhow::Error::from)?)
     };
+    let milestone = if args.milestone_clear {
+        Some(None)
+    } else {
+        match args.milestone.as_deref() {
+            Some(raw) => Some(Some(parse_milestone_uuid(raw)?)),
+            None => None,
+        }
+    };
 
     let spec = UpdateSpec {
         title: args.title,
@@ -333,6 +359,7 @@ async fn run_update(args: UpdateArgs) -> Result<()> {
         status,
         depends_on,
         blocks,
+        milestone,
         message: args.message,
         // CLI does not yet expose the refs / supersede knobs;
         // the MCP tools are the primary surface for now.
@@ -477,6 +504,9 @@ fn print_record_full(record: &FeatureRecord) {
     if !record.blocks.is_empty() {
         println!("blocks      : {}", join_uuids(&record.blocks));
     }
+    if let Some(milestone) = record.milestone {
+        println!("milestone   : {milestone}");
+    }
     if !record.commit_id.is_empty() {
         println!("commit      : {}", record.commit_id);
     }
@@ -505,6 +535,20 @@ fn parse_status_cli(raw: Option<&str>) -> Result<Option<FeatureStatus>> {
             )
         }),
     }
+}
+
+/// Parse an optional milestone UUID argument for `add`, where
+/// absence simply means "no milestone".
+fn parse_milestone_cli(raw: Option<&str>) -> Result<Option<uuid::Uuid>> {
+    raw.map(parse_milestone_uuid).transpose()
+}
+
+/// Parse a milestone UUID argument, surfacing a clear error rather
+/// than a bare `uuid::Error` when the operator passes a slug by
+/// mistake — milestone cross-references are UUIDs only, never slugs.
+fn parse_milestone_uuid(raw: &str) -> Result<uuid::Uuid> {
+    uuid::Uuid::parse_str(raw)
+        .map_err(|_| anyhow::anyhow!("`--milestone` expects a UUID, got '{raw}'"))
 }
 
 /// Join UUIDs into a comma-separated display string for the

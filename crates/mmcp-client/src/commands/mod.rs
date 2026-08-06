@@ -13,6 +13,7 @@ pub mod import;
 pub mod init;
 pub mod issue;
 pub mod memory;
+pub mod milestone;
 pub mod serve;
 pub mod status;
 pub mod subscribe;
