@@ -175,6 +175,10 @@ pub struct AddSpec {
     /// existing reference memory. Stamped into the frontmatter at
     /// commit time and never re-resolved.
     pub source: Option<Uuid>,
+    /// UUID of the milestone this feature counts toward, if any.
+    /// Cross-group by design (D3): the milestone does not have to
+    /// live in this feature's own project group.
+    pub milestone: Option<Uuid>,
     /// Optional override for the git commit message; when absent,
     /// defaults to `create feature <slug>` so history stays
     /// self-describing.
@@ -211,6 +215,13 @@ pub struct UpdateSpec {
     /// Superseded, superseded_by: Some(ref), ..default })`.
     /// `None` leaves the existing back-link untouched.
     pub superseded_by: Option<MemoryRef>,
+    /// Replacement milestone UUID; `Some(None)` clears the link,
+    /// `None` leaves it untouched. Mirrors the `Option<Option<T>>`
+    /// shape nowhere else in this struct because every other field
+    /// already has an unambiguous "clear" sentinel (`Some(Vec::new())`
+    /// for lists); a bare `Option<Uuid>` cannot distinguish "leave
+    /// untouched" from "clear".
+    pub milestone: Option<Option<Uuid>>,
     pub message: Option<String>,
 }
 
@@ -238,6 +249,8 @@ pub struct FeatureRecord {
     /// at the frontmatter level via
     /// [`FeatureMetadata::validate_supersede_invariant`].
     pub superseded_by: Option<MemoryRef>,
+    /// UUID of the milestone this feature counts toward, if any.
+    pub milestone: Option<Uuid>,
     /// Commit id of the most recent write for this FR, or the head
     /// commit that produced the record on a read. Empty string on a
     /// freshly read FR whose history starts before this field was
@@ -265,6 +278,7 @@ pub struct FeatureSummary {
     pub depends_on: Vec<Uuid>,
     pub blocks: Vec<Uuid>,
     pub superseded_by: Option<MemoryRef>,
+    pub milestone: Option<Uuid>,
     pub commit_id: String,
 }
 
@@ -284,6 +298,7 @@ impl FeatureSummary {
             depends_on,
             blocks,
             superseded_by,
+            milestone,
             commit_id,
         } = record;
         Self {
@@ -295,6 +310,7 @@ impl FeatureSummary {
             depends_on,
             blocks,
             superseded_by,
+            milestone,
             commit_id,
         }
     }
@@ -384,6 +400,7 @@ pub async fn add_feature(
         depends_on: spec.depends_on.clone(),
         blocks: spec.blocks.clone(),
         superseded_by: None,
+        milestone: spec.milestone,
     };
     let mut file = build_memory_file(
         spec.title.clone(),
@@ -464,6 +481,7 @@ pub async fn add_feature(
         depends_on: spec.depends_on,
         blocks: spec.blocks,
         superseded_by: None,
+        milestone: spec.milestone,
         commit_id,
     })
 }
@@ -688,6 +706,10 @@ pub async fn update_feature_unlocked(
     // frontmatter edit — not yet plumbed to avoid overloading this
     // shape.
     let superseded_by = spec.superseded_by.or(current.superseded_by);
+    // `Some(Some(id))` sets the link, `Some(None)` clears it,
+    // `None` (the field itself absent) leaves the on-disk value
+    // untouched.
+    let milestone = spec.milestone.unwrap_or(current.milestone);
 
     let metadata = FeatureMetadata {
         status,
@@ -695,6 +717,7 @@ pub async fn update_feature_unlocked(
         depends_on: depends_on.clone(),
         blocks: blocks.clone(),
         superseded_by: superseded_by.clone(),
+        milestone,
     };
     metadata
         .validate_supersede_invariant()
@@ -747,6 +770,7 @@ pub async fn update_feature_unlocked(
         depends_on,
         blocks,
         superseded_by,
+        milestone,
         commit_id,
     })
 }
@@ -1137,6 +1161,7 @@ fn record_from_file(
         depends_on: metadata.depends_on,
         blocks: metadata.blocks,
         superseded_by: metadata.superseded_by,
+        milestone: metadata.milestone,
         commit_id,
     })
 }

@@ -53,6 +53,8 @@ pub mod issues;
 pub mod lock;
 pub mod memory;
 pub mod memory_ops;
+pub mod milestones;
+pub mod rollup;
 pub mod sessions;
 pub mod sync;
 pub mod tracker;
@@ -97,6 +99,12 @@ pub use memory::{
     write_file_at_path, write_memory_by_id,
 };
 pub use memory_ops::{MemoryEditError, MemoryEditOp, apply_ops};
+pub use milestones::{
+    AddSpec as MilestoneAddSpec, MilestoneError, MilestoneRecord,
+    UpdateSpec as MilestoneUpdateSpec, add_milestone, list_milestones, read_milestone,
+    update_milestone,
+};
 pub use mmcp_core::memory::{MemoryRefInput, XrefError, parse_cross_refs, parse_memory_refs};
+pub use rollup::{MilestoneRollup, RollupStatus};
 pub use sessions::{MemoryRead, SessionState, SessionStore};
 pub use sync::{IndexResolver, build_engine};
