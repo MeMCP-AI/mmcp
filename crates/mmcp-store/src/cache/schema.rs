@@ -29,6 +29,13 @@ CREATE TABLE IF NOT EXISTS indexed_memory (
     commit_id   TEXT NOT NULL,
     embedding   BLOB,
     updated_at  TEXT NOT NULL,
+    -- Present only on kind = 'feature' rows: the feature's wire-form
+    -- status string and the UUID of the milestone it points at (if
+    -- any), lifted out of frontmatter so `mmcp_store::rollup` can
+    -- fold a milestone's cross-group status from one table scan
+    -- instead of re-parsing every feature memory's frontmatter.
+    status      TEXT,
+    milestone   TEXT,
     PRIMARY KEY (group_id, id)
 )
 "#;
@@ -38,6 +45,9 @@ const CREATE_SLUG_INDEX: &str =
 
 const CREATE_KIND_INDEX: &str =
     "CREATE INDEX IF NOT EXISTS idx_indexed_memory_kind ON indexed_memory(kind)";
+
+const CREATE_MILESTONE_INDEX: &str =
+    "CREATE INDEX IF NOT EXISTS idx_indexed_memory_milestone ON indexed_memory(milestone)";
 
 const CREATE_CACHE_META: &str = r#"
 CREATE TABLE IF NOT EXISTS cache_meta (
@@ -58,12 +68,46 @@ pub const LAST_FULL_REBUILD_KEY: &str = "last_full_rebuild_at";
 /// Create every table and index this module owns if they do not
 /// already exist. Safe to call on every pool open — `IF NOT EXISTS`
 /// makes it a no-op against an already-initialised database.
+///
+/// Also runs the one schema migration this module has ever needed:
+/// an on-disk `indexed_memory` table from before the `status` /
+/// `milestone` columns landed gets dropped and recreated (with the
+/// build-completion flag cleared so the next lazy read repopulates
+/// it), per the module doc's documented upgrade path — the cache is
+/// a fully derived, freely rebuildable index, so `DROP TABLE` + a
+/// full rebuild is simpler and safer than an `ALTER TABLE` chain for
+/// a table that never carries irreplaceable data.
 pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), CacheError> {
     sqlx::query(CREATE_INDEXED_MEMORY).execute(pool).await?;
+    if !has_column(pool, "indexed_memory", "milestone").await? {
+        sqlx::query("DROP TABLE indexed_memory").execute(pool).await?;
+        sqlx::query(CREATE_CACHE_META).execute(pool).await?;
+        sqlx::query("DELETE FROM cache_meta WHERE key = ?")
+            .bind(LAST_FULL_REBUILD_KEY)
+            .execute(pool)
+            .await?;
+        sqlx::query(CREATE_INDEXED_MEMORY).execute(pool).await?;
+    }
     sqlx::query(CREATE_SLUG_INDEX).execute(pool).await?;
     sqlx::query(CREATE_KIND_INDEX).execute(pool).await?;
+    sqlx::query(CREATE_MILESTONE_INDEX).execute(pool).await?;
     sqlx::query(CREATE_CACHE_META).execute(pool).await?;
     Ok(())
+}
+
+/// Whether `table` already has a column named `column`, via
+/// `PRAGMA table_info`. Used by [`ensure_schema`] to detect a
+/// pre-migration `indexed_memory` table without hand-parsing SQLite
+/// error text.
+async fn has_column(pool: &SqlitePool, table: &str, column: &str) -> Result<bool, CacheError> {
+    // The table-valued-function form of `PRAGMA table_info` lets us
+    // project just the `name` column, so the result binds cleanly
+    // onto a one-column `(String,)` row.
+    let rows: Vec<(String,)> = sqlx::query_as("SELECT name FROM pragma_table_info(?)")
+        .bind(table)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.iter().any(|(name,)| name == column))
 }
 
 /// Whether the index has ever completed a full rebuild, per

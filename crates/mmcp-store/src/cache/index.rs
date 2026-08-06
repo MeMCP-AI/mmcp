@@ -141,6 +141,16 @@ pub fn build_record(
     commit_id: &str,
     memory_file: &MemoryFile,
 ) -> IndexedRecord {
+    let status = memory_file
+        .frontmatter
+        .feature
+        .as_ref()
+        .map(|f| f.status.as_str().to_string());
+    let milestone = memory_file
+        .frontmatter
+        .feature
+        .as_ref()
+        .and_then(|f| f.milestone);
     IndexedRecord {
         group_id,
         id,
@@ -152,6 +162,8 @@ pub fn build_record(
         body: memory_file.body.clone(),
         path: path.to_string(),
         commit_id: commit_id.to_string(),
+        status,
+        milestone,
     }
 }
 
@@ -170,15 +182,16 @@ pub async fn upsert_record(pool: &SqlitePool, record: &IndexedRecord) -> Result<
         record.body
     );
     let embedding = super::embed::vector_to_bytes(&super::embed::embed_text(&embedding_text));
+    let milestone = record.milestone.map(|id| id.to_string());
     sqlx::query(
         "INSERT INTO indexed_memory \
-           (group_id, id, slug, kind, name, description, tags, body, path, commit_id, embedding, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+           (group_id, id, slug, kind, name, description, tags, body, path, commit_id, embedding, updated_at, status, milestone) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(group_id, id) DO UPDATE SET \
            slug = excluded.slug, kind = excluded.kind, name = excluded.name, \
            description = excluded.description, tags = excluded.tags, body = excluded.body, \
            path = excluded.path, commit_id = excluded.commit_id, embedding = excluded.embedding, \
-           updated_at = excluded.updated_at",
+           updated_at = excluded.updated_at, status = excluded.status, milestone = excluded.milestone",
     )
     .bind(record.group_id.to_string())
     .bind(record.id.to_string())
@@ -192,6 +205,8 @@ pub async fn upsert_record(pool: &SqlitePool, record: &IndexedRecord) -> Result<
     .bind(&record.commit_id)
     .bind(embedding)
     .bind(now)
+    .bind(&record.status)
+    .bind(milestone)
     .execute(pool)
     .await?;
     Ok(())

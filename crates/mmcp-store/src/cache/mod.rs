@@ -120,6 +120,16 @@ pub struct IndexedRecord {
     pub body: String,
     pub path: String,
     pub commit_id: String,
+    /// Wire-form status string, present only when `kind == "feature"`.
+    /// Lifted out of `FeatureMetadata::status` so
+    /// `mmcp_store::rollup` can fold it without re-parsing
+    /// frontmatter.
+    pub status: Option<String>,
+    /// UUID of the milestone this feature points at, present only
+    /// when `kind == "feature"` and `FeatureMetadata::milestone` is
+    /// set. Cross-group by design (D3): the milestone may live in a
+    /// different group than this record's own `group_id`.
+    pub milestone: Option<Uuid>,
 }
 
 /// One hit returned by [`query::keyword_search`] or
