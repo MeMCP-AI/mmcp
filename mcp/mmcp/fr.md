@@ -16,7 +16,7 @@ memories verbatim and are now addressable by slug
   (`fr-007-feature-request-tracking`) for the full tool contract.
 - CLI: `mmcp feature add | read | update | delete | list`. Auto-resolves
   the project group from the working directory.
-- Status lifecycle: `open | resolved | blocked | deferred | duplicate`.
+- Status lifecycle: `requested | approved | pending | completed | blocked | deferred | duplicate | superseded`.
 - Cross-refs: `depends_on` / `blocks` are typed slug lists on each FR.
 
 ## Why stub instead of delete

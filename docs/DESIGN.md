@@ -159,7 +159,7 @@ Default kinds (extensible by users):
 | `log`      | Append-only record (decisions, incidents). Edits only add entries.       |
 | `reference`| Pointer to external resource (Linear project, Grafana dashboard, spec).  |
 | `scratch`  | Short-lived working notes. Not versioned, no warnings.                   |
-| `feature`  | Feature request. Carries a structured `[feature]` frontmatter block with `status` (open / resolved / blocked / deferred / duplicate / superseded), `number` (auto-assigned per group as `max(existing) + 1`), and UUID cross-references in `depends_on` / `blocks`. |
+| `feature`  | Feature request. Carries a structured `[feature]` frontmatter block with `status` (requested / approved / pending / completed / blocked / deferred / duplicate / superseded), `number` (auto-assigned per group as `max(existing) + 1`), and UUID cross-references in `depends_on` / `blocks`. |
 | `issue`    | Issue tracker entry, sister kind to `feature`. Carries a structured `[issue]` frontmatter block with its own distinct `status` (open / closed / wontfix / blocked / deferred / duplicate / superseded), sharing the same `number` counter and cross-reference machinery as `feature` without sharing its status vocabulary. |
 
 Users can define custom kinds with their own behavior metadata:
