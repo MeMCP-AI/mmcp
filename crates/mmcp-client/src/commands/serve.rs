@@ -6661,6 +6661,17 @@ fn map_milestone_error_to_mcp(err: mmcp_store::milestones::MilestoneError) -> Mc
                     Some(json!({ "code": "cache_walk_failed" })),
                 )
             }
+            mmcp_store::cache::CacheError::UnparseableFeatureStatus { raw, source } => {
+                tracing::error!(
+                    raw = %raw,
+                    error = %source,
+                    "milestone rollup: a feature's cached status does not parse"
+                );
+                McpError::internal_error(
+                    "a feature's cached status could not be parsed; milestone rollups cannot be computed",
+                    Some(json!({ "code": "cache_unparseable_feature_status" })),
+                )
+            }
         },
     }
 }
