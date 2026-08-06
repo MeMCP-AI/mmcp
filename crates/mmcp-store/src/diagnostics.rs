@@ -866,7 +866,8 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
     }
 
     // Rollup-derived milestone findings: the second consumer of
-    // `mmcp_store::rollup`, alongside `milestones::list_milestones`.
+    // `mmcp_store::milestones::rollup`, alongside
+    // `milestones::list_milestones`.
     // Best-effort against the process-global cache pool: the cache
     // is a derived artifact, so its absence (e.g. a consumer that
     // never called `cache::init_from_home`) is never a reason to
@@ -899,8 +900,14 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
                 let Some(id) = mf.frontmatter.id else {
                     continue;
                 };
-                let Ok(computed) =
-                    crate::rollup::compute(&pool, backend, groups, entry.handle.group_id, id).await
+                let Ok(computed) = crate::milestones::rollup::compute(
+                    &pool,
+                    backend,
+                    groups,
+                    entry.handle.group_id,
+                    id,
+                )
+                .await
                 else {
                     continue;
                 };
@@ -919,7 +926,8 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
                 }
                 let editorial_completed =
                     meta.status == mmcp_core::memory::MilestoneStatus::Completed;
-                let rollup_completed = computed.status == crate::rollup::RollupStatus::Completed;
+                let rollup_completed =
+                    computed.status == crate::milestones::rollup::RollupStatus::Completed;
                 if editorial_completed != rollup_completed {
                     report.findings.push(Finding {
                         group: gid.clone(),

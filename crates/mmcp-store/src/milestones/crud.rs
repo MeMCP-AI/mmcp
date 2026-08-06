@@ -1,19 +1,11 @@
 //! Typed CRUD over milestone memories.
 //!
-//! Sister surface to [`crate::features`] / [`crate::issues`], but a
-//! deliberately REDUCED-surface tracked kind (M5 design): add, read,
-//! update, list — no delete, no rename, no supersede flow, no
-//! `depends_on` / `blocks` cross-refs, no shared ticket-number
-//! counter. A milestone is a grouping container over features, not
-//! an individually-worked ticket, so it does not need any of that
-//! machinery.
-//!
 //! A milestone's own frontmatter carries only an editorial
 //! [`MilestoneStatus`]. Its LIVE, computed status — the fold over
-//! the lifecycle states of every feature (in any locally-mirrored
-//! group, per D3) pointing at it — is never persisted; every read
-//! path in this module computes it fresh via [`crate::rollup`] and
-//! attaches it to the returned record.
+//! the lifecycle states of every feature in the milestone's own
+//! group (see [`super::rollup`]) pointing at it — is never
+//! persisted; every read path in this module computes it fresh via
+//! [`super::rollup`] and attaches it to the returned record.
 
 use mmcp_core::memory::{
     FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryKind, MilestoneMetadata,
@@ -23,6 +15,7 @@ use mmcp_git::{GitBackend, NativeBackend, Rev};
 use sqlx::sqlite::SqlitePool;
 use uuid::Uuid;
 
+use super::rollup::{self, MilestoneRollup, RollupStatus};
 use crate::diagnostics::Finding;
 use crate::groups::{GroupEntry, GroupIndex};
 use crate::home::ResolvedAuthor;
@@ -30,7 +23,6 @@ use crate::memory::{
     AddressingMode, ImportError, WriteFileOptions, WriteMemoryOptions, resolve_memory,
     slugify_filename, validate_slug, write_file_at_path, write_memory_by_id,
 };
-use crate::rollup::{self, MilestoneRollup, RollupStatus};
 
 /// Errors specific to milestone operations.
 #[derive(Debug, thiserror::Error)]

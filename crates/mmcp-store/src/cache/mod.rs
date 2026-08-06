@@ -105,9 +105,9 @@ pub enum CacheError {
     /// A `kind = 'feature'` row's stored status string does not
     /// parse as a [`mmcp_core::memory::FeatureStatus`]. Surfaced
     /// instead of silently excluded from a rollup fold (see
-    /// `mmcp_store::rollup::compute`), so a milestone never reports
-    /// `Completed` while a real, merely un-migrated `Blocked`
-    /// feature is invisible to the count.
+    /// `mmcp_store::milestones::rollup::compute`), so a milestone
+    /// never reports `Completed` while a real, merely un-migrated
+    /// `Blocked` feature is invisible to the count.
     #[error("feature status {raw:?} in the local content cache does not parse: {source}")]
     UnparseableFeatureStatus {
         raw: String,
@@ -135,13 +135,15 @@ pub struct IndexedRecord {
     pub commit_id: String,
     /// Wire-form status string, present only when `kind == "feature"`.
     /// Lifted out of `FeatureMetadata::status` so
-    /// `mmcp_store::rollup` can fold it without re-parsing
-    /// frontmatter.
+    /// `mmcp_store::milestones::rollup` can fold it without
+    /// re-parsing frontmatter.
     pub status: Option<String>,
     /// UUID of the milestone this feature points at, present only
     /// when `kind == "feature"` and `FeatureMetadata::milestone` is
-    /// set. Cross-group by design (D3): the milestone may live in a
-    /// different group than this record's own `group_id`.
+    /// set. The milestone may live in a different group than this
+    /// record's own `group_id` (the row itself is not scope-limited);
+    /// `rollup::compute` is what restricts the FOLD to the milestone's
+    /// own group, see its module doc for the narrowed D3 history.
     pub milestone: Option<Uuid>,
 }
 

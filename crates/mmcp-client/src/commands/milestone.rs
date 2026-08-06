@@ -13,11 +13,11 @@ use clap::{Args, Subcommand};
 use mmcp_core::memory::MilestoneStatus;
 use mmcp_store::features::resolve_project_group;
 use mmcp_store::home::MmcpHome;
+use mmcp_store::milestones::rollup::RollupStatus;
 use mmcp_store::milestones::{
     AddSpec, MilestoneRecord, UpdateSpec, add_milestone, list_milestones, read_milestone,
     update_milestone,
 };
-use mmcp_store::rollup::RollupStatus;
 
 use crate::notes::{findings_to_notes, render_notes_tail};
 

@@ -32,9 +32,9 @@ CREATE TABLE IF NOT EXISTS indexed_memory (
     updated_at  TEXT NOT NULL,
     -- Present only on kind = 'feature' rows: the feature's wire-form
     -- status string and the UUID of the milestone it points at (if
-    -- any), lifted out of frontmatter so `mmcp_store::rollup` can
-    -- fold a milestone's cross-group status from one table scan
-    -- instead of re-parsing every feature memory's frontmatter.
+    -- any), lifted out of frontmatter so `mmcp_store::milestones::rollup`
+    -- can fold a milestone's status from one table scan instead of
+    -- re-parsing every feature memory's frontmatter.
     status      TEXT,
     milestone   TEXT,
     PRIMARY KEY (group_id, id)

@@ -54,7 +54,6 @@ pub mod lock;
 pub mod memory;
 pub mod memory_ops;
 pub mod milestones;
-pub mod rollup;
 pub mod sessions;
 pub mod sync;
 pub mod tracker;
@@ -100,11 +99,10 @@ pub use memory::{
 };
 pub use memory_ops::{MemoryEditError, MemoryEditOp, apply_ops};
 pub use milestones::{
-    AddSpec as MilestoneAddSpec, MilestoneError, MilestoneRecord,
+    AddSpec as MilestoneAddSpec, MilestoneError, MilestoneRecord, MilestoneRollup, RollupStatus,
     UpdateSpec as MilestoneUpdateSpec, add_milestone, list_milestones, read_milestone,
     update_milestone,
 };
 pub use mmcp_core::memory::{MemoryRefInput, XrefError, parse_cross_refs, parse_memory_refs};
-pub use rollup::{MilestoneRollup, RollupStatus};
 pub use sessions::{MemoryRead, SessionState, SessionStore};
 pub use sync::{IndexResolver, build_engine};
