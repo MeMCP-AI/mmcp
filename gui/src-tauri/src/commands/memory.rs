@@ -196,6 +196,7 @@ fn to_memory_file(dto: MemoryFileDto) -> GuiResult<MemoryFile> {
         version,
         tags: dto.frontmatter.tags,
         bump_intent: None,
+        milestone: None,
         feature: dto
             .frontmatter
             .feature
@@ -210,6 +211,9 @@ fn to_memory_file(dto: MemoryFileDto) -> GuiResult<MemoryFile> {
                         target: r.target,
                         commit: r.commit,
                     }),
+                    // GUI does not yet expose milestone linking on features.
+                    // Default-None mirrors the frontmatter milestone default above.
+                    milestone: None,
                 })
             })
             .transpose()?,
