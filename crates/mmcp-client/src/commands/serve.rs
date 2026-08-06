@@ -1740,6 +1740,103 @@ struct ListMilestonesArgs {
     pub all: Option<bool>,
 }
 
+/// Maximum byte length of the `version` selector accepted by
+/// `ReadMilestoneArgs::version`: a branch name, tag name, or 40-char
+/// commit hex. No shared constant exists for this shape elsewhere in
+/// the project, so 512 bytes is chosen locally: generous headroom
+/// above any real git ref name while still bounding pathological
+/// input at the MCP boundary, per `global-security-rules`.
+const MAX_MILESTONE_VERSION_LENGTH: usize = 512;
+
+/// Boundary-level length validation for the milestone Args structs
+/// (`AddMilestoneArgs` / `ReadMilestoneArgs` / `UpdateMilestoneArgs`).
+///
+/// `global-security-rules` requires every external string field to
+/// carry an explicit maximum length enforced at the boundary, before
+/// the value becomes a domain value. `title` / `description` / `body`
+/// are already bounded downstream by `write_file_at_path`'s
+/// content-length choke point, and `slug` downstream by
+/// `validate_slug`, but neither runs until deep inside `mmcp-store` —
+/// well past the MCP boundary this rule targets — and `version` has
+/// no downstream bound at all. This helper reuses the SAME named
+/// maxima the rest of the project already validates against
+/// (`mmcp_core::memory::MAX_*_LENGTH`, `mmcp_store::MAX_SLUG_LENGTH`)
+/// and the SAME error-mapping choke point (`ImportError::FieldTooLong`
+/// via `map_memory_error_to_mcp`), never a locally invented mechanism.
+fn validate_milestone_field_len(
+    field: &'static str,
+    value: &str,
+    max: usize,
+) -> Result<(), McpError> {
+    mmcp_core::memory::validate_field_length(field, value, max)
+        .map_err(|err| map_memory_error_to_mcp(ImportError::FieldTooLong(err)))
+}
+
+/// Reject an empty value for a field where an empty string is
+/// meaningless (`slug`, `version`).
+fn validate_milestone_field_nonempty(field: &'static str, value: &str) -> Result<(), McpError> {
+    if value.is_empty() {
+        return Err(McpError::invalid_params(
+            format!("field '{field}' must not be empty"),
+            Some(json!({ "code": "field_empty", "field": field })),
+        ));
+    }
+    Ok(())
+}
+
+/// Validate every bounded field on [`AddMilestoneArgs`].
+fn validate_add_milestone_args(args: &AddMilestoneArgs) -> Result<(), McpError> {
+    if let Some(slug) = args.slug.as_deref() {
+        validate_milestone_field_nonempty("slug", slug)?;
+        validate_milestone_field_len("slug", slug, mmcp_store::MAX_SLUG_LENGTH)?;
+    }
+    validate_milestone_field_len("title", &args.title, mmcp_core::memory::MAX_NAME_LENGTH)?;
+    validate_milestone_field_len(
+        "description",
+        &args.description,
+        mmcp_core::memory::MAX_DESCRIPTION_LENGTH,
+    )?;
+    validate_milestone_field_len("body", &args.body, mmcp_core::memory::MAX_BODY_LENGTH)?;
+    if let Some(message) = args.message.as_deref() {
+        validate_milestone_field_len("message", message, mmcp_core::memory::MAX_MESSAGE_LENGTH)?;
+    }
+    Ok(())
+}
+
+/// Validate every bounded field on [`ReadMilestoneArgs`].
+fn validate_read_milestone_args(args: &ReadMilestoneArgs) -> Result<(), McpError> {
+    validate_milestone_field_nonempty("slug", &args.slug)?;
+    validate_milestone_field_len("slug", &args.slug, mmcp_store::MAX_SLUG_LENGTH)?;
+    if let Some(version) = args.version.as_deref() {
+        validate_milestone_field_nonempty("version", version)?;
+        validate_milestone_field_len("version", version, MAX_MILESTONE_VERSION_LENGTH)?;
+    }
+    Ok(())
+}
+
+/// Validate every bounded field on [`UpdateMilestoneArgs`].
+fn validate_update_milestone_args(args: &UpdateMilestoneArgs) -> Result<(), McpError> {
+    validate_milestone_field_nonempty("slug", &args.slug)?;
+    validate_milestone_field_len("slug", &args.slug, mmcp_store::MAX_SLUG_LENGTH)?;
+    if let Some(title) = args.title.as_deref() {
+        validate_milestone_field_len("title", title, mmcp_core::memory::MAX_NAME_LENGTH)?;
+    }
+    if let Some(description) = args.description.as_deref() {
+        validate_milestone_field_len(
+            "description",
+            description,
+            mmcp_core::memory::MAX_DESCRIPTION_LENGTH,
+        )?;
+    }
+    if let Some(body) = args.body.as_deref() {
+        validate_milestone_field_len("body", body, mmcp_core::memory::MAX_BODY_LENGTH)?;
+    }
+    if let Some(message) = args.message.as_deref() {
+        validate_milestone_field_len("message", message, mmcp_core::memory::MAX_MESSAGE_LENGTH)?;
+    }
+    Ok(())
+}
+
 /// Memory filter facets shared by `export_archive` and
 /// `import_archive`. Every facet is optional; an absent filter matches
 /// every memory.
@@ -4989,6 +5086,7 @@ impl McpServer {
         Parameters(args): Parameters<AddMilestoneArgs>,
         peer: Peer<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
+        validate_add_milestone_args(&args)?;
         let cwd = current_dir_for_mcp()?;
         let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
             &self.state.groups,
@@ -5009,6 +5107,7 @@ impl McpServer {
         &self,
         args: AddMilestoneArgs,
     ) -> Result<CallToolResult, McpError> {
+        validate_add_milestone_args(&args)?;
         let cwd = current_dir_for_mcp()?;
         let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
             &self.state.groups,
@@ -5050,6 +5149,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<ReadMilestoneArgs>,
     ) -> Result<CallToolResult, McpError> {
+        validate_read_milestone_args(&args)?;
         let cwd = current_dir_for_mcp()?;
         let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
             &self.state.groups,
@@ -5087,6 +5187,7 @@ impl McpServer {
         Parameters(args): Parameters<UpdateMilestoneArgs>,
         peer: Peer<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
+        validate_update_milestone_args(&args)?;
         let cwd = current_dir_for_mcp()?;
         let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
             &self.state.groups,
@@ -5104,6 +5205,7 @@ impl McpServer {
         &self,
         args: UpdateMilestoneArgs,
     ) -> Result<CallToolResult, McpError> {
+        validate_update_milestone_args(&args)?;
         let cwd = current_dir_for_mcp()?;
         let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
             &self.state.groups,
@@ -6520,9 +6622,46 @@ fn map_milestone_error_to_mcp(err: mmcp_store::milestones::MilestoneError) -> Mc
             McpError::invalid_params(message, Some(json!({ "code": "milestone_title_required" })))
         }
         MilestoneError::Memory(inner) => map_memory_error_to_mcp(inner),
-        MilestoneError::Cache(_) => {
-            McpError::internal_error(message, Some(json!({ "code": "cache_unavailable" })))
-        }
+        // The transparent `CacheError` wrapper's `Display` embeds raw
+        // absolute filesystem paths and raw sqlx/SQLite error text
+        // (see `CacheError`'s own variant docs), so `message` above
+        // is never surfaced to the caller for this branch. Every arm
+        // logs the real error server-side via `tracing::error!` and
+        // returns a fixed, generic caller-facing message with its
+        // own error code, matching `require_cache_pool`'s pattern.
+        MilestoneError::Cache(cache_err) => match cache_err {
+            mmcp_store::cache::CacheError::Open { path, source } => {
+                tracing::error!(
+                    path = %path.display(),
+                    error = %source,
+                    "milestone rollup: cache database failed to open"
+                );
+                McpError::internal_error(
+                    "local content cache could not be opened; milestone rollups cannot be computed",
+                    Some(json!({ "code": "cache_open_failed" })),
+                )
+            }
+            mmcp_store::cache::CacheError::Query(source) => {
+                tracing::error!(
+                    error = %source,
+                    "milestone rollup: cache database query failed"
+                );
+                McpError::internal_error(
+                    "local content cache query failed; milestone rollups cannot be computed",
+                    Some(json!({ "code": "cache_query_failed" })),
+                )
+            }
+            mmcp_store::cache::CacheError::Git(source) => {
+                tracing::error!(
+                    error = %source,
+                    "milestone rollup: walking group repository failed"
+                );
+                McpError::internal_error(
+                    "local content cache could not walk the group repository; milestone rollups cannot be computed",
+                    Some(json!({ "code": "cache_walk_failed" })),
+                )
+            }
+        },
     }
 }
 
@@ -9073,6 +9212,154 @@ mod tests {
     fn resolve_milestone_update_neither_leaves_unchanged() {
         let resolved = resolve_milestone_update(None, false).expect("neither set must succeed");
         assert_eq!(resolved, None);
+    }
+
+    #[tokio::test]
+    async fn add_milestone_rejects_oversized_title() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(
+            &state,
+            "milestone-oversized-title",
+            "seed-only",
+            SAMPLE_MEMORY,
+        )
+        .await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let err = server
+            .add_milestone_unguarded(AddMilestoneArgs {
+                project: Some(group.to_string()),
+                title: "a".repeat(mmcp_core::memory::MAX_NAME_LENGTH + 1),
+                ..AddMilestoneArgs::default()
+            })
+            .await
+            .expect_err("oversized title must be rejected at the arg boundary");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("field_too_long")
+        );
+        assert_eq!(payload.get("field").and_then(|v| v.as_str()), Some("title"));
+    }
+
+    #[tokio::test]
+    async fn read_milestone_rejects_oversized_version() {
+        let (state, _tmp) = test_state().await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let err = server
+            .read_milestone(Parameters(ReadMilestoneArgs {
+                project: None,
+                slug: "launch".into(),
+                version: Some("a".repeat(MAX_MILESTONE_VERSION_LENGTH + 1)),
+            }))
+            .await
+            .expect_err("oversized version must be rejected at the arg boundary");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("field_too_long")
+        );
+        assert_eq!(
+            payload.get("field").and_then(|v| v.as_str()),
+            Some("version")
+        );
+    }
+
+    #[tokio::test]
+    async fn read_milestone_rejects_empty_slug() {
+        let (state, _tmp) = test_state().await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let err = server
+            .read_milestone(Parameters(ReadMilestoneArgs {
+                project: None,
+                slug: String::new(),
+                version: None,
+            }))
+            .await
+            .expect_err("empty slug must be rejected at the arg boundary");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("field_empty")
+        );
+        assert_eq!(payload.get("field").and_then(|v| v.as_str()), Some("slug"));
+    }
+
+    #[tokio::test]
+    async fn update_milestone_rejects_oversized_body() {
+        let (state, _tmp) = test_state().await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let err = server
+            .update_milestone_unguarded(UpdateMilestoneArgs {
+                project: None,
+                slug: "launch".into(),
+                body: Some("a".repeat(mmcp_core::memory::MAX_BODY_LENGTH + 1)),
+                ..UpdateMilestoneArgs::default()
+            })
+            .await
+            .expect_err("oversized body must be rejected at the arg boundary");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("field_too_long")
+        );
+        assert_eq!(payload.get("field").and_then(|v| v.as_str()), Some("body"));
+    }
+
+    /// Proves the `MilestoneError::Cache` mapping never puts the raw
+    /// filesystem path or raw sqlx error text on the wire, and that
+    /// each `CacheError` variant maps to its own distinct code
+    /// instead of one shared `cache_unavailable`.
+    #[test]
+    fn milestone_cache_error_mapping_never_leaks_raw_cache_detail() {
+        let raw_path = std::path::PathBuf::from("/var/secret/mmcp-home/cache/index.sqlite3");
+        let raw_sql_detail =
+            "near \"SELEC\": syntax error while scanning table memories column body";
+
+        let open_err = map_milestone_error_to_mcp(mmcp_store::milestones::MilestoneError::Cache(
+            mmcp_store::cache::CacheError::Open {
+                path: raw_path.clone(),
+                source: sqlx::Error::Protocol(raw_sql_detail.to_string()),
+            },
+        ));
+        let open_text = format!("{open_err:?}");
+        assert!(
+            !open_text.contains("/var/secret/mmcp-home"),
+            "mapped open-failure error must not leak the raw filesystem path"
+        );
+        assert!(
+            !open_text.contains(raw_sql_detail),
+            "mapped open-failure error must not leak the raw sqlx error text"
+        );
+        assert_eq!(
+            open_err
+                .data
+                .as_ref()
+                .and_then(|p| p.get("code"))
+                .and_then(|v| v.as_str()),
+            Some("cache_open_failed")
+        );
+
+        let query_err = map_milestone_error_to_mcp(mmcp_store::milestones::MilestoneError::Cache(
+            mmcp_store::cache::CacheError::Query(sqlx::Error::Protocol(raw_sql_detail.to_string())),
+        ));
+        let query_text = format!("{query_err:?}");
+        assert!(
+            !query_text.contains(raw_sql_detail),
+            "mapped query-failure error must not leak the raw sqlx error text"
+        );
+        assert_eq!(
+            query_err
+                .data
+                .as_ref()
+                .and_then(|p| p.get("code"))
+                .and_then(|v| v.as_str()),
+            Some("cache_query_failed"),
+            "cache_query_failed must be a distinct code from cache_open_failed"
+        );
     }
 
     // ── sync tool helpers (FR-014) ────────────────────────────────────
