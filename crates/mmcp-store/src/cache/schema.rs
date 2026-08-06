@@ -11,6 +11,7 @@
 //! rebuild (see [`super::index::rebuild_full`]), not a migration
 //! chain.
 
+use sqlx::Sqlite;
 use sqlx::sqlite::SqlitePool;
 
 use super::CacheError;
@@ -124,14 +125,24 @@ pub async fn is_built(pool: &SqlitePool) -> Result<bool, CacheError> {
 
 /// Stamp [`LAST_FULL_REBUILD_KEY`] with `at` (an RFC 3339
 /// timestamp), marking the index as built.
-pub async fn mark_built(pool: &SqlitePool, at: &str) -> Result<(), CacheError> {
+///
+/// Generic over the executor so callers running a rebuild inside a
+/// transaction (see [`super::index::rebuild_full`]) can stamp the
+/// flag as part of the SAME transaction instead of a second,
+/// separately-committed statement — the flag must never observably
+/// flip to "built" ahead of (or independent from) the row data it
+/// describes.
+pub async fn mark_built<'e, E>(executor: E, at: &str) -> Result<(), CacheError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     sqlx::query(
         "INSERT INTO cache_meta (key, value) VALUES (?, ?) \
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
     )
     .bind(LAST_FULL_REBUILD_KEY)
     .bind(at)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
 }

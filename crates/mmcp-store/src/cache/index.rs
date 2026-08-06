@@ -3,6 +3,7 @@
 use jiff::Timestamp;
 use mmcp_core::memory::MemoryFile;
 use mmcp_git::{GitBackend, NativeBackend, Rev};
+use sqlx::Sqlite;
 use sqlx::sqlite::SqlitePool;
 use uuid::Uuid;
 
@@ -24,23 +25,34 @@ pub struct RebuildStats {
 /// upstream does not linger as a stale hit. This is both the lazy
 /// -build-on-read primitive (see [`super::query`]) and the body of
 /// the debug/admin "force rebuild" entry point.
+///
+/// The clear, the repopulate loop, and the `mark_built` stamp all
+/// run inside ONE sqlite transaction. A partial failure (e.g. a git
+/// error walking one group) rolls the whole attempt back rather than
+/// leaving `indexed_memory` truncated while [`super::schema::is_built`]
+/// still reports the PREVIOUS build as current: readers keep serving
+/// the last known-good index instead of a half-emptied one, and the
+/// build-completion flag never observably disagrees with the row
+/// data it describes.
 pub async fn rebuild_full(
     pool: &SqlitePool,
     backend: &NativeBackend,
     groups: &GroupIndex,
 ) -> Result<RebuildStats, CacheError> {
     let mut stats = RebuildStats::default();
+    let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM indexed_memory")
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
 
     for entry in groups.list().await {
         stats.groups_scanned += 1;
-        stats.memories_indexed += index_group(pool, backend, &entry).await?;
+        stats.memories_indexed += index_group(&mut tx, backend, &entry).await?;
     }
 
     let now = Timestamp::now().to_string();
-    super::schema::mark_built(pool, &now).await?;
+    super::schema::mark_built(&mut *tx, &now).await?;
+    tx.commit().await?;
     Ok(stats)
 }
 
@@ -54,6 +66,14 @@ pub async fn rebuild_full(
 /// top of a cache that was never built would leave every other
 /// local group looking indexed when it is not; the next read simply
 /// pays for the full lazy build instead.
+///
+/// Every requested group's clear-and-repopulate runs inside ONE
+/// sqlite transaction, same rationale as [`rebuild_full`]: a git
+/// error walking one group rolls back every group already
+/// deleted/repopulated in this call, so the other requested groups
+/// are never left with truncated rows while the untouched
+/// [`super::schema::is_built`] flag keeps claiming a fully-built
+/// index.
 pub async fn rebuild_groups(
     pool: &SqlitePool,
     backend: &NativeBackend,
@@ -64,6 +84,7 @@ pub async fn rebuild_groups(
     if group_ids.is_empty() || !super::schema::is_built(pool).await? {
         return Ok(stats);
     }
+    let mut tx = pool.begin().await?;
     for group_id in group_ids {
         let Some(entry) = groups
             .get(&mmcp_core::id::GroupId::from_uuid(*group_id))
@@ -77,20 +98,22 @@ pub async fn rebuild_groups(
         };
         sqlx::query("DELETE FROM indexed_memory WHERE group_id = ?")
             .bind(group_id.to_string())
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
         stats.groups_scanned += 1;
-        stats.memories_indexed += index_group(pool, backend, &entry).await?;
+        stats.memories_indexed += index_group(&mut tx, backend, &entry).await?;
     }
+    tx.commit().await?;
     Ok(stats)
 }
 
 /// Read and upsert every memory currently in `entry`'s group at
 /// `HEAD`. Returns the number of memories indexed. Shared body for
 /// [`rebuild_full`] and [`rebuild_groups`]; callers own clearing any
-/// stale rows for the group before calling this.
+/// stale rows for the group before calling this, and own committing
+/// or rolling back `tx`.
 async fn index_group(
-    pool: &SqlitePool,
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
     backend: &NativeBackend,
     entry: &GroupEntry,
 ) -> Result<usize, CacheError> {
@@ -122,7 +145,7 @@ async fn index_group(
             "HEAD",
             &memory_file,
         );
-        upsert_record(pool, &record).await?;
+        upsert_record(&mut **tx, &record).await?;
         indexed += 1;
     }
     Ok(indexed)
@@ -171,7 +194,15 @@ pub fn build_record(
 /// (see [`super::embed`]) from the current name, description, tags,
 /// and body every time — an edit that changes the text must not
 /// leave a stale embedding behind.
-pub async fn upsert_record(pool: &SqlitePool, record: &IndexedRecord) -> Result<(), CacheError> {
+///
+/// Generic over the executor so [`index_group`] can run every upsert
+/// inside the caller's transaction (see [`rebuild_full`] and
+/// [`rebuild_groups`]) while the write-trigger hook
+/// ([`super::notify_write`]) keeps passing the plain pool.
+pub async fn upsert_record<'e, E>(executor: E, record: &IndexedRecord) -> Result<(), CacheError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     let tags_json = serde_json::to_string(&record.tags).unwrap_or_default();
     let now = Timestamp::now().to_string();
     let embedding_text = format!(
@@ -207,7 +238,7 @@ pub async fn upsert_record(pool: &SqlitePool, record: &IndexedRecord) -> Result<
     .bind(now)
     .bind(&record.status)
     .bind(milestone)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
 }
@@ -275,5 +306,89 @@ mod tests {
             .await
             .expect("count rows");
         assert_eq!(row_count.0, 2);
+    }
+
+    #[tokio::test]
+    async fn rebuild_full_rolls_back_instead_of_leaving_a_truncated_built_index() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+
+        let good = scratch
+            .seed_group("cache-atomic-good")
+            .await
+            .expect("seed good group");
+        let good_entry = scratch
+            .groups()
+            .get(&good.group_id)
+            .await
+            .expect("good entry present");
+        let file = sample_memory_file("alpha");
+        let rendered = file.to_string().expect("render memory file");
+        let id = uuid::Uuid::now_v7();
+        let path = mmcp_core::conventions::memory_path("alpha", id);
+        crate::memory::write_file_at_path(
+            scratch.backend(),
+            &good_entry.handle,
+            &path,
+            &rendered,
+            scratch.author(),
+            crate::memory::WriteFileOptions::default(),
+        )
+        .await
+        .expect("write sample memory");
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let pool = super::super::open_pool(&tmp.path().join("index.sqlite3"))
+            .await
+            .expect("open pool");
+
+        // Prime the index with one real, successful build so
+        // `is_built` starts true and `indexed_memory` starts with a
+        // known-good row: the assertion below must prove this state
+        // survives untouched, not merely that a cold index stays cold.
+        rebuild_full(&pool, scratch.backend(), scratch.groups())
+            .await
+            .expect("initial rebuild_full");
+        assert!(
+            super::super::schema::is_built(&pool)
+                .await
+                .expect("is_built after initial build")
+        );
+
+        // Seed a second group, then corrupt its bare repo on disk
+        // after the group index already resolved it -- this forces
+        // `index_group` to fail partway through the next rebuild
+        // with a real git error instead of the benign
+        // `PathNotFound` a vanished single file would raise.
+        let bad = scratch
+            .seed_group("cache-atomic-bad")
+            .await
+            .expect("seed bad group");
+        let bad_entry = scratch
+            .groups()
+            .get(&bad.group_id)
+            .await
+            .expect("bad entry present");
+        std::fs::remove_dir_all(&bad_entry.handle.locator).expect("corrupt bad group repo");
+
+        let failure = rebuild_full(&pool, scratch.backend(), scratch.groups()).await;
+        assert!(
+            failure.is_err(),
+            "rebuild_full must surface the mid-rebuild git failure"
+        );
+
+        // The whole attempt (delete + partial repopulate) must have
+        // rolled back: the previous known-good row and built flag
+        // are exactly as the initial successful build left them,
+        // never truncated and never left disagreeing with each other.
+        assert!(
+            super::super::schema::is_built(&pool)
+                .await
+                .expect("is_built after failed rebuild")
+        );
+        let row_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM indexed_memory")
+            .fetch_one(&pool)
+            .await
+            .expect("count rows after failed rebuild");
+        assert_eq!(row_count.0, 1);
     }
 }
