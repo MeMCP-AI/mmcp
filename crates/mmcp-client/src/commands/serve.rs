@@ -1197,6 +1197,12 @@ struct AddFeatureArgs {
     #[serde(default)]
     pub supersedes: Option<String>,
 
+    /// UUID of the milestone this feature counts toward. Cross-group
+    /// by design (D3): the milestone does not have to live in this
+    /// project's group. Absent means no milestone.
+    #[serde(default)]
+    pub milestone: Option<String>,
+
     /// FR-38 provenance UUID. When set, this FR was filed by an
     /// agent acting on behalf of the named owner — group UUID for
     /// federated workflows where one project files an FR against
@@ -1288,6 +1294,16 @@ struct UpdateFeatureArgs {
     /// `SupersedeInvariantError` via `invalid_memory_ref`.
     #[serde(default)]
     pub superseded_by: Option<MemoryRefArg>,
+
+    /// Replacement milestone UUID; omit to leave unchanged. Set
+    /// `milestone_clear: true` to unlink instead.
+    #[serde(default)]
+    pub milestone: Option<String>,
+
+    /// Clear the milestone link. Mutually exclusive in effect with
+    /// `milestone`; when both are set, `milestone` wins.
+    #[serde(default)]
+    pub milestone_clear: bool,
 
     /// Optional override for the git commit message.
     #[serde(default)]
@@ -1606,6 +1622,120 @@ struct ListIssuesArgs {
     /// Defaults to `false`, so the tool returns only non-terminal
     /// issues unless `status` selects a different variant or `all`
     /// is set.
+    #[serde(default)]
+    pub all: Option<bool>,
+}
+
+// ── Milestone tool args ─────────────────────────────────────────
+//
+// Sister block to the feature/issue-tracker args above, but a
+// deliberately reduced surface (M5 design): `add_milestone` /
+// `read_milestone` / `update_milestone` / `list_milestones` route
+// through `mmcp_store::milestones` — no delete, no rename, no
+// supersede flow, no depends_on/blocks. `add_milestone` /
+// `update_milestone` call `confirm_protected_write` from the start,
+// matching every other tracker mutator.
+
+/// Args for `add_milestone`.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct AddMilestoneArgs {
+    /// Target project group (UUID or slug). When omitted, the
+    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    #[serde(default)]
+    pub project: Option<String>,
+
+    /// Stable slug for the milestone. Auto-minted from the title
+    /// when omitted.
+    #[serde(default)]
+    pub slug: Option<String>,
+
+    /// Human-readable title. Required unless a slug is supplied.
+    #[serde(default)]
+    pub title: String,
+
+    /// One-line summary.
+    #[serde(default)]
+    pub description: String,
+
+    /// Full milestone body as freeform markdown. Not parsed by the
+    /// tool, preserved verbatim.
+    #[serde(default)]
+    pub body: String,
+
+    /// Initial editorial status. Defaults to `planning` when
+    /// absent. Wire form: `planning | active | on_hold | completed`.
+    #[serde(default)]
+    pub status: Option<String>,
+
+    /// Optional override for the git commit message.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// Args for `read_milestone`.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct ReadMilestoneArgs {
+    /// Target project group (UUID or slug). When omitted, the
+    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    #[serde(default)]
+    pub project: Option<String>,
+
+    /// Slug of the milestone to read.
+    pub slug: String,
+
+    /// Branch name, tag, or 40-char commit hex. Defaults to the
+    /// group's `main` when absent.
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
+/// Args for `update_milestone`.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct UpdateMilestoneArgs {
+    /// Target project group (UUID or slug). When omitted, the
+    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    #[serde(default)]
+    pub project: Option<String>,
+
+    /// Slug of the milestone to mutate.
+    pub slug: String,
+
+    /// New title; omit to leave unchanged.
+    #[serde(default)]
+    pub title: Option<String>,
+
+    /// New description; omit to leave unchanged.
+    #[serde(default)]
+    pub description: Option<String>,
+
+    /// Replacement body; omit to leave unchanged.
+    #[serde(default)]
+    pub body: Option<String>,
+
+    /// New editorial status; omit to leave unchanged. Wire form
+    /// matches `AddMilestoneArgs::status`.
+    #[serde(default)]
+    pub status: Option<String>,
+
+    /// Optional override for the git commit message.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// Args for `list_milestones`.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct ListMilestonesArgs {
+    /// Target project group (UUID or slug). When omitted, the
+    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    #[serde(default)]
+    pub project: Option<String>,
+
+    /// When `true`, include milestones whose live rollup is
+    /// `completed`. Defaults to `false`.
     #[serde(default)]
     pub all: Option<bool>,
 }
@@ -4083,6 +4213,7 @@ impl McpServer {
             mmcp_store::parse_cross_refs(&args.blocks, "blocks").map_err(map_xref_error_to_mcp)?;
         let refs = parse_wire_refs(args.refs, "refs")?;
         let source = parse_optional_source(args.source.as_deref())?;
+        let milestone = parse_optional_milestone(args.milestone.as_deref())?;
         let spec = mmcp_store::features::AddSpec {
             slug: args.slug,
             title: args.title,
@@ -4094,6 +4225,7 @@ impl McpServer {
             refs,
             supersedes: args.supersedes,
             source,
+            milestone,
             message: args.message,
             // FR-37: `number` is server-assigned only, never
             // accepted from the wire. Leaving default None lets
@@ -4234,6 +4366,11 @@ impl McpServer {
                     .expect("parse_wire_refs returns one entry per input"),
             ),
         };
+        let milestone = if args.milestone_clear {
+            Some(None)
+        } else {
+            parse_optional_milestone(args.milestone.as_deref())?.map(Some)
+        };
         let spec = mmcp_store::features::UpdateSpec {
             title: args.title,
             description: args.description,
@@ -4244,6 +4381,7 @@ impl McpServer {
             refs_add,
             refs_remove,
             superseded_by,
+            milestone,
             message: args.message,
         };
         let record = mmcp_store::features::update_feature(
@@ -4830,6 +4968,226 @@ impl McpServer {
             notes,
         ))
     }
+
+    // ── Milestone tools ─────────────────────────────────────────
+    //
+    // Reduced-surface tracked kind (M5 design): add / read / update
+    // / list only, routed through `mmcp_store::milestones`. Every
+    // read path attaches the live, cross-group rollup computed by
+    // `mmcp_store::rollup` via the local content cache. The two
+    // mutators run `confirm_protected_write` before touching the
+    // group, mirroring the feature/issue tracker tools exactly.
+
+    #[tool(
+        description = "File a new milestone in the current project's group. Slug is auto-minted from the title when omitted. Status defaults to `planning`; supply one of `planning | active | on_hold | completed` to override. A milestone's live status is a separate, computed rollup over the features that point at it via `add_feature`/`update_feature`'s `milestone` field — see `read_milestone` / `list_milestones`. Errors with `project_not_found`, `invalid_slug`, and `memory_already_exists` mirroring the feature/issue tools.",
+        annotations(
+            title = "Add milestone",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
+    )]
+    async fn add_milestone(
+        &self,
+        Parameters(args): Parameters<AddMilestoneArgs>,
+        peer: Peer<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        let guard_slug = args.slug.as_deref().unwrap_or(args.title.as_str());
+        confirm_protected_write(&peer, &entry, guard_slug, "add_milestone").await?;
+        self.add_milestone_unguarded(args).await
+    }
+
+    /// Peer-less test entry point: re-resolves the entry and commits
+    /// the write WITHOUT firing the elicitation guard. Mirrors
+    /// `add_issue_unguarded`.
+    async fn add_milestone_unguarded(
+        &self,
+        args: AddMilestoneArgs,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        let status = parse_milestone_status_arg(args.status.as_deref())?.unwrap_or_default();
+        let spec = mmcp_store::milestones::AddSpec {
+            slug: args.slug,
+            title: args.title,
+            description: args.description,
+            body: args.body,
+            status,
+            message: args.message,
+        };
+        let record = mmcp_store::milestones::add_milestone(
+            &self.state.backend,
+            &entry,
+            spec,
+            &self.state.author,
+        )
+        .await
+        .map_err(map_milestone_error_to_mcp)?;
+        Ok(ok_json(milestone_record_to_json(&entry, &record)))
+    }
+
+    #[tool(
+        description = "Read a milestone by slug from the current project's group. Returns the milestone record (title, description, body, editorial status, commit_id) plus `rollup`: the LIVE status computed by folding the lifecycle states of every feature — in any locally-mirrored group — currently pointing at this milestone. Set `version` to a branch, tag, or 40-char commit hex to read a specific revision. Errors with `not_a_milestone` when the slug resolves to a memory whose kind is not `milestone`.",
+        annotations(
+            title = "Read a milestone",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn read_milestone(
+        &self,
+        Parameters(args): Parameters<ReadMilestoneArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        let pool = require_cache_pool()?;
+        let record = mmcp_store::milestones::read_milestone(
+            &self.state.backend,
+            &entry,
+            &pool,
+            &self.state.groups,
+            &args.slug,
+            args.version.as_deref(),
+        )
+        .await
+        .map_err(map_milestone_error_to_mcp)?;
+        Ok(ok_json(milestone_record_to_json(&entry, &record)))
+    }
+
+    #[tool(
+        description = "Apply partial updates to an existing milestone and commit the result. Every mutator is optional, omit to leave untouched. `status` is the operator's editorial state, not the computed rollup — see `read_milestone` for the live rollup. Errors with `memory_not_found` when the slug has no milestone, `not_a_milestone` when the slug is a non-milestone memory, and `invalid_milestone_status` when `status` is not one of the four variants.",
+        annotations(
+            title = "Update milestone",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false,
+        )
+    )]
+    async fn update_milestone(
+        &self,
+        Parameters(args): Parameters<UpdateMilestoneArgs>,
+        peer: Peer<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        confirm_protected_write(&peer, &entry, &args.slug, "update_milestone").await?;
+        self.update_milestone_unguarded(args).await
+    }
+
+    /// Peer-less test entry point. Mirrors `update_issue_unguarded`.
+    async fn update_milestone_unguarded(
+        &self,
+        args: UpdateMilestoneArgs,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        let pool = require_cache_pool()?;
+        let status = match args.status.as_deref() {
+            Some(raw) => Some(parse_milestone_status_arg(Some(raw))?.unwrap_or_default()),
+            None => None,
+        };
+        let spec = mmcp_store::milestones::UpdateSpec {
+            title: args.title,
+            description: args.description,
+            body: args.body,
+            status,
+            message: args.message,
+        };
+        let record = mmcp_store::milestones::update_milestone(
+            &self.state.backend,
+            &entry,
+            &pool,
+            &self.state.groups,
+            &args.slug,
+            spec,
+            &self.state.author,
+        )
+        .await
+        .map_err(map_milestone_error_to_mcp)?;
+        Ok(ok_json(milestone_record_to_json(&entry, &record)))
+    }
+
+    #[tool(
+        description = "List milestones in the current project's group, each with its live cross-group rollup. By default hides a milestone whose rollup is fully `completed`. Pass `all: true` to include those too. Memories whose frontmatter fails to parse are reported through the notes channel rather than silently dropped.",
+        annotations(
+            title = "List milestones",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn list_milestones(
+        &self,
+        Parameters(args): Parameters<ListMilestonesArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let (entry, _root) = mmcp_store::features::resolve_project_group_with_selector(
+            &self.state.groups,
+            args.project.as_deref(),
+            &cwd,
+        )
+        .await
+        .map_err(map_feature_error_to_mcp)?;
+        let pool = require_cache_pool()?;
+        let show_all = args.all.unwrap_or(false);
+        let (records, findings) = mmcp_store::milestones::list_milestones(
+            &self.state.backend,
+            &entry,
+            &pool,
+            &self.state.groups,
+            show_all,
+        )
+        .await
+        .map_err(map_milestone_error_to_mcp)?;
+        let notes = findings_to_notes(&findings);
+        let milestones: Vec<_> = records
+            .iter()
+            .map(|record| milestone_record_to_json(&entry, record))
+            .collect();
+        Ok(ok_json_with_notes(
+            json!({
+                "group":      entry.manifest.group_id.to_string(),
+                "milestones": milestones,
+                "count":      records.len(),
+            }),
+            notes,
+        ))
+    }
 }
 
 /// Compose the `status` tool response from a cwd + a pre-built
@@ -4915,6 +5273,8 @@ impl McpServer {
             Self::list_features_tool_attr(),
             Self::read_issue_tool_attr(),
             Self::list_issues_tool_attr(),
+            Self::read_milestone_tool_attr(),
+            Self::list_milestones_tool_attr(),
             Self::describe_tools_tool_attr(),
             // Local mutators (open_world = false).
             Self::write_memory_tool_attr(),
@@ -4925,6 +5285,7 @@ impl McpServer {
             Self::debug_write_file_tool_attr(),
             Self::update_feature_tool_attr(),
             Self::update_issue_tool_attr(),
+            Self::update_milestone_tool_attr(),
             Self::delete_memory_tool_attr(),
             Self::init_claude_tool_attr(),
             Self::delete_feature_tool_attr(),
@@ -4938,6 +5299,7 @@ impl McpServer {
             Self::create_group_tool_attr(),
             Self::add_feature_tool_attr(),
             Self::add_issue_tool_attr(),
+            Self::add_milestone_tool_attr(),
             // Archive tools (open_world = true).
             Self::export_archive_tool_attr(),
             Self::import_archive_tool_attr(),
@@ -4991,6 +5353,9 @@ pub(crate) enum ToolIconCategory {
     Feature,
     /// Issue-tracker tools (`*_issue`), sister to `Feature`.
     Issue,
+    /// Milestone tracker tools (`*_milestone`), sister to `Feature`
+    /// / `Issue` but a reduced surface (M5 design).
+    Milestone,
     /// `debug_*` raw-git escape hatches.
     Debug,
     /// `sync_*` tools that contact the remote server.
@@ -5015,6 +5380,9 @@ fn tool_icon_category(name: &str) -> ToolIconCategory {
         | "rename_feature" => ToolIconCategory::Feature,
         "read_issue" | "list_issues" | "add_issue" | "update_issue" | "delete_issue"
         | "rename_issue" => ToolIconCategory::Issue,
+        "read_milestone" | "list_milestones" | "add_milestone" | "update_milestone" => {
+            ToolIconCategory::Milestone
+        }
         "debug_read_file" | "debug_list_tree" | "debug_git_log" | "debug_write_file"
         | "debug_toggle" => ToolIconCategory::Debug,
         "sync_fetch" | "sync_push" | "sync_pull" | "sync" => ToolIconCategory::Sync,
@@ -5036,6 +5404,7 @@ fn icons_for_category(cat: ToolIconCategory) -> Vec<rmcp::model::Icon> {
         ToolIconCategory::Mutate => MUTATE_ICON_SRC,
         ToolIconCategory::Feature => FEATURE_ICON_SRC,
         ToolIconCategory::Issue => ISSUE_ICON_SRC,
+        ToolIconCategory::Milestone => MILESTONE_ICON_SRC,
         ToolIconCategory::Debug => DEBUG_ICON_SRC,
         ToolIconCategory::Sync => SYNC_ICON_SRC,
     };
@@ -5050,6 +5419,7 @@ const READ_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.o
 const MUTATE_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{270F}\u{FE0F}</text></svg>";
 const FEATURE_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F6A9}</text></svg>";
 const ISSUE_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F41E}</text></svg>";
+const MILESTONE_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F3C1}</text></svg>";
 const DEBUG_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F41B}</text></svg>";
 const SYNC_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F504}</text></svg>";
 
@@ -5097,6 +5467,10 @@ fn meta_for_tool(name: &str) -> Option<rmcp::model::MetaObject> {
             | "update_issue"
             | "delete_issue"
             | "rename_issue"
+            | "read_milestone"
+            | "list_milestones"
+            | "add_milestone"
+            | "update_milestone"
             | "subscribe"
             | "unsubscribe"
     ) {
@@ -5139,6 +5513,8 @@ fn meta_for_tool(name: &str) -> Option<rmcp::model::MetaObject> {
             | "update_issue"
             | "delete_issue"
             | "rename_issue"
+            | "add_milestone"
+            | "update_milestone"
     ) {
         keys.push(("mmcp.protected_group_gated", true));
     }
@@ -5777,6 +6153,7 @@ fn feature_record_to_json(
         "depends_on":    record.depends_on,
         "blocks":        record.blocks,
         "superseded_by": record.superseded_by.as_ref().map(memory_ref_to_json),
+        "milestone":     record.milestone.map(|id| id.to_string()),
         "commit_id":     record.commit_id,
     })
 }
@@ -5799,6 +6176,7 @@ fn feature_summary_to_json(
         "depends_on":    summary.depends_on,
         "blocks":        summary.blocks,
         "superseded_by": summary.superseded_by.as_ref().map(memory_ref_to_json),
+        "milestone":     summary.milestone.map(|id| id.to_string()),
         "commit_id":     summary.commit_id,
     })
 }
@@ -6058,6 +6436,99 @@ fn map_issue_error_to_mcp(err: mmcp_store::issues::IssueError) -> McpError {
             })),
         ),
         IssueError::Memory(inner) => map_memory_error_to_mcp(inner),
+    }
+}
+
+/// Fetch the process-global local content cache pool, mapping its
+/// absence onto a structured error. Every milestone tool that reads
+/// a rollup (`read_milestone`, `update_milestone`, `list_milestones`)
+/// needs this — unlike the write-trigger hook, a rollup query with
+/// no pool has no fallback answer to give, so this surfaces as a
+/// real error rather than silently returning a trivial rollup.
+/// `ClientState::initialize_from` calls `cache::init_from_home`
+/// before the router ever dispatches a tool call, so this should
+/// only fire when that startup step itself failed.
+fn require_cache_pool() -> Result<sqlx::sqlite::SqlitePool, McpError> {
+    mmcp_store::cache::active_pool().ok_or_else(|| {
+        McpError::internal_error(
+            "local content cache is not available; milestone rollups cannot be computed",
+            Some(json!({ "code": "cache_unavailable" })),
+        )
+    })
+}
+
+/// Parse the wire form of [`mmcp_core::memory::MilestoneStatus`]
+/// from an optional string argument. Mirrors `parse_issue_status_arg`.
+fn parse_milestone_status_arg(
+    raw: Option<&str>,
+) -> Result<Option<mmcp_core::memory::MilestoneStatus>, McpError> {
+    let Some(s) = raw else {
+        return Ok(None);
+    };
+    mmcp_core::memory::MilestoneStatus::parse(s)
+        .map(Some)
+        .map_err(|err| {
+            McpError::invalid_params(
+                err.to_string(),
+                Some(json!({
+                    "code":  "invalid_milestone_status",
+                    "input": err.input,
+                    "allowed": mmcp_core::memory::MilestoneStatus::all()
+                        .iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                })),
+            )
+        })
+}
+
+/// Serialize a [`mmcp_store::milestones::MilestoneRecord`] to the
+/// JSON shape returned by the milestone tools. `rollup` is a nested
+/// object so callers can tell at a glance which fields are the
+/// operator's editorial state versus the live computed fold.
+fn milestone_record_to_json(
+    entry: &GroupEntry,
+    record: &mmcp_store::milestones::MilestoneRecord,
+) -> serde_json::Value {
+    json!({
+        "group":       entry.manifest.group_id.to_string(),
+        "slug":        record.slug,
+        "title":       record.title,
+        "description": record.description,
+        "body":        record.body,
+        "status":      record.status.as_str(),
+        "rollup": {
+            "status":    record.rollup.status.as_str(),
+            "counted":   record.rollup.counted,
+            "completed": record.rollup.completed,
+            "blocked":   record.rollup.blocked,
+        },
+        "commit_id":   record.commit_id,
+    })
+}
+
+/// Map an [`mmcp_store::milestones::MilestoneError`] onto an
+/// [`McpError`] with a structured `code` payload, mirroring
+/// `map_issue_error_to_mcp`.
+fn map_milestone_error_to_mcp(err: mmcp_store::milestones::MilestoneError) -> McpError {
+    use mmcp_store::milestones::MilestoneError;
+    let message = err.to_string();
+    match err {
+        MilestoneError::NotAMilestone { slug, kind } => McpError::invalid_params(
+            message,
+            Some(json!({
+                "code": "not_a_milestone",
+                "slug": slug,
+                "kind": kind,
+            })),
+        ),
+        MilestoneError::TitleRequired => McpError::invalid_params(
+            message,
+            Some(json!({ "code": "milestone_title_required" })),
+        ),
+        MilestoneError::Memory(inner) => map_memory_error_to_mcp(inner),
+        MilestoneError::Cache(_) => McpError::internal_error(
+            message,
+            Some(json!({ "code": "cache_unavailable" })),
+        ),
     }
 }
 
@@ -6802,6 +7273,21 @@ fn parse_optional_source(value: Option<&str>) -> Result<Option<Uuid>, McpError> 
             McpError::invalid_params(
                 "source is not a valid UUID",
                 Some(json!({ "code": "invalid_source", "source": s })),
+            )
+        }),
+    }
+}
+
+/// Parse the `milestone` wire argument shared by `add_feature` /
+/// `update_feature`: a bare UUID, never a slug (milestone
+/// cross-references are UUID-only per the D3/M5 design).
+fn parse_optional_milestone(value: Option<&str>) -> Result<Option<Uuid>, McpError> {
+    match value {
+        None => Ok(None),
+        Some(s) => Uuid::parse_str(s).map(Some).map_err(|_| {
+            McpError::invalid_params(
+                "milestone is not a valid UUID",
+                Some(json!({ "code": "invalid_milestone", "milestone": s })),
             )
         }),
     }
@@ -8360,6 +8846,164 @@ mod tests {
         let body = std::fs::read_to_string(&target).expect("read stub");
         assert!(body.contains("mmcp is mandatory"));
         assert!(body.contains("bootstrap_context"));
+    }
+
+    // ── Milestone tools ─────────────────────────────────────────
+    //
+    // Assertions here deliberately avoid depending on `rollup`
+    // VALUES beyond "zero features -> Planning / counted == 0":
+    // the local content cache pool is a process-global `OnceLock`
+    // (see `mmcp_store::cache::ACTIVE_POOL`'s doc), so whichever
+    // test in this shared unit-test binary wins the race to call
+    // `cache::init_from_home` first determines which pool answers
+    // every later `require_cache_pool()` call in the same process.
+    // A milestone with a fresh UUIDv7 and zero linked features
+    // reads back as Planning/0 regardless of which generation of
+    // the shared cache is active, so that assertion stays
+    // deterministic; a milestone rollup asserting `Blocked` or
+    // `Completed` would not be, because a rebuild triggered by an
+    // earlier test never re-walks a group created by a later one.
+    // The cross-group, mixed-status rollup fold itself is proven
+    // deterministically in `mmcp_store::milestones`'s own test
+    // suite, which opens a private pool per test.
+
+    #[tokio::test]
+    async fn milestone_add_read_update_round_trip() {
+        let (state, _tmp) = test_state().await;
+        let group =
+            seed_group_with_memory(&state, "milestone-crud", "seed-only", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let added = server
+            .add_milestone_unguarded(AddMilestoneArgs {
+                project: Some(group.to_string()),
+                slug: Some("launch".into()),
+                title: "Launch".into(),
+                description: "ship it".into(),
+                body: "## Scope\n\neverything".into(),
+                ..AddMilestoneArgs::default()
+            })
+            .await
+            .expect("add_milestone");
+        let added = parse_ok_json(added);
+        assert_eq!(added.get("slug").and_then(|v| v.as_str()), Some("launch"));
+        assert_eq!(
+            added.get("status").and_then(|v| v.as_str()),
+            Some("planning")
+        );
+        assert_eq!(
+            added
+                .get("rollup")
+                .and_then(|r| r.get("status"))
+                .and_then(|v| v.as_str()),
+            Some("planning")
+        );
+
+        let read = server
+            .read_milestone(Parameters(ReadMilestoneArgs {
+                project: Some(group.to_string()),
+                slug: "launch".into(),
+                version: None,
+            }))
+            .await
+            .expect("read_milestone");
+        let read = parse_ok_json(read);
+        assert_eq!(read.get("title").and_then(|v| v.as_str()), Some("Launch"));
+        assert_eq!(
+            read.get("rollup")
+                .and_then(|r| r.get("counted"))
+                .and_then(|v| v.as_u64()),
+            Some(0)
+        );
+
+        let updated = server
+            .update_milestone_unguarded(UpdateMilestoneArgs {
+                project: Some(group.to_string()),
+                slug: "launch".into(),
+                status: Some("active".into()),
+                ..UpdateMilestoneArgs::default()
+            })
+            .await
+            .expect("update_milestone");
+        let updated = parse_ok_json(updated);
+        assert_eq!(
+            updated.get("status").and_then(|v| v.as_str()),
+            Some("active")
+        );
+    }
+
+    #[tokio::test]
+    async fn list_milestones_surfaces_a_fresh_empty_milestone() {
+        let (state, _tmp) = test_state().await;
+        let group =
+            seed_group_with_memory(&state, "milestone-listing", "seed-only", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        server
+            .add_milestone_unguarded(AddMilestoneArgs {
+                project: Some(group.to_string()),
+                slug: Some("empty-one".into()),
+                title: "Empty One".into(),
+                ..AddMilestoneArgs::default()
+            })
+            .await
+            .expect("add_milestone");
+
+        let res = server
+            .list_milestones(Parameters(ListMilestonesArgs {
+                project: Some(group.to_string()),
+                all: None,
+            }))
+            .await
+            .expect("list_milestones");
+        let parsed = parse_ok_json(res);
+        let milestones = parsed
+            .get("milestones")
+            .and_then(|v| v.as_array())
+            .expect("milestones array");
+        let slugs: Vec<&str> = milestones
+            .iter()
+            .filter_map(|m| m.get("slug").and_then(|v| v.as_str()))
+            .collect();
+        assert!(slugs.contains(&"empty-one"));
+    }
+
+    #[tokio::test]
+    async fn milestone_tools_reject_a_feature_slug() {
+        let (state, _tmp) = test_state().await;
+        let group =
+            seed_group_with_memory(&state, "milestone-not-a-feature", "seed-only", SAMPLE_MEMORY)
+                .await;
+        let entry = state.groups.get(&group).await.expect("group entry");
+
+        mmcp_store::features::add_feature(
+            &state.backend,
+            &entry,
+            mmcp_store::features::AddSpec {
+                slug: Some("a-feat".into()),
+                title: "feat".into(),
+                ..mmcp_store::features::AddSpec::default()
+            },
+            &state.author,
+        )
+        .await
+        .expect("seed feature");
+        state.groups.refresh().await.expect("refresh");
+
+        let server = McpServer::new(state, ServeMode::Full);
+        let err = server
+            .read_milestone(Parameters(ReadMilestoneArgs {
+                project: Some(group.to_string()),
+                slug: "a-feat".into(),
+                version: None,
+            }))
+            .await
+            .expect_err("read_milestone must reject a feature slug");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("not_a_milestone")
+        );
     }
 
     // ── sync tool helpers (FR-014) ────────────────────────────────────
@@ -10154,6 +10798,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn add_milestone_against_protected_group_is_gated() {
+        let (state, _tmp) = test_state().await;
+        let entry = protected_entry_for(&state, "global").await;
+        let err = ensure_not_protected(&entry, "fresh-milestone", "add_milestone")
+            .expect_err("protected-group fallback must gate add_milestone");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("protected_requires_elicitation")
+        );
+        assert_eq!(
+            payload.get("action").and_then(|v| v.as_str()),
+            Some("add_milestone")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_milestone_against_protected_group_is_gated() {
+        let (state, _tmp) = test_state().await;
+        let entry = protected_entry_for(&state, "global").await;
+        let err = ensure_not_protected(&entry, "a-milestone", "update_milestone")
+            .expect_err("protected-group fallback must gate update_milestone");
+        let payload = err.data.as_ref().expect("payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("protected_requires_elicitation")
+        );
+        assert_eq!(
+            payload.get("action").and_then(|v| v.as_str()),
+            Some("update_milestone")
+        );
+    }
+
+    #[tokio::test]
     async fn delete_issue_against_protected_group_is_gated() {
         let (state, _tmp) = test_state().await;
         let entry = protected_entry_for(&state, "global").await;
@@ -10558,6 +11236,8 @@ mod tests {
         check_bits(McpServer::list_features_tool_attr(), ro);
         check_bits(McpServer::read_issue_tool_attr(), ro);
         check_bits(McpServer::list_issues_tool_attr(), ro);
+        check_bits(McpServer::read_milestone_tool_attr(), ro);
+        check_bits(McpServer::list_milestones_tool_attr(), ro);
         check_bits(McpServer::describe_tools_tool_attr(), ro);
 
         // ── Local mutation tools (open_world = false) ───────────
@@ -10573,6 +11253,7 @@ mod tests {
         check_bits(McpServer::debug_write_file_tool_attr(), dmod);
         check_bits(McpServer::update_feature_tool_attr(), dmod);
         check_bits(McpServer::update_issue_tool_attr(), dmod);
+        check_bits(McpServer::update_milestone_tool_attr(), dmod);
 
         // Destructive + idempotent (delete shapes + init_claude rewrite).
         let ddel = (Some(false), Some(true), Some(true), Some(false));
@@ -10596,6 +11277,7 @@ mod tests {
         check_bits(McpServer::create_group_tool_attr(), cre);
         check_bits(McpServer::add_feature_tool_attr(), cre);
         check_bits(McpServer::add_issue_tool_attr(), cre);
+        check_bits(McpServer::add_milestone_tool_attr(), cre);
 
         // ── Sync tools (open_world = true) ──────────────────────
         // sync_fetch / sync_push: non-destructive, idempotent.
