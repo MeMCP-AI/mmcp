@@ -488,9 +488,9 @@ fn print_record_full(record: &FeatureRecord) {
 // ── Parsing helpers ─────────────────────────────────────────────
 
 /// Parse the CLI wire form of [`FeatureStatus`]. Bails with a
-/// human-readable error when the value is not one of the five
-/// variants so operators see the acceptable options immediately
-/// without a crash trace.
+/// human-readable error listing every valid variant, sourced from
+/// [`FeatureStatus::all`], so operators see the acceptable options
+/// immediately without a crash trace.
 fn parse_status_cli(raw: Option<&str>) -> Result<Option<FeatureStatus>> {
     match raw {
         None => Ok(None),

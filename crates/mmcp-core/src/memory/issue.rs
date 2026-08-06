@@ -25,12 +25,15 @@ use crate::memory::{MemoryRef, Status};
 
 /// Lifecycle state of an issue.
 ///
-/// Differs from [`FeatureStatus`](super::FeatureStatus) on the
-/// terminal verbs: issues *close* (the work landed, the question
-/// got an answer) and may be *wontfix*ed (the team explicitly
-/// declines to act). Open / Blocked / Deferred / Duplicate /
-/// Superseded carry the same semantics as on the feature side so
-/// generic listings and diagnostics behave identically.
+/// Deliberately a DISTINCT vocabulary from
+/// [`FeatureStatus`](super::FeatureStatus): "two systems, two
+/// purposes." Issues *close* (the work landed, the question got an
+/// answer) and may be *wontfix*ed (the team explicitly declines to
+/// act), neither of which the feature side has a variant for. Only
+/// the surrounding tracker CRUD/listing/notes-channel machinery is
+/// shared between the two kinds (see `mmcp_store::tracker`); the
+/// status enums themselves are never unified or renamed in lockstep,
+/// even where a variant name happens to read the same.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum IssueStatus {
