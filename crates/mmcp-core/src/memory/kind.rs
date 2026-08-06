@@ -95,6 +95,43 @@ impl MemoryKind {
     }
 }
 
+/// Raised when [`MemoryKind`]'s [`FromStr`](std::str::FromStr) impl
+/// sees a string that does not match any known kind.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "invalid memory kind '{input}': expected one of rule / snapshot / log / reference / scratch / feature / issue"
+)]
+pub struct MemoryKindParseError {
+    /// The offending input string, echoed back for user-facing errors.
+    pub input: String,
+}
+
+/// Canonical parser for the lowercase wire form of [`MemoryKind`].
+///
+/// This is the single owning parser every hand-rolled `MemoryKind`
+/// decoder in the codebase delegates to (mmcp-store's create-time
+/// parser, the archive filter's facet parser, the GUI's DTO
+/// converter) so the accepted-kind set can never drift between
+/// call sites again.
+impl std::str::FromStr for MemoryKind {
+    type Err = MemoryKindParseError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw {
+            "rule" => Ok(MemoryKind::Rule),
+            "snapshot" => Ok(MemoryKind::Snapshot),
+            "log" => Ok(MemoryKind::Log),
+            "reference" => Ok(MemoryKind::Reference),
+            "scratch" => Ok(MemoryKind::Scratch),
+            "feature" => Ok(MemoryKind::Feature),
+            "issue" => Ok(MemoryKind::Issue),
+            other => Err(MemoryKindParseError {
+                input: other.to_string(),
+            }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +160,27 @@ mod tests {
     #[test]
     fn as_str_returns_canonical_feature_token() {
         assert_eq!(MemoryKind::Feature.as_str(), "feature");
+    }
+
+    #[test]
+    fn from_str_round_trips_every_kind() {
+        for kind in [
+            MemoryKind::Rule,
+            MemoryKind::Snapshot,
+            MemoryKind::Log,
+            MemoryKind::Reference,
+            MemoryKind::Scratch,
+            MemoryKind::Feature,
+            MemoryKind::Issue,
+        ] {
+            let parsed: MemoryKind = kind.as_str().parse().expect("round trip");
+            assert_eq!(parsed, kind);
+        }
+    }
+
+    #[test]
+    fn from_str_rejects_unknown_kind() {
+        let err = "bogus".parse::<MemoryKind>().expect_err("unknown kind");
+        assert_eq!(err.input, "bogus");
     }
 }
