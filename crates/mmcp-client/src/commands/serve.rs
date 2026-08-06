@@ -6424,9 +6424,9 @@ fn map_memory_error_to_mcp(err: ImportError) -> McpError {
         ImportError::MissingFrontmatter => json!({
             "code": "memory_missing_frontmatter",
         }),
-        ImportError::UnknownKind(kind) => json!({
+        ImportError::UnknownKind(err) => json!({
             "code": "memory_unknown_kind",
-            "kind": kind,
+            "kind": err.input,
         }),
         ImportError::GroupNotFound(group) => json!({
             "code": "group_not_found",

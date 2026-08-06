@@ -120,22 +120,15 @@ impl MemoryFilter {
     }
 }
 
-/// Parse a memory-kind facet string (accepts every kind, including
-/// `feature`/`fr` and `issue`, unlike the create-time `parse_kind`
-/// which is limited to the author-facing kinds). Returns `None` for an
-/// unknown kind so callers can reject the input with a clear message.
+/// Parse a memory-kind facet string, case-insensitively. Delegates
+/// to the canonical [`MemoryKind::from_str`](std::str::FromStr)
+/// parser (after lowercasing, this facet's one point of divergence
+/// from the create-time `parse_kind`) so the accepted-kind set stays
+/// identical everywhere. Returns `None` for an unknown kind so
+/// callers can reject the input with a clear message.
 #[must_use]
 pub fn parse_memory_kind(value: &str) -> Option<MemoryKind> {
-    match value.trim().to_lowercase().as_str() {
-        "rule" => Some(MemoryKind::Rule),
-        "snapshot" => Some(MemoryKind::Snapshot),
-        "log" => Some(MemoryKind::Log),
-        "reference" => Some(MemoryKind::Reference),
-        "scratch" => Some(MemoryKind::Scratch),
-        "feature" | "fr" => Some(MemoryKind::Feature),
-        "issue" => Some(MemoryKind::Issue),
-        _ => None,
-    }
+    value.trim().to_lowercase().parse().ok()
 }
 
 #[cfg(test)]
@@ -216,8 +209,15 @@ mod tests {
     fn parse_memory_kind_covers_every_kind() {
         assert_eq!(parse_memory_kind("rule"), Some(MemoryKind::Rule));
         assert_eq!(parse_memory_kind("Feature"), Some(MemoryKind::Feature));
-        assert_eq!(parse_memory_kind("fr"), Some(MemoryKind::Feature));
         assert_eq!(parse_memory_kind("issue"), Some(MemoryKind::Issue));
         assert_eq!(parse_memory_kind("nope"), None);
+    }
+
+    #[test]
+    fn parse_memory_kind_no_longer_accepts_legacy_fr_alias() {
+        // The `fr` alias was retired in the same unit that added
+        // MemoryKind::from_str as the one canonical parser; this
+        // facet must reject it exactly like every other decoder.
+        assert_eq!(parse_memory_kind("fr"), None);
     }
 }

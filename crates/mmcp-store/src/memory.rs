@@ -74,8 +74,8 @@ pub enum ImportError {
     #[error("render error: {0}")]
     Render(String),
 
-    #[error("unknown memory kind '{0}': expected rule, snapshot, log, reference, or scratch")]
-    UnknownKind(String),
+    #[error(transparent)]
+    UnknownKind(#[from] mmcp_core::memory::MemoryKindParseError),
 
     #[error("group not found: {0}")]
     GroupNotFound(String),
@@ -1173,16 +1173,12 @@ fn strip_known_import_extension(filename: &str) -> &str {
     filename
 }
 
-/// Parse a kind string into `MemoryKind`.
+/// Parse a kind string into `MemoryKind`. Delegates to the canonical
+/// [`MemoryKind::from_str`](std::str::FromStr) parser so every
+/// caller of this create-time entry point accepts exactly the same
+/// kind set as the archive filter and the GUI DTO converter.
 pub fn parse_kind(s: &str) -> Result<MemoryKind, ImportError> {
-    match s {
-        "rule" => Ok(MemoryKind::Rule),
-        "snapshot" => Ok(MemoryKind::Snapshot),
-        "log" => Ok(MemoryKind::Log),
-        "reference" => Ok(MemoryKind::Reference),
-        "scratch" => Ok(MemoryKind::Scratch),
-        other => Err(ImportError::UnknownKind(other.to_string())),
-    }
+    Ok(s.parse::<MemoryKind>()?)
 }
 
 /// Resolve a group by UUID or slug.
@@ -1314,6 +1310,12 @@ mod tests {
     fn parse_kind_round_trips() {
         assert_eq!(parse_kind("rule").unwrap(), MemoryKind::Rule);
         assert_eq!(parse_kind("reference").unwrap(), MemoryKind::Reference);
+        // Delegating to the canonical MemoryKind::from_str widens
+        // this create-time parser to accept every kind, matching the
+        // archive filter and GUI decoders instead of silently
+        // rejecting `feature` / `issue` through this one path only.
+        assert_eq!(parse_kind("feature").unwrap(), MemoryKind::Feature);
+        assert_eq!(parse_kind("issue").unwrap(), MemoryKind::Issue);
         assert!(parse_kind("bogus").is_err());
     }
 
