@@ -103,7 +103,11 @@ pub(crate) fn compose_refs(
 ///    the status's own [`Status::is_default_hidden`] marks
 ///    terminal-ish, so each tracker kind declares its own default
 ///    visibility once instead of every call site re-deciding it.
-pub(crate) fn listing_keeps_status<S: Status>(status: S, status_filter: Option<S>, show_all: bool) -> bool {
+pub(crate) fn listing_keeps_status<S: Status>(
+    status: S,
+    status_filter: Option<S>,
+    show_all: bool,
+) -> bool {
     match status_filter {
         Some(want) => status == want,
         None if show_all => true,

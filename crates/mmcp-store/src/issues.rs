@@ -27,6 +27,7 @@ use mmcp_core::memory::{
 use mmcp_git::{GitBackend, NativeBackend, Rev};
 use uuid::Uuid;
 
+use crate::diagnostics::Finding;
 use crate::groups::GroupEntry;
 use crate::home::ResolvedAuthor;
 use crate::memory::{
@@ -648,12 +649,20 @@ pub async fn delete_issue(
 /// frontmatter carries an `[issue]` block, regardless of the
 /// `kind` discriminator. Hybrid memories appear in both
 /// `list_features` and `list_issues`.
+///
+/// A memory that IS an issue but whose frontmatter fails to parse
+/// is NOT skipped silently: it is excluded from the returned
+/// records (a mis-parsed record cannot be trusted) but reported
+/// back as a [`Finding`] (`frontmatter_parse_failed`) so callers can
+/// surface it through the FR-45 notes channel instead of the
+/// listing quietly lying about the group's true issue count. Mirrors
+/// the identical fix already applied to `list_features`.
 pub async fn list_issues(
     backend: &NativeBackend,
     entry: &GroupEntry,
     status_filter: Option<IssueStatus>,
     show_all: bool,
-) -> Result<Vec<IssueRecord>, IssueError> {
+) -> Result<(Vec<IssueRecord>, Vec<Finding>), IssueError> {
     // FR-41-aware: walk recursively so nested slug paths surface
     // alongside flat ones.
     let slug_dirs = crate::memory::list_memory_slug_dirs(backend, &entry.handle, &Rev::head())
@@ -661,20 +670,28 @@ pub async fn list_issues(
         .map_err(|e| IssueError::Memory(ImportError::Git(e)))?;
 
     let mut out = Vec::new();
+    let mut findings = Vec::new();
     for slug_dir in slug_dirs {
         match read_issue(backend, entry, &slug_dir.slug, None).await {
             Ok(record) => {
-                let keep = match status_filter {
-                    Some(want) => record.status == want,
-                    None if show_all => true,
-                    None => !record.status.is_default_hidden(),
-                };
-                if keep {
+                if crate::tracker::listing_keeps_status(record.status, status_filter, show_all) {
                     out.push(record);
                 }
             }
+            // `NotAnIssue` is an *expected* non-match — the slug is
+            // a rule / snapshot / log / reference / scratch / pure
+            // feature memory, not a corruption signal.
             Err(IssueError::NotAnIssue { .. }) => {}
-            Err(IssueError::Memory(ImportError::Parse(_))) => {}
+            // A genuine parse error does NOT silently drop the
+            // memory from view: it is surfaced as a finding so a
+            // corrupt-on-disk issue is loud instead of invisible.
+            Err(IssueError::Memory(ImportError::Parse(err))) => {
+                findings.push(crate::tracker::parse_failed_finding(
+                    &entry.manifest.group_id.to_string(),
+                    &slug_dir.slug,
+                    &err,
+                ));
+            }
             Err(other) => return Err(other),
         }
     }
@@ -684,18 +701,22 @@ pub async fn list_issues(
         (None, Some(_)) => std::cmp::Ordering::Greater,
         (None, None) => a.slug.cmp(&b.slug),
     });
-    Ok(out)
+    Ok((out, findings))
 }
 
 /// Body-free counterpart to [`list_issues`] for listing surfaces.
+/// Also forwards `list_issues`'s per-memory parse-error findings
+/// unchanged, so callers surface them through the FR-45 notes
+/// channel.
 pub async fn list_issue_summaries(
     backend: &NativeBackend,
     entry: &GroupEntry,
     status_filter: Option<IssueStatus>,
     show_all: bool,
-) -> Result<Vec<IssueSummary>, IssueError> {
-    let records = list_issues(backend, entry, status_filter, show_all).await?;
-    Ok(records.into_iter().map(IssueSummary::from_record).collect())
+) -> Result<(Vec<IssueSummary>, Vec<Finding>), IssueError> {
+    let (records, findings) = list_issues(backend, entry, status_filter, show_all).await?;
+    let summaries = records.into_iter().map(IssueSummary::from_record).collect();
+    Ok((summaries, findings))
 }
 
 fn build_memory_file(
@@ -902,19 +923,84 @@ mod tests {
             .expect("seed");
         }
 
-        let visible = list_issues(scratch.backend(), &entry, None, false)
+        let (visible, findings) = list_issues(scratch.backend(), &entry, None, false)
             .await
             .expect("list default");
+        assert!(findings.is_empty());
         let slugs: Vec<&str> = visible.iter().map(|r| r.slug.as_str()).collect();
         assert!(slugs.contains(&"issue-open"));
         assert!(slugs.contains(&"issue-blocked"));
         assert!(!slugs.contains(&"issue-closed"));
         assert!(!slugs.contains(&"issue-wontfix"));
 
-        let everything = list_issues(scratch.backend(), &entry, None, true)
+        let (everything, _findings) = list_issues(scratch.backend(), &entry, None, true)
             .await
             .expect("list all");
         assert_eq!(everything.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn list_issues_surfaces_parse_error_as_finding_not_silent_drop() {
+        // Regression test for the swallowed-parse-error bug mirrored
+        // from features.rs: a corrupt issue memory must not simply
+        // vanish from the listing with no trace.
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("issue-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        add_issue(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("good".into()),
+                title: "Good".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed good issue");
+
+        // Seed a memory whose frontmatter is a genuine parse
+        // failure (no `+++` fences at all), not merely an
+        // edge-case-but-valid value.
+        let bad_id = Uuid::now_v7();
+        let author = scratch.author();
+        scratch
+            .backend()
+            .write_commit(
+                &entry.handle,
+                mmcp_git::CommitSpec::mmcp_commit(
+                    "seed corrupt/bad".to_string(),
+                    vec![(
+                        mmcp_core::conventions::memory_path("corrupt", bad_id),
+                        Some(b"not a memory file at all\n".to_vec()),
+                    )],
+                    &author.name,
+                    &author.email,
+                ),
+            )
+            .await
+            .expect("seed corrupt memory");
+
+        let (records, findings) = list_issues(scratch.backend(), &entry, None, true)
+            .await
+            .expect("list must not fail the whole group over one corrupt memory");
+
+        let slugs: Vec<_> = records.iter().map(|r| r.slug.as_str()).collect();
+        assert_eq!(
+            slugs,
+            vec!["good"],
+            "the corrupt memory must not appear as a trustworthy record",
+        );
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "the corrupt memory must be reported, not silently dropped",
+        );
+        assert_eq!(findings[0].code, "frontmatter_parse_failed");
+        assert_eq!(findings[0].slug.as_deref(), Some("corrupt"));
     }
 
     #[tokio::test]

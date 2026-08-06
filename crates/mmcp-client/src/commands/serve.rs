@@ -4781,11 +4781,15 @@ impl McpServer {
         .map_err(map_feature_error_to_mcp)?;
         let status = parse_issue_status_arg(args.status.as_deref())?;
         let show_all = args.all.unwrap_or(false);
-        let summaries =
+        // Per-memory parse-error findings (frontmatter_parse_failed)
+        // ride the same notes channel as the feature-tool listing so
+        // a corrupt issue memory is loud instead of silently
+        // vanishing.
+        let (summaries, findings) =
             mmcp_store::issues::list_issue_summaries(&self.state.backend, &entry, status, show_all)
                 .await
                 .map_err(map_issue_error_to_mcp)?;
-        let mut notes = Vec::new();
+        let mut notes = findings_to_notes(&findings);
         for summary in &summaries {
             notes.extend(
                 dangling_ref_notes_for(
