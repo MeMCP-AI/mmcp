@@ -56,6 +56,10 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# Self-dependency so integration tests under `tests/*.rs` (compiled
+# as external crates against this one) can reach `mmcp_store::testing`
+# the same way `mmcp-client`'s integration suite already does.
+mmcp-store = { path = ".", features = ["testing"] }
 
 [features]
 # Opt-in module with tempdir-backed fixtures reused by consumer

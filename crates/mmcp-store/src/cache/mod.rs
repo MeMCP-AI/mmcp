@@ -41,13 +41,11 @@
 //! - **Local write**: [`crate::memory::write_file_at_path`] — the
 //!   single choke point every memory write with rendered content
 //!   (create, update, `edit_memory_body`, feature/issue create and
-//!   update, archive import) commits through — calls a
-//!   `notify_write` hook right after the git commit lands (landing
-//!   in a follow-up commit alongside the rest of the write-trigger
-//!   wiring). Best-effort:
-//!   a cache-write failure never fails the underlying memory write,
-//!   it only gets logged, since the cache is a derived artifact and
-//!   the next lazy-build or debug rebuild repairs it.
+//!   update, archive import) commits through — calls [`notify_write`]
+//!   right after the git commit lands. Best-effort: a cache-write
+//!   failure never fails the underlying memory write, it only gets
+//!   logged, since the cache is a derived artifact and the next
+//!   lazy-build or debug rebuild repairs it.
 //! - **Server pull/sync**: wired at the CLI (`mmcp pull` / `mmcp
 //!   sync`) and MCP (`sync_pull`) call sites in `mmcp-client`, right
 //!   after `SyncEngine::pull` reports which groups advanced. See
@@ -74,10 +72,13 @@ pub mod query;
 pub mod schema;
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use thiserror::Error;
 use uuid::Uuid;
+
+use mmcp_core::memory::MemoryFile;
 
 use crate::home::MmcpHome;
 
@@ -154,10 +155,8 @@ pub fn default_db_path(home: &MmcpHome) -> PathBuf {
 /// the schema exists. Creates parent directories as needed. Callers
 /// that only need a throwaway pool for a test or a one-shot rebuild
 /// call this directly with an explicit path; long-lived consumers
-/// (the CLI, the MCP server) instead go through a process-global
-/// active pool (landing in a follow-up commit alongside the
-/// write-trigger wiring) so every write/pull hook in the process
-/// shares one connection pool.
+/// (the CLI, the MCP server) instead go through [`init_from_home`]
+/// so every write/pull hook in the process shares one pool.
 pub async fn open_pool(path: &Path) -> Result<SqlitePool, CacheError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| CacheError::Open {
@@ -178,6 +177,86 @@ pub async fn open_pool(path: &Path) -> Result<SqlitePool, CacheError> {
         })?;
     schema::ensure_schema(&pool).await?;
     Ok(pool)
+}
+
+/// Process-global active cache pool, set once by each consumer's
+/// startup path via [`init_from_home`] (the CLI's `main` and the
+/// MCP server's `ClientState::initialize_from` both call it before
+/// dispatching to any command). [`notify_write`] reads it back to
+/// decide whether the write-trigger hook has anything to do.
+///
+/// A `OnceLock` — the same "set once per process" shape `log` and
+/// `tracing` use for their global sink — is the right tool here: a
+/// real `mmcp` invocation is one process with exactly one home, so
+/// there is never a legitimate reason to swap the active pool mid
+/// process. Tests that need to exercise the hook call
+/// [`init_from_home`] themselves against a scratch home; because the
+/// slot is process-global, such tests must run in their own test
+/// binary (a dedicated `tests/*.rs` integration file, which cargo
+/// already compiles as its own process) rather than inside this
+/// crate's shared unit-test binary, so they cannot race another
+/// test's `init_from_home` call for the same slot.
+static ACTIVE_POOL: OnceLock<SqlitePool> = OnceLock::new();
+
+/// Initialise the process-global active pool from `home`'s default
+/// cache path (see [`default_db_path`]). Idempotent: a second call
+/// in the same process is a no-op that keeps the pool the first
+/// call installed, matching the "one home per process" invariant.
+pub async fn init_from_home(home: &MmcpHome) -> Result<(), CacheError> {
+    if ACTIVE_POOL.get().is_some() {
+        return Ok(());
+    }
+    let pool = open_pool(&default_db_path(home)).await?;
+    // Benign race: if another task won between the `get()` check
+    // above and this `set`, our freshly-opened pool is simply
+    // dropped (closes cleanly) and every caller ends up sharing the
+    // winner's pool either way.
+    let _ = ACTIVE_POOL.set(pool);
+    Ok(())
+}
+
+/// The active pool, if [`init_from_home`] has run in this process.
+/// `None` means no consumer has started the cache subsystem yet
+/// (e.g. a unit test exercising unrelated store logic, or a CLI
+/// invocation whose command never touches the cache); callers treat
+/// that as "the hook is a no-op", never as an error — the cache is
+/// a derived artifact, not source-of-truth state, so its absence is
+/// never a reason to fail an unrelated operation.
+#[must_use]
+pub fn active_pool() -> Option<SqlitePool> {
+    ACTIVE_POOL.get().cloned()
+}
+
+/// Write-trigger hook: called by
+/// [`crate::memory::write_file_at_path`] right after a memory write
+/// commits. Best-effort — parses `rendered` and upserts it into the
+/// active cache pool; any failure (no active pool, unparseable
+/// content, a query error) is swallowed after a `tracing::warn!`
+/// because the cache is a derived artifact that the next lazy build
+/// or debug rebuild repairs, and a cache hiccup must never fail the
+/// underlying memory write it is only observing.
+pub async fn notify_write(
+    group_id: Uuid,
+    id: Uuid,
+    slug: &str,
+    path: &str,
+    commit_id: &str,
+    rendered: &str,
+) {
+    let Some(pool) = active_pool() else {
+        return;
+    };
+    let memory_file = match MemoryFile::parse(rendered) {
+        Ok(file) => file,
+        Err(err) => {
+            tracing::warn!(%group_id, %id, %path, error = %err, "cache write-trigger: failed to parse written memory, skipping index update");
+            return;
+        }
+    };
+    let record = index::build_record(group_id, id, slug, path, commit_id, &memory_file);
+    if let Err(err) = index::upsert_record(&pool, &record).await {
+        tracing::warn!(%group_id, %id, %path, error = %err, "cache write-trigger: failed to upsert index row");
+    }
 }
 
 // Flattened re-exports so callers write `cache::rebuild_full(...)`

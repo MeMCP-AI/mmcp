@@ -371,6 +371,21 @@ fn filename_uuid_from_path(path: &str) -> Option<Uuid> {
     Uuid::parse_str(stem).ok()
 }
 
+/// Extract the `<slug>` segment from a `memories/<slug>/<uuid>.md`
+/// path (slug may itself contain `/`-joined sub-segments per FR-41).
+/// Returns `None` when `path` does not follow the two-level
+/// convention (e.g. `.mmcp.toml`, a hand-crafted debug write).
+/// Shared by the cache write-trigger hook in
+/// [`write_file_at_path`] so it never re-derives the slug from
+/// scratch.
+fn slug_from_memory_path(path: &str) -> Option<String> {
+    let rest = path
+        .strip_prefix(mmcp_core::conventions::MEMORIES_DIR)?
+        .strip_prefix('/')?;
+    let (slug, _filename) = rest.rsplit_once('/')?;
+    Some(slug.to_string())
+}
+
 /// Addressing result from [`resolve_memory`]. Carries the slug,
 /// the canonical UUID, and the in-repo path
 /// (`memories/<slug>/<uuid>.md`) that a subsequent `read_file` can
@@ -781,6 +796,23 @@ pub async fn write_file_at_path(
             ),
         )
         .await?;
+
+    // Write-trigger for the local content cache (see
+    // `crate::cache`): best-effort, never fails the write itself.
+    // The frontmatter id is authoritative when present (matches
+    // what `validate_id_mismatch` above already treated as source
+    // of truth for a frontmatter/filename disagreement); the
+    // filename UUID is the fallback for content that somehow lacks
+    // one.
+    if let Some(slug) = slug_from_memory_path(path) {
+        let id =
+            parse_frontmatter_id(rendered.as_bytes()).or_else(|| filename_uuid_from_path(path));
+        if let Some(id) = id {
+            crate::cache::notify_write(handle.group_id, id, &slug, path, &commit_id, rendered)
+                .await;
+        }
+    }
+
     Ok((commit_id, validation))
 }
 
