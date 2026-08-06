@@ -81,9 +81,20 @@ impl MilestoneStatus {
         ]
     }
 
-    /// Statuses hidden from the default `list_milestones(all = false)`
-    /// listing. Only `Completed` counts as terminal-ish here; a
-    /// milestone on hold still needs an operator's eyes.
+    /// Statuses the generic tracker helper
+    /// (`mmcp_store::tracker::listing_keeps_status`) treats as
+    /// hidden from a default, un-filtered listing. Only `Completed`
+    /// counts as terminal-ish here; a milestone on hold still needs
+    /// an operator's eyes.
+    ///
+    /// `list_milestones` (`mmcp_store::milestones`) does NOT go
+    /// through that generic helper: it hides based on the
+    /// freshly-computed rollup status instead, because this
+    /// editorial status can be stale relative to the live rollup
+    /// (see the staleness check surfaced by `read_milestone`). This
+    /// method's only current callers are the `Status` trait forward
+    /// below and that tracker helper, itself unused by milestone
+    /// listing.
     #[must_use]
     pub const fn is_default_hidden(self) -> bool {
         matches!(self, MilestoneStatus::Completed)
