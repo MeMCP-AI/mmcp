@@ -24,7 +24,6 @@
 
 use std::path::{Path, PathBuf};
 
-use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION, memory_path};
 use mmcp_core::id::GroupId;
 use mmcp_core::memory::{
     FeatureMetadata, FeatureStatus, FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryKind,
@@ -677,7 +676,7 @@ pub async fn update_feature_unlocked(
     // Compose-dedup on the typed refs: remove-side first (by
     // target UUID, ignoring commit), then add-side (dedup by
     // target so add-side wins the commit pin on collision).
-    let refs = compose_refs(
+    let refs = crate::tracker::compose_refs(
         current_refs,
         spec.refs_remove.as_deref(),
         spec.refs_add.as_deref(),
@@ -772,24 +771,6 @@ async fn read_memory_refs(
 /// refs list. The remove-side runs first by UUID match (commit sha
 /// ignored), then the add-side dedupes-and-replaces by target so
 /// add-side commit pins win on collision.
-fn compose_refs(
-    current: Vec<MemoryRef>,
-    remove: Option<&[Uuid]>,
-    add: Option<&[MemoryRef]>,
-) -> Vec<MemoryRef> {
-    let mut out = current;
-    if let Some(remove) = remove {
-        out.retain(|r| !remove.contains(&r.target));
-    }
-    if let Some(add) = add {
-        for new in add {
-            out.retain(|r| r.target != new.target);
-            out.push(new.clone());
-        }
-    }
-    out
-}
-
 /// Commit a deletion. Propagates `MemoryNotFound` verbatim so CLI
 /// and MCP callers can distinguish "slug never existed" from "slug
 /// is an unrelated memory kind" (`FeatureError::NotAFeature`).
@@ -830,63 +811,22 @@ pub async fn rename_feature(
         return list_features_for_slug(backend, entry, old_slug).await;
     }
 
-    let old_dir = format!("{MEMORIES_DIR}/{old_slug}");
-    let entries = backend
-        .list_tree(&entry.handle, &old_dir, &Rev::head())
-        .await
-        .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?;
-    if entries.is_empty() {
-        return Err(FeatureError::Memory(ImportError::MemoryNotFound {
-            slug: Some(old_slug.to_string()),
-            id: None,
-        }));
-    }
-
     // Plan the moves: one commit, new paths written and old paths
     // removed in the same tree rewrite so `git log` never shows a
-    // half-renamed state.
-    let mut moves: Vec<(String, Option<Vec<u8>>)> = Vec::with_capacity(entries.len() * 2);
-    let mut moved_uuids: Vec<Uuid> = Vec::with_capacity(entries.len());
-    for filename in &entries {
-        let Some(stem) = filename.strip_suffix(MEMORY_EXTENSION) else {
-            continue;
-        };
-        let Ok(id) = Uuid::parse_str(stem) else {
-            // Not a UUID-named file — out-of-shape content we
-            // refuse to silently move. Skip so the rename stays
-            // narrow to legitimate memory files.
-            continue;
-        };
-        let old_path = memory_path(old_slug, id);
-        let new_path = memory_path(new_slug, id);
-        let bytes = backend
-            .read_file(&entry.handle, &old_path, &Rev::head())
-            .await
-            .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?;
-
-        // Reject rename when the source is not a feature; keeps
-        // the tool aligned with `delete_feature`'s not-a-feature
-        // guard.
-        let text = String::from_utf8_lossy(&bytes).into_owned();
-        let file =
-            MemoryFile::parse(&text).map_err(|e| FeatureError::Memory(ImportError::Parse(e)))?;
+    // half-renamed state. Rejects a source file that is not a
+    // feature, keeping the tool aligned with `delete_feature`'s
+    // not-a-feature guard.
+    let planned = crate::tracker::plan_slug_rename(backend, entry, old_slug, new_slug, |file| {
         if file.frontmatter.kind != MemoryKind::Feature {
-            return Err(FeatureError::NotAFeature {
+            Some(FeatureError::NotAFeature {
                 slug: old_slug.to_string(),
                 kind: file.frontmatter.kind.as_str().to_string(),
-            });
+            })
+        } else {
+            None
         }
-
-        moves.push((new_path, Some(bytes.to_vec())));
-        moves.push((old_path, None));
-        moved_uuids.push(id);
-    }
-    if moved_uuids.is_empty() {
-        return Err(FeatureError::Memory(ImportError::MemoryNotFound {
-            slug: Some(old_slug.to_string()),
-            id: None,
-        }));
-    }
+    })
+    .await?;
 
     let commit_message = resolve_commit_message(message, || {
         format!("rename feature {old_slug} -> {new_slug}")
@@ -895,7 +835,7 @@ pub async fn rename_feature(
     backend
         .write_commit(
             &entry.handle,
-            mmcp_git::CommitSpec::mmcp_commit(commit_message, moves, &author.name, &author.email),
+            mmcp_git::CommitSpec::mmcp_commit(commit_message, planned, &author.name, &author.email),
         )
         .await
         .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?;
@@ -912,21 +852,12 @@ async fn list_features_for_slug(
     entry: &GroupEntry,
     slug: &str,
 ) -> Result<Vec<FeatureRecord>, FeatureError> {
-    let dir = format!("{MEMORIES_DIR}/{slug}");
-    let filenames = backend
-        .list_tree(&entry.handle, &dir, &Rev::head())
+    let count = crate::tracker::count_slug_entries(backend, entry, slug)
         .await
-        .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?;
-    let mut out = Vec::with_capacity(filenames.len());
-    for filename in filenames {
-        let Some(stem) = filename.strip_suffix(MEMORY_EXTENSION) else {
-            continue;
-        };
-        if Uuid::parse_str(stem).is_err() {
-            continue;
-        }
-        let record = read_feature(backend, entry, slug, None).await?;
-        out.push(record);
+        .map_err(FeatureError::Memory)?;
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        out.push(read_feature(backend, entry, slug, None).await?);
     }
     Ok(out)
 }
@@ -1034,12 +965,7 @@ pub async fn list_features(
     for slug_dir in slug_dirs {
         match read_feature(backend, entry, &slug_dir.slug, None).await {
             Ok(record) => {
-                let keep = match status_filter {
-                    Some(want) => record.status == want,
-                    None if show_all => true,
-                    None => !record.status.is_default_hidden(),
-                };
-                if keep {
+                if crate::tracker::listing_keeps_status(record.status, status_filter, show_all) {
                     out.push(record);
                 }
             }
@@ -1054,13 +980,11 @@ pub async fn list_features(
             // one bad memory still does not take the whole group's
             // listing down.
             Err(FeatureError::Memory(ImportError::Parse(err))) => {
-                findings.push(Finding {
-                    group: entry.manifest.group_id.to_string(),
-                    slug: Some(slug_dir.slug.clone()),
-                    severity: "error",
-                    code: "frontmatter_parse_failed",
-                    message: format!("frontmatter parse failed: {err}"),
-                });
+                findings.push(crate::tracker::parse_failed_finding(
+                    &entry.manifest.group_id.to_string(),
+                    &slug_dir.slug,
+                    &err,
+                ));
             }
             Err(other) => return Err(other),
         }
@@ -1219,6 +1143,7 @@ fn record_from_file(
 mod tests {
     use super::*;
     use crate::testing::ScratchHome;
+    use mmcp_core::conventions::memory_path;
 
     #[tokio::test]
     async fn add_then_read_round_trips() {

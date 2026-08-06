@@ -129,12 +129,9 @@ pub(crate) fn parse_failed_finding(
     }
 }
 
-/// Outcome of [`plan_slug_rename`]: the git move-list ready for
-/// `CommitSpec::mmcp_commit`, plus how many entries moved.
-pub(crate) struct PlannedRename {
-    pub moves: Vec<(String, Option<Vec<u8>>)>,
-    pub moved: usize,
-}
+/// Git move-list produced by [`plan_slug_rename`], ready for
+/// `CommitSpec::mmcp_commit`.
+pub(crate) type PlannedRename = Vec<(String, Option<Vec<u8>>)>;
 
 /// Walk every memory file under `old_slug`'s two-level directory,
 /// parse each, and stage a git move to `new_slug` in one batch.
@@ -171,7 +168,7 @@ where
         }));
     }
 
-    let mut moves: Vec<(String, Option<Vec<u8>>)> = Vec::with_capacity(entries.len() * 2);
+    let mut moves: PlannedRename = Vec::with_capacity(entries.len() * 2);
     let mut moved = 0usize;
     for filename in &entries {
         let Some(stem) = filename.strip_suffix(MEMORY_EXTENSION) else {
@@ -203,7 +200,7 @@ where
             id: None,
         }));
     }
-    Ok(PlannedRename { moves, moved })
+    Ok(moves)
 }
 
 /// Count how many memory files under `slug`'s two-level directory
