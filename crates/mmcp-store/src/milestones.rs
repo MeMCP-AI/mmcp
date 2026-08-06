@@ -211,7 +211,8 @@ pub async fn read_milestone(
     let file =
         MemoryFile::parse(&text).map_err(|e| MilestoneError::Memory(ImportError::Parse(e)))?;
     let mut record = record_from_file(slug, file, String::new())?;
-    record.rollup = rollup::compute(pool, backend, groups, resolved.id).await?;
+    let owner_group_id = *entry.manifest.group_id.as_uuid();
+    record.rollup = rollup::compute(pool, backend, groups, owner_group_id, resolved.id).await?;
     Ok(record)
 }
 
@@ -612,31 +613,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cross_group_rollup_counts_features_from_a_second_group() {
-        // D3: a milestone's features are not required to live in
-        // the same project group as the milestone itself.
+    async fn cross_group_feature_does_not_influence_milestone_rollup() {
+        // Security regression: a feature filed in an unrelated group
+        // and pointed at this milestone must NOT count toward the
+        // rollup. The rollup scope was narrowed to the milestone's
+        // own group precisely because the old cross-group fold let
+        // any caller with write access to any unprotected group
+        // inject a status into a victim milestone without ever
+        // touching the victim's group.
         let scratch = ScratchHome::new().await.expect("scratch home");
         let milestone_group = scratch
             .seed_group("milestone-owner-group")
             .await
             .expect("seed milestone group");
-        let feature_group = scratch
-            .seed_group("feature-owner-group")
+        let foreign_group = scratch
+            .seed_group("foreign-group")
             .await
-            .expect("seed feature group");
+            .expect("seed foreign group");
         let milestone_entry = scratch
             .groups()
             .get(&milestone_group.group_id)
             .await
             .expect("milestone entry");
-        let feature_entry = scratch
+        let foreign_entry = scratch
             .groups()
-            .get(&feature_group.group_id)
+            .get(&foreign_group.group_id)
             .await
-            .expect("feature entry");
+            .expect("foreign entry");
         let (_tmp, pool) = scratch_pool().await;
 
-        let milestone = add_milestone(
+        add_milestone(
             scratch.backend(),
             &milestone_entry,
             AddSpec {
@@ -660,11 +666,11 @@ mod tests {
 
         crate::features::add_feature(
             scratch.backend(),
-            &feature_entry,
+            &foreign_entry,
             crate::features::AddSpec {
-                slug: Some("other-group-feat".into()),
-                title: "feat in other group".into(),
-                description: "cross group rollup test".into(),
+                slug: Some("foreign-group-feat".into()),
+                title: "feat filed in a foreign group".into(),
+                description: "cross group rollup injection attempt".into(),
                 body: "x".into(),
                 status: mmcp_core::memory::FeatureStatus::Blocked,
                 milestone: Some(milestone_id),
@@ -673,7 +679,7 @@ mod tests {
             scratch.author(),
         )
         .await
-        .expect("seed feature in other group");
+        .expect("seed feature in foreign group");
 
         let record = read_milestone(
             scratch.backend(),
@@ -687,48 +693,30 @@ mod tests {
         .expect("read milestone");
         assert_eq!(
             record.rollup.status,
-            RollupStatus::Blocked,
-            "rollup must see the blocked feature from the OTHER group: {:?}",
+            RollupStatus::Planning,
+            "a feature filed in a foreign group must not count: {:?}",
             record.rollup
         );
-        assert_eq!(record.rollup.counted, 1);
-        let _ = milestone;
+        assert_eq!(record.rollup.counted, 0);
     }
 
     #[tokio::test]
-    async fn mixed_status_features_from_two_groups_fold_into_in_progress() {
-        // Direct exercise of the gate scenario: a milestone with
-        // features assigned from TWO DIFFERENT local groups, whose
-        // statuses genuinely differ, must fold into one coherent
-        // cross-group rollup rather than only seeing one side.
+    async fn mixed_status_features_in_the_milestones_own_group_fold_into_in_progress() {
+        // Exercises the fold rule (Completed + Pending -> InProgress,
+        // then a flip to Blocked -> Blocked) with both features in
+        // the milestone's OWN group, matching the narrowed rollup
+        // scope; a same-shape sibling test above proves a foreign
+        // group's feature is excluded rather than folded in here.
         let scratch = ScratchHome::new().await.expect("scratch home");
         let milestone_group = scratch
             .seed_group("gate-milestone-group")
             .await
             .expect("seed milestone group");
-        let group_a = scratch
-            .seed_group("gate-feature-group-a")
-            .await
-            .expect("seed group a");
-        let group_b = scratch
-            .seed_group("gate-feature-group-b")
-            .await
-            .expect("seed group b");
         let milestone_entry = scratch
             .groups()
             .get(&milestone_group.group_id)
             .await
             .expect("milestone entry");
-        let entry_a = scratch
-            .groups()
-            .get(&group_a.group_id)
-            .await
-            .expect("entry a");
-        let entry_b = scratch
-            .groups()
-            .get(&group_b.group_id)
-            .await
-            .expect("entry b");
         let (_tmp, pool) = scratch_pool().await;
 
         add_milestone(
@@ -753,13 +741,13 @@ mod tests {
         .expect("resolve milestone")
         .id;
 
-        // Group A: one Completed feature.
+        // One Completed feature.
         crate::features::add_feature(
             scratch.backend(),
-            &entry_a,
+            &milestone_entry,
             crate::features::AddSpec {
                 slug: Some("feat-a-done".into()),
-                title: "done in group a".into(),
+                title: "done".into(),
                 description: "gate test".into(),
                 body: "x".into(),
                 status: mmcp_core::memory::FeatureStatus::Completed,
@@ -769,15 +757,15 @@ mod tests {
             scratch.author(),
         )
         .await
-        .expect("seed group a feature");
+        .expect("seed completed feature");
 
-        // Group B: one still-in-progress feature.
+        // One still-in-progress feature.
         crate::features::add_feature(
             scratch.backend(),
-            &entry_b,
+            &milestone_entry,
             crate::features::AddSpec {
                 slug: Some("feat-b-pending".into()),
-                title: "pending in group b".into(),
+                title: "pending".into(),
                 description: "gate test".into(),
                 body: "x".into(),
                 status: mmcp_core::memory::FeatureStatus::Pending,
@@ -787,7 +775,7 @@ mod tests {
             scratch.author(),
         )
         .await
-        .expect("seed group b feature");
+        .expect("seed pending feature");
 
         let record = read_milestone(
             scratch.backend(),
@@ -802,20 +790,17 @@ mod tests {
         assert_eq!(
             record.rollup.status,
             RollupStatus::InProgress,
-            "a completed feature in one group plus a pending feature in another must fold into InProgress: {:?}",
+            "a completed feature plus a pending feature must fold into InProgress: {:?}",
             record.rollup
         );
-        assert_eq!(
-            record.rollup.counted, 2,
-            "both cross-group features must count"
-        );
+        assert_eq!(record.rollup.counted, 2, "both features must count");
         assert_eq!(record.rollup.completed, 1);
 
-        // Now flip group B's feature to Blocked and confirm the
+        // Now flip the pending feature to Blocked and confirm the
         // rollup updates to reflect the mixed set correctly again.
         crate::features::update_feature(
             scratch.backend(),
-            &entry_b,
+            &milestone_entry,
             "feat-b-pending",
             crate::features::UpdateSpec {
                 status: Some(mmcp_core::memory::FeatureStatus::Blocked),
@@ -824,7 +809,7 @@ mod tests {
             scratch.author(),
         )
         .await
-        .expect("flip group b feature to blocked");
+        .expect("flip pending feature to blocked");
         // This test opens its OWN cache pool (`scratch_pool`) rather
         // than the process-global one `cache::notify_write` pushes
         // incremental updates through (see `cache::mod`'s doc on
@@ -851,7 +836,7 @@ mod tests {
         assert_eq!(
             record.rollup.status,
             RollupStatus::Blocked,
-            "the blocked feature in group b must win the fold: {:?}",
+            "the newly blocked feature must win the fold: {:?}",
             record.rollup
         );
         assert_eq!(record.rollup.blocked, 1);

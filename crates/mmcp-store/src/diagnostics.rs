@@ -899,7 +899,9 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
                 let Some(id) = mf.frontmatter.id else {
                     continue;
                 };
-                let Ok(computed) = crate::rollup::compute(&pool, backend, groups, id).await else {
+                let Ok(computed) =
+                    crate::rollup::compute(&pool, backend, groups, entry.handle.group_id, id).await
+                else {
                     continue;
                 };
                 let Some(report) = reports.iter_mut().find(|r| r.group_id == gid) else {

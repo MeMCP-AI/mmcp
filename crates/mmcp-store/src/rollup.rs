@@ -1,16 +1,36 @@
-//! Cross-group milestone rollup.
+//! Milestone rollup.
 //!
-//! A milestone's features are not required to live in the same
-//! project group as the milestone itself (D3, the operator's
-//! explicit ruling overruling the more cautious mono-group default).
-//! Computing "what is this milestone's status right now" therefore
-//! means folding over feature memories that may be scattered across
-//! every locally-mirrored group. Live-walking every group's git
-//! repository on every rollup computation would not scale, so this
-//! module queries the [`crate::cache`] local content index instead —
-//! a single `indexed_memory` table scan (`WHERE kind = 'feature' AND
-//! milestone = ?`) that already spans every mirrored group by
-//! construction (see [`crate::cache::schema`]'s `group_id` column).
+//! ## Scope narrowed to the milestone's own group (security fix)
+//!
+//! This module originally folded over every locally-mirrored group's
+//! features by design (D3, "cross-group by design", an explicit
+//! operator ruling overruling the more cautious mono-group default —
+//! see the historical note preserved below). That design has a
+//! concrete exploit: a caller with write access to their OWN
+//! unprotected group can file a feature there with `status:
+//! "blocked"` and `milestone: <victim-group's milestone UUID>`, and
+//! the victim's [`crate::milestones::read_milestone`] /
+//! `list_milestones` then reports a status the victim group never
+//! actually produced, without the attacker ever needing to touch (or
+//! pass the protected-group guard on) the victim's own group.
+//!
+//! [`compute`] therefore only counts features whose `group_id`
+//! matches the milestone's OWN group. This is a deliberate narrowing
+//! of the original cross-group ambition, not a fix for a bug in it —
+//! a full cross-group authorization / allowlist model (e.g. a
+//! milestone opting specific other groups in) is tracked as a
+//! separate backlog feature request, not built here.
+//!
+//! Historical design note (D3, superseded by the narrowing above): a
+//! milestone's features were not required to live in the same
+//! project group as the milestone itself, so computing "what is this
+//! milestone's status right now" meant folding over feature memories
+//! that could be scattered across every locally-mirrored group.
+//! Live-walking every group's git repository on every rollup
+//! computation would not scale, so this module queries the
+//! [`crate::cache`] local content index instead — a single
+//! `indexed_memory` table scan (now `WHERE kind = 'feature' AND
+//! milestone = ? AND group_id = ?`) rather than a live git walk.
 //!
 //! Per global-coding-rules section 13 this lives in its own
 //! concern-named module because it has two consumers from day one:
@@ -64,9 +84,10 @@ use crate::cache::CacheError;
 use crate::groups::GroupIndex;
 
 /// Computed status of a milestone, folded over the lifecycle states
-/// of every feature (in any locally-mirrored group) whose
+/// of every feature IN THE MILESTONE'S OWN GROUP whose
 /// [`FeatureMetadata::milestone`](mmcp_core::memory::FeatureMetadata::milestone)
-/// points at it. See the module doc for the exact fold rule.
+/// points at it. See the module doc for the exact fold rule and for
+/// why the scope is restricted to one group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RollupStatus {
@@ -110,17 +131,20 @@ pub struct MilestoneRollup {
 }
 
 /// Compute `milestone_id`'s rollup by scanning the local content
-/// cache across every locally-mirrored group. Lazily builds the
-/// cache first (see [`crate::cache::ensure_built`]) so a cold cache
-/// never returns a false [`RollupStatus::Planning`].
+/// cache, counting only features whose `group_id` matches
+/// `owner_group_id` — the group the milestone itself lives in. See
+/// the module doc for why the scope is restricted this way. Lazily
+/// builds the cache first (see [`crate::cache::ensure_built`]) so a
+/// cold cache never returns a false [`RollupStatus::Planning`].
 pub async fn compute(
     pool: &SqlitePool,
     backend: &NativeBackend,
     groups: &GroupIndex,
+    owner_group_id: Uuid,
     milestone_id: Uuid,
 ) -> Result<MilestoneRollup, CacheError> {
     crate::cache::ensure_built(pool, backend, groups).await?;
-    let statuses = fetch_feature_statuses(pool, milestone_id).await?;
+    let statuses = fetch_feature_statuses(pool, owner_group_id, milestone_id).await?;
     Ok(fold(&statuses))
 }
 
@@ -140,12 +164,15 @@ pub async fn compute(
 /// fold because its status string no longer parses.
 async fn fetch_feature_statuses(
     pool: &SqlitePool,
+    owner_group_id: Uuid,
     milestone_id: Uuid,
 ) -> Result<Vec<FeatureStatus>, CacheError> {
     let rows: Vec<(Option<String>,)> = sqlx::query_as(
-        "SELECT status FROM indexed_memory WHERE kind = 'feature' AND milestone = ?",
+        "SELECT status FROM indexed_memory \
+         WHERE kind = 'feature' AND milestone = ? AND group_id = ?",
     )
     .bind(milestone_id.to_string())
+    .bind(owner_group_id.to_string())
     .fetch_all(pool)
     .await?;
     rows.into_iter()
@@ -265,6 +292,7 @@ mod tests {
         let pool = crate::cache::open_pool(&tmp.path().join("index.sqlite3"))
             .await
             .expect("open pool");
+        let group_id = Uuid::now_v7();
         let milestone_id = Uuid::now_v7();
 
         sqlx::query(
@@ -273,7 +301,7 @@ mod tests {
                 commit_id, updated_at, status, milestone) \
              VALUES (?, ?, ?, 'feature', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(Uuid::now_v7().to_string())
+        .bind(group_id.to_string())
         .bind(Uuid::now_v7().to_string())
         .bind("broken-feature")
         .bind("broken feature")
@@ -289,7 +317,7 @@ mod tests {
         .await
         .expect("seed row with unparseable status");
 
-        let err = fetch_feature_statuses(&pool, milestone_id)
+        let err = fetch_feature_statuses(&pool, group_id, milestone_id)
             .await
             .expect_err("an unparseable status must surface as an error, not be dropped");
         match err {
@@ -298,5 +326,83 @@ mod tests {
             }
             other => panic!("expected UnparseableFeatureStatus, got {other:?}"),
         }
+    }
+
+    async fn seed_feature_row(
+        pool: &SqlitePool,
+        group_id: Uuid,
+        milestone_id: Uuid,
+        slug: &str,
+        status: FeatureStatus,
+    ) {
+        sqlx::query(
+            "INSERT INTO indexed_memory \
+               (group_id, id, slug, kind, name, description, tags, body, path, \
+                commit_id, updated_at, status, milestone) \
+             VALUES (?, ?, ?, 'feature', ?, ?, '[]', '', ?, 'HEAD', \
+                      '2026-08-06T00:00:00Z', ?, ?)",
+        )
+        .bind(group_id.to_string())
+        .bind(Uuid::now_v7().to_string())
+        .bind(slug)
+        .bind(slug)
+        .bind(format!("a feature named {slug}"))
+        .bind(format!("memories/{slug}/x.md"))
+        .bind(status.as_str())
+        .bind(milestone_id.to_string())
+        .execute(pool)
+        .await
+        .expect("seed feature row");
+    }
+
+    #[tokio::test]
+    async fn compute_ignores_a_feature_filed_in_a_different_group() {
+        // Security regression: a feature filed in group B and
+        // pointed at group A's milestone must never influence group
+        // A's rollup. Without the group_id predicate this reproduces
+        // the cross-group rollup-injection finding, where a Blocked
+        // feature in an unrelated, unprotected group silently flips
+        // the victim milestone away from Completed.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let pool = crate::cache::open_pool(&tmp.path().join("index.sqlite3"))
+            .await
+            .expect("open pool");
+
+        let group_a = Uuid::now_v7();
+        let group_b = Uuid::now_v7();
+        let milestone_id = Uuid::now_v7();
+
+        seed_feature_row(
+            &pool,
+            group_a,
+            milestone_id,
+            "owning-group-feature",
+            FeatureStatus::Completed,
+        )
+        .await;
+        seed_feature_row(
+            &pool,
+            group_b,
+            milestone_id,
+            "foreign-group-feature",
+            FeatureStatus::Blocked,
+        )
+        .await;
+
+        let statuses = fetch_feature_statuses(&pool, group_a, milestone_id)
+            .await
+            .expect("fetch_feature_statuses");
+        assert_eq!(
+            statuses,
+            vec![FeatureStatus::Completed],
+            "the foreign group's Blocked feature must not be counted"
+        );
+
+        let rollup = fold(&statuses);
+        assert_eq!(
+            rollup.status,
+            RollupStatus::Completed,
+            "a foreign-group feature must not flip the rollup away from Completed"
+        );
     }
 }
