@@ -17,6 +17,7 @@ mod frontmatter;
 mod issue;
 mod kind;
 mod limits;
+mod milestone;
 mod parser;
 mod refs;
 mod splice;
@@ -31,6 +32,7 @@ pub use feature::{FeatureMetadata, FeatureStatus, FeatureStatusParseError};
 pub use frontmatter::MemoryFrontmatter;
 pub use issue::{IssueMetadata, IssueStatus, IssueStatusParseError, IssueSupersedeInvariantError};
 pub use kind::{MemoryKind, MemoryKindParseError};
+pub use milestone::{MilestoneMetadata, MilestoneStatus, MilestoneStatusParseError};
 pub use limits::{
     FieldLengthError, MAX_BODY_LENGTH, MAX_DESCRIPTION_LENGTH, MAX_MESSAGE_LENGTH, MAX_NAME_LENGTH,
     MAX_TAG_COUNT, MAX_TAG_LENGTH, validate_body_length, validate_field_length,

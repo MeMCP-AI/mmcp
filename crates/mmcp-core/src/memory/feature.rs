@@ -210,6 +210,23 @@ pub struct FeatureMetadata {
     /// lineage a reader sees when they follow the link.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<MemoryRef>,
+
+    /// UUID of the [`MilestoneMetadata`](crate::memory::MilestoneMetadata)
+    /// memory this feature counts toward, if any. Deliberately a
+    /// bare UUID rather than a [`MemoryRef`]: unlike `depends_on` /
+    /// `blocks`, this cross-reference exists so
+    /// `mmcp_store::rollup` can fold the milestone's live status
+    /// from this feature's *current* status, so pinning it to a
+    /// stale commit would defeat the point.
+    ///
+    /// Cross-group by design (D3, the operator's explicit ruling
+    /// overruling the more cautious mono-group default): the
+    /// milestone this points at does not have to live in the same
+    /// project group as this feature. Rollup computation resolves
+    /// it via the local-content-cache across every locally-mirrored
+    /// group rather than a same-group lookup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub milestone: Option<Uuid>,
 }
 
 impl FeatureMetadata {
@@ -285,6 +302,7 @@ mod tests {
             depends_on: Vec::new(),
             blocks: Vec::new(),
             superseded_by: None,
+            milestone: None,
         };
         let rendered = toml::to_string(&meta).expect("render");
         assert!(rendered.contains("number = 42"), "rendered: {rendered}");
@@ -343,6 +361,7 @@ mod tests {
             depends_on: Vec::new(),
             blocks: Vec::new(),
             superseded_by: Some(MemoryRef::new(Uuid::now_v7(), forty_char_hex())),
+            milestone: None,
         };
         assert!(meta.validate_supersede_invariant().is_ok());
     }
@@ -391,6 +410,7 @@ mod tests {
             depends_on: Vec::new(),
             blocks: Vec::new(),
             superseded_by: Some(MemoryRef::new(id, forty_char_hex())),
+            milestone: None,
         };
         let rendered = toml::to_string(&meta).expect("render");
         assert!(

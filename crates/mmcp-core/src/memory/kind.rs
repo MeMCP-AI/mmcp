@@ -47,6 +47,18 @@ pub enum MemoryKind {
     /// hybrid model permits a memory to carry both `[feature]`
     /// and `[issue]` blocks; listings filter by block presence.
     Issue,
+
+    /// Milestone: a grouping container over features, possibly
+    /// spanning multiple project groups (D3). Carries a structured
+    /// [`MilestoneMetadata`](crate::memory::MilestoneMetadata)
+    /// block in frontmatter. Deliberately a reduced-surface tracked
+    /// kind (M5 design): no supersede flow, no `depends_on` /
+    /// `blocks`, no shared ticket-number counter. Individual
+    /// features opt into a milestone via
+    /// [`FeatureMetadata::milestone`](crate::memory::FeatureMetadata::milestone);
+    /// the milestone's own live status is computed by
+    /// `mmcp_store::rollup`, never stored here.
+    Milestone,
 }
 
 impl MemoryKind {
@@ -65,6 +77,7 @@ impl MemoryKind {
             MemoryKind::Scratch => "scratch",
             MemoryKind::Feature => "feature",
             MemoryKind::Issue => "issue",
+            MemoryKind::Milestone => "milestone",
         }
     }
 
@@ -95,7 +108,7 @@ impl MemoryKind {
 /// sees a string that does not match any known kind.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "invalid memory kind '{input}': expected one of rule / snapshot / log / reference / scratch / feature / issue"
+    "invalid memory kind '{input}': expected one of rule / snapshot / log / reference / scratch / feature / issue / milestone"
 )]
 pub struct MemoryKindParseError {
     /// The offending input string, echoed back for user-facing errors.
@@ -121,6 +134,7 @@ impl std::str::FromStr for MemoryKind {
             "scratch" => Ok(MemoryKind::Scratch),
             "feature" => Ok(MemoryKind::Feature),
             "issue" => Ok(MemoryKind::Issue),
+            "milestone" => Ok(MemoryKind::Milestone),
             other => Err(MemoryKindParseError {
                 input: other.to_string(),
             }),
@@ -170,6 +184,7 @@ mod tests {
             MemoryKind::Scratch,
             MemoryKind::Feature,
             MemoryKind::Issue,
+            MemoryKind::Milestone,
         ] {
             let parsed: MemoryKind = kind.as_str().parse().expect("round trip");
             assert_eq!(parsed, kind);

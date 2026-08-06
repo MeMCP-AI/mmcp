@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::memory::{BumpIntent, FeatureMetadata, IssueMetadata, MemoryKind, MemoryRef};
+use crate::memory::{BumpIntent, FeatureMetadata, IssueMetadata, MemoryKind, MemoryRef, MilestoneMetadata};
 
 /// User-visible metadata written in the `+++`-delimited TOML block at
 /// the top of a memory file.
@@ -70,6 +70,13 @@ pub struct MemoryFrontmatter {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issue: Option<IssueMetadata>,
 
+    /// Structured metadata for a milestone. Carried when
+    /// `kind == MemoryKind::Milestone`. Absent on every other
+    /// kind; the TOML serializer skips the field when unset so
+    /// unrelated memories keep their existing wire shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub milestone: Option<MilestoneMetadata>,
+
     /// Typed cross-references to other memories (or features - the
     /// two share a UUID space). Each entry pins a commit so the
     /// reference survives later edits on the target side. Empty
@@ -114,6 +121,7 @@ impl MemoryFrontmatter {
             bump_intent: None,
             feature: None,
             issue: None,
+            milestone: None,
             refs: Vec::new(),
             source: None,
         }
@@ -171,6 +179,14 @@ impl MemoryFrontmatter {
     #[must_use]
     pub fn with_issue(mut self, issue: IssueMetadata) -> Self {
         self.issue = Some(issue);
+        self
+    }
+
+    /// Attach the milestone metadata block. Used by the milestone
+    /// tooling layer; ordinary writers leave this absent.
+    #[must_use]
+    pub fn with_milestone(mut self, milestone: MilestoneMetadata) -> Self {
+        self.milestone = Some(milestone);
         self
     }
 
