@@ -1300,8 +1300,8 @@ struct UpdateFeatureArgs {
     #[serde(default)]
     pub milestone: Option<String>,
 
-    /// Clear the milestone link. Mutually exclusive in effect with
-    /// `milestone`; when both are set, `milestone` wins.
+    /// Clear the milestone link. Mutually exclusive with
+    /// `milestone`; setting both is rejected as an error.
     #[serde(default)]
     pub milestone_clear: bool,
 
@@ -4366,11 +4366,7 @@ impl McpServer {
                     .expect("parse_wire_refs returns one entry per input"),
             ),
         };
-        let milestone = if args.milestone_clear {
-            Some(None)
-        } else {
-            parse_optional_milestone(args.milestone.as_deref())?.map(Some)
-        };
+        let milestone = resolve_milestone_update(args.milestone.as_deref(), args.milestone_clear)?;
         let spec = mmcp_store::features::UpdateSpec {
             title: args.title,
             description: args.description,
@@ -7296,6 +7292,35 @@ fn parse_optional_milestone(value: Option<&str>) -> Result<Option<Uuid>, McpErro
     }
 }
 
+/// Resolve `update_feature`'s `milestone` / `milestone_clear` pair
+/// into the store's `UpdateSpec::milestone` shape: `None` leaves the
+/// link unchanged, `Some(None)` clears it, `Some(Some(id))` sets it.
+///
+/// The CLI equivalent rejects the conflicting combination via clap's
+/// `conflicts_with`; this mirrors that rather than letting
+/// `milestone_clear` silently win, since a silent winner would
+/// contradict this project's one-cause-one-error error convention.
+fn resolve_milestone_update(
+    milestone: Option<&str>,
+    milestone_clear: bool,
+) -> Result<Option<Option<Uuid>>, McpError> {
+    if milestone_clear && milestone.is_some() {
+        return Err(McpError::invalid_params(
+            "milestone and milestone_clear are mutually exclusive; set only one",
+            Some(json!({
+                "code": "conflicting_milestone_args",
+                "field": "milestone_clear",
+                "detail": "milestone and milestone_clear cannot both be set",
+            })),
+        ));
+    }
+    if milestone_clear {
+        Ok(Some(None))
+    } else {
+        Ok(parse_optional_milestone(milestone)?.map(Some))
+    }
+}
+
 fn parse_rev(value: Option<&str>) -> Rev {
     match value {
         // Default: resolve via HEAD so repos whose default branch is
@@ -9011,6 +9036,44 @@ mod tests {
             payload.get("code").and_then(|v| v.as_str()),
             Some("not_a_milestone")
         );
+    }
+
+    /// `update_feature`'s `milestone`/`milestone_clear` pair must be
+    /// rejected up front with a structured `conflicting_milestone_args`
+    /// code, matching the CLI's `conflicts_with`, instead of letting
+    /// `milestone_clear` silently win over `milestone`.
+    #[test]
+    fn resolve_milestone_update_rejects_both_milestone_and_clear() {
+        let id = Uuid::new_v4().to_string();
+        let err = resolve_milestone_update(Some(id.as_str()), true)
+            .expect_err("both milestone and milestone_clear must error");
+        let payload = err.data.as_ref().expect("error payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("conflicting_milestone_args"),
+        );
+    }
+
+    #[test]
+    fn resolve_milestone_update_clear_unlinks() {
+        let resolved =
+            resolve_milestone_update(None, true).expect("milestone_clear alone must succeed");
+        assert_eq!(resolved, Some(None));
+    }
+
+    #[test]
+    fn resolve_milestone_update_sets_new_milestone() {
+        let id = Uuid::new_v4();
+        let resolved = resolve_milestone_update(Some(id.to_string().as_str()), false)
+            .expect("milestone alone must succeed");
+        assert_eq!(resolved, Some(Some(id)));
+    }
+
+    #[test]
+    fn resolve_milestone_update_neither_leaves_unchanged() {
+        let resolved =
+            resolve_milestone_update(None, false).expect("neither set must succeed");
+        assert_eq!(resolved, None);
     }
 
     // ── sync tool helpers (FR-014) ────────────────────────────────────
