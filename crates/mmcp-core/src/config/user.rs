@@ -21,6 +21,9 @@ pub struct UserConfig {
 
     /// Default values for CLI flags.
     pub defaults: Option<DefaultsConfig>,
+
+    /// Tunable numeric limits an operator may override per-install.
+    pub limits: Option<LimitsConfig>,
 }
 
 /// Author identity configuration.
@@ -53,6 +56,20 @@ pub struct DefaultsConfig {
     pub group: Option<String>,
 }
 
+/// Per-install overrides for numeric limits that otherwise fall back
+/// to a compiled-in constant. Each field names the constant it
+/// overrides in its own doc comment so the override and its fallback
+/// stay discoverable from either side.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LimitsConfig {
+    /// Overrides `mmcp_store::memory::DEFAULT_MAX_AUTO_SLUG_LENGTH`,
+    /// the cap applied to a slug auto-derived from a title
+    /// (`add_issue` / `add_feature` / milestone creation / file
+    /// import default-slug path) when no per-call override and no
+    /// `MMCP_MAX_AUTO_SLUG_LENGTH` environment variable are set.
+    pub max_auto_slug_length: Option<usize>,
+}
+
 impl UserConfig {
     /// Parse from a TOML string.
     pub fn from_toml(text: &str) -> Result<Self, toml::de::Error> {
@@ -75,6 +92,7 @@ mod tests {
         assert!(cfg.sync.is_none());
         assert!(cfg.author.is_none());
         assert!(cfg.defaults.is_none());
+        assert!(cfg.limits.is_none());
     }
 
     #[test]
@@ -90,6 +108,9 @@ git_fallback = true
 
 [defaults]
 group = "my-group"
+
+[limits]
+max_auto_slug_length = 80
 "#;
         let cfg = UserConfig::from_toml(text).unwrap();
         assert_eq!(cfg.author.as_ref().unwrap().name.as_deref(), Some("Alice"));
@@ -102,6 +123,14 @@ group = "my-group"
             cfg.defaults.as_ref().unwrap().group.as_deref(),
             Some("my-group")
         );
+        assert_eq!(cfg.limits.as_ref().unwrap().max_auto_slug_length, Some(80));
+    }
+
+    #[test]
+    fn limits_section_omitted_when_absent() {
+        let text = "[author]\nname = \"Bob\"\n";
+        let cfg = UserConfig::from_toml(text).unwrap();
+        assert!(cfg.limits.is_none());
     }
 
     #[test]
