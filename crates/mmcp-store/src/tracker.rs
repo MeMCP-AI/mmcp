@@ -119,7 +119,13 @@ pub(crate) fn listing_keeps_status<S: Status>(
 /// `list_features` and `list_issues` emit for a memory whose
 /// frontmatter failed to parse, so a corrupt-on-disk tracker memory
 /// is reported instead of silently vanishing from the listing.
-pub(crate) fn parse_failed_finding(
+///
+/// `pub` (not `pub(crate)`): `mmcp-client`'s generic `list_memories`
+/// / `search_memories` MCP tools (issue #45) reuse this exact shape
+/// for the same class of bug outside the tracker kinds, so every
+/// caller across the workspace reports one `frontmatter_parse_failed`
+/// code with one message format instead of drifting per crate.
+pub fn parse_failed_finding(
     group: &str,
     slug: &str,
     err: &mmcp_core::memory::MemoryParseError,
