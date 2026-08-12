@@ -1151,6 +1151,7 @@ dependencies = [
  "ident_case",
  "proc-macro2",
  "quote",
+ "strsim",
  "syn 2.0.119",
 ]
 
@@ -1278,7 +1279,6 @@ version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 dependencies = [
- "powerfmt",
  "serde_core",
 ]
 
@@ -1290,6 +1290,37 @@ checksum = "d08b3a0bcc0d079199cd476b2cae8435016ec11d1c0986c6901c5ac223041534"
 dependencies = [
  "proc-macro2",
  "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "derive_builder"
+version = "0.20.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "507dfb09ea8b7fa618fcf76e953f4f5e192547945816d5358edffe39f6f94947"
+dependencies = [
+ "derive_builder_macro",
+]
+
+[[package]]
+name = "derive_builder_core"
+version = "0.20.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d5bcf7b024d6835cfb3d473887cd966994907effbe9227e8c8219824d06c4e8"
+dependencies = [
+ "darling 0.20.11",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "derive_builder_macro"
+version = "0.20.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab63b0e2bf4d5928aff72e83a7dace85d7bba5fe12dcc3c5a572d78caffd3f3c"
+dependencies = [
+ "derive_builder_core",
  "syn 2.0.119",
 ]
 
@@ -3515,7 +3546,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-auth"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "argon2",
  "axum-login",
@@ -3531,7 +3562,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-client"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -3556,11 +3587,12 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "vergen-gitcl",
 ]
 
 [[package]]
 name = "mmcp-core"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "gray_matter",
  "jiff",
@@ -3578,7 +3610,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-db"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "async-trait",
  "libsqlite3-sys",
@@ -3592,7 +3624,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-git"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3608,7 +3640,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-proto"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "serde",
  "serde_json",
@@ -3618,7 +3650,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-server"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "anyhow",
  "axum",
@@ -3653,7 +3685,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-session"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "serde",
  "sha2 0.11.0",
@@ -3663,7 +3695,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-store"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "acdc-converters-core",
  "acdc-converters-markdown",
@@ -3695,7 +3727,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-sync"
-version = "0.1.38"
+version = "0.1.39"
 dependencies = [
  "mmcp-core",
  "mmcp-git",
@@ -3855,6 +3887,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
 dependencies = [
  "hermit-abi",
+ "libc",
+]
+
+[[package]]
+name = "num_threads"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
+dependencies = [
  "libc",
 ]
 
@@ -5681,13 +5722,14 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.47"
+version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c"
+checksum = "cdb87b95ec50ddfa440816d227a17b2ccbdda963a316a727fda0fc4334f7d134"
 dependencies = [
  "deranged",
- "itoa",
+ "libc",
  "num-conv",
+ "num_threads",
  "powerfmt",
  "serde_core",
  "time-core",
@@ -5696,15 +5738,15 @@ dependencies = [
 
 [[package]]
 name = "time-core"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7694e1cfe791f8d31026952abf09c69ca6f6fa4e1a1229e18988f06a04a12dca"
+checksum = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109"
 
 [[package]]
 name = "time-macros"
-version = "0.2.27"
+version = "0.2.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215"
+checksum = "7e689342a48d2ea927c87ea50cabf8594854bf940e9310208848d680d668ed85"
 dependencies = [
  "num-conv",
  "time-core",
@@ -6203,6 +6245,44 @@ name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
+
+[[package]]
+name = "vergen"
+version = "9.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b849a1f6d8639e8de261e81ee0fc881e3e3620db1af9f2e0da015d4382ceaf75"
+dependencies = [
+ "anyhow",
+ "derive_builder",
+ "rustc_version",
+ "rustversion",
+ "vergen-lib",
+]
+
+[[package]]
+name = "vergen-gitcl"
+version = "9.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77ff3b5300a085d6bcd8fc96a507f706a28ae3814693236c9b409db71a1d15b9"
+dependencies = [
+ "anyhow",
+ "derive_builder",
+ "rustversion",
+ "time",
+ "vergen",
+ "vergen-lib",
+]
+
+[[package]]
+name = "vergen-lib"
+version = "9.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b34a29ba7e9c59e62f229ae1932fb1b8fb8a6fdcc99215a641913f5f5a59a569"
+dependencies = [
+ "anyhow",
+ "derive_builder",
+ "rustversion",
+]
 
 [[package]]
 name = "version_check"

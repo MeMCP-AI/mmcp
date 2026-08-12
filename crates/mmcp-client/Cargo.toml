@@ -39,8 +39,20 @@ assert_cmd = "2"
 predicates = "3"
 
 [build-dependencies]
+anyhow = { workspace = true }
 tempfile = "3"
 cargo_toml = "0.22"
+# `version` MCP tool: vergen-gitcl embeds build metadata (rustc
+# version) and git SHA/describe as compile-time env vars, read via
+# `env!` in serve.rs. It never links or shells out to git at
+# runtime -- only `build.rs` invokes the `git` CLI, once, at
+# compile time. vergen-git2 was rejected: it pulls in libgit2 (a
+# *-sys C-binding crate), against the pure-Rust preference.
+# vergen-gix was also rejected: it resolves a second, unpatched
+# copy of gitoxide (0.86 from crates.io) alongside the workspace's
+# patched `gix` fork pin (0.81, see root Cargo.toml), doubling an
+# already-large dependency tree instead of reusing it.
+vergen-gitcl = { version = "9", features = ["rustc"] }
 
 [lints]
 workspace = true

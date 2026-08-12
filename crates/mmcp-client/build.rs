@@ -1,4 +1,6 @@
 fn main() {
+    emit_build_info();
+
     // Force this build script to run before every compile. The
     // default behaviour ("re-run only when build.rs changes")
     // skipped the exe-stash pass on source edits of the
@@ -11,6 +13,44 @@ fn main() {
     }
     #[cfg(windows)]
     win::stash();
+}
+
+/// `version` MCP tool support: embed the rustc toolchain semver and
+/// the git SHA / describe string as compile-time `cargo:rustc-env`
+/// vars, read back via `option_env!` in `commands/serve.rs`.
+///
+/// Runs once, here, at build time only -- `vergen-gitcl` shells out
+/// to the local `git` CLI during THIS build script, never from the
+/// running binary at request time, so the shipped tool has zero
+/// runtime cost and zero runtime git dependency. Picked over
+/// `vergen-git2` (pulls in libgit2, a C-binding `*-sys` crate) and
+/// `vergen-gix` (resolves a second, unpatched copy of gitoxide
+/// alongside the workspace's patched `gix` fork pin in the root
+/// `Cargo.toml`, doubling an already-large dependency tree).
+///
+/// When git info is unavailable (no `.git`, no `git` on PATH,
+/// building from a source tarball), `vergen-gitcl` does not fail
+/// the build: it emits the literal sentinel `VERGEN_IDEMPOTENT_OUTPUT`
+/// for the affected vars instead. `commands/serve.rs`'s `version`
+/// tool recognises that sentinel and reports the field as absent
+/// rather than presenting it as a real commit SHA.
+fn emit_build_info() {
+    use vergen_gitcl::{Emitter, GitclBuilder, RustcBuilder};
+
+    let result: anyhow::Result<()> = (|| {
+        let gitcl = GitclBuilder::all_git()?;
+        let rustc = RustcBuilder::all_rustc()?;
+        Emitter::default()
+            .add_instructions(&gitcl)?
+            .add_instructions(&rustc)?
+            .emit()
+    })();
+    if let Err(e) = result {
+        // Non-fatal: the `version` tool falls back to reporting
+        // only `CARGO_PKG_VERSION` when these compile-time env vars
+        // never got set.
+        println!("cargo:warning=vergen-gitcl instruction emission failed: {e}");
+    }
 }
 
 #[cfg(windows)]

@@ -934,6 +934,14 @@ struct ListGroupsArgs {}
 #[schemars(crate = "rmcp::schemars")]
 struct DescribeToolsArgs {}
 
+/// Argument shape for `version`. Takes no parameters; kept as a
+/// struct (rather than dropping `Parameters` entirely) so a future
+/// flag lands without a wire-schema break, matching the
+/// `DescribeToolsArgs` precedent above.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+struct VersionArgs {}
+
 // ── Elicitation payload shapes (FR-011) ──────────────────────────
 //
 // Each struct defines the JSON schema the server sends in the
@@ -4152,6 +4160,33 @@ impl McpServer {
     }
 
     #[tool(
+        description = "Report the running mmcp binary's build identity: the mmcp-client package version (which the workspace bumps as one unit, so this equals the workspace version), and, when captured at compile time, the git commit SHA, `git describe` string, working-tree dirty flag, and the rustc toolchain version the binary was built with. Callers can compare `git_sha` against `git rev-parse HEAD` in a live checkout to detect a running server built from stale source (a stale server binary silently rejecting current wire vocabulary is otherwise only discovered by accident). The git/rustc fields are captured once, at build time, from `vergen-gitcl` -- the running binary never shells out to git or reads any git state at request time. A field is `null` when the binary was built outside a git checkout (e.g. from a source tarball) or when the local `git` CLI was unavailable at build time; `null` must never be read as 'up to date', only as 'unknown'.",
+        annotations(
+            title = "Report running binary version and build identity",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn version(
+        &self,
+        Parameters(_args): Parameters<VersionArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let git_sha = normalize_vergen_output(option_env!("VERGEN_GIT_SHA"));
+        let git_describe = normalize_vergen_output(option_env!("VERGEN_GIT_DESCRIBE"));
+        let git_dirty =
+            normalize_vergen_output(option_env!("VERGEN_GIT_DIRTY")).map(|v| v == "true");
+        let rustc_semver = normalize_vergen_output(option_env!("VERGEN_RUSTC_SEMVER"));
+        Ok(ok_json(json!({
+            "package_version": env!("CARGO_PKG_VERSION"),
+            "git_sha": git_sha,
+            "git_describe": git_describe,
+            "git_dirty": git_dirty,
+            "rustc_semver": rustc_semver,
+        })))
+    }
+
+    #[tool(
         description = "Return the annotated tool surface in one read-only call. Each entry carries name, description, title, plus the four MCP annotation hints (read_only, destructive, idempotent, open_world). Use this when a harness needs a deterministic catalogue of safe-tool subsets without parsing per-client `tools/list` quirks. Pure-local introspection; no group, no I/O.",
         annotations(
             title = "Describe registered MCP tools",
@@ -5396,6 +5431,7 @@ impl McpServer {
             Self::debug_git_log_tool_attr(),
             Self::bootstrap_context_tool_attr(),
             Self::status_tool_attr(),
+            Self::version_tool_attr(),
             Self::read_feature_tool_attr(),
             Self::list_features_tool_attr(),
             Self::read_issue_tool_attr(),
@@ -5502,6 +5538,7 @@ fn tool_icon_category(name: &str) -> ToolIconCategory {
         | "diagnose"
         | "bootstrap_context"
         | "status"
+        | "version"
         | "describe_tools" => ToolIconCategory::Read,
         "read_feature" | "list_features" | "add_feature" | "update_feature" | "delete_feature"
         | "rename_feature" => ToolIconCategory::Feature,
@@ -7631,6 +7668,21 @@ fn owner_hint_to_json(owner: &mmcp_core::manifest::GroupOwnerHint) -> serde_json
 fn ok_json(value: serde_json::Value) -> CallToolResult {
     let text = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
     CallToolResult::success(vec![ContentBlock::text(Cow::Owned(text))])
+}
+
+/// `version` tool support: `vergen-gitcl` (see `build.rs`) emits this
+/// literal placeholder for a `VERGEN_GIT_*` / `VERGEN_RUSTC_*`
+/// compile-time env var when it could not determine the real value
+/// (no `.git`, no `git` on `PATH`, or `VERGEN_IDEMPOTENT` set) rather
+/// than failing the build. `normalize_vergen_output` folds that
+/// sentinel and "the env var was never set at all" (a binary built
+/// before this env var existed) into the same `None`, so `version`
+/// reports an honest "unknown" instead of ever surfacing a fake or
+/// approximate git SHA.
+const VERGEN_IDEMPOTENT_SENTINEL: &str = "VERGEN_IDEMPOTENT_OUTPUT";
+
+fn normalize_vergen_output(raw: Option<&'static str>) -> Option<&'static str> {
+    raw.filter(|value| *value != VERGEN_IDEMPOTENT_SENTINEL)
 }
 
 /// FR-45 notes channel: wrap a JSON response payload and attach a
@@ -11732,6 +11784,7 @@ mod tests {
         check_bits(McpServer::debug_git_log_tool_attr(), ro);
         check_bits(McpServer::bootstrap_context_tool_attr(), ro);
         check_bits(McpServer::status_tool_attr(), ro);
+        check_bits(McpServer::version_tool_attr(), ro);
         check_bits(McpServer::read_feature_tool_attr(), ro);
         check_bits(McpServer::list_features_tool_attr(), ro);
         check_bits(McpServer::read_issue_tool_attr(), ro);
@@ -12051,6 +12104,66 @@ mod tests {
             parsed.get("mode").and_then(|v| v.as_str()),
             Some("readonly"),
         );
+    }
+
+    /// `version` must report the exact `CARGO_PKG_VERSION` the test
+    /// binary itself was compiled with -- the same source the
+    /// running server binary uses -- so a caller comparing this
+    /// value against a live checkout's `Cargo.toml` gets a real
+    /// answer, never an approximation.
+    #[tokio::test]
+    async fn version_tool_reports_compile_time_package_version() {
+        let (state, _tmp) = test_state().await;
+        let server = McpServer::new(state, ServeMode::Full);
+        let res = server
+            .version(Parameters(VersionArgs::default()))
+            .await
+            .expect("version");
+        let parsed = parse_ok_json(res);
+        assert_eq!(
+            parsed.get("package_version").and_then(|v| v.as_str()),
+            Some(env!("CARGO_PKG_VERSION")),
+        );
+    }
+
+    /// The sentinel `vergen-gitcl` emits for an unavailable git/rustc
+    /// field must never be reported verbatim: it is not a real SHA
+    /// or describe string, and a caller trusting it would compare
+    /// against a HEAD hash that can never match.
+    #[test]
+    fn normalize_vergen_output_rejects_idempotent_sentinel() {
+        assert_eq!(
+            normalize_vergen_output(Some(VERGEN_IDEMPOTENT_SENTINEL)),
+            None,
+        );
+        assert_eq!(normalize_vergen_output(None), None);
+        assert_eq!(normalize_vergen_output(Some("deadbeef")), Some("deadbeef"),);
+    }
+
+    /// `version` is read-only, so every `ServeMode` (readonly, edit,
+    /// full) must keep it registered -- a staleness probe is most
+    /// valuable in the RESTRICTED modes a harness locks itself into.
+    #[tokio::test]
+    async fn version_tool_registered_under_every_serve_mode() {
+        for mode in [ServeMode::Readonly, ServeMode::Edit, ServeMode::Full] {
+            let (state, _tmp) = test_state().await;
+            let server = McpServer::new(state, mode);
+            let res = server
+                .version(Parameters(VersionArgs::default()))
+                .await
+                .expect("version");
+            let parsed = parse_ok_json(res);
+            assert!(
+                parsed.get("package_version").is_some(),
+                "{}: version tool must respond under this mode",
+                mode.as_label(),
+            );
+            assert!(
+                mode.allows(&McpServer::version_tool_attr()),
+                "{}: ServeMode::allows must keep the read-only version tool registered",
+                mode.as_label(),
+            );
+        }
     }
 
     /// FR-31: `describe_tools` returns one entry per registered tool
