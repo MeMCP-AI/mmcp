@@ -20,6 +20,7 @@ mod limits;
 mod milestone;
 mod parser;
 mod refs;
+mod response_budget;
 mod splice;
 mod status;
 mod version;
@@ -40,6 +41,10 @@ pub use limits::{
 pub use milestone::{MilestoneMetadata, MilestoneStatus, MilestoneStatusParseError};
 pub use parser::{FrontmatterFormat, MemoryFile, MemoryParseError};
 pub use refs::{COMMIT_SHA_HEX_LEN, InvalidCommit, MemoryRef, looks_like_commit_sha};
+pub use response_budget::{
+    COMPACT_RECORD_ESTIMATED_BYTES, DEFAULT_LIST_MEMORIES_LIMIT, DEFAULT_RESPONSE_BUDGET_BYTES,
+    MAX_LIST_MEMORIES_LIMIT, ResponseEnvelope,
+};
 pub use splice::{SpliceError, line_terminator, splice};
 pub use status::Status;
 pub use version::Version;
