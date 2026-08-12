@@ -10083,11 +10083,11 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_subscribed_reads_gives_a_non_utf8_body_its_own_distinct_code() {
-        // mmcp issue #93 review follow-up: a non-UTF8 body is a
-        // different failure cause than a frontmatter parse failure
-        // (git read succeeded, decode failed before parsing ever
-        // runs), so it must carry its own `memory_not_utf8` code
-        // instead of reusing `frontmatter_parse_failed`.
+        // A non-UTF8 body is a different failure cause than a
+        // frontmatter parse failure (git read succeeded, decode
+        // failed before parsing ever runs), so it must carry its own
+        // `memory_not_utf8` code instead of reusing
+        // `frontmatter_parse_failed`.
         let (state, tmp) = test_state().await;
         let group = seed_scoped_group_with_memory(
             &state,
