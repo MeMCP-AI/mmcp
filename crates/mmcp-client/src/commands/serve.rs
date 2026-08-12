@@ -241,24 +241,26 @@ struct ListMemoriesArgs {
     /// preserved.
     #[serde(default)]
     pub recursive: Option<bool>,
-    /// FR-46 WP6: when `true`, each descriptor drops `description`
+    /// When `true`, each descriptor drops `description`
     /// (the single largest per-record field) and returns only
     /// `slug`, `path`, `name`, `kind`, `mandatory`. Defaults to
     /// `false` (the full descriptor), preserving the pre-FR-46
-    /// shape for callers that don't opt in.
+    /// shape for callers that don't opt in. Use this for a large
+    /// group to keep the response inside the tool output ceiling.
     #[serde(default)]
     pub compact: Option<bool>,
-    /// FR-46 WP6: zero-based offset into the NON-mandatory portion
+    /// Zero-based offset into the NON-mandatory portion
     /// of the filtered listing. Setting either `offset` or `limit`
     /// activates pagination: the response splits into `mandatory`
-    /// (every `mandatory == true` match, always returned in full —
+    /// (every `mandatory == true` match, always returned in full,
     /// never paginated away) and `memories` (the paginated
     /// non-mandatory window), plus an `envelope`. Leaving both unset
     /// preserves the pre-FR-46 shape: every matching memory in one
-    /// flat `memories` array, no envelope.
+    /// flat `memories` array, no envelope. Set this alongside
+    /// `limit` on a large group instead of one unbounded call.
     #[serde(default)]
     pub offset: Option<usize>,
-    /// FR-46 WP6: page size for the non-mandatory window. See
+    /// Page size for the non-mandatory window. See
     /// `offset` for the pagination-activation rule. Defaults to
     /// [`mmcp_core::memory::DEFAULT_LIST_MEMORIES_LIMIT`] and clamps
     /// to [`mmcp_core::memory::MAX_LIST_MEMORIES_LIMIT`].
@@ -284,13 +286,13 @@ struct ReadMemoryArgs {
     /// Optional branch name, tag name, or commit hex. Defaults to `main`.
     #[serde(default)]
     pub version: Option<String>,
-    /// FR-46 WP5: cap the returned `body` to this many bytes. When
+    /// Cap the returned `body` to this many bytes. When
     /// the stored body exceeds it, `body` is truncated at a UTF-8
     /// char boundary, `envelope.truncated` is `true`, and a note
     /// promotes the caller toward `read_memory_body_sections` for
     /// addressable, budget-safe reads of the rest. Defaults to
     /// [`mmcp_core::memory::DEFAULT_RESPONSE_BUDGET_BYTES`] when
-    /// absent — `read_memory` never returns an unbounded body, since
+    /// absent: `read_memory` never returns an unbounded body, since
     /// that is exactly the failure mode issue #46 measured (bodies
     /// up to 388,000 bytes forced callers to read raw git objects on
     /// disk). Pass an explicit larger value to widen the cap for a
@@ -2078,7 +2080,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List memories that live in the specified group. The group argument is the group UUID. Returns `{group, memories, mirrored: bool}` — `mirrored: false` signals the group UUID is unknown to the local mirror (distinct from a mirrored-but-empty group, which returns `mirrored: true` with `memories: []`). FR-41: pass `path_prefix` to restrict to a slug subtree (literal prefix, no wildcards), and `recursive: false` to surface only the immediate children at that prefix level. A memory whose frontmatter fails to parse is excluded from `memories` (never fabricated as a fake `kind: \"rule\"` record) and reported instead as a `frontmatter_parse_failed` note; every sibling record that parses fine still lists normally. FR-46 WP6: pass `compact: true` to drop `description` and other large fields from each descriptor. Setting `offset` and/or `limit` activates pagination over the NON-mandatory portion of the listing and reshapes the response to `{group, mandatory, memories, envelope, mirrored}` — every `mandatory == true` match is always returned in full under `mandatory`, unconditionally and never paginated away; `memories` carries the paginated window and `envelope` reports `{truncated, total, returned, next_offset}` for that window.",
+        description = "List memories that live in the specified group. The group argument is the group UUID. Returns `{group, memories, mirrored: bool}` (`mirrored: false` signals the group UUID is unknown to the local mirror, distinct from a mirrored-but-empty group, which returns `mirrored: true` with `memories: []`). FR-41: pass `path_prefix` to restrict to a slug subtree (literal prefix, no wildcards), and `recursive: false` to surface only the immediate children at that prefix level. A memory whose frontmatter fails to parse is excluded from `memories` (never fabricated as a fake `kind: \"rule\"` record) and reported instead as a `frontmatter_parse_failed` note; every sibling record that parses fine still lists normally. For a large group, pass `compact: true` to drop `description` and other large fields from each descriptor, and set `offset` and/or `limit` to page through results instead of one unbounded call. Setting `offset` and/or `limit` activates pagination over the NON-mandatory portion of the listing and reshapes the response to `{group, mandatory, memories, envelope, mirrored}`: every `mandatory == true` match is always returned in full under `mandatory`, unconditionally and never paginated away; `memories` carries the paginated window and `envelope` reports `{truncated, total, returned, next_offset}` for that window.",
         annotations(
             title = "List memories in a group",
             read_only_hint = true,
@@ -2110,11 +2112,11 @@ impl McpServer {
         let mut memories = Vec::with_capacity(files.len());
         // Issue #45: a memory whose frontmatter fails to parse is
         // never fabricated as a `kind: "rule"`, `name: null`,
-        // `description: null` record — that shape is indistinguishable
-        // from a real minimal rule memory. It is excluded from
-        // `memories` and reported as a `frontmatter_parse_failed`
-        // note instead, so one corrupt file never takes down the
-        // rest of the group's listing.
+        // `description: null` record, since that shape is
+        // indistinguishable from a real minimal rule memory. It is
+        // excluded from `memories` and reported as a
+        // `frontmatter_parse_failed` note instead, so one corrupt
+        // file never takes down the rest of the group's listing.
         let mut notes = Vec::new();
         for file in files {
             if !slug_matches_filter(&file.slug, prefix, recursive) {
@@ -2135,7 +2137,7 @@ impl McpServer {
             }
         }
 
-        // FR-46 WP6: compact mode drops `description` and the other
+        // Compact mode drops `description` and the other
         // rarely-needed fields per descriptor before pagination, so
         // the mandatory-always-included set below is compact too.
         if args.compact.unwrap_or(false) {
@@ -2144,13 +2146,13 @@ impl McpServer {
             }
         }
 
-        // FR-46 WP6: `offset`/`limit` activate pagination. The
+        // `offset`/`limit` activate pagination. The
         // single most important correctness property: a caller must
         // never be able to page past or truncate out a mandatory
         // memory. Every `mandatory == true` match therefore rides in
         // its own `mandatory` field, unconditionally, deduplicated
         // by construction (one descriptor per matched file), and is
-        // never subject to `offset`/`limit` — only the non-mandatory
+        // never subject to `offset`/`limit`; only the non-mandatory
         // remainder is paginated.
         if args.offset.is_some() || args.limit.is_some() {
             let (mandatory, non_mandatory): (Vec<_>, Vec<_>) =
@@ -2193,7 +2195,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Read a memory by group and slug. Returns the TOML frontmatter and the Markdown body exactly as stored in git. Set `version` to a branch name, tag, or commit hex to read a specific revision; defaults to the latest `main`. `body` is bounded by `max_bytes` (default: the shared response budget) — when the stored body is larger, `body` is truncated at a char boundary, `envelope.truncated` is `true`, and a note promotes `read_memory_body_sections` for reading the rest as addressable sections.",
+        description = "Read a memory by group and slug. Returns the TOML frontmatter and the Markdown body exactly as stored in git. Set `version` to a branch name, tag, or commit hex to read a specific revision; defaults to the latest `main`. `body` is bounded by `max_bytes` (default: the shared response budget); pass a smaller `max_bytes` for a large body. When the stored body is larger, `body` is truncated at a char boundary, `envelope.truncated` is `true`, and a note promotes `read_memory_body_sections` for reading the rest as addressable sections.",
         annotations(
             title = "Read a memory",
             read_only_hint = true,
@@ -2244,7 +2246,7 @@ impl McpServer {
         // channel per-read.
         let mut notes = malformed_frontmatter_notes(&resolved.slug, resolved.id, &file);
 
-        // FR-46 WP5: never return an unbounded body. Issue #46
+        // Never return an unbounded body. Issue #46
         // measured bodies up to 388,000 bytes forcing callers to
         // read raw git objects on disk instead of this tool.
         let max_bytes = args
@@ -2484,7 +2486,7 @@ impl McpServer {
                     Ok(MemoryDescriptorOutcome::Parsed(d)) => d,
                     // Issue #45: never fabricate a `kind: "rule"`
                     // hit for a record whose frontmatter failed to
-                    // parse — it cannot legitimately match `name`
+                    // parse, since it cannot legitimately match `name`
                     // either, so it is skipped, loudly, instead of
                     // silently matching nothing under a fake shape.
                     Ok(MemoryDescriptorOutcome::ParseFailed(err)) => {
@@ -3764,12 +3766,12 @@ impl McpServer {
             }));
         }
 
-        // Resolve subscribed reads from the four axes. WP7: entries
+        // Resolve subscribed reads from the four axes: entries
         // are either a `kind: "group"` summary (fully-subscribed
         // group, collapsed) or a `kind: "memory"` address (explicit
-        // pin). `subscribed_notes` carries mmcp #93's parse/read
-        // failure signals, merged below into the response's shared
-        // notes channel.
+        // pin). `subscribed_notes` carries the resolver's own
+        // parse/read failure signals, merged below into the
+        // response's shared notes channel.
         let (subscribed_reads, subscribed_notes) = match project_cfg.as_ref() {
             None => (Vec::new(), Vec::new()),
             Some(cfg) => {
@@ -3801,9 +3803,9 @@ impl McpServer {
 
         // FR-45: advisory CLAUDE.md signals flow through the
         // standard notes channel; no bespoke `diagnostics` field.
-        // `init_claude` is still the only remediation — the note
-        // context points callers at it. mmcp #93's subscribed-reads
-        // failure signals ride the same channel.
+        // `init_claude` is still the only remediation, and the note
+        // context points callers at it. The subscribed-reads
+        // resolver's own failure signals ride the same channel.
         let mut notes = claude_md_notes(project_root.as_deref());
         notes.extend(subscribed_notes);
 
@@ -3811,7 +3813,7 @@ impl McpServer {
             json!({
                 "instructions": SESSION_INSTRUCTIONS,
                 "next_action": {
-                    "imperative_mandatory": "For each entry in `groups_in_scope`, call list_memories(group=<uuid>) and read every memory whose `mandatory == true`. The bodies are NOT in this response — read_memory(group, slug) fetches each one.",
+                    "imperative_mandatory": "For each entry in `groups_in_scope`, call list_memories(group=<uuid>) and read every memory whose `mandatory == true`. For a large group, pass compact=true and page with offset/limit instead of one unbounded call. The bodies are NOT in this response; read_memory(group, slug, max_bytes=<n>) fetches each one, bounding a large body with max_bytes.",
                     "imperative_optional": "Inspect the same `list_memories` results for non-mandatory entries that match this task. Use subscribe(kind='memory'|'tag'|'group'|'language', value=...) to pin the ones relevant to this project; subscribed entries appear in `subscribed_reads` next bootstrap.",
                     "groups_in_scope": groups_in_scope,
                     "subscribed_reads": subscribed_reads,
@@ -6289,30 +6291,33 @@ async fn resolve_sync_filter(
 ///   `fetch_hint` naming the follow-up call.
 /// - `memories` → literal `<group_uuid>:<slug>` pins. ALWAYS surface
 ///   as their own per-memory entry (`kind: "memory"`), even inside an
-///   otherwise fully-subscribed group — amendment A2: an explicit pin
+///   otherwise fully-subscribed group: an explicit pin
 ///   is real, non-derivable information the collapse must not absorb.
 /// - `tags` → scan every group the local mirror knows about (not
-///   only in-scope ones — the whole point of tag pins is to reach
+///   only in-scope ones, since the whole point of tag pins is to reach
 ///   memories from groups the project hasn't fully adopted) and
 ///   include any non-mandatory memory whose tags overlap, as its own
 ///   per-memory entry. A tag match landing inside an already
 ///   fully-subscribed group is resolved INSIDE that group's own pass
 ///   below (never falls through to the generic tag-matching walk),
-///   so amendment A2's carve-out never duplicates work or re-inflates
+///   so that carve-out never duplicates work or re-inflates
 ///   the response with redundant entries for files the group summary
 ///   already covers.
 ///
 /// Every entry in the returned array carries an explicit `kind`
 /// discriminant (`"group"` or `"memory"`) so a caller can never
-/// mistake one shape for the other — amendment A1.
+/// mistake one shape for the other.
 ///
-/// mmcp issue #93: a read/parse failure on any file (git read,
-/// non-UTF8 body, frontmatter parse) or a failed group listing no
-/// longer silently drops the address. It surfaces instead as a
-/// `frontmatter_parse_failed` note on the returned notes list,
-/// mirroring the exact pattern P45 established in
-/// `read_memory_descriptor` (commit a83fb33) — no whole-group drop,
-/// no whole-file drop, every sibling still lists/collapses normally.
+/// A read/parse failure on any file (git read, non-UTF8 body,
+/// frontmatter parse) or a failed group listing no longer silently
+/// drops the address. Each cause surfaces on the returned notes list
+/// under its own code: `group_listing_failed` for a failed group
+/// listing, `memory_read_failed` for a git read failure,
+/// `memory_not_utf8` for a non-UTF8 body, and `frontmatter_parse_failed`
+/// (the same code and shape `read_memory_descriptor` uses, via the
+/// shared `parse_failed_finding` producer) only for an actual
+/// frontmatter parse failure. No whole-group drop, no whole-file
+/// drop; every sibling still lists/collapses normally.
 ///
 /// Deduplicated across axes so a tag- or memory-pinned entry never
 /// appears twice.
@@ -6364,15 +6369,15 @@ pub(crate) async fn resolve_subscribed_reads(
         let files = match list_memory_files(backend, entry).await {
             Ok(f) => f,
             Err(err) => {
-                // mmcp #93: a group listing failure used to drop the
+                // A group listing failure used to drop the
                 // group's entire address contribution with zero
-                // diagnostic — the group-level sibling of the
+                // diagnostic: the group-level sibling of the
                 // per-file note below.
                 notes.push(finding_to_note(&Finding {
                     group: entry_uuid.to_string(),
                     slug: None,
                     severity: "error",
-                    code: "frontmatter_parse_failed",
+                    code: "group_listing_failed",
                     message: format!("failed to list memory files: {err}"),
                 }));
                 continue;
@@ -6384,7 +6389,7 @@ pub(crate) async fn resolve_subscribed_reads(
             // the collapse and keeps its own per-memory entry; only
             // the unpinned remainder folds into the one group-summary
             // row below. These files never fall through to the
-            // generic tag-matching walk further down — that walk is
+            // generic tag-matching walk further down, since that walk is
             // for groups NOT already fully subscribed.
             let mut collapsed_count = 0usize;
             for file_ref in &files {
@@ -6394,7 +6399,7 @@ pub(crate) async fn resolve_subscribed_reads(
                     continue;
                 }
 
-                // mmcp #93: read + parse once per file so a broken
+                // Read + parse once per file so a broken
                 // frontmatter file is reported instead of silently
                 // vanishing from the group's count, and so an
                 // explicit tag pin inside an already fully-subscribed
@@ -6475,11 +6480,12 @@ pub(crate) async fn resolve_subscribed_reads(
 }
 
 /// Read and parse one memory file inside `resolve_subscribed_reads`'s
-/// pin/tag matching passes, converting every failure mode (git read,
-/// UTF-8 decode, frontmatter parse) into the exact
-/// `frontmatter_parse_failed` note shape P45 already established in
-/// `read_memory_descriptor` — mmcp issue #93: none of the three
-/// silently drops the file anymore.
+/// pin/tag matching passes, converting every failure mode into its
+/// own note code: `memory_read_failed` for a git read failure,
+/// `memory_not_utf8` for a non-UTF8 body, and `frontmatter_parse_failed`
+/// (the same shape `read_memory_descriptor` already established) for
+/// an actual frontmatter parse failure. None of the three silently
+/// drops the file anymore.
 async fn read_memory_file_for_subscription(
     backend: &NativeBackend,
     entry: &GroupEntry,
@@ -6494,7 +6500,7 @@ async fn read_memory_file_for_subscription(
                 group: entry_uuid.to_string(),
                 slug: Some(file_ref.slug.clone()),
                 severity: "error",
-                code: "frontmatter_parse_failed",
+                code: "memory_read_failed",
                 message: format!("failed to read memory file: {err}"),
             })
         })?;
@@ -6503,7 +6509,7 @@ async fn read_memory_file_for_subscription(
             group: entry_uuid.to_string(),
             slug: Some(file_ref.slug.clone()),
             severity: "error",
-            code: "frontmatter_parse_failed",
+            code: "memory_not_utf8",
             message: format!("memory file is not valid UTF-8: {err}"),
         })
     })?;
@@ -7530,7 +7536,9 @@ const SESSION_INSTRUCTIONS: &str = concat!(
     "entries are relevant — mandatory rules ALWAYS, plus context-relevant ",
     "non-mandatory ones — and call `read_memory(group, slug)` for each. Do not ",
     "write code, do not commit, do not answer the user's task until every ",
-    "mandatory entry's BODY has been fetched.\n\n",
+    "mandatory entry's BODY has been fetched. For a large group, pass ",
+    "`compact=true` and page with `offset`/`limit` on `list_memories`, and ",
+    "bound `read_memory` with `max_bytes`, instead of one unbounded call.\n\n",
     "## Subscriptions: opt into non-mandatory memories per project\n\n",
     "Non-mandatory rules from in-scope groups are visible through ",
     "`list_memories` but the AI typically should not read them all. Instead, ",
@@ -7673,7 +7681,7 @@ enum MemoryDescriptorOutcome {
 /// whichever the enumeration walker returned.
 ///
 /// Returns `Err` only for a git-level read failure. A frontmatter
-/// parse failure is NOT an `Err` here — see
+/// parse failure is NOT an `Err` here; see
 /// [`MemoryDescriptorOutcome`].
 async fn read_memory_descriptor(
     backend: &NativeBackend,
@@ -7712,10 +7720,10 @@ async fn read_memory_descriptor(
 }
 
 /// Project a full `list_memories` descriptor (as built by
-/// [`read_memory_descriptor`]) down to FR-46 WP6's compact shape:
+/// [`read_memory_descriptor`]) down to the compact shape:
 /// `slug`, `path`, `name`, `kind`, `mandatory` only. Drops
-/// `description` — the single largest per-record field measured on
-/// issue #46 — plus `tags`, `source`, and `latest_version`.
+/// `description` (the single largest per-record field measured on
+/// issue #46), plus `tags`, `source`, and `latest_version`.
 fn compact_descriptor(full: &serde_json::Value) -> serde_json::Value {
     json!({
         "slug": full.get("slug"),
@@ -7729,7 +7737,7 @@ fn compact_descriptor(full: &serde_json::Value) -> serde_json::Value {
 /// Read the `mandatory` flag back off a descriptor built by either
 /// [`read_memory_descriptor`] or [`compact_descriptor`] (both carry
 /// the field). Missing/non-boolean is treated as `false` rather than
-/// panicking — the field is always present in practice, but a
+/// panicking: the field is always present in practice, but a
 /// partition predicate must never fabricate a `true` from absent
 /// data.
 fn descriptor_is_mandatory(descriptor: &serde_json::Value) -> bool {
@@ -8129,7 +8137,7 @@ mod tests {
 
     /// Seed `total` memories into a fresh group in one commit, the
     /// first `mandatory_count` of them (by slug order) marked
-    /// `mandatory = true`. FR-46 WP6 fixture: slugs are
+    /// `mandatory = true`. Slugs are
     /// zero-padded (`entry-0000`, `entry-0001`, ...) so ordering is
     /// deterministic across the whole test.
     async fn seed_group_with_many_memories(
@@ -8226,7 +8234,7 @@ mod tests {
     async fn list_memories_surfaces_a_broken_sibling_without_fabricating_or_aborting() {
         // Issue #45: a memory whose frontmatter fails to parse must
         // never come back as a fabricated `kind: "rule"`, `name:
-        // null`, `description: null` record — that shape is
+        // null`, `description: null` record, since that shape is
         // indistinguishable from a real minimal rule memory. The
         // broken record is excluded from `memories` and reported as
         // a `frontmatter_parse_failed` note instead, while its
@@ -8691,7 +8699,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_memories_pagination_always_returns_every_mandatory_entry() {
-        // FR-46 WP6, the non-negotiable correctness property: a
+        // The non-negotiable correctness property: a
         // caller must never be able to page past or truncate out a
         // mandatory memory. 20 of 200 seeded memories are
         // `mandatory = true`; every paginated page below must still
@@ -8863,7 +8871,7 @@ mod tests {
     async fn list_groups_returns_every_mirrored_group_with_metadata() {
         // FR-010: verify the standalone enumeration path returns
         // every seeded group, with manifest + memory counts, in a
-        // single cheap call — no need to drive `bootstrap_context`
+        // single cheap call, with no need to drive `bootstrap_context`
         // just to discover what is mirrored.
         let (state, _tmp) = test_state().await;
         seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
@@ -8969,9 +8977,9 @@ mod tests {
 
     #[tokio::test]
     async fn read_memory_max_bytes_truncates_and_signals_via_envelope() {
-        // FR-46 WP5: an explicit `max_bytes` bounds the returned
+        // An explicit `max_bytes` bounds the returned
         // body and signals truncation through the shared envelope
-        // plus a promotion note — never silently.
+        // plus a promotion note, never silently.
         let (state, _tmp) = test_state().await;
         let big_body = "x".repeat(1000);
         let source = format!(
@@ -9020,7 +9028,7 @@ mod tests {
     #[tokio::test]
     async fn read_memory_without_max_bytes_still_bounds_an_oversized_body() {
         // Issue #46: `read_memory` must never return an unbounded
-        // body by default — bodies up to 388,000 bytes were
+        // body by default; bodies up to 388,000 bytes were
         // observed forcing callers to read raw git objects on disk.
         // Seed a body larger than the shared default budget and
         // confirm the default alone (no explicit `max_bytes`) still
@@ -9789,7 +9797,7 @@ mod tests {
     /// Seed a minimal `.mmcp.toml` naming `project_uuid` (and,
     /// optionally, a `[subscriptions]` block) at `root`, so
     /// `bootstrap_context` resolves a real `project_cfg` and runs
-    /// `resolve_subscribed_reads` — Global scope is always
+    /// `resolve_subscribed_reads`. Global scope is always
     /// fully-subscribed regardless of the project's own uuid, so no
     /// `subscriptions.groups` entry is needed to exercise the
     /// collapse itself.
@@ -9890,7 +9898,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_subscribed_reads_keeps_explicit_pin_separate_from_group_collapse() {
-        // WP7 amendment A2: a file that is ALSO an explicit `memories`
+        // A file that is ALSO an explicit `memories`
         // pin must keep its own per-memory entry even though its
         // group is otherwise fully subscribed; only the unpinned
         // remainder folds into the group summary's count.
@@ -9979,11 +9987,11 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_subscribed_reads_surfaces_broken_frontmatter_without_dropping_the_group() {
-        // mmcp #93, exercised inside WP7's collapse path: a memory
+        // Exercised inside the fully-subscribed collapse path: a memory
         // whose frontmatter fails to parse, seeded inside an
         // otherwise fully-subscribed group, must not crash the call,
         // must not silently drop the whole group, and must surface
-        // an explicit `frontmatter_parse_failed` note — while every
+        // an explicit `frontmatter_parse_failed` note, while every
         // other sibling in the same group still collapses into the
         // group summary as normal.
         let (state, tmp) = test_state().await;
@@ -10070,6 +10078,78 @@ mod tests {
                 .and_then(|v| v.as_str())
                 .is_some_and(|m| !m.is_empty()),
             "note must carry the real parse-error text: {broken_note:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_subscribed_reads_gives_a_non_utf8_body_its_own_distinct_code() {
+        // mmcp issue #93 review follow-up: a non-UTF8 body is a
+        // different failure cause than a frontmatter parse failure
+        // (git read succeeded, decode failed before parsing ever
+        // runs), so it must carry its own `memory_not_utf8` code
+        // instead of reusing `frontmatter_parse_failed`.
+        let (state, tmp) = test_state().await;
+        let group = seed_scoped_group_with_memory(
+            &state,
+            "global",
+            "good-one",
+            MANDATORY_MEMORY,
+            mmcp_core::manifest::GroupScope::Global,
+        )
+        .await;
+        let entry = state.groups.get(&group).await.expect("group entry");
+        // Not valid UTF-8: a lone continuation byte can never start a
+        // valid UTF-8 sequence.
+        const NOT_UTF8: &[u8] = &[0x80, 0x81, 0x82];
+        state
+            .backend
+            .write_commit(
+                &entry.handle,
+                CommitSpec {
+                    branch: mmcp_core::conventions::MAIN_BRANCH.to_string(),
+                    author_name: "test".into(),
+                    author_email: "test@example.com".into(),
+                    message: "seed good sibling and non-UTF8 sibling".into(),
+                    files: vec![
+                        (
+                            mmcp_core::conventions::memory_path("good-two", Uuid::now_v7()),
+                            Some(OPTIONAL_MEMORY.as_bytes().to_vec()),
+                        ),
+                        (
+                            mmcp_core::conventions::memory_path("not-utf8", Uuid::now_v7()),
+                            Some(NOT_UTF8.to_vec()),
+                        ),
+                    ],
+                },
+            )
+            .await
+            .expect("seed siblings");
+        state.groups.refresh().await.expect("refresh");
+
+        let project_root = tmp.path().join("project");
+        write_minimal_project_toml(&project_root, "");
+        let server = McpServer::new(state, ServeMode::Full);
+        let res = server
+            .bootstrap_context(Parameters(BootstrapContextArgs {
+                project: None,
+                path: Some(project_root.to_string_lossy().into_owned()),
+            }))
+            .await
+            .expect("bootstrap_context must not abort on one non-UTF8 sibling");
+        let parsed = parse_ok_json(res);
+
+        let notes = parsed
+            .get("notes")
+            .and_then(|v| v.as_array())
+            .expect("the non-UTF8 sibling must surface a note");
+        let bad_note = notes
+            .iter()
+            .find(|n| n.pointer("/context/slug").and_then(|v| v.as_str()) == Some("not-utf8"))
+            .unwrap_or_else(|| panic!("expected a note naming 'not-utf8'; saw: {notes:?}"));
+        assert_eq!(
+            bad_note.get("code").and_then(|v| v.as_str()),
+            Some("memory_not_utf8"),
+            "a non-UTF8 body must carry its own code, distinct from frontmatter_parse_failed: {bad_note:?}",
         );
     }
 
