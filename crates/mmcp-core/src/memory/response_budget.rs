@@ -81,6 +81,13 @@ pub const DEFAULT_LIST_MEMORIES_LIMIT: usize =
 /// pathological caller-supplied limit.
 pub const MAX_LIST_MEMORIES_LIMIT: usize = 512;
 
+// Compile-time invariants on the constants above: a violation fails
+// the build rather than needing a runtime test to catch it.
+const _: () = assert!(MAX_LIST_MEMORIES_LIMIT >= DEFAULT_LIST_MEMORIES_LIMIT);
+const _: () = assert!(
+    DEFAULT_LIST_MEMORIES_LIMIT * COMPACT_RECORD_ESTIMATED_BYTES <= DEFAULT_RESPONSE_BUDGET_BYTES
+);
+
 /// Shared truncation/pagination envelope. See the module doc's
 /// "Shared shape" section for which tools reuse it and why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -151,17 +158,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn default_list_limit_fits_the_response_budget() {
-        // The whole point of deriving the default from the budget:
-        // a full default-sized page of worst-case compact records
-        // must not itself exceed the shared response budget.
-        let worst_case_page_bytes = DEFAULT_LIST_MEMORIES_LIMIT * COMPACT_RECORD_ESTIMATED_BYTES;
-        assert!(worst_case_page_bytes <= DEFAULT_RESPONSE_BUDGET_BYTES);
-    }
-
-    #[test]
-    fn max_limit_is_at_least_the_default() {
-        assert!(MAX_LIST_MEMORIES_LIMIT >= DEFAULT_LIST_MEMORIES_LIMIT);
-    }
+    // The budget/limit relationships (default page fits the shared
+    // budget; MAX_LIST_MEMORIES_LIMIT is at least the default) are
+    // enforced above as compile-time `const _: () = assert!(...)`
+    // checks rather than runtime tests here, per clippy's
+    // `assertions_on_constants` lint: a violation fails the build
+    // itself, a strictly earlier and stronger signal than a test
+    // failure.
 }
