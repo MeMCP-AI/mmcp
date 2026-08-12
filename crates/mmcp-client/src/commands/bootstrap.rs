@@ -17,6 +17,7 @@ use mmcp_store::memory::resolve_group;
 use uuid::Uuid;
 
 use crate::commands::serve::{is_group_adopted, resolve_subscribed_reads};
+use crate::notes::render_notes_tail;
 
 #[derive(Debug, Args)]
 pub struct BootstrapArgs {
@@ -110,8 +111,8 @@ pub async fn run(args: BootstrapArgs) -> Result<()> {
         }
     }
 
-    let subscribed_reads = match project_cfg.as_ref() {
-        None => Vec::new(),
+    let (subscribed_reads, subscribed_notes) = match project_cfg.as_ref() {
+        None => (Vec::new(), Vec::new()),
         Some(cfg) => {
             resolve_subscribed_reads(&backend, &entries, cfg, &adopted_shared, project_uuid).await
         }
@@ -123,10 +124,33 @@ pub async fn run(args: BootstrapArgs) -> Result<()> {
     } else {
         for entry in &subscribed_reads {
             let group = entry.get("group").and_then(|v| v.as_str()).unwrap_or("?");
-            let slug = entry.get("slug").and_then(|v| v.as_str()).unwrap_or("?");
-            println!("  {group}/{slug}");
+            match entry.get("kind").and_then(|v| v.as_str()) {
+                Some("group") => {
+                    let slug = entry.get("slug").and_then(|v| v.as_str()).unwrap_or("?");
+                    let count = entry.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let hint = entry
+                        .get("fetch_hint")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    println!("  [group]  {slug}  {group}  ({count} memories — {hint})");
+                }
+                Some("memory") => {
+                    let slug = entry.get("slug").and_then(|v| v.as_str()).unwrap_or("?");
+                    println!("  [memory] {group}/{slug}");
+                }
+                other => {
+                    // WP7 amendment A1: an unrecognized shape errors
+                    // loudly instead of silently degrading to `?`,
+                    // so a future third entry shape cannot vanish
+                    // unnoticed from this printer.
+                    println!(
+                        "  [unrecognized kind {other:?}] {entry} — printer needs updating for this shape"
+                    );
+                }
+            }
         }
     }
+    render_notes_tail(&subscribed_notes);
 
     if let Some(cfg) = project_cfg.as_ref() {
         println!();

@@ -40,7 +40,7 @@ use crate::notes::{
 use crate::state::{WatcherHandle, spawn_watcher};
 use mmcp_store::config::{PROJECT_MANIFEST, find_project_root, load as load_project_config};
 use mmcp_store::diagnostics::{
-    DiagReport, diagnose_all, diagnose_group, health_check_all, health_check_group,
+    DiagReport, Finding, diagnose_all, diagnose_group, health_check_all, health_check_group,
 };
 use mmcp_store::groups::{GroupEntry, GroupIndex};
 use mmcp_store::home::{MmcpHome, ResolvedAuthor};
@@ -3764,10 +3764,14 @@ impl McpServer {
             }));
         }
 
-        // Resolve subscribed reads from the four axes. Returns
-        // (group_uuid, slug) addresses only — no metadata.
-        let subscribed_reads = match project_cfg.as_ref() {
-            None => Vec::new(),
+        // Resolve subscribed reads from the four axes. WP7: entries
+        // are either a `kind: "group"` summary (fully-subscribed
+        // group, collapsed) or a `kind: "memory"` address (explicit
+        // pin). `subscribed_notes` carries mmcp #93's parse/read
+        // failure signals, merged below into the response's shared
+        // notes channel.
+        let (subscribed_reads, subscribed_notes) = match project_cfg.as_ref() {
+            None => (Vec::new(), Vec::new()),
             Some(cfg) => {
                 resolve_subscribed_reads(
                     &self.state.backend,
@@ -3798,8 +3802,10 @@ impl McpServer {
         // FR-45: advisory CLAUDE.md signals flow through the
         // standard notes channel; no bespoke `diagnostics` field.
         // `init_claude` is still the only remediation — the note
-        // context points callers at it.
-        let notes = claude_md_notes(project_root.as_deref());
+        // context points callers at it. mmcp #93's subscribed-reads
+        // failure signals ride the same channel.
+        let mut notes = claude_md_notes(project_root.as_deref());
+        notes.extend(subscribed_notes);
 
         Ok(ok_json_with_notes(
             json!({
@@ -6270,40 +6276,69 @@ async fn resolve_sync_filter(
 /// Resolve `bootstrap_context.next_action.subscribed_reads` from the
 /// four subscription axes:
 ///
-/// - `groups` + `languages` → every memory address from the named
-///   group surfaces (mandatory + non-mandatory). Project group and
-///   Global are also treated as "fully subscribed" so the AI sees
-///   all their addresses without paying per-group `list_memories`.
-/// - `memories` → literal `<group_uuid>:<slug>` pins.
+/// - `groups` + `languages` → every file in a fully-subscribed group
+///   (Global scope, the caller's own Project scope, or an adopted
+///   Shared group) collapses to ONE group-summary entry (`kind:
+///   "group"`) instead of one entry per file. WP7 (mmcp issue #46's
+///   still-open sizing sub-problem, option 3 of the decision log):
+///   the per-file address list is strictly less informative than the
+///   `list_memories(group)` walk the protocol already mandates for
+///   every `groups_in_scope` entry, so emitting one row per file was
+///   pure duplication (measured 213 -> 2 entries on this project's
+///   own mmcp group). The summary carries a `count` and a
+///   `fetch_hint` naming the follow-up call.
+/// - `memories` → literal `<group_uuid>:<slug>` pins. ALWAYS surface
+///   as their own per-memory entry (`kind: "memory"`), even inside an
+///   otherwise fully-subscribed group — amendment A2: an explicit pin
+///   is real, non-derivable information the collapse must not absorb.
 /// - `tags` → scan every group the local mirror knows about (not
 ///   only in-scope ones — the whole point of tag pins is to reach
 ///   memories from groups the project hasn't fully adopted) and
-///   include any non-mandatory memory whose tags overlap.
+///   include any non-mandatory memory whose tags overlap, as its own
+///   per-memory entry. A tag match landing inside an already
+///   fully-subscribed group is resolved INSIDE that group's own pass
+///   below (never falls through to the generic tag-matching walk),
+///   so amendment A2's carve-out never duplicates work or re-inflates
+///   the response with redundant entries for files the group summary
+///   already covers.
 ///
-/// Returns `(group_uuid, slug)` JSON entries with no metadata.
-/// Deduplicated across axes so a tag-pinned memory in a fully
-/// subscribed group only appears once.
+/// Every entry in the returned array carries an explicit `kind`
+/// discriminant (`"group"` or `"memory"`) so a caller can never
+/// mistake one shape for the other — amendment A1.
+///
+/// mmcp issue #93: a read/parse failure on any file (git read,
+/// non-UTF8 body, frontmatter parse) or a failed group listing no
+/// longer silently drops the address. It surfaces instead as a
+/// `frontmatter_parse_failed` note on the returned notes list,
+/// mirroring the exact pattern P45 established in
+/// `read_memory_descriptor` (commit a83fb33) — no whole-group drop,
+/// no whole-file drop, every sibling still lists/collapses normally.
+///
+/// Deduplicated across axes so a tag- or memory-pinned entry never
+/// appears twice.
 pub(crate) async fn resolve_subscribed_reads(
     backend: &NativeBackend,
     entries: &[GroupEntry],
     cfg: &mmcp_core::config::ProjectConfig,
     adopted_shared: &std::collections::HashSet<Uuid>,
     project_uuid: Option<Uuid>,
-) -> Vec<serde_json::Value> {
+) -> (Vec<serde_json::Value>, Vec<mmcp_proto::Note>) {
     let mut seen: std::collections::HashSet<(Uuid, String)> = std::collections::HashSet::new();
     let mut out: Vec<serde_json::Value> = Vec::new();
+    let mut notes: Vec<mmcp_proto::Note> = Vec::new();
 
     let want_tags: std::collections::HashSet<String> =
         cfg.subscriptions.tags.iter().cloned().collect();
     let want_memories: std::collections::HashSet<String> =
         cfg.subscriptions.memories.iter().cloned().collect();
 
-    let push_addr = |seen: &mut std::collections::HashSet<(Uuid, String)>,
-                     out: &mut Vec<serde_json::Value>,
-                     group: Uuid,
-                     slug: &str| {
+    let push_memory_addr = |seen: &mut std::collections::HashSet<(Uuid, String)>,
+                            out: &mut Vec<serde_json::Value>,
+                            group: Uuid,
+                            slug: &str| {
         if seen.insert((group, slug.to_string())) {
             out.push(json!({
+                "kind": "memory",
                 "group": group.to_string(),
                 "slug": slug,
             }));
@@ -6328,36 +6363,100 @@ pub(crate) async fn resolve_subscribed_reads(
 
         let files = match list_memory_files(backend, entry).await {
             Ok(f) => f,
-            Err(_) => continue,
-        };
-
-        for file_ref in files {
-            let pin_key = format!("{}:{}", entry_uuid, file_ref.slug);
-            let pinned_individually = want_memories.contains(&pin_key);
-
-            if fully_subscribed {
-                push_addr(&mut seen, &mut out, entry_uuid, &file_ref.slug);
+            Err(err) => {
+                // mmcp #93: a group listing failure used to drop the
+                // group's entire address contribution with zero
+                // diagnostic — the group-level sibling of the
+                // per-file note below.
+                notes.push(finding_to_note(&Finding {
+                    group: entry_uuid.to_string(),
+                    slug: None,
+                    severity: "error",
+                    code: "frontmatter_parse_failed",
+                    message: format!("failed to list memory files: {err}"),
+                }));
                 continue;
             }
+        };
+
+        if fully_subscribed {
+            // Amendment A2: an explicit pin (memory or tag) wins over
+            // the collapse and keeps its own per-memory entry; only
+            // the unpinned remainder folds into the one group-summary
+            // row below. These files never fall through to the
+            // generic tag-matching walk further down — that walk is
+            // for groups NOT already fully subscribed.
+            let mut collapsed_count = 0usize;
+            for file_ref in &files {
+                let pin_key = format!("{entry_uuid}:{}", file_ref.slug);
+                if want_memories.contains(&pin_key) {
+                    push_memory_addr(&mut seen, &mut out, entry_uuid, &file_ref.slug);
+                    continue;
+                }
+
+                // mmcp #93: read + parse once per file so a broken
+                // frontmatter file is reported instead of silently
+                // vanishing from the group's count, and so an
+                // explicit tag pin inside an already fully-subscribed
+                // group still earns its own entry without a second,
+                // redundant walk over the same files.
+                let file =
+                    match read_memory_file_for_subscription(backend, entry, entry_uuid, file_ref)
+                        .await
+                    {
+                        Ok(file) => file,
+                        Err(note) => {
+                            notes.push(note);
+                            continue;
+                        }
+                    };
+
+                if !file.frontmatter.mandatory
+                    && !want_tags.is_empty()
+                    && file.frontmatter.tags.iter().any(|t| want_tags.contains(t))
+                {
+                    push_memory_addr(&mut seen, &mut out, entry_uuid, &file_ref.slug);
+                    continue;
+                }
+
+                collapsed_count += 1;
+            }
+            if collapsed_count > 0 {
+                out.push(json!({
+                    "kind": "group",
+                    "group": entry_uuid.to_string(),
+                    "slug": entry.manifest.slug,
+                    "scope": match entry.manifest.scope {
+                        mmcp_core::manifest::GroupScope::Global => "global",
+                        mmcp_core::manifest::GroupScope::Shared => "shared",
+                        mmcp_core::manifest::GroupScope::Project => "project",
+                    },
+                    "count": collapsed_count,
+                    "fetch_hint": format!("list_memories(group={entry_uuid})"),
+                }));
+            }
+            continue;
+        }
+
+        for file_ref in &files {
+            let pin_key = format!("{entry_uuid}:{}", file_ref.slug);
+            let pinned_individually = want_memories.contains(&pin_key);
+
             if pinned_individually {
-                push_addr(&mut seen, &mut out, entry_uuid, &file_ref.slug);
+                push_memory_addr(&mut seen, &mut out, entry_uuid, &file_ref.slug);
                 continue;
             }
             if !want_tags.is_empty() {
-                // Tag matching needs to peek at the frontmatter.
-                let bytes = match backend
-                    .read_file(&entry.handle, &file_ref.path, &Rev::head())
-                    .await
-                {
-                    Ok(b) => b,
-                    Err(_) => continue,
-                };
-                let Ok(text) = std::str::from_utf8(&bytes) else {
-                    continue;
-                };
-                let Ok(file) = MemoryFile::parse(text) else {
-                    continue;
-                };
+                let file =
+                    match read_memory_file_for_subscription(backend, entry, entry_uuid, file_ref)
+                        .await
+                    {
+                        Ok(file) => file,
+                        Err(note) => {
+                            notes.push(note);
+                            continue;
+                        }
+                    };
                 if file.frontmatter.mandatory {
                     // Tag-based subscription is intentionally about
                     // non-mandatory memories — mandatory entries
@@ -6366,13 +6465,55 @@ pub(crate) async fn resolve_subscribed_reads(
                     continue;
                 }
                 if file.frontmatter.tags.iter().any(|t| want_tags.contains(t)) {
-                    push_addr(&mut seen, &mut out, entry_uuid, &file_ref.slug);
+                    push_memory_addr(&mut seen, &mut out, entry_uuid, &file_ref.slug);
                 }
             }
         }
     }
 
-    out
+    (out, notes)
+}
+
+/// Read and parse one memory file inside `resolve_subscribed_reads`'s
+/// pin/tag matching passes, converting every failure mode (git read,
+/// UTF-8 decode, frontmatter parse) into the exact
+/// `frontmatter_parse_failed` note shape P45 already established in
+/// `read_memory_descriptor` — mmcp issue #93: none of the three
+/// silently drops the file anymore.
+async fn read_memory_file_for_subscription(
+    backend: &NativeBackend,
+    entry: &GroupEntry,
+    entry_uuid: Uuid,
+    file_ref: &mmcp_store::MemoryFileRef,
+) -> Result<MemoryFile, mmcp_proto::Note> {
+    let bytes = backend
+        .read_file(&entry.handle, &file_ref.path, &Rev::head())
+        .await
+        .map_err(|err| {
+            finding_to_note(&Finding {
+                group: entry_uuid.to_string(),
+                slug: Some(file_ref.slug.clone()),
+                severity: "error",
+                code: "frontmatter_parse_failed",
+                message: format!("failed to read memory file: {err}"),
+            })
+        })?;
+    let text = std::str::from_utf8(&bytes).map_err(|err| {
+        finding_to_note(&Finding {
+            group: entry_uuid.to_string(),
+            slug: Some(file_ref.slug.clone()),
+            severity: "error",
+            code: "frontmatter_parse_failed",
+            message: format!("memory file is not valid UTF-8: {err}"),
+        })
+    })?;
+    MemoryFile::parse(text).map_err(|err| {
+        finding_to_note(&mmcp_store::tracker::parse_failed_finding(
+            &entry_uuid.to_string(),
+            &file_ref.slug,
+            &err,
+        ))
+    })
 }
 
 /// FR-025: does `cfg` adopt the given group slug? Checks both the
@@ -9597,24 +9738,338 @@ mod tests {
             scoped_uuids.contains(&shared_group.to_string()),
             "subscribed Shared group must enter scope; saw: {scoped_uuids:?}",
         );
-        // Full-group subscriptions surface every memory address in
-        // `subscribed_reads`. The Shared group's `team-rule` must
-        // appear there.
-        let subscribed: Vec<(String, String)> = parsed
+        // WP7: a fully-subscribed Shared group collapses to ONE
+        // `kind: "group"` summary entry instead of one row per
+        // memory. The Shared group's single `team-rule` memory must
+        // therefore surface as a group summary carrying count: 1 and
+        // a `list_memories` fetch hint, not as its own per-memory
+        // `{group, slug}` row.
+        let subscribed = parsed
             .pointer("/next_action/subscribed_reads")
             .and_then(|v| v.as_array())
-            .expect("subscribed_reads")
+            .expect("subscribed_reads");
+        let group_summary = subscribed
             .iter()
-            .filter_map(|s| {
-                Some((
-                    s.get("group").and_then(|v| v.as_str())?.to_string(),
-                    s.get("slug").and_then(|v| v.as_str())?.to_string(),
-                ))
+            .find(|s| {
+                s.get("kind").and_then(|v| v.as_str()) == Some("group")
+                    && s.get("group").and_then(|v| v.as_str()) == Some(&shared_group.to_string())
             })
-            .collect();
+            .unwrap_or_else(|| {
+                panic!("subscribed Shared group must surface a group summary entry; saw: {subscribed:?}")
+            });
+        assert_eq!(
+            group_summary
+                .get("count")
+                .and_then(serde_json::Value::as_u64),
+            Some(1),
+            "group summary must count the group's one memory; saw: {group_summary:?}",
+        );
+        assert_eq!(
+            group_summary.get("slug").and_then(|v| v.as_str()),
+            Some("team/house-rules"),
+            "group summary must carry the GROUP's own slug, not a memory slug; saw: {group_summary:?}",
+        );
+        let fetch_hint = group_summary
+            .get("fetch_hint")
+            .and_then(|v| v.as_str())
+            .expect("group summary must carry a fetch_hint");
         assert!(
-            subscribed.contains(&(shared_group.to_string(), "team-rule".to_string())),
-            "subscribed group's memory must appear in subscribed_reads; saw: {subscribed:?}",
+            fetch_hint.contains("list_memories") && fetch_hint.contains(&shared_group.to_string()),
+            "fetch_hint must point at list_memories(group=<uuid>); saw: {fetch_hint}",
+        );
+        assert!(
+            !subscribed.iter().any(|s| {
+                s.get("kind").and_then(|v| v.as_str()) == Some("memory")
+                    && s.get("slug").and_then(|v| v.as_str()) == Some("team-rule")
+            }),
+            "a fully-subscribed group's own memory must NOT also appear as a per-memory entry; saw: {subscribed:?}",
+        );
+    }
+
+    /// Seed a minimal `.mmcp.toml` naming `project_uuid` (and,
+    /// optionally, a `[subscriptions]` block) at `root`, so
+    /// `bootstrap_context` resolves a real `project_cfg` and runs
+    /// `resolve_subscribed_reads` — Global scope is always
+    /// fully-subscribed regardless of the project's own uuid, so no
+    /// `subscriptions.groups` entry is needed to exercise the
+    /// collapse itself.
+    fn write_minimal_project_toml(root: &std::path::Path, subscriptions_block: &str) {
+        std::fs::create_dir_all(root).expect("mkdir project root");
+        let toml_body = format!(
+            "project_uuid = \"{}\"\n{subscriptions_block}",
+            Uuid::now_v7()
+        );
+        std::fs::write(root.join(".mmcp.toml"), toml_body).expect("seed project .mmcp.toml");
+    }
+
+    #[tokio::test]
+    async fn resolve_subscribed_reads_collapses_fully_subscribed_group_to_one_entry() {
+        // WP7 acceptance: a fully-subscribed group (Global scope,
+        // always fully subscribed) with N files produces exactly ONE
+        // `kind: "group"` summary entry, not N per-memory rows.
+        let (state, tmp) = test_state().await;
+        let group = seed_scoped_group_with_memory(
+            &state,
+            "global",
+            "rule-one",
+            MANDATORY_MEMORY,
+            mmcp_core::manifest::GroupScope::Global,
+        )
+        .await;
+        let entry = state.groups.get(&group).await.expect("group entry");
+        state
+            .backend
+            .write_commit(
+                &entry.handle,
+                CommitSpec {
+                    branch: mmcp_core::conventions::MAIN_BRANCH.to_string(),
+                    author_name: "test".into(),
+                    author_email: "test@example.com".into(),
+                    message: "seed two more siblings".into(),
+                    files: vec![
+                        (
+                            mmcp_core::conventions::memory_path("rule-two", Uuid::now_v7()),
+                            Some(OPTIONAL_MEMORY.as_bytes().to_vec()),
+                        ),
+                        (
+                            mmcp_core::conventions::memory_path("rule-three", Uuid::now_v7()),
+                            Some(OPTIONAL_MEMORY.as_bytes().to_vec()),
+                        ),
+                    ],
+                },
+            )
+            .await
+            .expect("seed siblings");
+        state.groups.refresh().await.expect("refresh");
+
+        let project_root = tmp.path().join("project");
+        write_minimal_project_toml(&project_root, "");
+        let server = McpServer::new(state, ServeMode::Full);
+        let res = server
+            .bootstrap_context(Parameters(BootstrapContextArgs {
+                project: None,
+                path: Some(project_root.to_string_lossy().into_owned()),
+            }))
+            .await
+            .expect("bootstrap_context");
+        let parsed = parse_ok_json(res);
+        let subscribed = parsed
+            .pointer("/next_action/subscribed_reads")
+            .and_then(|v| v.as_array())
+            .expect("subscribed_reads");
+
+        let group_entries: Vec<&serde_json::Value> = subscribed
+            .iter()
+            .filter(|s| s.get("group").and_then(|v| v.as_str()) == Some(&group.to_string()))
+            .collect();
+        assert_eq!(
+            group_entries.len(),
+            1,
+            "a fully-subscribed group with 3 files must produce exactly one entry, not one per file; saw: {subscribed:?}",
+        );
+        let summary = group_entries[0];
+        assert_eq!(
+            summary.get("kind").and_then(|v| v.as_str()),
+            Some("group"),
+            "summary entry must carry the group discriminant; saw: {summary:?}",
+        );
+        assert_eq!(
+            summary.get("count").and_then(serde_json::Value::as_u64),
+            Some(3),
+            "summary must count all 3 files; saw: {summary:?}",
+        );
+        let hint = summary
+            .get("fetch_hint")
+            .and_then(|v| v.as_str())
+            .expect("fetch_hint present");
+        assert!(
+            hint.contains("list_memories") && hint.contains(&group.to_string()),
+            "fetch_hint must name list_memories(group=<uuid>); saw: {hint}",
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_subscribed_reads_keeps_explicit_pin_separate_from_group_collapse() {
+        // WP7 amendment A2: a file that is ALSO an explicit `memories`
+        // pin must keep its own per-memory entry even though its
+        // group is otherwise fully subscribed; only the unpinned
+        // remainder folds into the group summary's count.
+        let (state, tmp) = test_state().await;
+        let group = seed_scoped_group_with_memory(
+            &state,
+            "global",
+            "pinned",
+            MANDATORY_MEMORY,
+            mmcp_core::manifest::GroupScope::Global,
+        )
+        .await;
+        let entry = state.groups.get(&group).await.expect("group entry");
+        state
+            .backend
+            .write_commit(
+                &entry.handle,
+                CommitSpec {
+                    branch: mmcp_core::conventions::MAIN_BRANCH.to_string(),
+                    author_name: "test".into(),
+                    author_email: "test@example.com".into(),
+                    message: "seed unpinned sibling".into(),
+                    files: vec![(
+                        mmcp_core::conventions::memory_path("unpinned", Uuid::now_v7()),
+                        Some(OPTIONAL_MEMORY.as_bytes().to_vec()),
+                    )],
+                },
+            )
+            .await
+            .expect("seed unpinned sibling");
+        state.groups.refresh().await.expect("refresh");
+
+        let project_root = tmp.path().join("project");
+        write_minimal_project_toml(
+            &project_root,
+            &format!("\n[subscriptions]\nmemories = [\"{group}:pinned\"]\n"),
+        );
+        let server = McpServer::new(state, ServeMode::Full);
+        let res = server
+            .bootstrap_context(Parameters(BootstrapContextArgs {
+                project: None,
+                path: Some(project_root.to_string_lossy().into_owned()),
+            }))
+            .await
+            .expect("bootstrap_context");
+        let parsed = parse_ok_json(res);
+        let subscribed = parsed
+            .pointer("/next_action/subscribed_reads")
+            .and_then(|v| v.as_array())
+            .expect("subscribed_reads");
+
+        let pinned_entry = subscribed
+            .iter()
+            .find(|s| {
+                s.get("kind").and_then(|v| v.as_str()) == Some("memory")
+                    && s.get("group").and_then(|v| v.as_str()) == Some(&group.to_string())
+                    && s.get("slug").and_then(|v| v.as_str()) == Some("pinned")
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "explicit memory pin must keep its own per-memory entry; saw: {subscribed:?}"
+                )
+            });
+        assert_eq!(
+            pinned_entry.get("kind").and_then(|v| v.as_str()),
+            Some("memory")
+        );
+
+        let group_summary = subscribed
+            .iter()
+            .find(|s| {
+                s.get("kind").and_then(|v| v.as_str()) == Some("group")
+                    && s.get("group").and_then(|v| v.as_str()) == Some(&group.to_string())
+            })
+            .unwrap_or_else(|| {
+                panic!("unpinned remainder must still collapse into a group summary; saw: {subscribed:?}")
+            });
+        assert_eq!(
+            group_summary
+                .get("count")
+                .and_then(serde_json::Value::as_u64),
+            Some(1),
+            "group summary must count only the unpinned remainder (1 file), not the pinned one too; saw: {group_summary:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_subscribed_reads_surfaces_broken_frontmatter_without_dropping_the_group() {
+        // mmcp #93, exercised inside WP7's collapse path: a memory
+        // whose frontmatter fails to parse, seeded inside an
+        // otherwise fully-subscribed group, must not crash the call,
+        // must not silently drop the whole group, and must surface
+        // an explicit `frontmatter_parse_failed` note — while every
+        // other sibling in the same group still collapses into the
+        // group summary as normal.
+        let (state, tmp) = test_state().await;
+        let group = seed_scoped_group_with_memory(
+            &state,
+            "global",
+            "good-one",
+            MANDATORY_MEMORY,
+            mmcp_core::manifest::GroupScope::Global,
+        )
+        .await;
+        let entry = state.groups.get(&group).await.expect("group entry");
+        const BROKEN_MEMORY: &str = "+++\nname = \"Broken\"\ndescription = \"Broken\"\nkind = \"not-a-real-kind\"\nmandatory = false\ntags = []\n+++\n# Broken\nBody.\n";
+        state
+            .backend
+            .write_commit(
+                &entry.handle,
+                CommitSpec {
+                    branch: mmcp_core::conventions::MAIN_BRANCH.to_string(),
+                    author_name: "test".into(),
+                    author_email: "test@example.com".into(),
+                    message: "seed good sibling and broken sibling".into(),
+                    files: vec![
+                        (
+                            mmcp_core::conventions::memory_path("good-two", Uuid::now_v7()),
+                            Some(OPTIONAL_MEMORY.as_bytes().to_vec()),
+                        ),
+                        (
+                            mmcp_core::conventions::memory_path("broken", Uuid::now_v7()),
+                            Some(BROKEN_MEMORY.as_bytes().to_vec()),
+                        ),
+                    ],
+                },
+            )
+            .await
+            .expect("seed siblings");
+        state.groups.refresh().await.expect("refresh");
+
+        let project_root = tmp.path().join("project");
+        write_minimal_project_toml(&project_root, "");
+        let server = McpServer::new(state, ServeMode::Full);
+        let res = server
+            .bootstrap_context(Parameters(BootstrapContextArgs {
+                project: None,
+                path: Some(project_root.to_string_lossy().into_owned()),
+            }))
+            .await
+            .expect("bootstrap_context must not abort on one corrupt sibling");
+        let parsed = parse_ok_json(res);
+
+        let subscribed = parsed
+            .pointer("/next_action/subscribed_reads")
+            .and_then(|v| v.as_array())
+            .expect("subscribed_reads");
+        let summary = subscribed
+            .iter()
+            .find(|s| {
+                s.get("kind").and_then(|v| v.as_str()) == Some("group")
+                    && s.get("group").and_then(|v| v.as_str()) == Some(&group.to_string())
+            })
+            .unwrap_or_else(|| panic!("group must not be dropped wholesale; saw: {subscribed:?}"));
+        assert_eq!(
+            summary.get("count").and_then(serde_json::Value::as_u64),
+            Some(2),
+            "the two good siblings must still collapse into the group summary; saw: {summary:?}",
+        );
+
+        let notes = parsed
+            .get("notes")
+            .and_then(|v| v.as_array())
+            .expect("the broken sibling must surface a note");
+        let broken_note = notes
+            .iter()
+            .find(|n| {
+                n.get("code").and_then(|v| v.as_str()) == Some("frontmatter_parse_failed")
+                    && n.pointer("/context/slug").and_then(|v| v.as_str()) == Some("broken")
+            })
+            .unwrap_or_else(|| {
+                panic!("expected a frontmatter_parse_failed note naming 'broken'; saw: {notes:?}")
+            });
+        assert!(
+            broken_note
+                .get("message")
+                .and_then(|v| v.as_str())
+                .is_some_and(|m| !m.is_empty()),
+            "note must carry the real parse-error text: {broken_note:?}",
         );
     }
 
