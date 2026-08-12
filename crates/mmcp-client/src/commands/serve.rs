@@ -241,6 +241,29 @@ struct ListMemoriesArgs {
     /// preserved.
     #[serde(default)]
     pub recursive: Option<bool>,
+    /// FR-46 WP6: when `true`, each descriptor drops `description`
+    /// (the single largest per-record field) and returns only
+    /// `slug`, `path`, `name`, `kind`, `mandatory`. Defaults to
+    /// `false` (the full descriptor), preserving the pre-FR-46
+    /// shape for callers that don't opt in.
+    #[serde(default)]
+    pub compact: Option<bool>,
+    /// FR-46 WP6: zero-based offset into the NON-mandatory portion
+    /// of the filtered listing. Setting either `offset` or `limit`
+    /// activates pagination: the response splits into `mandatory`
+    /// (every `mandatory == true` match, always returned in full —
+    /// never paginated away) and `memories` (the paginated
+    /// non-mandatory window), plus an `envelope`. Leaving both unset
+    /// preserves the pre-FR-46 shape: every matching memory in one
+    /// flat `memories` array, no envelope.
+    #[serde(default)]
+    pub offset: Option<usize>,
+    /// FR-46 WP6: page size for the non-mandatory window. See
+    /// `offset` for the pagination-activation rule. Defaults to
+    /// [`mmcp_core::memory::DEFAULT_LIST_MEMORIES_LIMIT`] and clamps
+    /// to [`mmcp_core::memory::MAX_LIST_MEMORIES_LIMIT`].
+    #[serde(default)]
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -261,6 +284,19 @@ struct ReadMemoryArgs {
     /// Optional branch name, tag name, or commit hex. Defaults to `main`.
     #[serde(default)]
     pub version: Option<String>,
+    /// FR-46 WP5: cap the returned `body` to this many bytes. When
+    /// the stored body exceeds it, `body` is truncated at a UTF-8
+    /// char boundary, `envelope.truncated` is `true`, and a note
+    /// promotes the caller toward `read_memory_body_sections` for
+    /// addressable, budget-safe reads of the rest. Defaults to
+    /// [`mmcp_core::memory::DEFAULT_RESPONSE_BUDGET_BYTES`] when
+    /// absent — `read_memory` never returns an unbounded body, since
+    /// that is exactly the failure mode issue #46 measured (bodies
+    /// up to 388,000 bytes forced callers to read raw git objects on
+    /// disk). Pass an explicit larger value to widen the cap for a
+    /// single call.
+    #[serde(default)]
+    pub max_bytes: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -2042,7 +2078,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List memories that live in the specified group. The group argument is the group UUID. Returns `{group, memories, mirrored: bool}` — `mirrored: false` signals the group UUID is unknown to the local mirror (distinct from a mirrored-but-empty group, which returns `mirrored: true` with `memories: []`). FR-41: pass `path_prefix` to restrict to a slug subtree (literal prefix, no wildcards), and `recursive: false` to surface only the immediate children at that prefix level. A memory whose frontmatter fails to parse is excluded from `memories` (never fabricated as a fake `kind: \"rule\"` record) and reported instead as a `frontmatter_parse_failed` note; every sibling record that parses fine still lists normally.",
+        description = "List memories that live in the specified group. The group argument is the group UUID. Returns `{group, memories, mirrored: bool}` — `mirrored: false` signals the group UUID is unknown to the local mirror (distinct from a mirrored-but-empty group, which returns `mirrored: true` with `memories: []`). FR-41: pass `path_prefix` to restrict to a slug subtree (literal prefix, no wildcards), and `recursive: false` to surface only the immediate children at that prefix level. A memory whose frontmatter fails to parse is excluded from `memories` (never fabricated as a fake `kind: \"rule\"` record) and reported instead as a `frontmatter_parse_failed` note; every sibling record that parses fine still lists normally. FR-46 WP6: pass `compact: true` to drop `description` and other large fields from each descriptor. Setting `offset` and/or `limit` activates pagination over the NON-mandatory portion of the listing and reshapes the response to `{group, mandatory, memories, envelope, mirrored}` — every `mandatory == true` match is always returned in full under `mandatory`, unconditionally and never paginated away; `memories` carries the paginated window and `envelope` reports `{truncated, total, returned, next_offset}` for that window.",
         annotations(
             title = "List memories in a group",
             read_only_hint = true,
@@ -2098,6 +2134,54 @@ impl McpServer {
                 }
             }
         }
+
+        // FR-46 WP6: compact mode drops `description` and the other
+        // rarely-needed fields per descriptor before pagination, so
+        // the mandatory-always-included set below is compact too.
+        if args.compact.unwrap_or(false) {
+            for memory in &mut memories {
+                *memory = compact_descriptor(memory);
+            }
+        }
+
+        // FR-46 WP6: `offset`/`limit` activate pagination. The
+        // single most important correctness property: a caller must
+        // never be able to page past or truncate out a mandatory
+        // memory. Every `mandatory == true` match therefore rides in
+        // its own `mandatory` field, unconditionally, deduplicated
+        // by construction (one descriptor per matched file), and is
+        // never subject to `offset`/`limit` — only the non-mandatory
+        // remainder is paginated.
+        if args.offset.is_some() || args.limit.is_some() {
+            let (mandatory, non_mandatory): (Vec<_>, Vec<_>) =
+                memories.into_iter().partition(descriptor_is_mandatory);
+            let offset = args.offset.unwrap_or(0);
+            let limit = args
+                .limit
+                .unwrap_or(mmcp_core::memory::DEFAULT_LIST_MEMORIES_LIMIT)
+                .clamp(1, mmcp_core::memory::MAX_LIST_MEMORIES_LIMIT);
+            let total = non_mandatory.len();
+            let start = offset.min(total);
+            let page: Vec<_> = non_mandatory.into_iter().skip(start).take(limit).collect();
+            let returned = page.len();
+            let next_offset = if start + returned < total {
+                Some(start + returned)
+            } else {
+                None
+            };
+            let envelope = mmcp_core::memory::ResponseEnvelope::new(total, returned, next_offset);
+            return Ok(ok_json_with_notes(
+                json!({
+                    "group":     entry.manifest.group_id,
+                    "mandatory": mandatory,
+                    "memories":  page,
+                    "envelope":  envelope,
+                    "mirrored":  true,
+                }),
+                notes,
+            ));
+        }
+
         Ok(ok_json_with_notes(
             json!({
                 "group":    entry.manifest.group_id,
@@ -2109,7 +2193,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Read a memory by group and slug. Returns the TOML frontmatter and the Markdown body exactly as stored in git. Set `version` to a branch name, tag, or commit hex to read a specific revision; defaults to the latest `main`.",
+        description = "Read a memory by group and slug. Returns the TOML frontmatter and the Markdown body exactly as stored in git. Set `version` to a branch name, tag, or commit hex to read a specific revision; defaults to the latest `main`. `body` is bounded by `max_bytes` (default: the shared response budget) — when the stored body is larger, `body` is truncated at a char boundary, `envelope.truncated` is `true`, and a note promotes `read_memory_body_sections` for reading the rest as addressable sections.",
         annotations(
             title = "Read a memory",
             read_only_hint = true,
@@ -2158,7 +2242,41 @@ impl McpServer {
         // callers know to reconcile. Shape matches what
         // `mcp:diagnose` flags, but returned through the notes
         // channel per-read.
-        let notes = malformed_frontmatter_notes(&resolved.slug, resolved.id, &file);
+        let mut notes = malformed_frontmatter_notes(&resolved.slug, resolved.id, &file);
+
+        // FR-46 WP5: never return an unbounded body. Issue #46
+        // measured bodies up to 388,000 bytes forcing callers to
+        // read raw git objects on disk instead of this tool.
+        let max_bytes = args
+            .max_bytes
+            .unwrap_or(mmcp_core::memory::DEFAULT_RESPONSE_BUDGET_BYTES);
+        let total_bytes = file.body.len();
+        let (returned_body, envelope) = if total_bytes > max_bytes {
+            let truncated_body = truncate_body_to_budget(&file.body, max_bytes);
+            let returned_bytes = truncated_body.len();
+            notes.push(
+                mmcp_proto::Note::info(
+                    "body_truncated",
+                    format!(
+                        "body is {total_bytes} bytes, exceeding the {max_bytes}-byte budget; returned the first {returned_bytes} bytes. Call read_memory_body_sections(group, slug|id) to read the rest as addressable sections, or pass a larger max_bytes."
+                    ),
+                )
+                .with_context(json!({
+                    "suggested_tool": "read_memory_body_sections",
+                    "suggested_args": { "group": args.group, "slug": resolved.slug },
+                })),
+            );
+            (
+                truncated_body,
+                mmcp_core::memory::ResponseEnvelope::new(total_bytes, returned_bytes, None),
+            )
+        } else {
+            (
+                file.body.clone(),
+                mmcp_core::memory::ResponseEnvelope::new(total_bytes, total_bytes, None),
+            )
+        };
+
         Ok(ok_json_with_notes(
             json!({
                 "group": entry.manifest.group_id,
@@ -2166,7 +2284,8 @@ impl McpServer {
                 "id": resolved.id.to_string(),
                 "version": rev_label(&rev),
                 "frontmatter": frontmatter_to_json(&file.frontmatter),
-                "body": file.body,
+                "body": returned_body,
+                "envelope": envelope,
             }),
             notes,
         ))
@@ -7451,6 +7570,34 @@ async fn read_memory_descriptor(
     })))
 }
 
+/// Project a full `list_memories` descriptor (as built by
+/// [`read_memory_descriptor`]) down to FR-46 WP6's compact shape:
+/// `slug`, `path`, `name`, `kind`, `mandatory` only. Drops
+/// `description` — the single largest per-record field measured on
+/// issue #46 — plus `tags`, `source`, and `latest_version`.
+fn compact_descriptor(full: &serde_json::Value) -> serde_json::Value {
+    json!({
+        "slug": full.get("slug"),
+        "path": full.get("path"),
+        "name": full.get("name"),
+        "kind": full.get("kind"),
+        "mandatory": full.get("mandatory"),
+    })
+}
+
+/// Read the `mandatory` flag back off a descriptor built by either
+/// [`read_memory_descriptor`] or [`compact_descriptor`] (both carry
+/// the field). Missing/non-boolean is treated as `false` rather than
+/// panicking — the field is always present in practice, but a
+/// partition predicate must never fabricate a `true` from absent
+/// data.
+fn descriptor_is_mandatory(descriptor: &serde_json::Value) -> bool {
+    descriptor
+        .get("mandatory")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
 fn parse_group_id(value: &str) -> Result<GroupId, McpError> {
     let uuid = Uuid::parse_str(value).map_err(|_| {
         McpError::invalid_params("group is not a valid UUID", Some(json!({ "group": value })))
@@ -7641,6 +7788,21 @@ fn claude_md_notes(project_root: Option<&std::path::Path>) -> Vec<mmcp_proto::No
     }))]
 }
 
+/// Truncate `body` to at most `max_bytes`, respecting UTF-8 char
+/// boundaries so the returned prefix is always valid UTF-8 (FR-46
+/// WP5's `read_memory` `max_bytes` bound). Returns the body
+/// unchanged when it already fits.
+fn truncate_body_to_budget(body: &str, max_bytes: usize) -> String {
+    if body.len() <= max_bytes {
+        return body.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    body[..end].to_string()
+}
+
 fn frontmatter_to_json(fm: &MemoryFrontmatter) -> serde_json::Value {
     json!({
         "name": fm.name,
@@ -7816,6 +7978,56 @@ mod tests {
                         mmcp_core::conventions::memory_path(memory_slug, Uuid::now_v7()),
                         Some(memory_body.as_bytes().to_vec()),
                     )],
+                },
+            )
+            .await
+            .expect("write commit");
+        state.groups.refresh().await.expect("refresh");
+        group_id
+    }
+
+    /// Seed `total` memories into a fresh group in one commit, the
+    /// first `mandatory_count` of them (by slug order) marked
+    /// `mandatory = true`. FR-46 WP6 fixture: slugs are
+    /// zero-padded (`entry-0000`, `entry-0001`, ...) so ordering is
+    /// deterministic across the whole test.
+    async fn seed_group_with_many_memories(
+        state: &ClientState,
+        slug: &str,
+        total: usize,
+        mandatory_count: usize,
+    ) -> GroupId {
+        let owner = Uuid::now_v7();
+        let group_id = GroupId::new();
+        let manifest = GroupManifest::new_user_owned(group_id, slug, owner);
+        let handle = state
+            .backend
+            .create_group_repo(&manifest)
+            .await
+            .expect("create group repo");
+        let files: Vec<_> = (0..total)
+            .map(|i| {
+                let mandatory = i < mandatory_count;
+                let memory_slug = format!("entry-{i:04}");
+                let body = format!(
+                    "+++\nname = \"Entry {i}\"\ndescription = \"Description for entry {i}, padded so the fixture reproduces a realistic per-record size.\"\nkind = \"rule\"\nmandatory = {mandatory}\ntags = []\n+++\n# Entry {i}\nBody.\n"
+                );
+                (
+                    mmcp_core::conventions::memory_path(&memory_slug, Uuid::now_v7()),
+                    Some(body.into_bytes()),
+                )
+            })
+            .collect();
+        state
+            .backend
+            .write_commit(
+                &handle,
+                CommitSpec {
+                    branch: mmcp_core::conventions::MAIN_BRANCH.to_string(),
+                    author_name: "test".into(),
+                    author_email: "test@example.com".into(),
+                    message: "seed many memories".into(),
+                    files,
                 },
             )
             .await
@@ -8305,6 +8517,208 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_memories_unbounded_call_reproduces_the_issue_46_overflow() {
+        // Sanity check that the fixture below is a real reproduction
+        // of the reported problem, not a fixture that happens to
+        // pass: a full, non-compact, non-paginated listing over 200
+        // memories must itself exceed the shared response budget, or
+        // the "compact/paginated stays bounded" assertion in
+        // `list_memories_pagination_always_returns_every_mandatory_entry`
+        // would be vacuous.
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_many_memories(&state, "big-group", 200, 20).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let res = server
+            .list_memories(Parameters(ListMemoriesArgs {
+                group: group.to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect("list_memories");
+        let text = match &res.content[0] {
+            block if block.as_text().is_some() => block.as_text().unwrap().text.clone(),
+            _ => panic!("expected text content"),
+        };
+        assert!(
+            text.len() > mmcp_core::memory::DEFAULT_RESPONSE_BUDGET_BYTES,
+            "fixture must reproduce the overflow: unbounded response was {} bytes, budget is {} bytes",
+            text.len(),
+            mmcp_core::memory::DEFAULT_RESPONSE_BUDGET_BYTES,
+        );
+    }
+
+    #[tokio::test]
+    async fn list_memories_pagination_always_returns_every_mandatory_entry() {
+        // FR-46 WP6, the non-negotiable correctness property: a
+        // caller must never be able to page past or truncate out a
+        // mandatory memory. 20 of 200 seeded memories are
+        // `mandatory = true`; every paginated page below must still
+        // carry all 20 of them under `mandatory`, deduplicated,
+        // regardless of the `offset`/`limit` window requested.
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_many_memories(&state, "big-group", 200, 20).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let mandatory_slugs_from =
+            |parsed: &serde_json::Value| -> std::collections::BTreeSet<String> {
+                parsed
+                    .get("mandatory")
+                    .and_then(|v| v.as_array())
+                    .expect("mandatory array present")
+                    .iter()
+                    .map(|m| {
+                        m.get("slug")
+                            .and_then(|v| v.as_str())
+                            .expect("slug present")
+                            .to_string()
+                    })
+                    .collect()
+            };
+
+        // Page 1: compact mode, a small page size well under the 20
+        // mandatory + 180 non-mandatory total.
+        let res = server
+            .list_memories(Parameters(ListMemoriesArgs {
+                group: group.to_string(),
+                compact: Some(true),
+                offset: Some(0),
+                limit: Some(5),
+                ..Default::default()
+            }))
+            .await
+            .expect("list_memories page 1");
+        let text_len = match &res.content[0] {
+            block if block.as_text().is_some() => block.as_text().unwrap().text.len(),
+            _ => panic!("expected text content"),
+        };
+        let parsed = parse_ok_json(res);
+        let mandatory_page1 = mandatory_slugs_from(&parsed);
+        assert_eq!(
+            mandatory_page1.len(),
+            20,
+            "every mandatory memory must be present on page 1: {mandatory_page1:?}"
+        );
+        let memories = parsed
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .expect("memories array");
+        assert_eq!(memories.len(), 5, "page size must be honored");
+        for memory in memories {
+            assert_eq!(
+                memory.get("description"),
+                None,
+                "compact mode must drop description: {memory:?}"
+            );
+        }
+        let envelope = parsed.get("envelope").expect("envelope present");
+        assert_eq!(envelope.get("total").and_then(|v| v.as_u64()), Some(180));
+        assert_eq!(envelope.get("returned").and_then(|v| v.as_u64()), Some(5));
+        assert_eq!(
+            envelope.get("truncated").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            envelope.get("next_offset").and_then(|v| v.as_u64()),
+            Some(5)
+        );
+        assert!(
+            text_len < mmcp_core::memory::DEFAULT_RESPONSE_BUDGET_BYTES,
+            "compact paginated response must stay under the shared budget: {text_len} bytes"
+        );
+
+        // Page 2: a different window entirely (offset moved past
+        // page 1's non-mandatory window). The mandatory set must be
+        // byte-for-byte the same 20 entries.
+        let res2 = server
+            .list_memories(Parameters(ListMemoriesArgs {
+                group: group.to_string(),
+                compact: Some(true),
+                offset: Some(100),
+                limit: Some(5),
+                ..Default::default()
+            }))
+            .await
+            .expect("list_memories page 2");
+        let parsed2 = parse_ok_json(res2);
+        let mandatory_page2 = mandatory_slugs_from(&parsed2);
+        assert_eq!(
+            mandatory_page1, mandatory_page2,
+            "the mandatory set must be identical across pagination windows"
+        );
+
+        // A far-out offset with no non-mandatory entries left must
+        // still return all 20 mandatory entries.
+        let res3 = server
+            .list_memories(Parameters(ListMemoriesArgs {
+                group: group.to_string(),
+                compact: Some(true),
+                offset: Some(1_000),
+                limit: Some(5),
+                ..Default::default()
+            }))
+            .await
+            .expect("list_memories far offset");
+        let parsed3 = parse_ok_json(res3);
+        let mandatory_page3 = mandatory_slugs_from(&parsed3);
+        assert_eq!(
+            mandatory_page1, mandatory_page3,
+            "mandatory entries survive even an offset past the end of the non-mandatory window"
+        );
+        let memories3 = parsed3
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .expect("memories array");
+        assert!(
+            memories3.is_empty(),
+            "an out-of-range offset returns an empty non-mandatory page, not an error"
+        );
+        let envelope3 = parsed3.get("envelope").expect("envelope present");
+        assert_eq!(
+            envelope3.get("next_offset").and_then(|v| v.as_u64()),
+            None,
+            "nothing remains past the end"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_memories_without_pagination_keeps_the_pre_fr46_shape() {
+        // Backward compatibility: a caller that never sets
+        // `compact`/`offset`/`limit` must see the exact pre-FR-46
+        // response shape (flat `memories`, no `mandatory` split, no
+        // `envelope`).
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let res = server
+            .list_memories(Parameters(ListMemoriesArgs {
+                group: group.to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect("list_memories");
+        let parsed = parse_ok_json(res);
+        assert!(
+            parsed.get("mandatory").is_none(),
+            "unpaginated response must not carry a mandatory split: {parsed:?}"
+        );
+        assert!(
+            parsed.get("envelope").is_none(),
+            "unpaginated response must not carry an envelope: {parsed:?}"
+        );
+        let memories = parsed
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .expect("memories array");
+        assert_eq!(memories.len(), 1);
+        assert!(
+            memories[0].get("description").is_some(),
+            "full (non-compact) descriptor still carries description"
+        );
+    }
+
+    #[tokio::test]
     async fn list_groups_returns_every_mirrored_group_with_metadata() {
         // FR-010: verify the standalone enumeration path returns
         // every seeded group, with manifest + memory counts, in a
@@ -8370,6 +8784,7 @@ mod tests {
                 slug: Some("rules".into()),
                 id: None,
                 version: None,
+                max_bytes: None,
             }))
             .await
             .expect("read_memory");
@@ -8401,6 +8816,7 @@ mod tests {
                 slug: Some("missing".into()),
                 id: None,
                 version: None,
+                max_bytes: None,
             }))
             .await
             .expect_err("should be an error");
@@ -8408,6 +8824,171 @@ mod tests {
             err.message.contains("memory not found"),
             "expected memory-not-found error, got: {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn read_memory_max_bytes_truncates_and_signals_via_envelope() {
+        // FR-46 WP5: an explicit `max_bytes` bounds the returned
+        // body and signals truncation through the shared envelope
+        // plus a promotion note — never silently.
+        let (state, _tmp) = test_state().await;
+        let big_body = "x".repeat(1000);
+        let source = format!(
+            "+++\nname = \"Big\"\ndescription = \"A big memory\"\nkind = \"rule\"\nmandatory = false\ntags = []\n+++\n{big_body}"
+        );
+        let group = seed_group_with_memory(&state, "team-rust", "big", &source).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let res = server
+            .read_memory(Parameters(ReadMemoryArgs {
+                group: group.to_string(),
+                slug: Some("big".into()),
+                id: None,
+                version: None,
+                max_bytes: Some(100),
+            }))
+            .await
+            .expect("read_memory");
+        let parsed = parse_ok_json(res);
+        let body = parsed.get("body").and_then(|v| v.as_str()).expect("body");
+        assert_eq!(body.len(), 100, "body must be truncated to max_bytes");
+        let envelope = parsed.get("envelope").expect("envelope present");
+        assert_eq!(
+            envelope.get("truncated").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(envelope.get("returned").and_then(|v| v.as_u64()), Some(100));
+        assert_eq!(envelope.get("total").and_then(|v| v.as_u64()), Some(1000));
+        assert_eq!(
+            envelope.get("next_offset"),
+            None,
+            "next_offset must be omitted, not null, for read_memory"
+        );
+        let notes = parsed
+            .get("notes")
+            .and_then(|v| v.as_array())
+            .expect("notes present");
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.get("code").and_then(|v| v.as_str()) == Some("body_truncated")),
+            "must surface a body_truncated note promoting read_memory_body_sections: {notes:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_memory_without_max_bytes_still_bounds_an_oversized_body() {
+        // Issue #46: `read_memory` must never return an unbounded
+        // body by default — bodies up to 388,000 bytes were
+        // observed forcing callers to read raw git objects on disk.
+        // Seed a body larger than the shared default budget and
+        // confirm the default alone (no explicit `max_bytes`) still
+        // truncates it.
+        let (state, _tmp) = test_state().await;
+        let oversized_len = mmcp_core::memory::DEFAULT_RESPONSE_BUDGET_BYTES + 1000;
+        let big_body = "y".repeat(oversized_len);
+        let source = format!(
+            "+++\nname = \"Huge\"\ndescription = \"A huge memory\"\nkind = \"rule\"\nmandatory = false\ntags = []\n+++\n{big_body}"
+        );
+        let group = seed_group_with_memory(&state, "team-rust", "huge", &source).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let res = server
+            .read_memory(Parameters(ReadMemoryArgs {
+                group: group.to_string(),
+                slug: Some("huge".into()),
+                id: None,
+                version: None,
+                max_bytes: None,
+            }))
+            .await
+            .expect("read_memory");
+        let parsed = parse_ok_json(res);
+        let body = parsed.get("body").and_then(|v| v.as_str()).expect("body");
+        assert!(
+            body.len() <= mmcp_core::memory::DEFAULT_RESPONSE_BUDGET_BYTES,
+            "default must bound the body even without explicit max_bytes: {} bytes",
+            body.len(),
+        );
+        let envelope = parsed.get("envelope").expect("envelope present");
+        assert_eq!(
+            envelope.get("truncated").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            envelope.get("total").and_then(|v| v.as_u64()),
+            Some(oversized_len as u64)
+        );
+    }
+
+    #[tokio::test]
+    async fn read_memory_body_under_budget_is_not_truncated() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let res = server
+            .read_memory(Parameters(ReadMemoryArgs {
+                group: group.to_string(),
+                slug: Some("rules".into()),
+                id: None,
+                version: None,
+                max_bytes: None,
+            }))
+            .await
+            .expect("read_memory");
+        let parsed = parse_ok_json(res);
+        let envelope = parsed.get("envelope").expect("envelope present");
+        assert_eq!(
+            envelope.get("truncated").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            envelope.get("total").and_then(|v| v.as_u64()),
+            envelope.get("returned").and_then(|v| v.as_u64()),
+        );
+        if let Some(notes) = parsed.get("notes").and_then(|v| v.as_array()) {
+            assert!(
+                !notes
+                    .iter()
+                    .any(|n| n.get("code").and_then(|v| v.as_str()) == Some("body_truncated")),
+                "no body_truncated note when nothing was truncated: {notes:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn read_memory_max_bytes_truncates_at_a_char_boundary() {
+        // A naive byte-slice truncation could land mid-UTF-8
+        // sequence and panic (or return invalid UTF-8). Place a
+        // multi-byte character (an emoji, 4 bytes in UTF-8) so it
+        // straddles the requested cut point at byte 100.
+        let (state, _tmp) = test_state().await;
+        let prefix = "a".repeat(98);
+        let body = format!("{prefix}\u{1F600}rest of body");
+        let source = format!(
+            "+++\nname = \"Emoji\"\ndescription = \"d\"\nkind = \"rule\"\nmandatory = false\ntags = []\n+++\n{body}"
+        );
+        let group = seed_group_with_memory(&state, "team-rust", "emoji", &source).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let res = server
+            .read_memory(Parameters(ReadMemoryArgs {
+                group: group.to_string(),
+                slug: Some("emoji".into()),
+                id: None,
+                version: None,
+                max_bytes: Some(100),
+            }))
+            .await
+            .expect("read_memory must not panic on a mid-character cut");
+        let parsed = parse_ok_json(res);
+        let returned_body = parsed
+            .get("body")
+            .and_then(|v| v.as_str())
+            .expect("body is valid UTF-8 text");
+        assert!(returned_body.len() <= 100);
+        assert!(returned_body.starts_with(&prefix));
     }
 
     #[tokio::test]
@@ -10397,6 +10978,7 @@ mod tests {
                 slug: Some("with-source".into()),
                 id: Some(written_id),
                 version: None,
+                max_bytes: None,
             }))
             .await
             .expect("read back");
@@ -10776,6 +11358,7 @@ mod tests {
                 slug: Some("first".into()),
                 id: None,
                 version: None,
+                max_bytes: None,
             }))
             .await
             .expect("read");
@@ -10814,6 +11397,7 @@ mod tests {
                 slug: Some("taggy".into()),
                 id: None,
                 version: None,
+                max_bytes: None,
             }))
             .await
             .expect("read");
@@ -11008,6 +11592,7 @@ mod tests {
                 group: group.to_string(),
                 path_prefix: Some("feedback".into()),
                 recursive: Some(false),
+                ..Default::default()
             }))
             .await
             .expect("list");
@@ -11576,6 +12161,7 @@ mod tests {
                 slug: Some("rules".into()),
                 id: None,
                 version: None,
+                max_bytes: None,
             }))
             .await
             .expect("read");
@@ -11630,6 +12216,7 @@ mod tests {
                 slug: Some("rules".into()),
                 id: None,
                 version: None,
+                max_bytes: None,
             }))
             .await
             .expect("read");
