@@ -34,7 +34,8 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::notes::{
-    dangling_ref_notes_for, findings_to_notes, id_validation_to_notes, malformed_frontmatter_notes,
+    dangling_ref_notes_for, finding_to_note, findings_to_notes, id_validation_to_notes,
+    malformed_frontmatter_notes,
 };
 use crate::state::{WatcherHandle, spawn_watcher};
 use mmcp_store::config::{PROJECT_MANIFEST, find_project_root, load as load_project_config};
@@ -2033,7 +2034,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List memories that live in the specified group. The group argument is the group UUID. Returns `{group, memories, mirrored: bool}` — `mirrored: false` signals the group UUID is unknown to the local mirror (distinct from a mirrored-but-empty group, which returns `mirrored: true` with `memories: []`). FR-41: pass `path_prefix` to restrict to a slug subtree (literal prefix, no wildcards), and `recursive: false` to surface only the immediate children at that prefix level.",
+        description = "List memories that live in the specified group. The group argument is the group UUID. Returns `{group, memories, mirrored: bool}` — `mirrored: false` signals the group UUID is unknown to the local mirror (distinct from a mirrored-but-empty group, which returns `mirrored: true` with `memories: []`). FR-41: pass `path_prefix` to restrict to a slug subtree (literal prefix, no wildcards), and `recursive: false` to surface only the immediate children at that prefix level. A memory whose frontmatter fails to parse is excluded from `memories` (never fabricated as a fake `kind: \"rule\"` record) and reported instead as a `frontmatter_parse_failed` note; every sibling record that parses fine still lists normally.",
         annotations(
             title = "List memories in a group",
             read_only_hint = true,
@@ -2063,21 +2064,40 @@ impl McpServer {
         let recursive = args.recursive.unwrap_or(true);
         let prefix = args.path_prefix.as_deref().map(|p| p.trim_end_matches('/'));
         let mut memories = Vec::with_capacity(files.len());
+        // Issue #45: a memory whose frontmatter fails to parse is
+        // never fabricated as a `kind: "rule"`, `name: null`,
+        // `description: null` record — that shape is indistinguishable
+        // from a real minimal rule memory. It is excluded from
+        // `memories` and reported as a `frontmatter_parse_failed`
+        // note instead, so one corrupt file never takes down the
+        // rest of the group's listing.
+        let mut notes = Vec::new();
         for file in files {
             if !slug_matches_filter(&file.slug, prefix, recursive) {
                 continue;
             }
-            let descriptor =
-                read_memory_descriptor(&self.state.backend, &entry, &file.path, &file.slug, None)
-                    .await
-                    .map_err(git_error)?;
-            memories.push(descriptor);
+            match read_memory_descriptor(&self.state.backend, &entry, &file.path, &file.slug, None)
+                .await
+                .map_err(git_error)?
+            {
+                MemoryDescriptorOutcome::Parsed(descriptor) => memories.push(descriptor),
+                MemoryDescriptorOutcome::ParseFailed(err) => {
+                    notes.push(finding_to_note(&mmcp_store::tracker::parse_failed_finding(
+                        &entry.manifest.group_id.to_string(),
+                        &file.slug,
+                        &err,
+                    )));
+                }
+            }
         }
-        Ok(ok_json(json!({
-            "group":    entry.manifest.group_id,
-            "memories": memories,
-            "mirrored": true,
-        })))
+        Ok(ok_json_with_notes(
+            json!({
+                "group":    entry.manifest.group_id,
+                "memories": memories,
+                "mirrored": true,
+            }),
+            notes,
+        ))
     }
 
     #[tool(
@@ -2334,7 +2354,16 @@ impl McpServer {
                 )
                 .await
                 {
-                    Ok(d) => d,
+                    Ok(MemoryDescriptorOutcome::Parsed(d)) => d,
+                    // Issue #45: never fabricate a `kind: "rule"`
+                    // hit for a record whose frontmatter failed to
+                    // parse — it cannot legitimately match `name`
+                    // either, so it is skipped, loudly, instead of
+                    // silently matching nothing under a fake shape.
+                    Ok(MemoryDescriptorOutcome::ParseFailed(err)) => {
+                        tracing::warn!(slug = %file.slug, error = %err, "search: frontmatter parse failed, skipping");
+                        continue;
+                    }
                     Err(err) => {
                         tracing::warn!(slug = %file.slug, error = %err, "search: descriptor read failed, skipping");
                         continue;
@@ -7319,6 +7348,25 @@ fn slug_matches_filter(slug: &str, prefix: Option<&str>, recursive: bool) -> boo
     if recursive { true } else { depth <= 1 }
 }
 
+/// Outcome of building one memory's descriptor.
+///
+/// Kept distinct from a bare parse `Result` so a per-record
+/// frontmatter parse failure (expected on a corrupt-on-disk file)
+/// never collapses onto the same path as a git-level read failure
+/// (`GitError`, which still legitimately aborts the caller's whole
+/// listing). Issue #45: fabricating `kind: "rule"`, `name: null`,
+/// `description: null` for a record that failed to parse is
+/// indistinguishable from a real minimal rule memory and must never
+/// happen again; the parse failure is reported as data instead, so
+/// the caller can turn it into a `frontmatter_parse_failed` finding
+/// (mirrors `mmcp_store::tracker::parse_failed_finding`, the same
+/// shape already used by `list_features` / `list_issues`) while
+/// still listing every sibling record that parsed fine.
+enum MemoryDescriptorOutcome {
+    Parsed(serde_json::Value),
+    ParseFailed(mmcp_core::memory::MemoryParseError),
+}
+
 /// Read one memory and return a compact descriptor including the
 /// slug, the parsed frontmatter fields, and a short summary.
 ///
@@ -7326,37 +7374,24 @@ fn slug_matches_filter(slug: &str, prefix: Option<&str>, recursive: bool) -> boo
 /// post-FR-028 that is `memories/<slug>/<uuid>.md`, but legacy
 /// mirrors still keep `memories/<slug>.md`; callers supply
 /// whichever the enumeration walker returned.
+///
+/// Returns `Err` only for a git-level read failure. A frontmatter
+/// parse failure is NOT an `Err` here — see
+/// [`MemoryDescriptorOutcome`].
 async fn read_memory_descriptor(
     backend: &NativeBackend,
     entry: &GroupEntry,
     path: &str,
     slug: &str,
     version: Option<&str>,
-) -> Result<serde_json::Value, mmcp_git::GitError> {
+) -> Result<MemoryDescriptorOutcome, mmcp_git::GitError> {
     let rev = parse_rev(version);
     let bytes = backend.read_file(&entry.handle, path, &rev).await?;
     let text = String::from_utf8_lossy(&bytes).into_owned();
-    let (name, description, kind, mandatory, version_str, tags, source) =
-        match MemoryFile::parse(&text) {
-            Ok(file) => (
-                Some(file.frontmatter.name),
-                Some(file.frontmatter.description),
-                file.frontmatter.kind.as_str().to_string(),
-                file.frontmatter.mandatory,
-                file.frontmatter.version.map(|v| v.to_string()),
-                file.frontmatter.tags,
-                file.frontmatter.source,
-            ),
-            Err(_) => (
-                None,
-                None,
-                "rule".to_string(),
-                false,
-                None,
-                Vec::new(),
-                None,
-            ),
-        };
+    let file = match MemoryFile::parse(&text) {
+        Ok(file) => file,
+        Err(err) => return Ok(MemoryDescriptorOutcome::ParseFailed(err)),
+    };
     // FR-41: every descriptor carries a segmented `path` so
     // structure-aware consumers (GUIs that render trees, callers
     // that filter by path) work with a typed `Vec<String>` instead
@@ -7365,18 +7400,18 @@ async fn read_memory_descriptor(
     // `path`. Callers that want the joined form do `path.join("/")`.
     let path: Vec<&str> = slug.split('/').filter(|s| !s.is_empty()).collect();
     let leaf = path.last().copied().unwrap_or(slug);
-    Ok(json!({
+    Ok(MemoryDescriptorOutcome::Parsed(json!({
         "group": entry.manifest.group_id,
         "slug": leaf,
         "path": path,
-        "name": name,
-        "description": description,
-        "kind": kind,
-        "mandatory": mandatory,
-        "latest_version": version_str,
-        "tags": tags,
-        "source": source,
-    }))
+        "name": file.frontmatter.name,
+        "description": file.frontmatter.description,
+        "kind": file.frontmatter.kind.as_str(),
+        "mandatory": file.frontmatter.mandatory,
+        "latest_version": file.frontmatter.version.map(|v| v.to_string()),
+        "tags": file.frontmatter.tags,
+        "source": file.frontmatter.source,
+    })))
 }
 
 fn parse_group_id(value: &str) -> Result<GroupId, McpError> {
@@ -7779,6 +7814,104 @@ mod tests {
             parsed.get("mirrored").and_then(|v| v.as_bool()),
             Some(true),
             "mirrored should be true for a group that exists in the local mirror",
+        );
+    }
+
+    #[tokio::test]
+    async fn list_memories_surfaces_a_broken_sibling_without_fabricating_or_aborting() {
+        // Issue #45: a memory whose frontmatter fails to parse must
+        // never come back as a fabricated `kind: "rule"`, `name:
+        // null`, `description: null` record — that shape is
+        // indistinguishable from a real minimal rule memory. The
+        // broken record is excluded from `memories` and reported as
+        // a `frontmatter_parse_failed` note instead, while its
+        // well-formed sibling in the same group still lists
+        // normally and the call as a whole succeeds (one corrupt
+        // file never aborts the group).
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "good", SAMPLE_MEMORY).await;
+        let entry = state.groups.get(&group).await.expect("group entry");
+
+        // Unknown `kind` variant, the same class of failure the
+        // real-world repro hit (`unknown variant "requested"`):
+        // deserialization fails, not the outer frontmatter scan.
+        const BROKEN_MEMORY: &str = "+++\nname = \"Broken\"\ndescription = \"Broken\"\nkind = \"not-a-real-kind\"\nmandatory = false\ntags = []\n+++\n# Broken\nBody.\n";
+        state
+            .backend
+            .write_commit(
+                &entry.handle,
+                CommitSpec {
+                    branch: mmcp_core::conventions::MAIN_BRANCH.to_string(),
+                    author_name: "test".into(),
+                    author_email: "test@example.com".into(),
+                    message: "seed broken sibling".into(),
+                    files: vec![(
+                        mmcp_core::conventions::memory_path("broken", Uuid::now_v7()),
+                        Some(BROKEN_MEMORY.as_bytes().to_vec()),
+                    )],
+                },
+            )
+            .await
+            .expect("seed broken sibling");
+        state.groups.refresh().await.expect("refresh");
+
+        let server = McpServer::new(state, ServeMode::Full);
+        let res = server
+            .list_memories(Parameters(ListMemoriesArgs {
+                group: group.to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect("list_memories must not abort on one corrupt sibling");
+        let parsed = parse_ok_json(res);
+
+        let memories = parsed
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .expect("memories array");
+        assert_eq!(
+            memories.len(),
+            1,
+            "the broken record must never be returned in `memories`: {memories:?}"
+        );
+        let good = &memories[0];
+        assert_eq!(good.get("slug").and_then(|v| v.as_str()), Some("good"));
+        assert_eq!(good.get("name").and_then(|v| v.as_str()), Some("Sample"));
+
+        for memory in memories {
+            let is_fake_rule = memory.get("kind").and_then(|v| v.as_str()) == Some("rule")
+                && memory.get("name").is_some_and(serde_json::Value::is_null)
+                && memory
+                    .get("description")
+                    .is_some_and(serde_json::Value::is_null);
+            assert!(
+                !is_fake_rule,
+                "a broken record must never be fabricated as kind: \"rule\", name/description: null: {memory:?}"
+            );
+        }
+
+        let notes = parsed
+            .get("notes")
+            .and_then(|v| v.as_array())
+            .expect("a parse failure must surface a note");
+        assert_eq!(notes.len(), 1, "expected exactly one note: {notes:?}");
+        let note = &notes[0];
+        assert_eq!(
+            note.get("code").and_then(|v| v.as_str()),
+            Some("frontmatter_parse_failed")
+        );
+        assert_eq!(
+            note.get("context")
+                .and_then(|c| c.get("slug"))
+                .and_then(|v| v.as_str()),
+            Some("broken"),
+            "note must name the broken record's slug: {note:?}"
+        );
+        assert!(
+            note.get("message")
+                .and_then(|v| v.as_str())
+                .is_some_and(|m| !m.is_empty()),
+            "note must carry the real parse-error text: {note:?}"
         );
     }
 
