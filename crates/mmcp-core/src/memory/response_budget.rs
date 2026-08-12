@@ -52,15 +52,19 @@ use serde::Serialize;
 /// doc for the measured spill/failure thresholds it sits below.
 pub const DEFAULT_RESPONSE_BUDGET_BYTES: usize = 32 * 1024;
 
-/// Estimated worst-case serialized JSON size of one COMPACT
+/// Estimated TYPICAL serialized JSON size of one COMPACT
 /// `list_memories` descriptor (`slug`, `path`, `name`, `kind`,
-/// `mandatory`, plus object/array punctuation). Bounded above by
-/// [`crate::memory::MAX_NAME_LENGTH`] (256 bytes) for `name`, with a
-/// handful of bytes each for `slug`, `path`, `kind`, the `mandatory`
-/// boolean, and JSON punctuation; 512 bytes keeps roughly 2x
-/// headroom above that worst case so [`DEFAULT_LIST_MEMORIES_LIMIT`]
-/// never actually overshoots [`DEFAULT_RESPONSE_BUDGET_BYTES`], even
-/// for a group of unusually long slugs.
+/// `mandatory`, plus object/array punctuation). This is a measured
+/// average, not a worst-case bound: field lengths observed on this
+/// project's own mmcp mirror average name ~52 chars, slug ~72 chars,
+/// path ~74 chars (issue #46). The theoretical worst case, with
+/// `name` at [`crate::memory::MAX_NAME_LENGTH`] (256 bytes) and
+/// `slug` at mmcp-store's `MAX_SLUG_LENGTH` (256 bytes, re-encoded a
+/// second time into `path`), plus JSON punctuation, runs closer to
+/// 838 bytes, well above this constant. [`DEFAULT_LIST_MEMORIES_LIMIT`]
+/// therefore fits the shared response budget for the typical record
+/// sizes actually observed, not as a hard guarantee for a group of
+/// unusually long slugs and names.
 pub const COMPACT_RECORD_ESTIMATED_BYTES: usize = 512;
 
 /// Default page size for `list_memories` pagination when the caller
@@ -82,7 +86,12 @@ pub const DEFAULT_LIST_MEMORIES_LIMIT: usize =
 pub const MAX_LIST_MEMORIES_LIMIT: usize = 512;
 
 // Compile-time invariants on the constants above: a violation fails
-// the build rather than needing a runtime test to catch it.
+// the build rather than needing a runtime test to catch it. This
+// checks only the constants' own arithmetic relationship. It does
+// NOT prove a real response body always stays under budget:
+// COMPACT_RECORD_ESTIMATED_BYTES is a measured-typical estimate, not
+// a worst-case bound (see its own doc comment for the ~838-byte
+// worst case it does not cover).
 const _: () = assert!(MAX_LIST_MEMORIES_LIMIT >= DEFAULT_LIST_MEMORIES_LIMIT);
 const _: () = assert!(
     DEFAULT_LIST_MEMORIES_LIMIT * COMPACT_RECORD_ESTIMATED_BYTES <= DEFAULT_RESPONSE_BUDGET_BYTES
@@ -94,7 +103,7 @@ const _: () = assert!(
 pub struct ResponseEnvelope {
     /// `true` exactly when `returned < total`. Computed, never
     /// caller-supplied, so an envelope can never claim `false` while
-    /// actually under-returning — truncation is signalled, never
+    /// actually under-returning: truncation is signalled, never
     /// silent.
     pub truncated: bool,
     /// The full size the caller has not necessarily seen all of.
