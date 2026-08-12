@@ -132,19 +132,19 @@ pub async fn run(args: BootstrapArgs) -> Result<()> {
                         .get("fetch_hint")
                         .and_then(|v| v.as_str())
                         .unwrap_or("?");
-                    println!("  [group]  {slug}  {group}  ({count} memories — {hint})");
+                    println!("  [group]  {slug}  {group}  ({count} memories, {hint})");
                 }
                 Some("memory") => {
                     let slug = entry.get("slug").and_then(|v| v.as_str()).unwrap_or("?");
                     println!("  [memory] {group}/{slug}");
                 }
                 other => {
-                    // WP7 amendment A1: an unrecognized shape errors
+                    // An unrecognized shape errors
                     // loudly instead of silently degrading to `?`,
                     // so a future third entry shape cannot vanish
                     // unnoticed from this printer.
                     println!(
-                        "  [unrecognized kind {other:?}] {entry} — printer needs updating for this shape"
+                        "  [unrecognized kind {other:?}] {entry}, printer needs updating for this shape"
                     );
                 }
             }
