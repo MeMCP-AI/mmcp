@@ -1178,17 +1178,17 @@ pub fn validate_slug(slug: &str) -> Result<(), ImportError> {
 /// (`add_issue`, `add_feature`, milestone creation, and file import
 /// all fall back to this path when the caller supplies no explicit
 /// slug). This is a production default for auto-generation, not an
-/// acceptance ceiling — [`MAX_SLUG_LENGTH`] still governs what
+/// acceptance ceiling: [`MAX_SLUG_LENGTH`] still governs what
 /// `validate_memory_slug` *accepts*, and stays untouched.
 ///
 /// Value fixed at 64 by explicit operator directive (2026-08-12), not
 /// independently derived from a specific reference system; it is only
 /// the LOWEST-precedence tier of [`resolve_max_auto_slug_length`] and
 /// is overridable per-call, per-machine (env var), or per-user
-/// (config file) — see that function's doc comment for the full
-/// cascade. Duplicate slugs are legal regardless of which tier wins —
-/// memories address by slug+UUID, not slug alone (see the
-/// `uuidify-memories-allow-duplicate-slugs` project memory) — so two
+/// (config file); see that function's doc comment for the full
+/// cascade. Duplicate slugs are legal regardless of which tier wins,
+/// since memories address by slug+UUID, not slug alone (see the
+/// `uuidify-memories-allow-duplicate-slugs` project memory), so two
 /// long titles colliding on the same truncated slug is not a
 /// correctness problem needing a disambiguating suffix.
 pub const DEFAULT_MAX_AUTO_SLUG_LENGTH: usize = 64;
@@ -1219,8 +1219,8 @@ pub fn slugify_filename(filename: &str) -> String {
     slugify_filename_with_cap(filename, None)
 }
 
-/// Same as [`slugify_filename`], but `override_max_len` — when
-/// `Some` and non-zero — takes precedence over every other tier of
+/// Same as [`slugify_filename`], but `override_max_len`, when
+/// `Some` and non-zero, takes precedence over every other tier of
 /// [`resolve_max_auto_slug_length`]. Exists so a future MCP tool /
 /// CLI flag can request a one-off cap without touching the env var or
 /// user config that every other call on the machine shares.
@@ -1233,52 +1233,109 @@ pub fn slugify_filename_with_cap(filename: &str, override_max_len: Option<usize>
 
 /// Resolve the effective auto-slug length cap. Highest-precedence
 /// source wins:
-/// 1. `override_len` — an explicit per-call argument.
+/// 1. `override_len`, an explicit per-call argument.
 /// 2. [`MAX_AUTO_SLUG_LENGTH_ENV`] environment variable.
 /// 3. `~/.mmcp/config.toml` `[limits] max_auto_slug_length`
 ///    ([`mmcp_core::config::UserConfig`]).
 /// 4. [`DEFAULT_MAX_AUTO_SLUG_LENGTH`], the compiled-in fallback.
 ///
 /// A zero or unparsable value at any tier is treated as absent and
-/// falls through to the next tier — a broken override must never make
-/// slug generation itself fail. The tier-selection logic itself lives
-/// in [`resolve_from_tiers`], kept pure and separate from the I/O
-/// (env var read, config file read) so it is unit-testable without
-/// mutating process-global environment state.
+/// falls through to the next tier, logged rather than silently
+/// discarded: a broken override must never make slug generation
+/// itself fail. The tier-selection logic itself lives in
+/// [`resolve_from_tiers`], kept separate from the I/O (env var read,
+/// config file read) so its precedence rules are unit-testable
+/// without mutating process-global environment state.
 fn resolve_max_auto_slug_length(override_len: Option<usize>) -> usize {
-    let env_len = std::env::var(MAX_AUTO_SLUG_LENGTH_ENV)
-        .ok()
-        .and_then(|raw| raw.parse::<usize>().ok());
+    let env_raw = std::env::var(MAX_AUTO_SLUG_LENGTH_ENV).ok();
+    let env_len = parse_env_auto_slug_length(env_raw.as_deref());
     let config_len = user_config_max_auto_slug_length();
     resolve_from_tiers(override_len, env_len, config_len)
 }
 
-/// Pure precedence resolution given each tier's already-fetched
-/// value: `override_len` beats `env_len` beats `config_len` beats
+/// Parse the raw [`MAX_AUTO_SLUG_LENGTH_ENV`] value, if any, into a
+/// tier value. Logs and falls through (returns `None`) when the
+/// variable is present but not a valid number, rather than silently
+/// discarding it. Split out from [`resolve_max_auto_slug_length`] so
+/// this parse behavior is unit-testable without mutating
+/// process-global environment state.
+fn parse_env_auto_slug_length(raw: Option<&str>) -> Option<usize> {
+    let raw = raw?;
+    match raw.parse::<usize>() {
+        Ok(n) => Some(n),
+        Err(err) => {
+            tracing::warn!(
+                env_value = %raw,
+                error = %err,
+                "{MAX_AUTO_SLUG_LENGTH_ENV} is not a valid number; ignoring and falling through to the next auto-slug-length tier"
+            );
+            None
+        }
+    }
+}
+
+/// Precedence resolution given each tier's already-fetched value:
+/// `override_len` beats `env_len` beats `config_len` beats
 /// [`DEFAULT_MAX_AUTO_SLUG_LENGTH`]. A `Some(0)` at any tier counts as
 /// absent (falls through), since a zero-length slug cap is never a
-/// legitimate intent.
+/// legitimate intent; when the config tier is the one actually
+/// rejected for this reason, it is logged before falling through to
+/// the compiled-in default.
 fn resolve_from_tiers(
     override_len: Option<usize>,
     env_len: Option<usize>,
     config_len: Option<usize>,
 ) -> usize {
-    override_len
-        .filter(|n| *n > 0)
-        .or_else(|| env_len.filter(|n| *n > 0))
-        .or_else(|| config_len.filter(|n| *n > 0))
-        .unwrap_or(DEFAULT_MAX_AUTO_SLUG_LENGTH)
+    if let Some(n) = override_len
+        && n > 0
+    {
+        return n;
+    }
+    if let Some(n) = env_len
+        && n > 0
+    {
+        return n;
+    }
+    if let Some(n) = config_len {
+        if n > 0 {
+            return n;
+        }
+        tracing::warn!(
+            "auto-slug-length config tier rejected: [limits] max_auto_slug_length = 0 is not a legitimate cap; falling through to the compiled-in default"
+        );
+    }
+    DEFAULT_MAX_AUTO_SLUG_LENGTH
 }
 
 /// Read `[limits] max_auto_slug_length` from the user-level
 /// `~/.mmcp/config.toml`, if present. Mirrors the read-only,
 /// missing-file-or-section-means-`None` style already used by
 /// `MmcpHome::resolve_author` for the same config file (see
-/// [`crate::home`]) — never errors, since a broken or absent user
-/// config must never fail slug generation.
+/// [`crate::home`]); never errors, since a broken or absent user
+/// config must never fail slug generation. A discovery or parse
+/// failure is logged before falling through, rather than discarded
+/// with no signal.
 fn user_config_max_auto_slug_length() -> Option<usize> {
-    let home = crate::home::MmcpHome::discover().ok()?;
-    let cfg = home.load_user_config().ok()?;
+    let home = match crate::home::MmcpHome::discover() {
+        Ok(home) => home,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "failed to discover MmcpHome while resolving the auto-slug-length config tier; falling through to the next tier"
+            );
+            return None;
+        }
+    };
+    let cfg = match home.load_user_config() {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "user config failed to parse while resolving the auto-slug-length config tier; falling through to the next tier"
+            );
+            return None;
+        }
+    };
     cfg.limits.and_then(|limits| limits.max_auto_slug_length)
 }
 
@@ -1291,7 +1348,7 @@ fn user_config_max_auto_slug_length() -> Option<usize> {
 /// before hyphenating), so byte-slicing at `max_len` never lands
 /// mid-character. When the first `max_len` bytes contain no hyphen at
 /// all (a single word longer than the cap), this falls back to a hard
-/// cut at `max_len` — the only case where the result can still end
+/// cut at `max_len`, the only case where the result can still end
 /// mid-word, since there is no boundary to land on.
 fn truncate_slug_at_hyphen_boundary(slug: &str, max_len: usize) -> String {
     if slug.len() <= max_len {
@@ -1554,6 +1611,99 @@ mod tests {
         assert_eq!(
             resolve_from_tiers(Some(0), Some(0), Some(0)),
             DEFAULT_MAX_AUTO_SLUG_LENGTH
+        );
+    }
+
+    /// Minimal `tracing::Subscriber` counting `WARN`-level events, so
+    /// a rejected auto-slug-length tier can be asserted to actually
+    /// log instead of silently discarding the bad value.
+    struct WarnCounter(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl tracing::Subscriber for WarnCounter {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            *metadata.level() == tracing::Level::WARN
+        }
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            if *event.metadata().level() == tracing::Level::WARN {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    #[test]
+    fn resolve_from_tiers_warns_only_when_the_zero_config_tier_is_actually_reached() {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let subscriber = WarnCounter(count.clone());
+
+        // The config tier is Some(0) in both calls below, but the
+        // first call never reaches it (override wins), so it must
+        // never warn; the second call falls through to it, so it
+        // must warn exactly once.
+        tracing::subscriber::with_default(subscriber, || {
+            assert_eq!(resolve_from_tiers(Some(10), None, Some(0)), 10);
+        });
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the zero config tier was never consulted, so it must not warn"
+        );
+
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let subscriber = WarnCounter(count.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            assert_eq!(
+                resolve_from_tiers(None, None, Some(0)),
+                DEFAULT_MAX_AUTO_SLUG_LENGTH
+            );
+        });
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "falling through the zero config tier must log exactly one warning"
+        );
+    }
+
+    #[test]
+    fn parse_env_auto_slug_length_warns_on_malformed_value() {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let subscriber = WarnCounter(count.clone());
+
+        let result = tracing::subscriber::with_default(subscriber, || {
+            parse_env_auto_slug_length(Some("not-a-number"))
+        });
+
+        assert_eq!(
+            result, None,
+            "a malformed env var must be treated as absent, not fabricated into a number"
+        );
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a malformed env var must log exactly one warning instead of being silently discarded"
+        );
+    }
+
+    #[test]
+    fn parse_env_auto_slug_length_accepts_a_valid_value_without_warning() {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let subscriber = WarnCounter(count.clone());
+
+        let result = tracing::subscriber::with_default(subscriber, || {
+            parse_env_auto_slug_length(Some("42"))
+        });
+
+        assert_eq!(result, Some(42));
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a valid env var must never warn"
         );
     }
 
