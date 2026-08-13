@@ -244,9 +244,10 @@ struct ListMemoriesArgs {
     /// When `true`, each descriptor drops `description`
     /// (the single largest per-record field) and returns only
     /// `slug`, `path`, `name`, `kind`, `mandatory`. Defaults to
-    /// `false` (the full descriptor), preserving the pre-FR-46
-    /// shape for callers that don't opt in. Use this for a large
-    /// group to keep the response inside the tool output ceiling.
+    /// `false` (the full descriptor), matching the shape returned
+    /// before compact mode existed, for callers that don't opt in.
+    /// Use this for a large group to keep the response inside the
+    /// tool output ceiling.
     #[serde(default)]
     pub compact: Option<bool>,
     /// Zero-based offset into the NON-mandatory portion
@@ -255,9 +256,10 @@ struct ListMemoriesArgs {
     /// (every `mandatory == true` match, always returned in full,
     /// never paginated away) and `memories` (the paginated
     /// non-mandatory window), plus an `envelope`. Leaving both unset
-    /// preserves the pre-FR-46 shape: every matching memory in one
-    /// flat `memories` array, no envelope. Set this alongside
-    /// `limit` on a large group instead of one unbounded call.
+    /// preserves the shape returned before pagination existed: every
+    /// matching memory in one flat `memories` array, no envelope.
+    /// Set this alongside `limit` on a large group instead of one
+    /// unbounded call.
     #[serde(default)]
     pub offset: Option<usize>,
     /// Page size for the non-mandatory window. See
@@ -6281,14 +6283,14 @@ async fn resolve_sync_filter(
 /// - `groups` + `languages` → every file in a fully-subscribed group
 ///   (Global scope, the caller's own Project scope, or an adopted
 ///   Shared group) collapses to ONE group-summary entry (`kind:
-///   "group"`) instead of one entry per file. WP7 (mmcp issue #46's
-///   still-open sizing sub-problem, option 3 of the decision log):
-///   the per-file address list is strictly less informative than the
-///   `list_memories(group)` walk the protocol already mandates for
-///   every `groups_in_scope` entry, so emitting one row per file was
-///   pure duplication (measured 213 -> 2 entries on this project's
-///   own mmcp group). The summary carries a `count` and a
-///   `fetch_hint` naming the follow-up call.
+///   "group"`) instead of one entry per file, to keep
+///   `bootstrap_context`'s response bounded on a group with many
+///   memories. The per-file address list is strictly less
+///   informative than the `list_memories(group)` walk the protocol
+///   already mandates for every `groups_in_scope` entry, so emitting
+///   one row per file was pure duplication (measured 213 -> 2
+///   entries on this project's own mmcp group). The summary carries
+///   a `count` and a `fetch_hint` naming the follow-up call.
 /// - `memories` → literal `<group_uuid>:<slug>` pins. ALWAYS surface
 ///   as their own per-memory entry (`kind: "memory"`), even inside an
 ///   otherwise fully-subscribed group: an explicit pin
@@ -6385,12 +6387,13 @@ pub(crate) async fn resolve_subscribed_reads(
         };
 
         if fully_subscribed {
-            // Amendment A2: an explicit pin (memory or tag) wins over
-            // the collapse and keeps its own per-memory entry; only
-            // the unpinned remainder folds into the one group-summary
-            // row below. These files never fall through to the
-            // generic tag-matching walk further down, since that walk is
-            // for groups NOT already fully subscribed.
+            // An explicit pin (memory or tag) always wins over the
+            // group collapse, so a deliberately-subscribed memory or
+            // tag match keeps its own per-memory entry instead of
+            // being absorbed into the one group-summary row below.
+            // These files never fall through to the generic
+            // tag-matching walk further down, since that walk is for
+            // groups NOT already fully subscribed.
             let mut collapsed_count = 0usize;
             for file_ref in &files {
                 let pin_key = format!("{entry_uuid}:{}", file_ref.slug);
@@ -7938,9 +7941,9 @@ fn claude_md_notes(project_root: Option<&std::path::Path>) -> Vec<mmcp_proto::No
 }
 
 /// Truncate `body` to at most `max_bytes`, respecting UTF-8 char
-/// boundaries so the returned prefix is always valid UTF-8 (FR-46
-/// WP5's `read_memory` `max_bytes` bound). Returns the body
-/// unchanged when it already fits.
+/// boundaries so the returned prefix is always valid UTF-8 for
+/// `read_memory`'s `max_bytes` bound. Returns the body unchanged
+/// when it already fits.
 fn truncate_body_to_budget(body: &str, max_bytes: usize) -> String {
     if body.len() <= max_bytes {
         return body.to_string();
@@ -8831,11 +8834,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_memories_without_pagination_keeps_the_pre_fr46_shape() {
+    async fn list_memories_without_pagination_keeps_the_pre_pagination_shape() {
         // Backward compatibility: a caller that never sets
-        // `compact`/`offset`/`limit` must see the exact pre-FR-46
-        // response shape (flat `memories`, no `mandatory` split, no
-        // `envelope`).
+        // `compact`/`offset`/`limit` must see the exact shape
+        // returned before compact mode and pagination existed
+        // (flat `memories`, no `mandatory` split, no `envelope`).
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
         let server = McpServer::new(state, ServeMode::Full);
@@ -9746,7 +9749,7 @@ mod tests {
             scoped_uuids.contains(&shared_group.to_string()),
             "subscribed Shared group must enter scope; saw: {scoped_uuids:?}",
         );
-        // WP7: a fully-subscribed Shared group collapses to ONE
+        // A fully-subscribed Shared group collapses to ONE
         // `kind: "group"` summary entry instead of one row per
         // memory. The Shared group's single `team-rule` memory must
         // therefore surface as a group summary carrying count: 1 and
@@ -9812,8 +9815,8 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_subscribed_reads_collapses_fully_subscribed_group_to_one_entry() {
-        // WP7 acceptance: a fully-subscribed group (Global scope,
-        // always fully subscribed) with N files produces exactly ONE
+        // A fully-subscribed group (Global scope, always fully
+        // subscribed) with N files produces exactly ONE
         // `kind: "group"` summary entry, not N per-memory rows.
         let (state, tmp) = test_state().await;
         let group = seed_scoped_group_with_memory(
