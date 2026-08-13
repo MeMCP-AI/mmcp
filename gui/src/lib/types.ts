@@ -177,10 +177,15 @@ export interface UserDefaultsConfig {
   group: string | null;
 }
 
+export interface UserLimitsConfig {
+  max_auto_slug_length: number | null;
+}
+
 export interface UserConfig {
   sync: UserSyncConfig | null;
   author: UserAuthorConfig | null;
   defaults: UserDefaultsConfig | null;
+  limits: UserLimitsConfig | null;
 }
 
 export interface ResolvedAuthor {

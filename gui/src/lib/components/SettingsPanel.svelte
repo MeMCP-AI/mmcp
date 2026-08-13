@@ -142,7 +142,11 @@
       author: hasAuthor
         ? { name: authorName, email: authorEmail, git_fallback: fallback }
         : null,
-      defaults: hasDefaults ? { group: defaultGroup } : null
+      defaults: hasDefaults ? { group: defaultGroup } : null,
+      // This form has no UI for limits; carry the loaded value through
+      // unchanged so a save never silently erases an operator-set
+      // `[limits]` section (mmcp review finding, repair round 4).
+      limits: userConfig?.limits ?? null
     };
     onSaveUser(cfg);
   }
