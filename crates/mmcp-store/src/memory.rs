@@ -1278,23 +1278,29 @@ fn parse_env_auto_slug_length(raw: Option<&str>) -> Option<usize> {
 /// `override_len` beats `env_len` beats `config_len` beats
 /// [`DEFAULT_MAX_AUTO_SLUG_LENGTH`]. A `Some(0)` at any tier counts as
 /// absent (falls through), since a zero-length slug cap is never a
-/// legitimate intent; when the config tier is the one actually
-/// rejected for this reason, it is logged before falling through to
-/// the compiled-in default.
+/// legitimate intent; whichever tier is the one actually rejected for
+/// this reason is logged, naming that specific tier, before falling
+/// through to the next one.
 fn resolve_from_tiers(
     override_len: Option<usize>,
     env_len: Option<usize>,
     config_len: Option<usize>,
 ) -> usize {
-    if let Some(n) = override_len
-        && n > 0
-    {
-        return n;
+    if let Some(n) = override_len {
+        if n > 0 {
+            return n;
+        }
+        tracing::warn!(
+            "auto-slug-length override tier rejected: an explicit per-call max_auto_slug_length = 0 is not a legitimate cap; falling through to the next auto-slug-length tier"
+        );
     }
-    if let Some(n) = env_len
-        && n > 0
-    {
-        return n;
+    if let Some(n) = env_len {
+        if n > 0 {
+            return n;
+        }
+        tracing::warn!(
+            "auto-slug-length env tier rejected: {MAX_AUTO_SLUG_LENGTH_ENV} = 0 is not a legitimate cap; falling through to the next auto-slug-length tier"
+        );
     }
     if let Some(n) = config_len {
         if n > 0 {
@@ -1638,7 +1644,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_from_tiers_warns_only_when_the_zero_config_tier_is_actually_reached() {
+    fn resolve_from_tiers_warns_for_the_config_tier_only_when_actually_reached() {
         let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let subscriber = WarnCounter(count.clone());
 
@@ -1667,6 +1673,44 @@ mod tests {
             count.load(std::sync::atomic::Ordering::SeqCst),
             1,
             "falling through the zero config tier must log exactly one warning"
+        );
+    }
+
+    #[test]
+    fn resolve_from_tiers_warns_when_the_override_tier_is_zero() {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let subscriber = WarnCounter(count.clone());
+
+        tracing::subscriber::with_default(subscriber, || {
+            assert_eq!(
+                resolve_from_tiers(Some(0), Some(20), Some(30)),
+                20,
+                "a rejected Some(0) override must fall through to the env tier"
+            );
+        });
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a rejected Some(0) override tier must log exactly one warning"
+        );
+    }
+
+    #[test]
+    fn resolve_from_tiers_warns_when_the_env_tier_is_zero() {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let subscriber = WarnCounter(count.clone());
+
+        tracing::subscriber::with_default(subscriber, || {
+            assert_eq!(
+                resolve_from_tiers(None, Some(0), Some(30)),
+                30,
+                "a rejected Some(0) env tier must fall through to the config tier"
+            );
+        });
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a rejected Some(0) env tier must log exactly one warning"
         );
     }
 
