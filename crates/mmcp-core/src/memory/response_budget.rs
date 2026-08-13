@@ -12,7 +12,7 @@
 //! small still overflows that same ceiling once an unfiltered
 //! `list_memories` call returns hundreds of them.
 //!
-//! ## Evidence (issue #46)
+//! ## Evidence (measured response sizes)
 //!
 //! Measured live against this project's own mmcp mirror (see the
 //! project memory
@@ -57,11 +57,12 @@ pub const DEFAULT_RESPONSE_BUDGET_BYTES: usize = 32 * 1024;
 /// `mandatory`, plus object/array punctuation). This is a measured
 /// average, not a worst-case bound: field lengths observed on this
 /// project's own mmcp mirror average name ~52 chars, slug ~72 chars,
-/// path ~74 chars (issue #46). The theoretical worst case, with
-/// `name` at [`crate::memory::MAX_NAME_LENGTH`] (256 bytes) and
-/// `slug` at mmcp-store's `MAX_SLUG_LENGTH` (256 bytes, re-encoded a
-/// second time into `path`), plus JSON punctuation, runs closer to
-/// 838 bytes, well above this constant. [`DEFAULT_LIST_MEMORIES_LIMIT`]
+/// and path ~74 chars, per the measured evidence in the module doc
+/// above. The theoretical worst case, with `name` at
+/// [`crate::memory::MAX_NAME_LENGTH`] (256 bytes) and `slug` at
+/// mmcp-store's `MAX_SLUG_LENGTH` (256 bytes, re-encoded a second
+/// time into `path`), plus JSON punctuation, runs closer to 838
+/// bytes, well above this constant. [`DEFAULT_LIST_MEMORIES_LIMIT`]
 /// therefore fits the shared response budget for the typical record
 /// sizes actually observed, not as a hard guarantee for a group of
 /// unusually long slugs and names.
