@@ -295,10 +295,10 @@ struct ReadMemoryArgs {
     /// addressable, budget-safe reads of the rest. Defaults to
     /// [`mmcp_core::memory::DEFAULT_RESPONSE_BUDGET_BYTES`] when
     /// absent: `read_memory` never returns an unbounded body, since
-    /// that is exactly the failure mode issue #46 measured (bodies
-    /// up to 388,000 bytes forced callers to read raw git objects on
-    /// disk). Pass an explicit larger value to widen the cap for a
-    /// single call.
+    /// that is exactly the measured failure mode: bodies up to
+    /// 388,000 bytes forced callers to read raw git objects on disk.
+    /// Pass an explicit larger value to widen the cap for a single
+    /// call.
     #[serde(default)]
     pub max_bytes: Option<usize>,
 }
@@ -2112,8 +2112,8 @@ impl McpServer {
         let recursive = args.recursive.unwrap_or(true);
         let prefix = args.path_prefix.as_deref().map(|p| p.trim_end_matches('/'));
         let mut memories = Vec::with_capacity(files.len());
-        // Issue #45: a memory whose frontmatter fails to parse is
-        // never fabricated as a `kind: "rule"`, `name: null`,
+        // A memory whose frontmatter fails to parse is never
+        // fabricated as a `kind: "rule"`, `name: null`,
         // `description: null` record, since that shape is
         // indistinguishable from a real minimal rule memory. It is
         // excluded from `memories` and reported as a
@@ -2248,9 +2248,9 @@ impl McpServer {
         // channel per-read.
         let mut notes = malformed_frontmatter_notes(&resolved.slug, resolved.id, &file);
 
-        // Never return an unbounded body. Issue #46
-        // measured bodies up to 388,000 bytes forcing callers to
-        // read raw git objects on disk instead of this tool.
+        // Never return an unbounded body: the measured failure mode
+        // was bodies up to 388,000 bytes, forcing callers to read
+        // raw git objects on disk instead of this tool.
         let max_bytes = args
             .max_bytes
             .unwrap_or(mmcp_core::memory::DEFAULT_RESPONSE_BUDGET_BYTES);
@@ -2486,11 +2486,11 @@ impl McpServer {
                 .await
                 {
                     Ok(MemoryDescriptorOutcome::Parsed(d)) => d,
-                    // Issue #45: never fabricate a `kind: "rule"`
-                    // hit for a record whose frontmatter failed to
-                    // parse, since it cannot legitimately match `name`
-                    // either, so it is skipped, loudly, instead of
-                    // silently matching nothing under a fake shape.
+                    // Never fabricate a `kind: "rule"` hit for a
+                    // record whose frontmatter failed to parse, since
+                    // it cannot legitimately match `name` either, so
+                    // it is skipped, loudly, instead of silently
+                    // matching nothing under a fake shape.
                     Ok(MemoryDescriptorOutcome::ParseFailed(err)) => {
                         tracing::warn!(slug = %file.slug, error = %err, "search: frontmatter parse failed, skipping");
                         continue;
@@ -7662,10 +7662,10 @@ fn slug_matches_filter(slug: &str, prefix: Option<&str>, recursive: bool) -> boo
 /// frontmatter parse failure (expected on a corrupt-on-disk file)
 /// never collapses onto the same path as a git-level read failure
 /// (`GitError`, which still legitimately aborts the caller's whole
-/// listing). Issue #45: fabricating `kind: "rule"`, `name: null`,
+/// listing). Fabricating `kind: "rule"`, `name: null`,
 /// `description: null` for a record that failed to parse is
 /// indistinguishable from a real minimal rule memory and must never
-/// happen again; the parse failure is reported as data instead, so
+/// happen; the parse failure is reported as data instead, so
 /// the caller can turn it into a `frontmatter_parse_failed` finding
 /// (mirrors `mmcp_store::tracker::parse_failed_finding`, the same
 /// shape already used by `list_features` / `list_issues`) while
@@ -7725,8 +7725,8 @@ async fn read_memory_descriptor(
 /// Project a full `list_memories` descriptor (as built by
 /// [`read_memory_descriptor`]) down to the compact shape:
 /// `slug`, `path`, `name`, `kind`, `mandatory` only. Drops
-/// `description` (the single largest per-record field measured on
-/// issue #46), plus `tags`, `source`, and `latest_version`.
+/// `description` (the single largest measured per-record field),
+/// plus `tags`, `source`, and `latest_version`.
 fn compact_descriptor(full: &serde_json::Value) -> serde_json::Value {
     json!({
         "slug": full.get("slug"),
@@ -8235,9 +8235,9 @@ mod tests {
 
     #[tokio::test]
     async fn list_memories_surfaces_a_broken_sibling_without_fabricating_or_aborting() {
-        // Issue #45: a memory whose frontmatter fails to parse must
-        // never come back as a fabricated `kind: "rule"`, `name:
-        // null`, `description: null` record, since that shape is
+        // A memory whose frontmatter fails to parse must never come
+        // back as a fabricated `kind: "rule"`, `name: null`,
+        // `description: null` record, since that shape is
         // indistinguishable from a real minimal rule memory. The
         // broken record is excluded from `memories` and reported as
         // a `frontmatter_parse_failed` note instead, while its
@@ -8669,7 +8669,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_memories_unbounded_call_reproduces_the_issue_46_overflow() {
+    async fn list_memories_unbounded_call_exceeds_the_response_budget() {
         // Sanity check that the fixture below is a real reproduction
         // of the reported problem, not a fixture that happens to
         // pass: a full, non-compact, non-paginated listing over 200
@@ -9030,12 +9030,11 @@ mod tests {
 
     #[tokio::test]
     async fn read_memory_without_max_bytes_still_bounds_an_oversized_body() {
-        // Issue #46: `read_memory` must never return an unbounded
-        // body by default; bodies up to 388,000 bytes were
-        // observed forcing callers to read raw git objects on disk.
-        // Seed a body larger than the shared default budget and
-        // confirm the default alone (no explicit `max_bytes`) still
-        // truncates it.
+        // `read_memory` must never return an unbounded body by
+        // default; bodies up to 388,000 bytes were observed forcing
+        // callers to read raw git objects on disk. Seed a body larger
+        // than the shared default budget and confirm the default
+        // alone (no explicit `max_bytes`) still truncates it.
         let (state, _tmp) = test_state().await;
         let oversized_len = mmcp_core::memory::DEFAULT_RESPONSE_BUDGET_BYTES + 1000;
         let big_body = "y".repeat(oversized_len);
