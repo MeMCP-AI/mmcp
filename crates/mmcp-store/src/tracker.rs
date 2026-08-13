@@ -121,8 +121,8 @@ pub(crate) fn listing_keeps_status<S: Status>(
 /// is reported instead of silently vanishing from the listing.
 ///
 /// `pub` (not `pub(crate)`): `mmcp-client`'s generic `list_memories`
-/// / `search_memories` MCP tools (issue #45) reuse this exact shape
-/// for the same class of bug outside the tracker kinds, so every
+/// / `search_memories` MCP tools reuse this exact shape for the same
+/// parse-failure-fabrication bug outside the tracker kinds, so every
 /// caller across the workspace reports one `frontmatter_parse_failed`
 /// code with one message format instead of drifting per crate.
 pub fn parse_failed_finding(
