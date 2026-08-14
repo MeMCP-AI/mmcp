@@ -1,4 +1,4 @@
-//! CLI surface for memory CRUD (Slice 2a — read-only ops).
+//! CLI surface for memory CRUD (Slice 2a, read-only ops).
 //!
 //! Mirrors the read-only memory MCP tools: `list_memories`,
 //! `read_memory`, `list_versions`, `read_memory_body_sections`,
@@ -8,10 +8,10 @@
 //!
 //! Each subcommand resolves its group + memory through the
 //! shared `mmcp_store::resolve_group` / `resolve_memory`
-//! primitives so behaviour matches the MCP layer exactly. The
-//! FR-45 notes channel rides on the read path via
-//! `malformed_frontmatter_notes`; the FR-026 section reader uses
-//! `mmcp_core::memory::body::parse_sections` directly.
+//! primitives (see also: `mmcp_server::routes::mcp::list_memories`
+//! for the MCP-side counterpart). The read path also feeds the
+//! notes channel via `malformed_frontmatter_notes`; the section
+//! reader uses `mmcp_core::memory::body::parse_sections` directly.
 
 use std::io::Read;
 
@@ -46,13 +46,13 @@ pub struct MemoryArgs {
 pub enum MemoryCommand {
     /// List memories in a group.
     List(ListArgs),
-    /// Render the slug-path hierarchy as a tree (FR-41).
+    /// Render the slug-path hierarchy as a tree.
     Tree(TreeArgs),
     /// Read a memory's frontmatter + body. Slug-or-UUID positional.
     Read(ReadArgs),
     /// Walk the commit history of a memory.
     Versions(VersionsArgs),
-    /// Print the parsed section tree of a memory body (FR-026).
+    /// Print the parsed section tree of a memory body.
     Sections(SectionsArgs),
     /// Substring search across slug + frontmatter.name.
     Search(SearchArgs),
@@ -60,9 +60,9 @@ pub enum MemoryCommand {
     Write(WriteArgs),
     /// Apply partial frontmatter / body deltas to an existing memory.
     Edit(EditArgs),
-    /// Apply ordered semantic body ops to an existing memory (FR-026).
+    /// Apply ordered semantic body ops to an existing memory.
     EditBody(EditBodyArgs),
-    /// Atomically rewrite a memory's slug path within its group (FR-41).
+    /// Atomically rewrite a memory's slug path within its group.
     Move(MoveArgs),
     /// Delete a memory by slug or UUID.
     Delete(DeleteArgs),
@@ -73,13 +73,13 @@ pub struct ListArgs {
     /// Target group (UUID or slug).
     pub group: String,
 
-    /// FR-41: literal slug-path prefix to filter on. Pass
+    /// Literal slug-path prefix to filter on. Pass
     /// `feedback` to list every memory whose slug starts with
     /// `feedback` or `feedback/...`.
     #[arg(long)]
     pub prefix: Option<String>,
 
-    /// FR-41: when set, only memories whose slug has at most one
+    /// When set, only memories whose slug has at most one
     /// path segment beyond `--prefix` (or one segment total when
     /// no prefix is set) are listed. Default lists every match.
     #[arg(long)]
@@ -91,7 +91,7 @@ pub struct TreeArgs {
     /// Target group (UUID or slug).
     pub group: String,
 
-    /// FR-41: optional literal slug-path prefix; the tree is
+    /// Optional literal slug-path prefix; the tree is
     /// rooted at this node so the listing fits the question
     /// "what's under feedback/git?".
     #[arg(long)]
@@ -103,8 +103,8 @@ pub struct MoveArgs {
     /// Target group (UUID or slug).
     pub group: String,
 
-    /// Source memory address — slug path or UUID. UUIDs are
-    /// detected by shape.
+    /// Source memory address: slug path or UUID.
+    /// UUIDs are detected by shape.
     pub addr: String,
 
     /// New slug path. Multi-segment paths use `/` separators
@@ -154,7 +154,7 @@ pub struct WriteArgs {
     pub group: String,
 
     /// Memory slug (lowercase + hyphens). Duplicate slugs are
-    /// allowed post-FR-028; the server distinguishes by `id`.
+    /// allowed; the server distinguishes by `id`.
     pub slug: String,
 
     /// Human-readable title.
@@ -192,13 +192,13 @@ pub struct WriteArgs {
     #[arg(long = "override")]
     pub override_: bool,
 
-    /// Bypass the FR-28 / Slice D filename-vs-frontmatter id
-    /// rejection on a `ByFilename` write. Drift surfaces as a
-    /// warn-level note instead of a hard error.
+    /// Bypass the filename-vs-frontmatter id rejection on a
+    /// `ByFilename` write. Drift surfaces as a warn-level note
+    /// instead of a hard error.
     #[arg(long)]
     pub force: bool,
 
-    /// Pre-confirm a write into a protected group (FR-019).
+    /// Pre-confirm a write into a protected group.
     /// Without this flag the command prompts on TTY and refuses
     /// on a non-TTY stdin.
     #[arg(long = "confirm-protected")]
@@ -249,7 +249,7 @@ pub struct EditArgs {
     #[arg(long)]
     pub message: Option<String>,
 
-    /// Bypass the FR-28 id mismatch rejection.
+    /// Bypass the id mismatch rejection.
     #[arg(long)]
     pub force: bool,
 
@@ -295,7 +295,7 @@ pub struct DeleteArgs {
     #[arg(long)]
     pub message: Option<String>,
 
-    /// FR-28 force flag, present for parity with the other write
+    /// Force flag, present for parity with the other write
     /// tools. `delete_memory` does not render new bytes, so the
     /// flag has nothing to bypass on the happy path.
     #[arg(long)]
@@ -309,7 +309,7 @@ pub struct DeleteArgs {
 pub struct SearchArgs {
     /// One or more case-insensitive substrings matched against slug
     /// and `name` in frontmatter. Pass multiple positional values
-    /// for the multi-query form (FR-43): each positional is a
+    /// for the multi-query form: each positional is a
     /// separate query, results dedupe by memory UUID, and the
     /// rendered table grows a `matched` column listing which
     /// queries hit each row.
@@ -394,7 +394,7 @@ async fn run_list(args: ListArgs) -> Result<()> {
     Ok(())
 }
 
-/// FR-41: shared slug-path filter. Returns `true` when `slug`
+/// Shared slug-path filter. Returns `true` when `slug`
 /// belongs in a listing constrained to `prefix` and the recursion
 /// mode. Mirrors the MCP-side helper of the same name (kept in
 /// sync by the parity test in `serve.rs`).
@@ -492,7 +492,7 @@ async fn run_move(args: MoveArgs) -> Result<()> {
         .map_err(anyhow::Error::from)?;
     let (slug_opt, id_opt) = parse_addr(&args.addr);
     let author = home.resolve_author();
-    // FR-39 v2: a slug-rewrite move spans source + target slug
+    // A slug-rewrite move spans source + target slug
     // dirs, so coarsen at the group level just like a feature
     // rename does.
     let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::coarsen_group_chain(
@@ -748,7 +748,7 @@ async fn run_write(args: WriteArgs) -> Result<()> {
         .await
         .map_err(anyhow::Error::from)?;
 
-    // FR-019 protected-group gate. Same shape as `mmcp import`:
+    // Protected-group gate. Same shape as `mmcp import`:
     // TTY prompts, non-TTY refuses unless `--confirm-protected`.
     protected_confirm(&entry, args.confirm_protected)?;
 
@@ -764,9 +764,9 @@ async fn run_write(args: WriteArgs) -> Result<()> {
         .to_string()
         .map_err(|e| anyhow::anyhow!("render: {e}"))?;
 
-    // FR-39 v2: group-level create chain (Process-Shared +
-    // Group-Exclusive). Kind discrimination dropped from the lock
-    // layer so the shared ticket counter and slug-uniqueness
+    // Group-level create chain (Process-Shared +
+    // Group-Exclusive). The lock layer does not discriminate by
+    // kind, so the shared ticket counter and slug-uniqueness
     // invariant both serialise on one scope.
     let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::create_chain(
         *entry.manifest.group_id.as_uuid(),
@@ -987,7 +987,7 @@ async fn run_delete(args: DeleteArgs) -> Result<()> {
         .await
         .map_err(anyhow::Error::from)?;
 
-    // Read once to learn the kind for the FR-39 v2 lock chain.
+    // Read once to learn the kind for the lock chain.
     let kind = match backend
         .read_file(&entry.handle, &resolved.path, &Rev::head())
         .await
@@ -1119,7 +1119,7 @@ fn short_id(id: &Uuid) -> String {
 
 /// Read a memory's `frontmatter.name` for listing / search
 /// display. Returns `(unreadable)` on failure so a single broken
-/// file doesn't kill the listing — the structural error surfaces
+/// file doesn't kill the listing: the structural error surfaces
 /// via `mmcp diagnose` instead.
 async fn read_title(backend: &NativeBackend, entry: &GroupEntry, path: &str) -> String {
     let Ok(bytes) = backend.read_file(&entry.handle, path, &Rev::head()).await else {

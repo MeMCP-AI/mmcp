@@ -1,10 +1,10 @@
 //! `mmcp tools` implementation.
 //!
 //! Operator-facing inspection of the MCP tool surface: prints one
-//! row per registered tool with the FR-029 annotation matrix
+//! row per registered tool with the annotation matrix
 //! (read_only / destructive / idempotent / open_world) plus a short
-//! description. Same data the `describe_tools` MCP tool returns
-//! (FR-031), surfaced through the CLI for hook scripts and ad-hoc
+//! description. Same data the `describe_tools` MCP tool returns,
+//! surfaced through the CLI for hook scripts and ad-hoc
 //! audits that should not need to start the stdio server.
 
 use anyhow::Result;
@@ -77,7 +77,7 @@ pub fn run(format: ToolsFormat) -> Result<()> {
     Ok(())
 }
 
-/// Hand-rolled column formatter — no new dep just for one CLI table.
+/// Hand-rolled column formatter: no new dep just for one CLI table.
 /// Booleans render as `Y` / `-` (unset); fields stay ASCII so the
 /// output looks the same on Windows terminals as on Unix.
 fn print_table(rows: &[ToolRow]) {
@@ -144,7 +144,7 @@ fn bool_cell(value: Option<bool>) -> &'static str {
 mod tests {
     use super::*;
 
-    /// FR-33: the JSON form returns one row per registered tool with
+    /// The JSON form returns one row per registered tool with
     /// the annotation hint columns wired up. Matches the MCP
     /// `describe_tools` shape so consumers can switch surfaces
     /// without re-parsing.
@@ -189,7 +189,7 @@ mod tests {
         assert_eq!(read_memory.read_only, Some(true));
         assert_eq!(read_memory.idempotent, Some(true));
         assert_eq!(read_memory.open_world, Some(false));
-        // FR-32: read_memory has no risky args; write_memory has
+        // read_memory has no risky args; write_memory has
         // an `override` hint.
         assert!(read_memory.arg_risk_hints.is_empty());
         let write_memory = rows

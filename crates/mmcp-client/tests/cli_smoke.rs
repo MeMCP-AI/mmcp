@@ -100,11 +100,9 @@ fn status_inside_initialized_project_prints_project_fields() {
 
 #[test]
 fn init_project_second_call_is_idempotent() {
-    // The merged `init project` never overwrites — a second run
+    // `init project` never overwrites: a second run
     // against an already-initialized project must succeed and leave
-    // the repo as-is. This replaces the old "refuses to overwrite"
-    // test; refusing to overwrite was a footgun that prevented
-    // running the command defensively.
+    // the repo as-is, so the command is safe to run defensively.
     let tmp = tempfile::tempdir().unwrap();
     let mmcp_home = tmp.path().join("mmcp-home");
     mmcp()
@@ -335,7 +333,7 @@ fn feature_add_list_read_round_trips_inside_project() {
             "no feature requests with status `requested`",
         ));
 
-    // FR-024: default listing now hides closed-like FRs. The
+    // Default listing hides closed-like FRs. The
     // completed entry above must drop out, and the help text has to
     // point operators at `--all` so the hide is self-documenting.
     mmcp()

@@ -256,7 +256,7 @@ fn to_anyhow(err: SyncError) -> anyhow::Error {
 
 /// Pull-trigger wiring for the local content cache: re-index
 /// exactly the groups `report` says advanced. Best-effort via
-/// [`mmcp_store::cache::notify_pull`] — never fails the `pull` /
+/// [`mmcp_store::cache::notify_pull`]: never fails the `pull` /
 /// `sync` command it observes.
 async fn notify_cache_of_pull(
     backend: &mmcp_git::NativeBackend,

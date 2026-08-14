@@ -1,4 +1,4 @@
-//! CLI surface for `mmcp debug` — raw git access into a group's
+//! CLI surface for `mmcp debug`: raw git access into a group's
 //! bare repository. Mirrors the `mcp:debug_*` MCP tools, minus
 //! `debug_toggle` (the toggle gates a long-running MCP session;
 //! one-shot CLI invocations are gated by the operator typing
@@ -106,7 +106,7 @@ pub struct WriteFileArgs {
     #[arg(long)]
     pub message: Option<String>,
 
-    /// Pre-confirm a write into a protected group (FR-019). The
+    /// Pre-confirm a write into a protected group. The
     /// debug surface still gates protected groups so a raw write
     /// can't silently mutate shared rules.
     #[arg(long = "confirm-protected")]

@@ -1,6 +1,6 @@
-//! CLI surface for `mmcp bootstrap` — the human-readable
-//! counterpart to the `mcp:bootstrap_context` MCP tool. Mirrors the
-//! post-slice-2c instruction-only shape: prints the groups the
+//! CLI surface for `mmcp bootstrap`, the human-readable
+//! counterpart to the `mcp:bootstrap_context` MCP tool. Mirrors its
+//! instruction-only shape: prints the groups the
 //! current project is allowed to enumerate (`groups_in_scope`),
 //! the addresses pinned by `[subscriptions]`
 //! (`subscribed_reads`), and the four-axis subscription summary.
@@ -64,7 +64,7 @@ pub async fn run(args: BootstrapArgs) -> Result<()> {
 
     let entries = groups.list().await;
 
-    // FR-025: which Shared groups has this project subscribed to?
+    // Which Shared groups has this project subscribed to?
     let adopted_shared: std::collections::HashSet<Uuid> = match project_cfg.as_ref() {
         None => std::collections::HashSet::new(),
         Some(cfg) => entries
@@ -139,10 +139,8 @@ pub async fn run(args: BootstrapArgs) -> Result<()> {
                     println!("  [memory] {group}/{slug}");
                 }
                 other => {
-                    // An unrecognized shape errors
-                    // loudly instead of silently degrading to `?`,
-                    // so a future third entry shape cannot vanish
-                    // unnoticed from this printer.
+                    // An unrecognized shape prints a visible marker instead of silently degrading to `?`.
+                    // This flags a future third entry shape instead of letting it vanish unnoticed from this printer.
                     println!(
                         "  [unrecognized kind {other:?}] {entry}, printer needs updating for this shape"
                     );

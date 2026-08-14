@@ -1,9 +1,9 @@
-//! CLI surface for the feature-request tools (FR-007).
+//! CLI surface for the feature-request tools.
 //!
 //! Thin adapters over `mmcp_store::features`: each subcommand
 //! resolves the project group from `cwd`, calls the corresponding
 //! store function, and prints a compact human-readable block. JSON
-//! output is out of scope — the MCP tool surface is the canonical
+//! output is out of scope: the MCP tool surface is the canonical
 //! machine-readable path, and scripted pipelines can call that
 //! directly via the stdio server rather than scraping CLI output.
 
@@ -42,7 +42,7 @@ pub enum FeatureCommand {
     Delete(DeleteArgs),
     /// List feature requests, optionally filtered by status.
     List(ListArgs),
-    /// Rename every feature under a slug to a new slug (FR-027).
+    /// Rename every feature under a slug to a new slug.
     Rename(RenameArgs),
 }
 
@@ -158,7 +158,7 @@ pub struct RenameArgs {
     pub old_slug: String,
 
     /// Target slug directory. Must satisfy the slug contract;
-    /// duplicate slugs are allowed post-FR-028, so this may land
+    /// duplicate slugs are allowed, so this may land
     /// under an existing slug as a sibling.
     pub new_slug: String,
 
@@ -188,7 +188,7 @@ pub struct ListArgs {
     /// Include FRs whose status is not `open`. Without this flag
     /// the listing hides closed-like FRs (resolved, blocked,
     /// deferred, duplicate) so the default signal is "what still
-    /// needs work?". FR-024.
+    /// needs work?".
     #[arg(long)]
     pub all: bool,
 }
@@ -269,7 +269,7 @@ async fn run_add(args: AddArgs) -> Result<()> {
         milestone,
         message: args.message,
         // `refs`, `supersedes`, and `number` are not exposed on the
-        // CLI. FR-37 makes `number` server-assigned only. Refs and
+        // CLI. `number` is server-assigned only. Refs and
         // supersedes are MCP-only until the CLI UX is designed.
         ..AddSpec::default()
     };
@@ -545,7 +545,7 @@ fn parse_milestone_cli(raw: Option<&str>) -> Result<Option<uuid::Uuid>> {
 
 /// Parse a milestone UUID argument, surfacing a clear error rather
 /// than a bare `uuid::Error` when the operator passes a slug by
-/// mistake — milestone cross-references are UUIDs only, never slugs.
+/// mistake: milestone cross-references are UUIDs only, never slugs.
 fn parse_milestone_uuid(raw: &str) -> Result<uuid::Uuid> {
     uuid::Uuid::parse_str(raw)
         .map_err(|_| anyhow::anyhow!("`--milestone` expects a UUID, got '{raw}'"))

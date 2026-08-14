@@ -1,9 +1,6 @@
 //! Integration tests for `SessionStore`.
 //!
-//! These cover the behaviour that used to live in the old
-//! `mmcp-session::SessionTracker` integration suite, now
-//! re-homed against the flat per-session TOML store owned by
-//! the client.
+//! Cover the flat per-session TOML store owned by the client.
 
 use std::io::Write;
 

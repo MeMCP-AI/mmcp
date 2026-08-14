@@ -1,6 +1,6 @@
 //! Integration test: every client primitive works without a remote.
 //!
-//! Documents and protects the "remoteless standalone" client mode —
+//! Documents and protects the "remoteless standalone" client mode:
 //! the operator has neither an mmcp-server nor any git remote
 //! configured, and every read/write path against memories must
 //! succeed against a local bare repo only. If any of these paths
@@ -47,7 +47,7 @@ async fn import_list_read_health_and_diagnose_run_without_any_remote() {
         .await
         .expect("seeded group resolvable");
 
-    // Import a memory — writes stay on local disk via the native backend.
+    // Import a memory: writes stay on local disk via the native backend.
     let result = import::import_memory(
         scratch.backend(),
         &entry.handle,
@@ -171,7 +171,7 @@ async fn adoc_source_round_trips_through_import_as_markdown_memory() {
 #[tokio::test]
 async fn native_backend_is_usable_with_only_a_local_repo_root() {
     // Smoke test: the whole storage layer must boot and round-trip
-    // a file using only filesystem APIs — no DNS, no sockets.
+    // a file using only filesystem APIs: no DNS, no sockets.
     let tmp = TempDir::new().expect("tempdir");
     let root: PathBuf = tmp.path().to_path_buf();
     let backend = NativeBackend::new(&root).expect("backend without net");

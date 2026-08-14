@@ -132,7 +132,7 @@ mod win {
     ///
     /// Windows returns:
     /// - `ERROR_SHARING_VIOLATION` (os error 32) when another
-    ///   process has the .exe open for execution — the expected
+    ///   process has the .exe open for execution: the expected
     ///   "still held, retry next build" case.
     /// - `ERROR_ACCESS_DENIED` (os error 5) occasionally surfaces
     ///   for the same scenario under stricter ACL setups.

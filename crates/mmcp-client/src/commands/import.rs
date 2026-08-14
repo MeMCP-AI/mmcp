@@ -106,7 +106,7 @@ pub struct ImportArgs {
 /// `inquire::Confirm` on a TTY (default: no). Non-TTY invocations
 /// must pass `force = true` explicitly so scripted imports never
 /// silently poke at protected groups. Unprotected groups are a
-/// no-op — the operator's `mmcp import` intent is the confirmation.
+/// no-op: the operator's `mmcp import` intent is the confirmation.
 pub fn protected_confirm(entry: &GroupEntry, force: bool) -> Result<()> {
     if !entry.manifest.protected {
         return Ok(());

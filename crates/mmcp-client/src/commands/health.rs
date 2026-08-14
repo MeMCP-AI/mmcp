@@ -1,13 +1,13 @@
 //! CLI entry points for `mmcp check` and `mmcp diagnose`.
 //!
-//! The actual health / diagnostic analysis now lives in
+//! The health / diagnostic analysis itself lives in
 //! `mmcp_store::diagnostics` so MCP tool handlers, GUI widgets,
 //! and third-party consumers can run the same checks without
 //! pulling in the CLI's stdout formatting and exit-code mapping.
 //! This module keeps only the three binary-specific bits: the
 //! `run_check` / `run_diagnose` entries (walk groups, assemble
 //! reports, map errors to `anyhow::Error`) and the `print_reports`
-//! formatter. Per FR-45 the formatter renders each group's summary
+//! formatter. The formatter renders each group's summary
 //! line then hands the collected findings to `render_notes_tail` so
 //! the CLI tail mirrors the MCP `notes` channel verbatim.
 
@@ -77,7 +77,7 @@ pub async fn run_diagnose(group: Option<String>) -> Result<()> {
 }
 
 /// Print the per-group structural summary then render every finding
-/// on the FR-45 notes tail. Returns the assembled notes so the
+/// on the notes tail. Returns the assembled notes so the
 /// caller can branch on severity for its exit code. `project_findings`
 /// carries the project/user-level diagnostics that belong to the
 /// whole mirror rather than any one group (sync config, author

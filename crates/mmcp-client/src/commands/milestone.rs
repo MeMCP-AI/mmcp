@@ -2,7 +2,7 @@
 //!
 //! Sister to `commands::feature` / `commands::issue`, but a
 //! deliberately reduced surface (M5 design): `add`, `read`,
-//! `update`, `list` only — no `delete`, no `rename`. Thin adapters
+//! `update`, `list` only, no `delete`, no `rename`. Thin adapters
 //! over `mmcp_store::milestones`: each subcommand resolves the
 //! project group from `cwd`, calls the corresponding store
 //! function, and prints a compact human-readable block including

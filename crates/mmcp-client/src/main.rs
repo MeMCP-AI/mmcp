@@ -2,7 +2,7 @@
 //!
 //! A single `[[bin]]` crate that dispatches clap subcommands across
 //! four roles: MCP stdio server, project CLI, sync engine, hook
-//! handler. Per FR-020 the crate exposes no library target; the
+//! handler. The crate exposes no library target; the
 //! reusable store logic lives in `mmcp-store` so other workspace
 //! members (`mmcp-gui`, future third-party consumers) depend on
 //! that instead.
@@ -139,7 +139,7 @@ enum Command {
         command: HookCommand,
     },
 
-    /// Manage the project's feature requests (FR-007).
+    /// Manage the project's feature requests.
     /// Subcommands: `add`, `read`, `update`, `delete`, `list`.
     /// Running `mmcp feature` with no subcommand prints this help.
     Feature(commands::feature::FeatureArgs),
@@ -191,7 +191,7 @@ enum Command {
     /// `mmcp memory` / `mmcp group` surfaces first.
     Debug(commands::debug::DebugArgs),
 
-    /// Print the registered MCP tool catalogue with FR-029 annotation
+    /// Print the registered MCP tool catalogue with annotation
     /// hints. Same data the `describe_tools` MCP tool returns, but
     /// callable without booting the stdio server. Useful for hook
     /// scripts and ad-hoc audits picking which tools to allow.
@@ -243,7 +243,7 @@ async fn main() -> Result<()> {
     // write path (CLI `mmcp memory` / `mmcp feature` / ... commands,
     // all of which eventually call `write_file_at_path`) gets the
     // write-trigger hook for free. A failure here (e.g. an unwritable
-    // home directory) never blocks the CLI itself — the cache is a
+    // home directory) never blocks the CLI itself: the cache is a
     // derived artifact, not source-of-truth state. Runs after
     // `Cli::parse()` so `--help` / bad-arg invocations never touch
     // the filesystem at all.

@@ -4,15 +4,15 @@
 //! and the backing bare git repo are both created (or, more often,
 //! one of them is created next to the other that is already there).
 //! `--config-only` exists for operators who want to write just the
-//! project config up front — useful when adopting a server-side
+//! project config up front: useful when adopting a server-side
 //! project that a follow-up `mmcp pull` will populate.
 //!
 //! Idempotency rule: *never rewrite* either artifact. The bare repo
 //! is untouched once it exists, and `.mmcp.toml` is only ever
 //! enriched (specifically, an absent `project_slug` gets backfilled).
-//! Every other difference between args and on-disk state — a
+//! Every other difference between args and on-disk state (a
 //! `--project-uuid` that disagrees with the stored one, a `--slug`
-//! that disagrees with the stored one — is an error so the operator
+//! that disagrees with the stored one) is an error so the operator
 //! never silently ends up with the wrong project identity.
 
 use std::io::IsTerminal;
@@ -82,7 +82,7 @@ pub struct ProjectGroupReport {
     pub repo_path: Option<PathBuf>,
     /// `true` when this call wrote `.mmcp.toml` for the first time,
     /// `false` when the config was already there. Slug backfill on
-    /// an existing config does not flip this to `true` — the config
+    /// an existing config does not flip this to `true`: the config
     /// is enriched, not replaced.
     pub created_config: bool,
     /// `true` when this call created the bare repo, `false` for a
@@ -151,7 +151,7 @@ pub async fn run_project(args: ProjectArgs) -> Result<()> {
     Ok(())
 }
 
-/// MCP entry — reuses state the server already holds. `tty_slug_prompt`
+/// MCP entry: reuses state the server already holds. `tty_slug_prompt`
 /// is always `false`; MCP callers either supply a slug up front, rely
 /// on a stored `project_slug`, or receive `SlugRequired`.
 pub async fn create_project_group_from_state(
@@ -173,7 +173,7 @@ async fn bootstrap_project(
     tty_slug_prompt: bool,
 ) -> Result<ProjectGroupReport, InitProjectError> {
     // 1. Discover or mint `.mmcp.toml`. `project_root` is always the
-    //    directory that holds the config once we return — either the
+    //    directory that holds the config once we return: either the
     //    discovered ancestor or `cwd` when this call created it.
     let (mut cfg, project_root, created_config) = load_or_mint_config(cwd, opts.project_uuid)?;
 
@@ -247,8 +247,8 @@ async fn bootstrap_project(
         });
     }
 
-    // Fresh repo. Owner is a v7 UUID — ownership semantics remain
-    // deferred to the auth track; `create_group_repo` records the
+    // Fresh repo. Owner is a v7 UUID; ownership semantics remain
+    // deferred to the auth track. `create_group_repo` records the
     // owner once and never overwrites it, so regeneration on
     // subsequent calls is harmless (they hit the `repo_exists`
     // short-circuit above).
@@ -317,14 +317,14 @@ fn load_or_mint_config(
 
 /// Resolve the slug from the precedence chain:
 ///
-/// 1. `arg_slug` — whatever the caller passed explicitly.
-/// 2. `config_slug` — the stored `project_slug` in `.mmcp.toml`.
+/// 1. `arg_slug`: whatever the caller passed explicitly.
+/// 2. `config_slug`: the stored `project_slug` in `.mmcp.toml`.
 /// 3. TTY prompt (only when `tty_slug_prompt` is true and stdin is a
 ///    terminal), defaulting to the slugified project dir basename.
 /// 4. [`InitProjectError::SlugRequired`].
 ///
 /// Errors [`SlugMismatch`] when the caller's slug disagrees with an
-/// already-stored slug. A matching arg is accepted — useful for
+/// already-stored slug. A matching arg is accepted, useful for
 /// automation that passes the slug defensively even when it's
 /// already recorded.
 fn resolve_slug(
@@ -390,7 +390,7 @@ mod tests {
 
     /// Assemble a tempdir-backed `(backend, groups, project_root)`
     /// fixture. The project config is written by the helper under
-    /// test, not by the fixture — callers pass a fresh tempdir path.
+    /// test, not by the fixture: callers pass a fresh tempdir path.
     async fn test_fixture() -> (Arc<NativeBackend>, GroupIndex, TempDir) {
         let tmp = TempDir::new().expect("tempdir");
         let repos_root = tmp.path().join("repos");
@@ -481,7 +481,7 @@ mod tests {
         let project_root = tmp.path().join("project");
         std::fs::create_dir_all(&project_root).expect("project root");
 
-        // Seed a pre-slug config — no `project_slug` field.
+        // Seed a pre-slug config with no `project_slug` field.
         let stored_uuid = ProjectUuid::new();
         let cfg = ProjectConfig {
             project_uuid: stored_uuid,

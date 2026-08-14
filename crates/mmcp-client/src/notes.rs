@@ -1,4 +1,4 @@
-//! FR-45 notes-channel helpers shared by the MCP stdio server and
+//! Notes-channel helpers shared by the MCP stdio server and
 //! the CLI subcommands. Both surfaces render the same
 //! [`mmcp_proto::Note`] vocabulary so a note code an operator sees
 //! on the command line matches what an AI caller sees through MCP.
@@ -47,7 +47,7 @@ pub fn render_notes_tail(notes: &[Note]) {
     }
 }
 
-/// Convert a store-side [`Finding`] into a [`Note`] on the FR-45 wire.
+/// Convert a store-side [`Finding`] into a [`Note`] on the notes wire.
 ///
 /// `severity` maps to `level`; `code` flows through unchanged;
 /// `group` + optional `slug` ride in `context` so callers can
@@ -72,7 +72,7 @@ pub fn finding_to_note(finding: &Finding) -> Note {
     }
 }
 
-/// Map a slice of diagnostic findings onto the FR-45 notes channel.
+/// Map a slice of diagnostic findings onto the notes channel.
 #[must_use]
 pub fn findings_to_notes(findings: &[Finding]) -> Vec<Note> {
     findings.iter().map(finding_to_note).collect()
@@ -137,7 +137,7 @@ pub async fn dangling_ref_notes_for(
     notes
 }
 
-/// FR-45 populator helper: scan a push report for groups whose
+/// Populator helper: scan a push report for groups whose
 /// control-plane push succeeded but whose content plane (git
 /// push) did not actually ship bytes. Each such group surfaces
 /// as one `sync_partial_failure` warn so callers don't assume
@@ -169,7 +169,7 @@ pub fn sync_push_partial_failure_notes(report: &PushReport, server_url: &str) ->
         .collect()
 }
 
-/// Map a [`mmcp_store::IdValidation`] outcome onto FR-45 notes.
+/// Map a [`mmcp_store::IdValidation`] outcome onto notes.
 /// Returns an empty vector for the silent `Match` case so no note
 /// is emitted; the two mismatch variants surface as
 /// `id_mismatch_accepted` (frontmatter wins) and
@@ -217,7 +217,7 @@ pub fn id_validation_to_notes(validation: &mmcp_store::IdValidation, slug: &str)
     }
 }
 
-/// FR-45 populator helper: inspect a successfully-parsed
+/// Populator helper: inspect a successfully-parsed
 /// `MemoryFile` for soft integrity issues and emit a note per
 /// issue. Hard parse errors already bail out upstream as a
 /// `McpError::invalid_params`; this function runs only on the

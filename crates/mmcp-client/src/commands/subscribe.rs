@@ -128,7 +128,7 @@ pub fn apply_subscription(
 
 /// Validate that a subscription target exists in the local mirror.
 ///
-/// `tag` and `language` skip validation — neither needs to exist
+/// `tag` and `language` skip validation: neither needs to exist
 /// yet. `group` resolves the value (UUID or slug) against the local
 /// mirror. `memory` parses `<group_uuid>:<slug>` and verifies both
 /// halves resolve.

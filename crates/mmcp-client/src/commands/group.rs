@@ -54,7 +54,7 @@ pub struct CreateGroupOptions {
     pub scope: GroupScope,
 
     /// When true, the manifest's `protected` flag is set so every
-    /// subsequent mutation goes through the FR-019 confirmation
+    /// subsequent mutation goes through the confirmation
     /// guard.
     pub protected: bool,
 }
@@ -205,14 +205,10 @@ pub enum SetProtectedError {
     IndexRefresh(#[source] StoreError),
 }
 
-/// Arm or disarm the FR-019 protected-write guard on an already
+/// Arm or disarm the protected-write guard on an already
 /// existing group.
 ///
-/// The manifest's `protected` flag used to be settable only at
-/// group-creation time (see [`create_standalone_group`]); this is
-/// the "future path on an existing repo" that
-/// [`GroupManifest::set_protected`]'s doc comment promised. Resolves
-/// `identifier` (UUID or slug) against the local mirror, re-reads
+/// Resolves `identifier` (UUID or slug) against the local mirror, re-reads
 /// the manifest from the repo's current tip, flips `protected`, and
 /// commits the result through [`GitBackend::write_manifest`]. The
 /// [`GroupIndex`] is refreshed before returning so the protected-
@@ -257,8 +253,8 @@ pub async fn set_group_protected(
 // ── CLI surface ─────────────────────────────────────────────────
 //
 // `mmcp group <verb>` mirrors the `mcp:list_groups`,
-// `mcp:group_info`, `mcp:create_group` MCP tools so the CLI
-// catches up on FR-cli-mcp-parity for group management.
+// `mcp:group_info`, `mcp:create_group` MCP tools for
+// group-management parity with the MCP surface.
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
@@ -282,7 +278,7 @@ pub enum GroupCommand {
     Info(InfoArgs),
     /// Bootstrap a fresh standalone group under ~/.mmcp/repos.
     Create(CreateArgs),
-    /// Arm or disarm the FR-019 protected-write guard on an
+    /// Arm or disarm the protected-write guard on an
     /// already existing group.
     Protect(ProtectArgs),
 }
@@ -309,7 +305,7 @@ pub struct CreateArgs {
     pub display_name: Option<String>,
 
     /// Mark the group as protected so every subsequent mutation
-    /// goes through the FR-019 confirmation guard.
+    /// goes through the confirmation guard.
     #[arg(long)]
     pub protected: bool,
 }
