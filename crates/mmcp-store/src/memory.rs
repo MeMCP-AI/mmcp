@@ -134,6 +134,24 @@ pub enum ImportError {
         "kind '{kind}' is a tracked kind and cannot be created via memory create/edit; use the dedicated add_{kind} command instead"
     )]
     NotACreatableKind { kind: String },
+
+    /// A memory blob read back from git was not valid UTF-8.
+    /// Surfaced as a typed error instead of lossily substituting the replacement character,
+    /// which would silently corrupt frontmatter/body content instead of reporting the truncation.
+    #[error("memory file '{path}' is not valid UTF-8")]
+    NotUtf8 {
+        path: String,
+        #[source]
+        source: std::str::Utf8Error,
+    },
+
+    /// The per-group ticket counter ([`crate::tracker::next_ticket_number`]) reached [`u32::MAX`].
+    /// Surfaced instead of silently wrapping to `0` and reissuing an already-allocated feature/issue number.
+    #[error(
+        "ticket counter overflow: every number up to {} is already allocated",
+        u32::MAX
+    )]
+    TicketCounterOverflow,
 }
 
 /// Per-file reference to a memory on disk.
@@ -621,8 +639,14 @@ async fn read_frontmatter_at(
     path: &str,
 ) -> Result<MemoryFrontmatter, ImportError> {
     let bytes = backend.read_file(handle, path, rev).await?;
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    let file = MemoryFile::parse(&text)?;
+    // Zero-copy: borrow `bytes` as UTF-8 instead of lossily substituting the replacement
+    // character, which would silently corrupt frontmatter/body content on a genuinely
+    // malformed blob (pattern already used correctly at diagnostics.rs's per-file walk).
+    let text = std::str::from_utf8(&bytes).map_err(|source| ImportError::NotUtf8 {
+        path: path.to_string(),
+        source,
+    })?;
+    let file = MemoryFile::parse(text)?;
     Ok(file.frontmatter)
 }
 
@@ -917,7 +941,7 @@ pub async fn write_memory_by_id(
         force,
         message,
     } = options;
-    validate_slug(slug)?;
+    validate_memory_slug(slug)?;
     let path = mmcp_core::conventions::memory_path(slug, id);
     let exists = match backend.read_file(handle, &path, &Rev::head()).await {
         Ok(_) => true,
@@ -971,7 +995,7 @@ pub async fn import_memory(
     author: &ResolvedAuthor,
     override_existing: bool,
 ) -> Result<ImportResult, ImportError> {
-    validate_slug(slug)?;
+    validate_memory_slug(slug)?;
 
     let mut memory_file = if content.trim_start().starts_with("+++") {
         MemoryFile::parse(content)?
@@ -1077,17 +1101,6 @@ pub fn validate_memory_slug(slug: &str) -> Result<(), ImportError> {
         validate_slug_segment(segment).map_err(|_| ImportError::InvalidSlug(slug.to_string()))?;
     }
     Ok(())
-}
-
-/// Validate a memory slug.
-/// Accepts multi-segment paths joined by `/`, so callers wanting hierarchical sub-grouping,
-/// can use e.g. `feedback/git/commit-phase`.
-/// Defers per-segment rules to [`validate_slug_segment`].
-///
-/// Alias kept so existing call sites compile unchanged;
-/// new code may also call [`validate_memory_slug`] directly when the path semantics are intentional.
-pub fn validate_slug(slug: &str) -> Result<(), ImportError> {
-    validate_memory_slug(slug)
 }
 
 /// Compiled-in fallback for the auto-slug length cap applied by [`slugify_filename`]
@@ -1384,25 +1397,25 @@ mod tests {
     }
 
     #[test]
-    fn validate_slug_accepts_valid() {
-        assert!(validate_slug("hello").is_ok());
-        assert!(validate_slug("hello-world").is_ok());
-        assert!(validate_slug("a").is_ok());
-        assert!(validate_slug("foo-bar-baz-123").is_ok());
+    fn validate_memory_slug_accepts_single_segment() {
+        assert!(validate_memory_slug("hello").is_ok());
+        assert!(validate_memory_slug("hello-world").is_ok());
+        assert!(validate_memory_slug("a").is_ok());
+        assert!(validate_memory_slug("foo-bar-baz-123").is_ok());
     }
 
     #[test]
-    fn validate_slug_rejects_invalid() {
-        assert!(validate_slug("").is_err());
-        assert!(validate_slug("-leading").is_err());
-        assert!(validate_slug("trailing-").is_err());
-        assert!(validate_slug("UPPER").is_err());
-        assert!(validate_slug("has space").is_err());
-        assert!(validate_slug("double--hyphen").is_err());
+    fn validate_memory_slug_rejects_invalid_single_segment() {
+        assert!(validate_memory_slug("").is_err());
+        assert!(validate_memory_slug("-leading").is_err());
+        assert!(validate_memory_slug("trailing-").is_err());
+        assert!(validate_memory_slug("UPPER").is_err());
+        assert!(validate_memory_slug("has space").is_err());
+        assert!(validate_memory_slug("double--hyphen").is_err());
         // Total-length cap: now MAX_SLUG_LENGTH (256). 257 chars
         // overflow even when each segment passes the per-segment
         // rules.
-        assert!(validate_slug(&"a".repeat(MAX_SLUG_LENGTH + 1)).is_err());
+        assert!(validate_memory_slug(&"a".repeat(MAX_SLUG_LENGTH + 1)).is_err());
     }
 
     #[test]
@@ -2093,6 +2106,47 @@ mod tests {
                 other => panic!("unexpected slug {other}"),
             }
         }
+    }
+
+    /// Regression guard for the zero-copy UTF-8 fix at `read_frontmatter_at`: a blob that is not
+    /// valid UTF-8 must surface a typed [`ImportError::NotUtf8`] per-entry, never silently
+    /// substitute the replacement character (the previous `String::from_utf8_lossy` behavior),
+    /// which would corrupt frontmatter/body content instead of reporting the truncation.
+    #[tokio::test]
+    async fn read_frontmatters_in_group_reports_invalid_utf8() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let bad_id = Uuid::now_v7();
+        // 0x80 alone is a lone UTF-8 continuation byte: never valid at any position.
+        let invalid_bytes: Vec<u8> = vec![0x2b, 0x2b, 0x2b, 0x0a, 0x80, 0x0a];
+        backend
+            .write_commit(
+                &handle,
+                CommitSpec::mmcp_commit(
+                    format!("seed not-utf8/{bad_id}"),
+                    vec![(
+                        mmcp_core::conventions::memory_path("not-utf8", bad_id),
+                        Some(invalid_bytes),
+                    )],
+                    &author.name,
+                    &author.email,
+                ),
+            )
+            .await
+            .expect("seed invalid-utf8 memory");
+
+        let entries = read_frontmatters_in_group(&backend, &handle, &Rev::head())
+            .await
+            .expect("batch read");
+        let entry = entries
+            .iter()
+            .find(|e| e.file.slug == "not-utf8")
+            .expect("not-utf8 entry present");
+        let err = entry
+            .frontmatter
+            .as_ref()
+            .expect_err("invalid UTF-8 surfaces as a typed error");
+        assert!(matches!(err, ImportError::NotUtf8 { .. }));
     }
 
     #[tokio::test]
