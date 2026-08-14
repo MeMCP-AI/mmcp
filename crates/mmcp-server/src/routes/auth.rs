@@ -23,7 +23,7 @@ use axum::{
     routing::{get, post},
 };
 use jiff::Timestamp;
-use mmcp_auth::{AuthSession, Credentials, hash_password};
+use mmcp_auth::{AuthSession, Credentials, hash_password, validate_password_policy};
 use mmcp_db::repository::{passkey_repo, user_repo};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -53,6 +53,24 @@ pub fn router() -> Router<ServerState> {
 
 // ── Password ────────────────────────────────────────────────────
 
+/// Maximum accepted length of a user handle, in bytes. Handles are
+/// short login identifiers, not free text; 64 stays well above any
+/// realistic handle while bounding pathological input, matching the
+/// maxima this project already uses for other external string
+/// fields (`mmcp_core::memory::limits`).
+pub const MAX_HANDLE_LENGTH: usize = 64;
+
+/// Maximum accepted length of an email address, in bytes. 254 is
+/// the maximum length an RFC 5321 compliant email address can have
+/// (the `MAIL FROM` reverse-path limit), so it is a real protocol
+/// bound rather than an arbitrary pick.
+const MAX_EMAIL_LENGTH: usize = 254;
+
+/// Maximum accepted length of a display name, in bytes. Display
+/// names are shown in WebUI listings; 128 stays far above any real
+/// name while bounding pathological input.
+const MAX_DISPLAY_NAME_LENGTH: usize = 128;
+
 #[derive(Deserialize)]
 pub struct RegisterRequest {
     pub handle: String,
@@ -66,10 +84,46 @@ pub struct RegisterResponse {
     pub user_id: Uuid,
 }
 
+/// Check `value`'s byte length against `max`, returning a 400-class
+/// [`AuthHttpError::Validation`] naming the offending field when it
+/// is exceeded.
+fn validate_max_length(field: &'static str, value: &str, max: usize) -> Result<(), AuthHttpError> {
+    let actual = value.len();
+    if actual > max {
+        return Err(AuthHttpError::Validation(format!(
+            "field '{field}' is too long: {actual} bytes exceeds the {max}-byte maximum"
+        )));
+    }
+    Ok(())
+}
+
+/// Validate a [`RegisterRequest`]'s fields at the HTTP boundary, so
+/// a rejected request never reaches the password hasher or the
+/// database: an empty/whitespace-only handle or password is
+/// rejected, and every field carries an explicit maximum length.
+fn validate_register_request(req: &RegisterRequest) -> Result<(), AuthHttpError> {
+    if req.handle.trim().is_empty() {
+        return Err(AuthHttpError::Validation(
+            "field 'handle' must not be empty or whitespace-only".to_string(),
+        ));
+    }
+    validate_max_length("handle", &req.handle, MAX_HANDLE_LENGTH)?;
+    if let Some(email) = &req.email {
+        validate_max_length("email", email, MAX_EMAIL_LENGTH)?;
+    }
+    if let Some(display_name) = &req.display_name {
+        validate_max_length("display_name", display_name, MAX_DISPLAY_NAME_LENGTH)?;
+    }
+    validate_password_policy(&req.password)
+        .map_err(|e| AuthHttpError::Validation(e.to_string()))?;
+    Ok(())
+}
+
 async fn register(
     State(state): State<ServerState>,
     Json(req): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<RegisterResponse>), AuthHttpError> {
+    validate_register_request(&req)?;
     let hash = hash_password(&req.password).map_err(into_generic_response)?;
     let user_id = Uuid::now_v7();
     user_repo::create(
@@ -469,6 +523,11 @@ enum AuthHttpError {
     NotFound(&'static str),
     BadRequest(&'static str),
     Conflict(&'static str),
+    /// Request-field validation failed (bad length, empty/blank
+    /// required field). Carries an owned message because the text
+    /// names the offending field and its actual/max values, unlike
+    /// the fixed-literal [`AuthHttpError::BadRequest`] variant.
+    Validation(String),
     Internal(String),
 }
 
@@ -491,9 +550,111 @@ impl IntoResponse for AuthHttpError {
                 (StatusCode::BAD_REQUEST, msg.to_string()).into_response()
             }
             AuthHttpError::Conflict(msg) => (StatusCode::CONFLICT, msg.to_string()).into_response(),
+            AuthHttpError::Validation(msg) => (StatusCode::BAD_REQUEST, msg).into_response(),
             AuthHttpError::Internal(msg) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_request() -> RegisterRequest {
+        RegisterRequest {
+            handle: "alice".to_string(),
+            password: "correcthorsebatterystaple".to_string(),
+            email: Some("alice@example.com".to_string()),
+            display_name: Some("Alice".to_string()),
+        }
+    }
+
+    #[test]
+    fn accepts_a_valid_request() {
+        assert!(validate_register_request(&valid_request()).is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_password() {
+        let req = RegisterRequest {
+            password: String::new(),
+            ..valid_request()
+        };
+        let err = validate_register_request(&req).unwrap_err();
+        assert!(matches!(err, AuthHttpError::Validation(_)));
+    }
+
+    #[test]
+    fn rejects_whitespace_only_password() {
+        let req = RegisterRequest {
+            password: "        ".to_string(),
+            ..valid_request()
+        };
+        assert!(matches!(
+            validate_register_request(&req),
+            Err(AuthHttpError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_over_length_password() {
+        let req = RegisterRequest {
+            password: "a".repeat(mmcp_auth::MAX_PASSWORD_LENGTH + 1),
+            ..valid_request()
+        };
+        assert!(matches!(
+            validate_register_request(&req),
+            Err(AuthHttpError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_empty_handle() {
+        let req = RegisterRequest {
+            handle: "   ".to_string(),
+            ..valid_request()
+        };
+        assert!(matches!(
+            validate_register_request(&req),
+            Err(AuthHttpError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_over_length_handle() {
+        let req = RegisterRequest {
+            handle: "h".repeat(MAX_HANDLE_LENGTH + 1),
+            ..valid_request()
+        };
+        assert!(matches!(
+            validate_register_request(&req),
+            Err(AuthHttpError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_over_length_email() {
+        let req = RegisterRequest {
+            email: Some("a".repeat(MAX_EMAIL_LENGTH + 1)),
+            ..valid_request()
+        };
+        assert!(matches!(
+            validate_register_request(&req),
+            Err(AuthHttpError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_over_length_display_name() {
+        let req = RegisterRequest {
+            display_name: Some("a".repeat(MAX_DISPLAY_NAME_LENGTH + 1)),
+            ..valid_request()
+        };
+        assert!(matches!(
+            validate_register_request(&req),
+            Err(AuthHttpError::Validation(_))
+        ));
     }
 }

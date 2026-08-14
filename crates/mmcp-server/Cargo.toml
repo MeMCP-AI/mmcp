@@ -53,6 +53,7 @@ axum = { workspace = true }
 mmcp-core = { workspace = true }
 mmcp-git = { workspace = true }
 mmcp-db = { workspace = true }
+mmcp-auth = { workspace = true }
 jiff = { workspace = true }
 uuid = { workspace = true }
 

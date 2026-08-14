@@ -37,7 +37,7 @@ async fn register_then_login_succeeds() {
         .post(format!("http://{addr}/auth/register"))
         .json(&serde_json::json!({
             "handle": "alice",
-            "password": "hunter2"
+            "password": "hunter22"
         }))
         .send()
         .await
@@ -51,7 +51,7 @@ async fn register_then_login_succeeds() {
         .post(format!("http://{addr}/auth/login"))
         .json(&serde_json::json!({
             "handle": "alice",
-            "password": "hunter2"
+            "password": "hunter22"
         }))
         .send()
         .await
@@ -73,7 +73,7 @@ async fn login_with_wrong_password_returns_401() {
         .post(format!("http://{addr}/auth/register"))
         .json(&serde_json::json!({
             "handle": "bob",
-            "password": "correct"
+            "password": "correctpw"
         }))
         .send()
         .await
@@ -99,7 +99,7 @@ async fn duplicate_register_returns_409() {
 
     let body = serde_json::json!({
         "handle": "charlie",
-        "password": "pass"
+        "password": "password"
     });
 
     let resp = client
@@ -117,4 +117,94 @@ async fn duplicate_register_returns_409() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 409);
+}
+
+#[tokio::test]
+async fn register_with_empty_password_returns_400() {
+    let addr = start_server().await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/auth/register"))
+        .json(&serde_json::json!({
+            "handle": "dave",
+            "password": ""
+        }))
+        .send()
+        .await
+        .expect("register");
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn register_with_whitespace_only_password_returns_400() {
+    let addr = start_server().await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/auth/register"))
+        .json(&serde_json::json!({
+            "handle": "erin",
+            "password": "        "
+        }))
+        .send()
+        .await
+        .expect("register");
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn register_with_too_short_password_returns_400() {
+    let addr = start_server().await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/auth/register"))
+        .json(&serde_json::json!({
+            "handle": "frank",
+            "password": "short1"
+        }))
+        .send()
+        .await
+        .expect("register");
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn register_with_over_length_password_returns_400() {
+    let addr = start_server().await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/auth/register"))
+        .json(&serde_json::json!({
+            "handle": "grace",
+            "password": "a".repeat(mmcp_auth::MAX_PASSWORD_LENGTH + 1)
+        }))
+        .send()
+        .await
+        .expect("register");
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn register_with_empty_handle_returns_400() {
+    let addr = start_server().await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/auth/register"))
+        .json(&serde_json::json!({
+            "handle": "   ",
+            "password": "validpassword"
+        }))
+        .send()
+        .await
+        .expect("register");
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn register_with_over_length_handle_returns_400() {
+    let addr = start_server().await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/auth/register"))
+        .json(&serde_json::json!({
+            "handle": "h".repeat(mmcp_server::routes::auth::MAX_HANDLE_LENGTH + 1),
+            "password": "validpassword"
+        }))
+        .send()
+        .await
+        .expect("register");
+    assert_eq!(resp.status(), 400);
 }

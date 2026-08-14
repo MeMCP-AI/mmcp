@@ -134,7 +134,7 @@ async fn passkey_register_finish_without_pending_state_returns_400() {
     let (addr, _tmp) = start_server_with_oauth(vec![]).await;
     // Seed a real user so the lookup does not fail before the pending-state check.
     // This test never calls register/start, so the in-memory pending map has no entry for this user.
-    let user_id = register_test_user(addr, "alice", "hunter2").await;
+    let user_id = register_test_user(addr, "alice", "hunter22").await;
 
     // The `response` field must still be a well-formed JSON object
     // because axum's Json extractor runs before the handler body.
@@ -184,7 +184,7 @@ async fn passkey_login_start_user_without_credentials_returns_400() {
     let (addr, _tmp) = start_server_with_oauth(vec![]).await;
     // Register a user via password so a user row exists, but skip
     // passkey enrollment; the start handler must return 400.
-    register_test_user(addr, "alice", "hunter2").await;
+    register_test_user(addr, "alice", "hunter22").await;
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/auth/passkey/login/start"))
