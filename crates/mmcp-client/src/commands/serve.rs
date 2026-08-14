@@ -346,8 +346,7 @@ impl ToolMemoryKind {
 struct MemoryRefArg {
     /// UUID of the referenced memory (primary key).
     pub target: String,
-    /// 40-character lowercase hex commit sha pinning the reference
-    /// to a specific revision of the target.
+    /// 40-character lowercase hex commit sha pinning the reference to a specific revision of the target.
     pub commit: String,
 }
 
@@ -453,40 +452,38 @@ struct ImportMemoryArgs {
     /// source carries no `id` in its frontmatter.
     pub slug: String,
 
-    /// Raw source document. May already carry a `+++` / `---` /
-    /// `---json` frontmatter fence (in which case the `name` /
-    /// `description` / `kind` args are ignored), or be a bare body
-    /// that gets frontmatter stamped from those args. Mixing a
-    /// fence with synth args is harmless - the fence wins.
+    /// Raw source document.
+    /// May carry a `+++`/`---`/`---json` frontmatter fence,
+    /// in which case `name`, `description`, and `kind` are ignored,
+    /// or be a bare body stamped from those args.
+    /// Mixing a fence with synth args is harmless: the fence wins.
     pub source: String,
 
-    /// Source format. Defaults to `markdown` when absent;
-    /// `adoc` / `asciidoc` routes through the AsciiDoc bridge before
-    /// the normal import pipeline runs. The converted markdown is
-    /// what lands on disk, so downstream tooling never sees the
-    /// original format.
+    /// Source format.
+    /// Defaults to `markdown` when absent;
+    /// `adoc` / `asciidoc` routes through the AsciiDoc bridge before the normal import pipeline runs.
+    /// The converted markdown is what lands on disk, so downstream tooling never sees the original format.
     #[serde(default)]
     pub format: Option<ToolImportSourceFormat>,
 
-    /// Human-readable title. Required alongside `description` and
-    /// `kind` when the source has no embedded frontmatter; ignored
-    /// when the source already carries a fence.
+    /// Human-readable title.
+    /// Required alongside `description` and `kind` when the source has no embedded frontmatter;
+    /// ignored when the source already carries a fence.
     #[serde(default)]
     pub name: Option<String>,
 
-    /// One-line summary. See `name` for the together-or-not-at-all
-    /// rule against embedded frontmatter.
+    /// One-line summary.
+    /// See `name` for the together-or-not-at-all rule against embedded frontmatter.
     #[serde(default)]
     pub description: Option<String>,
 
-    /// Memory kind. See `name` for the together-or-not-at-all rule.
+    /// Memory kind.
+    /// See `name` for the together-or-not-at-all rule.
     #[serde(default)]
     pub kind: Option<ToolMemoryKind>,
 
-    /// Replace an existing memory whose id collides with the one
-    /// embedded in the source's frontmatter. Fresh imports (no
-    /// pinned id) always create a new sibling, so this only
-    /// matters for pinned-id flows.
+    /// Replace an existing memory whose id collides with the one embedded in the source's frontmatter.
+    /// Fresh imports (no pinned id) always create a new sibling, so this only matters for pinned-id flows.
     #[serde(default, rename = "override")]
     pub override_: bool,
     /// Bypass the filename-vs-frontmatter id mismatch rejection.
@@ -499,12 +496,11 @@ struct ImportMemoryArgs {
 
 /// Argument shape for `edit_memory`.
 ///
-/// Every mutator field is optional; the server reads the existing
-/// memory file, applies the supplied deltas, re-renders, and
-/// commits. `tags_add` / `tags_remove` compose cleanly under repeat
-/// calls so callers don't have to fetch-merge-write the tag vector
-/// themselves. All-None args still produce a commit — the edit
-/// history stays explicit rather than collapsing no-op calls.
+/// Every mutator field is optional;
+/// the server reads the existing memory file, applies the supplied deltas, re-renders, and commits.
+/// `tags_add` / `tags_remove` compose cleanly under repeat calls,
+/// so callers don't have to fetch-merge-write the tag vector themselves.
+/// All-None args still produce a commit: the edit history stays explicit rather than collapsing no-op calls.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
 struct EditMemoryArgs {
@@ -516,12 +512,12 @@ struct EditMemoryArgs {
     /// Canonical UUID of the memory.
     #[serde(default)]
     pub id: Option<String>,
-    /// Replace the markdown body verbatim. Absent leaves it
-    /// untouched.
+    /// Replace the markdown body verbatim.
+    /// Absent leaves it untouched.
     #[serde(default)]
     pub body: Option<String>,
-    /// Replace the human-readable title. Absent leaves it
-    /// untouched.
+    /// Replace the human-readable title.
+    /// Absent leaves it untouched.
     #[serde(default)]
     pub name: Option<String>,
     /// Replace the one-line description.
@@ -530,34 +526,31 @@ struct EditMemoryArgs {
     /// Replace the memory kind.
     #[serde(default)]
     pub kind: Option<ToolMemoryKind>,
-    /// Tags to insert into the existing set; duplicates are
-    /// collapsed.
+    /// Tags to insert into the existing set; duplicates are collapsed.
     #[serde(default)]
     pub tags_add: Vec<String>,
-    /// Tags to strip from the existing set; missing tags are
-    /// silently ignored.
+    /// Tags to strip from the existing set; missing tags are silently ignored.
     #[serde(default)]
     pub tags_remove: Vec<String>,
-    /// Typed refs to add or replace. Dedupe is by target UUID —
-    /// entries whose `target` already appears in the memory's
-    /// existing refs are replaced in place (so the new commit pin
-    /// wins); new targets are appended.
+    /// Typed refs to add or replace.
+    /// Dedupe is by target UUID: entries whose `target` already appears in the memory's
+    /// existing refs are replaced in place (so the new commit pin wins); new targets are appended.
     #[serde(default)]
     pub refs_add: Vec<MemoryRefArg>,
-    /// UUIDs to strip from the existing refs list. Commit sha is
-    /// not part of the match so callers do not need to remember
-    /// which revision a ref was pinned to.
+    /// UUIDs to strip from the existing refs list.
+    /// Commit sha is not part of the match so callers do not need to remember which revision a ref was pinned to.
     #[serde(default)]
     pub refs_remove: Vec<String>,
-    /// Replace the mandatory flag. Absent leaves it untouched.
+    /// Replace the mandatory flag.
+    /// Absent leaves it untouched.
     #[serde(default)]
     pub mandatory: Option<bool>,
-    /// Commit message override. Absent falls back to
-    /// `"update memory {slug}"`.
+    /// Commit message override.
+    /// Absent falls back to `"update memory {slug}"`.
     #[serde(default)]
     pub message: Option<String>,
-    /// Bypass the filename-vs-frontmatter id mismatch rejection on
-    /// a `ByFilename` write. Defaults to `false`.
+    /// Bypass the filename-vs-frontmatter id mismatch rejection on a `ByFilename` write.
+    /// Defaults to `false`.
     #[serde(default)]
     pub force: bool,
 }
@@ -574,8 +567,8 @@ struct DeleteMemoryArgs {
     /// Canonical UUID of the memory.
     #[serde(default)]
     pub id: Option<String>,
-    /// Commit message override. Absent falls back to
-    /// `"delete memory {slug}"`.
+    /// Commit message override.
+    /// Absent falls back to `"delete memory {slug}"`.
     #[serde(default)]
     pub message: Option<String>,
     /// Present for parity with the other write tools; `delete_memory`
@@ -1369,13 +1362,13 @@ struct DeleteFeatureArgs {
     pub message: Option<String>,
 }
 
-/// Args for `move_memory` (FR-41).
+/// Args for `move_memory`.
 ///
 /// Atomically rewrites a memory's slug path in a single commit.
 /// The memory id stays stable across the move, so cross-refs in
-/// other memories remain valid. In-group only — cross-group
-/// transfer is FR-36 territory and will extend this tool with an
-/// optional `target_group` later.
+/// other memories remain valid.
+/// In-group only: cross-group transfer is a candidate future
+/// extension, adding an optional `target_group` later.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
 struct MoveMemoryArgs {
@@ -1397,7 +1390,7 @@ struct MoveMemoryArgs {
     pub message: Option<String>,
 }
 
-/// Args for `rename_feature` (FR-027).
+/// Args for `rename_feature`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
 struct RenameFeatureArgs {
@@ -1428,17 +1421,17 @@ struct ListFeaturesArgs {
     #[serde(default)]
     pub project: Option<String>,
 
-    /// Restrict to FRs with this status. Wire form matches
-    /// `AddFeatureArgs::status`. Explicit selector wins over the
-    /// `all` flag — an operator asking for `completed` FRs always
+    /// Restrict to FRs with this status.
+    /// Wire form matches `AddFeatureArgs::status`.
+    /// Explicit selector wins over the `all` flag: an operator asking for `completed` FRs always
     /// sees them even when the default hide is on.
     #[serde(default)]
     pub status: Option<String>,
 
     /// When `true`, include FRs whose status is default-hidden
-    /// (`completed`, `duplicate`, `superseded`). Defaults to `false`
-    /// — the tool hides those statuses unless `status` selects a
-    /// different variant or `all` is set. FR-024.
+    /// (`completed`, `duplicate`, `superseded`).
+    /// Defaults to `false`: the tool hides those statuses unless `status` selects a
+    /// different variant or `all` is set.
     #[serde(default)]
     pub all: Option<bool>,
 }
@@ -1458,7 +1451,7 @@ struct ListFeaturesArgs {
 struct AddIssueArgs {
     /// Target project group (UUID or slug). When omitted, the
     /// server falls back to walking `cwd` for a `.mmcp.toml` and
-    /// using whichever project it finds. FR-44.
+    /// using whichever project it finds.
     #[serde(default)]
     pub project: Option<String>,
 
@@ -1511,10 +1504,10 @@ struct AddIssueArgs {
     #[serde(default)]
     pub supersedes: Option<String>,
 
-    /// FR-38 provenance UUID. When set, this issue was filed by an
-    /// agent acting on behalf of the named owner. Absent means the
-    /// project group authored the issue directly. Errors with
-    /// `code: invalid_source` when not parseable as a UUID.
+    /// Provenance UUID.
+    /// When set, this issue was filed by an agent acting on behalf of the named owner.
+    /// Absent means the project group authored the issue directly.
+    /// Errors with `code: invalid_source` when not parseable as a UUID.
     #[serde(default)]
     pub source: Option<String>,
 
@@ -2008,16 +2001,14 @@ impl McpServer {
         if !matches!(mode, ServeMode::Full) {
             // ToolRouter's `map` is `pub`; filtering at construction
             // time means dropped tools never appear on `tools/list`,
-            // closing the gap between the advisory FR-029 hints and
+            // closing the gap between the advisory annotation hints and
             // hard registration-level enforcement.
             tool_router.map.retain(|_, route| mode.allows(&route.attr));
         }
-        // FR-49 / FR-50 / FR-45: patch icons, meta, and the shared
-        // output schema on the live router so `tools/list` surfaces
-        // the same fields `describe_tools` returns. The static
-        // `_tool_attr()` helpers do not carry these (rmcp builds
-        // them at macro-expansion time), so the canonical patch
-        // lives here and in `registered_tool_attrs()`.
+        // Patch icons, meta, and the shared output schema on the live router,
+        // so `tools/list` surfaces the same fields `describe_tools` returns.
+        // The static `_tool_attr()` helpers do not carry these (rmcp builds them at macro-expansion time),
+        // so the canonical patch lives here and in `registered_tool_attrs()`.
         let output_schema = shared_output_schema();
         for (name, route) in tool_router.map.iter_mut() {
             let name_str = name.as_ref();
@@ -2033,7 +2024,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Enumerate every group the local mirror holds. Returns `{groups: [{slug, uuid, memory_count, protected, is_project}]}` — cheap manifest-only walk, no memory bodies. `is_project` is true for the group whose UUID matches the current cwd's `.mmcp.toml`; false for every other group including cases where no project is in scope. Pure-local, no network.",
+        description = "Enumerate every group the local mirror holds. Returns `{groups: [{slug, uuid, memory_count, protected, is_project}]}`: cheap manifest-only walk, no memory bodies. `is_project` is true for the group whose UUID matches the current cwd's `.mmcp.toml`; false for every other group including cases where no project is in scope. Pure-local, no network.",
         annotations(
             title = "List mirrored groups",
             read_only_hint = true,
@@ -2075,7 +2066,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List memories that live in the specified group. The group argument is the group UUID. Returns `{group, memories, mirrored: bool}` (`mirrored: false` signals the group UUID is unknown to the local mirror, distinct from a mirrored-but-empty group, which returns `mirrored: true` with `memories: []`). FR-41: pass `path_prefix` to restrict to a slug subtree (literal prefix, no wildcards), and `recursive: false` to surface only the immediate children at that prefix level. A memory whose frontmatter fails to parse is excluded from `memories` (never fabricated as a fake `kind: \"rule\"` record) and reported instead as a `frontmatter_parse_failed` note; every sibling record that parses fine still lists normally. For a large group, pass `compact: true` to drop `description` and other large fields from each descriptor, and set `offset` and/or `limit` to page through results instead of one unbounded call. Setting `offset` and/or `limit` activates pagination over the NON-mandatory portion of the listing and reshapes the response to `{group, mandatory, memories, envelope, mirrored}`: every `mandatory == true` match is always returned in full under `mandatory`, unconditionally and never paginated away; `memories` carries the paginated window and `envelope` reports `{truncated, total, returned, next_offset}` for that window.",
+        description = "List memories that live in the specified group. The group argument is the group UUID. Returns `{group, memories, mirrored: bool}` (`mirrored: false` signals the group UUID is unknown to the local mirror, distinct from a mirrored-but-empty group, which returns `mirrored: true` with `memories: []`). Pass `path_prefix` to restrict to a slug subtree (literal prefix, no wildcards), and `recursive: false` to surface only the immediate children at that prefix level. A memory whose frontmatter fails to parse is excluded from `memories` (never fabricated as a fake `kind: \"rule\"` record) and reported instead as a `frontmatter_parse_failed` note; every sibling record that parses fine still lists normally. For a large group, pass `compact: true` to drop `description` and other large fields from each descriptor, and set `offset` and/or `limit` to page through results instead of one unbounded call. Setting `offset` and/or `limit` activates pagination over the NON-mandatory portion of the listing and reshapes the response to `{group, mandatory, memories, envelope, mirrored}`: every `mandatory == true` match is always returned in full under `mandatory`, unconditionally and never paginated away; `memories` carries the paginated window and `envelope` reports `{truncated, total, returned, next_offset}` for that window.",
         annotations(
             title = "List memories in a group",
             read_only_hint = true,
@@ -2233,12 +2224,11 @@ impl McpServer {
                 Some(json!({ "slug": resolved.slug })),
             )
         })?;
-        // FR-45 `malformed_frontmatter` populator: the parser
-        // accepted the file (hard errors already returned above)
-        // but some soft integrity signals are worth surfacing so
-        // callers know to reconcile. Shape matches what
-        // `mcp:diagnose` flags, but returned through the notes
-        // channel per-read.
+        // The `malformed_frontmatter` populator: the parser accepted the file
+        // (hard errors already returned above) but some soft integrity
+        // signals are worth surfacing so callers know to reconcile.
+        // Shape matches what `mcp:diagnose` flags, but returned through the
+        // notes channel per-read.
         let mut notes = malformed_frontmatter_notes(&resolved.slug, resolved.id, &file);
 
         // Never return an unbounded body: the measured failure mode
@@ -2379,7 +2369,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<SearchMemoriesArgs>,
     ) -> Result<CallToolResult, McpError> {
-        // FR-43: accept either `query` (legacy single-string form,
+        // Accept either `query` (legacy single-string form,
         // unchanged shape) or `queries` (Vec<String>, deduped output
         // with `matched_queries` per hit). Passing both is rejected
         // up front so callers cannot half-fall-back to the legacy
@@ -2523,7 +2513,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "CREATE a new memory in a group. All metadata fields (name, description, kind, tags, mandatory) are typed parameters — the server builds the frontmatter. Errors with code `memory_already_exists` when the slug is already on disk; use `edit_memory` to apply partial updates, `delete_memory` to remove, or pass `override: true` to deliberately replace the whole file (bulk-reset flows only — the default should almost always stay false).",
+        description = "CREATE a new memory in a group. All metadata fields (name, description, kind, tags, mandatory) are typed parameters: the server builds the frontmatter. Errors with code `memory_already_exists` when the slug is already on disk; use `edit_memory` to apply partial updates, `delete_memory` to remove, or pass `override: true` to deliberately replace the whole file (bulk-reset flows only; the default should almost always stay false).",
         annotations(
             title = "Create memory",
             read_only_hint = false,
@@ -2565,18 +2555,17 @@ impl McpServer {
 
         let kind = args.kind.into_core();
 
-        // FR-028: every new memory gets a UUIDv7 primary key.
+        // Every new memory gets a UUIDv7 primary key.
         // Callers can pin an explicit id (for migrations or to
         // collide under `override: true`); otherwise we mint one.
         let supplied_id = parse_optional_uuid(args.id.as_deref())?;
         let id = supplied_id.unwrap_or_else(Uuid::now_v7);
 
         let refs = parse_wire_refs(args.refs, "refs")?;
-        // FR-38: round-trip the optional source UUID into the
-        // frontmatter. Bad input fails fast with `invalid_source`
-        // so callers see the contract — group UUID for federated
-        // workflows, memory UUID for chained promotions; either
-        // way it's a parseable UUID.
+        // Round-trip the optional source UUID into the frontmatter.
+        // Bad input fails fast with `invalid_source` so callers see the contract:
+        // group UUID for federated workflows, memory UUID for chained promotions;
+        // either way it's a parseable UUID.
         let source = parse_optional_source(args.source.as_deref())?;
         use mmcp_core::memory::{FrontmatterFormat, MemoryFile, MemoryFrontmatter};
         let file = MemoryFile {
@@ -2593,9 +2582,8 @@ impl McpServer {
             .to_string()
             .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
 
-        // FR-39 v2: group-level create chain — Shared Process +
-        // Exclusive Group(g). The kind-partitioned scope is gone;
-        // every create in the group serialises on Group(g) so the
+        // Group-level create chain: Shared Process + Exclusive Group(g).
+        // Every create in the group serialises on Group(g) so the
         // shared ticket counter and slug-uniqueness invariant
         // both run against a stable view.
         let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::create_chain(
@@ -2627,7 +2615,7 @@ impl McpServer {
         .await
         .map_err(map_memory_error_to_mcp)?;
 
-        // FR-45 `deprecated_arg_form`: `override: true` rewrites
+        // `deprecated_arg_form`: `override: true` rewrites
         // the whole file and is almost never the right call.
         // `mcp:edit_memory` targets specific fields and keeps git
         // history cleaner. Surface a soft nudge in the notes
@@ -3002,9 +2990,8 @@ impl McpServer {
             .to_string()
             .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
 
-        // FR-39 v2: memory-modify chain — Shared on every ancestor
-        // and Exclusive on the per-memory leaf. Concurrent edits to
-        // *different* memories under the same group don't contend;
+        // Memory-modify chain: Shared on every ancestor and Exclusive on the per-memory leaf.
+        // Concurrent edits to *different* memories under the same group don't contend;
         // a coarsening rename (Exclusive Group) waits for the
         // Shared Group ancestor to drop.
         let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::memory_chain(
@@ -3045,7 +3032,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "FR-41: atomically move a memory to a new slug path inside the same group. The memory id stays stable across the move, so cross-references in other memories keep resolving. The new slug may be a single segment (`feedback`) or a `/`-joined multi-segment path (`feedback/git/commit-phase`). Same-slug moves short-circuit as no-ops. Refuses to overwrite an existing memory at the destination with the same id; pick a different target or delete the existing entry first.",
+        description = "Atomically move a memory to a new slug path inside the same group. The memory id stays stable across the move, so cross-references in other memories keep resolving. The new slug may be a single segment (`feedback`) or a `/`-joined multi-segment path (`feedback/git/commit-phase`). Same-slug moves short-circuit as no-ops. Refuses to overwrite an existing memory at the destination with the same id; pick a different target or delete the existing entry first.",
         annotations(
             title = "Move memory to a new slug path",
             read_only_hint = false,
@@ -3087,9 +3074,9 @@ impl McpServer {
             ));
         }
         let entry = self.resolve_group_entry(&args.group).await?;
-        // FR-39 v2: a slug-rewrite move spans the source and target
+        // A slug-rewrite move spans the source and target
         // slug directories, so we need the same coarsening lock the
-        // feature rename takes — Exclusive Group blocks every
+        // feature rename takes: Exclusive Group blocks every
         // narrower in-flight memory edit and every new one.
         let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::coarsen_group_chain(
             *entry.manifest.group_id.as_uuid(),
@@ -3185,7 +3172,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Return the section tree of a memory's markdown body (FR-026). Every heading gets a stable dot-separated path id (slugified heading trail with `-2`, `-3` disambiguators for duplicate siblings) plus its level, raw heading text, and half-open line range. Callers discover addressable nodes here before issuing `edit_memory_body` ops. A synthetic `preamble` section covers content before the first heading so even headingless bodies return one entry.",
+        description = "Return the section tree of a memory's markdown body. Every heading gets a stable dot-separated path id (slugified heading trail with `-2`, `-3` disambiguators for duplicate siblings) plus its level, raw heading text, and half-open line range. Callers discover addressable nodes here before issuing `edit_memory_body` ops. A synthetic `preamble` section covers content before the first heading so even headingless bodies return one entry.",
         annotations(
             title = "Read memory body sections",
             read_only_hint = true,
@@ -3244,7 +3231,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Apply an ordered list of section-level or line-level edits to a memory's markdown body and commit the result (FR-026). Section ops address a whole section (heading + nested children) by the dot-path id returned from `read_memory_body_sections`. Line ops are escape hatches for non-heading content. Ops run transactionally: the first error aborts the batch. Structured error codes: `section_not_found`, `move_would_loop`, `level_out_of_range`, `invalid_line_range`, `line_past_eof`, `body_parse_failed`. The protected-group guard from FR-019 / FR-011 still gates this path.",
+        description = "Apply an ordered list of section-level or line-level edits to a memory's markdown body and commit the result. Section ops address a whole section (heading + nested children) by the dot-path id returned from `read_memory_body_sections`. Line ops are escape hatches for non-heading content. Ops run transactionally: the first error aborts the batch. Structured error codes: `section_not_found`, `move_would_loop`, `level_out_of_range`, `invalid_line_range`, `line_past_eof`, `body_parse_failed`. The protected-group elicitation guard still gates this path.",
         annotations(
             title = "Edit memory body (semantic ops)",
             read_only_hint = false,
@@ -3295,7 +3282,7 @@ impl McpServer {
             .to_string()
             .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
 
-        // FR-39 v2: same memory-modify chain as `edit_memory`.
+        // Same memory-modify chain as `edit_memory`.
         let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::memory_chain(
             *entry.manifest.group_id.as_uuid(),
             resolved.id,
@@ -3351,7 +3338,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Validate manifests and memory frontmatter for a group. Returns one entry per group (manifest ok?, memory count) and lifts every finding onto the FR-45 notes channel: parse errors, missing required fields, empty bodies, and similar surface issues all appear as `notes` with stable codes. Checks one group if group UUID given, all groups if omitted.",
+        description = "Validate manifests and memory frontmatter for a group. Returns one entry per group (manifest ok?, memory count) and lifts every finding onto the standard notes channel: parse errors, missing required fields, empty bodies, and similar surface issues all appear as `notes` with stable codes. Checks one group if group UUID given, all groups if omitted.",
         annotations(
             title = "Check group health",
             read_only_hint = true,
@@ -3399,7 +3386,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Deep diagnostic analysis of a group's memories. Everything check_health does plus: missing tags, empty bodies, naming drift, empty groups, UUID mismatches, created_at sanity, cross-group duplicate slugs, cross-ref integrity, supersede-chain reciprocity, and structural hints. Per-group structural summary lives in `groups`; every finding — plus project-level (user / sync / config) signals — rides the FR-45 notes channel with stable codes.",
+        description = "Deep diagnostic analysis of a group's memories. Everything check_health does plus: missing tags, empty bodies, naming drift, empty groups, UUID mismatches, created_at sanity, cross-group duplicate slugs, cross-ref integrity, supersede-chain reciprocity, and structural hints. Per-group structural summary lives in `groups`; every finding, plus project-level (user / sync / config) signals, rides the standard notes channel with stable codes.",
         annotations(
             title = "Deep diagnose group",
             read_only_hint = true,
@@ -4219,7 +4206,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Return the local mmcp project state: discovered project root, configured sync server, and the mirrored groups with their memory counts. Pure-local — no network. Returns `project_configured: false` when no `.mmcp.toml` is in scope, so callers can distinguish 'not in a project' from transient errors.",
+        description = "Return the local mmcp project state: discovered project root, configured sync server, and the mirrored groups with their memory counts. Pure-local, no network. Returns `project_configured: false` when no `.mmcp.toml` is in scope, so callers can distinguish 'not in a project' from transient errors.",
         annotations(
             title = "Local mirror status",
             read_only_hint = true,
@@ -4364,7 +4351,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<InitProjectArgs>,
     ) -> Result<CallToolResult, McpError> {
-        // FR-39 v2: process-coarsening write — Exclusive Process
+        // Process-coarsening write: Exclusive Process
         // serialises every group-creating call across the whole
         // mirror so two concurrent `init_project` calls cannot
         // race on slug uniqueness or repo bootstrap.
@@ -4424,8 +4411,8 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<CreateGroupArgs>,
     ) -> Result<CallToolResult, McpError> {
-        // FR-39 v2: process-coarsening write. Same rationale as
-        // `init_project` — slug uniqueness and repo bootstrap
+        // Process-coarsening write.
+        // Same rationale as `init_project`: slug uniqueness and repo bootstrap
         // need to be globally serialised.
         let _lock_guards =
             mmcp_store::lock::acquire_chain(&mmcp_store::lock::coarsen_process_chain()).await;
@@ -4577,7 +4564,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Apply partial updates to an existing feature request and commit the result. Every mutator is optional — omit to leave untouched. `depends_on` and `blocks` are full-list replacements; pass `[]` to clear, omit to preserve. `status` takes the wire form of the status enum. Errors with `memory_not_found` when the slug has no FR, `not_a_feature` when the slug is a non-FR memory, and `invalid_feature_status` when `status` is not one of the eight variants.",
+        description = "Apply partial updates to an existing feature request and commit the result. Every mutator is optional, omit to leave untouched. `depends_on` and `blocks` are full-list replacements; pass `[]` to clear, omit to preserve. `status` takes the wire form of the status enum. Errors with `memory_not_found` when the slug has no FR, `not_a_feature` when the slug is a non-FR memory, and `invalid_feature_status` when `status` is not one of the eight variants.",
         annotations(
             title = "Update feature request",
             read_only_hint = false,
@@ -4718,7 +4705,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Rename every feature memory under `old_slug` to `new_slug` in a single atomic commit (FR-027). UUIDs stay stable across the rename so cross-references in other features keep resolving without further rewrites. Duplicate slugs (FR-028) move as a batch — every entry under `memories/<old_slug>/` lands under `memories/<new_slug>/`. Errors with `memory_not_found` when no memory lives at `old_slug` and with `not_a_feature` when the source is a non-FR memory.",
+        description = "Rename every feature memory under `old_slug` to `new_slug` in a single atomic commit. UUIDs stay stable across the rename so cross-references in other features keep resolving without further rewrites. Duplicate slugs move as a batch: every entry under `memories/<old_slug>/` lands under `memories/<new_slug>/`. Errors with `memory_not_found` when no memory lives at `old_slug` and with `not_a_feature` when the source is a non-FR memory.",
         annotations(
             title = "Rename feature request",
             read_only_hint = false,
@@ -5260,7 +5247,7 @@ impl McpServer {
     // group, mirroring the feature/issue tracker tools exactly.
 
     #[tool(
-        description = "File a new milestone in the current project's group. Slug is auto-minted from the title when omitted. Status defaults to `planning`; supply one of `planning | active | on_hold | completed` to override. A milestone's live status is a separate, computed rollup over the features that point at it via `add_feature`/`update_feature`'s `milestone` field — see `read_milestone` / `list_milestones`. Errors with `project_not_found`, `invalid_slug`, and `memory_already_exists` mirroring the feature/issue tools.",
+        description = "File a new milestone in the current project's group. Slug is auto-minted from the title when omitted. Status defaults to `planning`; supply one of `planning | active | on_hold | completed` to override. A milestone's live status is a separate, computed rollup over the features that point at it via `add_feature`/`update_feature`'s `milestone` field: see `read_milestone` / `list_milestones`. Errors with `project_not_found`, `invalid_slug`, and `memory_already_exists` mirroring the feature/issue tools.",
         annotations(
             title = "Add milestone",
             read_only_hint = false,
@@ -5325,7 +5312,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Read a milestone by slug from the current project's group. Returns the milestone record (title, description, body, editorial status, commit_id) plus `rollup`: the LIVE status computed by folding the lifecycle states of every feature — in any locally-mirrored group — currently pointing at this milestone. Set `version` to a branch, tag, or 40-char commit hex to read a specific revision. Errors with `not_a_milestone` when the slug resolves to a memory whose kind is not `milestone`.",
+        description = "Read a milestone by slug from the current project's group. Returns the milestone record (title, description, body, editorial status, commit_id) plus `rollup`: the LIVE status computed by folding the lifecycle states of every feature (in any locally-mirrored group) currently pointing at this milestone. Set `version` to a branch, tag, or 40-char commit hex to read a specific revision. Errors with `not_a_milestone` when the slug resolves to a memory whose kind is not `milestone`.",
         annotations(
             title = "Read a milestone",
             read_only_hint = true,
@@ -5361,7 +5348,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Apply partial updates to an existing milestone and commit the result. Every mutator is optional, omit to leave untouched. `status` is the operator's editorial state, not the computed rollup — see `read_milestone` for the live rollup. Errors with `memory_not_found` when the slug has no milestone, `not_a_milestone` when the slug is a non-milestone memory, and `invalid_milestone_status` when `status` is not one of the four variants.",
+        description = "Apply partial updates to an existing milestone and commit the result. Every mutator is optional, omit to leave untouched. `status` is the operator's editorial state, not the computed rollup: see `read_milestone` for the live rollup. Errors with `memory_not_found` when the slug has no milestone, `not_a_milestone` when the slug is a non-milestone memory, and `invalid_milestone_status` when `status` is not one of the four variants.",
         annotations(
             title = "Update milestone",
             read_only_hint = false,
