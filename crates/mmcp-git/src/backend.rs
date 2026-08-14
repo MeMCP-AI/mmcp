@@ -121,17 +121,14 @@ pub trait GitBackend: Send + Sync {
         path: &str,
     ) -> Result<Vec<CommitMeta>, GitError>;
 
-    /// List every blob directly under `path_prefix` at the given
-    /// revision.
+    /// List every blob directly under `path_prefix` at the given revision.
     ///
-    /// Returned values are the file names *relative to* `path_prefix`
-    /// (i.e. without the prefix itself). Subtrees under the prefix
-    /// are not recursed into. Use an empty `path_prefix` for the
-    /// tree root.
+    /// Returned values are the file names *relative to* `path_prefix` (i.e. without the prefix itself).
+    /// Subtrees under the prefix are not recursed into.
+    /// Use an empty `path_prefix` for the tree root.
     ///
-    /// An empty tree or a prefix that does not exist at the given
-    /// revision returns an empty vector, not an error, so callers
-    /// can treat "no memories yet" as the normal case.
+    /// An empty tree or a prefix that does not exist at the given revision returns an empty vector, not an error,
+    /// so callers can treat "no memories yet" as the normal case.
     async fn list_tree(
         &self,
         repo: &RepoHandle,
@@ -139,13 +136,12 @@ pub trait GitBackend: Send + Sync {
         rev: &Rev,
     ) -> Result<Vec<String>, GitError>;
 
-    /// List every subtree (directory) directly under `path_prefix`
-    /// at the given revision. Mirror of [`list_tree`] but for
-    /// directory entries, so resolvers can enumerate slug
-    /// directories under `memories/`.
+    /// List every subtree (directory) directly under `path_prefix` at the given revision.
+    /// Mirror of [`list_tree`] but for directory entries,
+    /// so resolvers can enumerate slug directories under `memories/`.
     ///
-    /// Returned values are the subtree names *relative to*
-    /// `path_prefix`. Nested subtrees are not recursed into.
+    /// Returned values are the subtree names *relative to* `path_prefix`.
+    /// Nested subtrees are not recursed into.
     /// Missing prefix returns an empty vector.
     async fn list_subtrees(
         &self,
