@@ -269,7 +269,10 @@ async fn provision_oauth_handle(
         truncate_to_byte_length(&format!("{provider}_{provider_user_id}"), MAX_HANDLE_LENGTH);
     if user_repo::find_by_handle(conn, &base)
         .await
-        .map_err(|e| AuthError::Claims(e.to_string()))?
+        .map_err(|source| AuthError::UserLookup {
+            handle: base.clone(),
+            source,
+        })?
         .is_none()
     {
         return Ok(base);
@@ -278,7 +281,10 @@ async fn provision_oauth_handle(
         let candidate = truncate_to_byte_length(&format!("{base}-{suffix}"), MAX_HANDLE_LENGTH);
         if user_repo::find_by_handle(conn, &candidate)
             .await
-            .map_err(|e| AuthError::Claims(e.to_string()))?
+            .map_err(|source| AuthError::UserLookup {
+                handle: candidate.clone(),
+                source,
+            })?
             .is_none()
         {
             return Ok(candidate);

@@ -2,6 +2,8 @@
 
 use thiserror::Error;
 
+use mmcp_db::DbError;
+
 /// Failures returned by [`password`](crate::password) and
 /// [`token`](crate::token).
 #[derive(Debug, Error)]
@@ -53,4 +55,18 @@ pub enum AuthError {
         "could not allocate a free handle for OAuth provider '{provider}' after {attempts} attempts"
     )]
     HandleAllocationExhausted { provider: String, attempts: u32 },
+
+    /// A database lookup failed while checking whether a candidate
+    /// handle is already taken during OAuth handle provisioning.
+    /// Distinct from [`AuthError::Claims`]: a lookup failure is a
+    /// database-layer failure, not a claims serialization or
+    /// deserialization failure, and this variant preserves the
+    /// underlying [`DbError`] as a walkable source instead of
+    /// collapsing it to a bare string.
+    #[error("failed to look up handle '{handle}'")]
+    UserLookup {
+        handle: String,
+        #[source]
+        source: DbError,
+    },
 }
