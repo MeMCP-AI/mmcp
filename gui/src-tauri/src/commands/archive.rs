@@ -441,9 +441,8 @@ fn read_confined_archive(input: &str) -> GuiResult<Vec<u8>> {
 
 /// Lock [`LAST_PICKED_IMPORT_PATH`]. The lock is only ever held across
 /// a few non-blocking statements (never across an `.await`), so
-/// poisoning would mean an earlier holder panicked mid-critical-section
-/// — a bug elsewhere in this module, not a condition callers recover
-/// from.
+/// poisoning would mean an earlier holder panicked mid-critical-section:
+/// a bug elsewhere in this module, not a condition callers recover from.
 fn last_picked_import_path() -> std::sync::MutexGuard<'static, Option<PathBuf>> {
     LAST_PICKED_IMPORT_PATH
         .lock()
