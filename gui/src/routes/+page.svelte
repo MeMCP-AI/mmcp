@@ -9,6 +9,7 @@
   import TitleBar from '$lib/components/TitleBar.svelte';
   import HubView from '$lib/components/variants/HubView.svelte';
 
+  import { onAppInitFailed } from '$lib/api/events';
   import { groupsStore } from '$lib/stores/groups.svelte';
   import { memoriesStore } from '$lib/stores/memories.svelte';
   import { reachabilityStore } from '$lib/stores/reachability.svelte';
@@ -21,6 +22,14 @@
     group_id: string | null;
   }
 
+  // Set when the Rust setup closure's `AppState::discover` fails
+  // (see gui/src-tauri/src/lib.rs). Every command depends on
+  // `AppState`, so this is fatal: without this subscriber the app
+  // rendered as a fully interactive but permanently inert shell,
+  // with only a tracing log to explain why — a silent failure (issue
+  // #129, mmcp rule software-surfaces-its-errors-no-silent-failure).
+  let initFailedMessage = $state<string | null>(null);
+
   $effect(() => {
     // Auto-pull the moment the probe reports the server is back.
     // Silent: the pull's own `mirror:changed` broadcast drives the
@@ -29,6 +38,14 @@
       if (!syncStore.configured || syncStore.inFlight) return;
       void syncStore.pull();
     };
+    let unlistenInitFailed: UnlistenFn | null = null;
+    let cancelled = false;
+    void onAppInitFailed((message) => {
+      initFailedMessage = message;
+    }).then((off) => {
+      if (cancelled) off();
+      else unlistenInitFailed = off;
+    });
     (async () => {
       await Promise.all([
         groupsStore.load(),
@@ -40,6 +57,8 @@
     return () => {
       reachabilityStore.onRestore = null;
       reachabilityStore.unmount();
+      cancelled = true;
+      unlistenInitFailed?.();
     };
   });
 
@@ -103,6 +122,16 @@
 
 <div class="flex h-full w-full flex-col overflow-hidden bg-surface-0 text-fg">
   <TitleBar />
+
+  {#if initFailedMessage}
+    <div
+      class="m-3 shrink-0 rounded-md border border-rose-900/60 bg-rose-950/40 p-3 text-sm text-rose-200"
+      role="alert"
+    >
+      <p class="font-semibold">The app failed to start correctly.</p>
+      <p class="mt-1 text-rose-200/90">{initFailedMessage}</p>
+    </div>
+  {/if}
 
   <!-- Hub is the only live variant; `settingsStore.values.ui_variant`
        stays in case a future experiment re-introduces the
