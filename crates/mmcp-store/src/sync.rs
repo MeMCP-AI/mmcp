@@ -87,7 +87,7 @@ impl ScopeIndex for IndexResolver {
 mod tests {
     use super::*;
     use crate::home::MmcpHome;
-    use mmcp_core::id::GroupId;
+    use mmcp_core::id::{GroupId, UserId};
     use mmcp_core::manifest::GroupManifest;
     use mmcp_git::GitBackend;
     use tempfile::TempDir;
@@ -102,7 +102,7 @@ mod tests {
         let (backend, index) = home.init_backend().await.expect("init backend");
 
         let shared_id = GroupId::new();
-        let mut shared = GroupManifest::new_user_owned(shared_id, "team", Uuid::now_v7());
+        let mut shared = GroupManifest::new_user_owned(shared_id, "team", UserId::new());
         shared.scope = GroupScope::Shared;
         backend
             .create_group_repo(&shared)
@@ -110,7 +110,7 @@ mod tests {
             .expect("seed shared");
 
         let project_id = GroupId::new();
-        let project = GroupManifest::new_user_owned(project_id, "proj", Uuid::now_v7());
+        let project = GroupManifest::new_user_owned(project_id, "proj", UserId::new());
         backend
             .create_group_repo(&project)
             .await

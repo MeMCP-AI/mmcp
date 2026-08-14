@@ -22,7 +22,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use inquire::Text;
 use mmcp_core::config::ProjectConfig;
-use mmcp_core::id::{GroupId, ProjectUuid};
+use mmcp_core::id::{GroupId, ProjectUuid, UserId};
 use mmcp_core::manifest::GroupManifest;
 use mmcp_git::{GitBackend, NativeBackend};
 use thiserror::Error;
@@ -251,7 +251,7 @@ async fn bootstrap_project(
     // Owner is a v7 UUID; ownership semantics remain deferred to the auth track.
     // `create_group_repo` records the owner once and never overwrites it,
     // so regeneration on subsequent calls is harmless (they hit the `repo_exists` short-circuit above).
-    let owner = Uuid::now_v7();
+    let owner = UserId::new();
     let manifest = GroupManifest::new_user_owned(group_id, slug.clone(), owner);
     backend
         .create_group_repo(&manifest)

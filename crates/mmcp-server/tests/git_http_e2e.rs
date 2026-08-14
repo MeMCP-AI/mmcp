@@ -9,7 +9,7 @@
 
 use std::net::SocketAddr;
 
-use mmcp_core::id::GroupId;
+use mmcp_core::id::{GroupId, UserId};
 use mmcp_core::manifest::GroupManifest;
 use mmcp_db::entities::group::OwnerKind;
 use mmcp_db::repository::group_repo;
@@ -60,7 +60,7 @@ async fn seed_group_with_memory(
     let owner_id = Uuid::now_v7();
 
     // Create the bare repo on disk with the usual manifest commit.
-    let manifest = GroupManifest::new_user_owned(group_id, slug, owner_id);
+    let manifest = GroupManifest::new_user_owned(group_id, slug, UserId::from_uuid(owner_id));
     let handle = state
         .git
         .create_group_repo(&manifest)

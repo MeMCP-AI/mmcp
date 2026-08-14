@@ -21,7 +21,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use mmcp_core::id::GroupId;
+use mmcp_core::id::{GroupId, UserId};
 use mmcp_core::manifest::{GroupManifest, GroupScope};
 use mmcp_git::{GitBackend, GitError, NativeBackend};
 use thiserror::Error;
@@ -142,7 +142,7 @@ pub async fn create_standalone_group(
     // Owner is a v7 UUID. Real ownership semantics remain deferred
     // to the auth track; `create_group_repo` records the owner once
     // and never overwrites it, which matches `init_project`'s shape.
-    let owner = Uuid::now_v7();
+    let owner = UserId::new();
     let mut manifest = GroupManifest::new_user_owned(group_id, opts.slug.clone(), owner);
     manifest.display_name = opts.display_name.clone();
     manifest.scope = opts.scope;
@@ -475,7 +475,8 @@ fn owner_kind_str(owner: &mmcp_core::manifest::GroupOwnerHint) -> &'static str {
 fn owner_id_str(owner: &mmcp_core::manifest::GroupOwnerHint) -> String {
     use mmcp_core::manifest::GroupOwnerHint;
     match owner {
-        GroupOwnerHint::User(uuid) | GroupOwnerHint::Org(uuid) => uuid.to_string(),
+        GroupOwnerHint::User(id) => id.to_string(),
+        GroupOwnerHint::Org(id) => id.to_string(),
     }
 }
 

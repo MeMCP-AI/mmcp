@@ -3,9 +3,8 @@
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-use crate::id::GroupId;
+use crate::id::{GroupId, OrgId, UserId};
 use crate::manifest::ManifestError;
 
 /// File name the manifest is committed under at the repo root.
@@ -82,8 +81,8 @@ pub struct GroupManifest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "id")]
 pub enum GroupOwnerHint {
-    User(Uuid),
-    Org(Uuid),
+    User(UserId),
+    Org(OrgId),
 }
 
 /// Declares whether a group's memories cross project boundaries.
@@ -134,7 +133,7 @@ impl GroupManifest {
     /// before `create_group_repo`, or via [`Self::set_protected`]
     /// on an already existing repo's parsed manifest.
     #[must_use]
-    pub fn new_user_owned(group_id: GroupId, slug: impl Into<String>, owner: Uuid) -> Self {
+    pub fn new_user_owned(group_id: GroupId, slug: impl Into<String>, owner: UserId) -> Self {
         Self {
             schema_version: MANIFEST_SCHEMA_VERSION,
             group_id,
@@ -149,7 +148,7 @@ impl GroupManifest {
 
     /// Build a fresh manifest for an org-owned group created now.
     #[must_use]
-    pub fn new_org_owned(group_id: GroupId, slug: impl Into<String>, owner: Uuid) -> Self {
+    pub fn new_org_owned(group_id: GroupId, slug: impl Into<String>, owner: OrgId) -> Self {
         Self {
             schema_version: MANIFEST_SCHEMA_VERSION,
             group_id,
@@ -206,7 +205,7 @@ mod tests {
 
     #[test]
     fn user_owned_manifest_round_trips() {
-        let manifest = GroupManifest::new_user_owned(GroupId::new(), "team-rust", Uuid::now_v7());
+        let manifest = GroupManifest::new_user_owned(GroupId::new(), "team-rust", UserId::new());
         let text = manifest.to_toml().unwrap();
         let parsed = GroupManifest::from_toml(&text).unwrap();
         assert_eq!(parsed, manifest);
@@ -214,7 +213,7 @@ mod tests {
 
     #[test]
     fn org_owned_manifest_round_trips() {
-        let manifest = GroupManifest::new_org_owned(GroupId::new(), "shared", Uuid::now_v7());
+        let manifest = GroupManifest::new_org_owned(GroupId::new(), "shared", OrgId::new());
         let text = manifest.to_toml().unwrap();
         let parsed = GroupManifest::from_toml(&text).unwrap();
         assert_eq!(parsed, manifest);
@@ -228,7 +227,7 @@ mod tests {
 
     #[test]
     fn newer_schema_version_is_rejected_explicitly() {
-        let owner = Uuid::now_v7();
+        let owner = UserId::new();
         let mut manifest = GroupManifest::new_user_owned(GroupId::new(), "future", owner);
         manifest.schema_version = MANIFEST_SCHEMA_VERSION + 1;
         let text = manifest.to_toml().unwrap();
@@ -248,7 +247,7 @@ mod tests {
         // Use a freshly-rendered manifest with the field stripped
         // rather than hand-typing TOML: avoids drifting on
         // GroupId's wire format.
-        let manifest = GroupManifest::new_user_owned(GroupId::new(), "legacy", Uuid::now_v7());
+        let manifest = GroupManifest::new_user_owned(GroupId::new(), "legacy", UserId::new());
         let text = manifest.to_toml().unwrap();
         assert!(
             !text.contains("protected"),
@@ -260,7 +259,7 @@ mod tests {
 
     #[test]
     fn manifest_with_protected_true_round_trips() {
-        let mut manifest = GroupManifest::new_user_owned(GroupId::new(), "global", Uuid::now_v7());
+        let mut manifest = GroupManifest::new_user_owned(GroupId::new(), "global", UserId::new());
         manifest.protected = true;
         let text = manifest.to_toml().unwrap();
         assert!(
@@ -277,7 +276,7 @@ mod tests {
         // skip_serializing_if keeps the wire shape minimal; a group
         // that has never been opted into protection produces no
         // `protected` line.
-        let manifest = GroupManifest::new_user_owned(GroupId::new(), "team-rust", Uuid::now_v7());
+        let manifest = GroupManifest::new_user_owned(GroupId::new(), "team-rust", UserId::new());
         let text = manifest.to_toml().unwrap();
         assert!(
             !text.contains("protected"),
@@ -291,7 +290,7 @@ mod tests {
         // Render a legacy manifest (no scope field emitted because
         // of skip_serializing_if on the default), reparse, assert
         // the default variant round-trips.
-        let manifest = GroupManifest::new_user_owned(GroupId::new(), "legacy", Uuid::now_v7());
+        let manifest = GroupManifest::new_user_owned(GroupId::new(), "legacy", UserId::new());
         let text = manifest.to_toml().unwrap();
         assert!(
             !text.contains("scope"),
@@ -303,7 +302,7 @@ mod tests {
 
     #[test]
     fn global_scope_round_trips_through_toml() {
-        let mut manifest = GroupManifest::new_user_owned(GroupId::new(), "global", Uuid::now_v7());
+        let mut manifest = GroupManifest::new_user_owned(GroupId::new(), "global", UserId::new());
         manifest.scope = GroupScope::Global;
         let text = manifest.to_toml().unwrap();
         assert!(
@@ -318,7 +317,7 @@ mod tests {
     #[test]
     fn shared_scope_round_trips_through_toml() {
         let mut manifest =
-            GroupManifest::new_user_owned(GroupId::new(), "team/house-rules", Uuid::now_v7());
+            GroupManifest::new_user_owned(GroupId::new(), "team/house-rules", UserId::new());
         manifest.scope = GroupScope::Shared;
         let text = manifest.to_toml().unwrap();
         assert!(
@@ -335,7 +334,7 @@ mod tests {
         // byte-identical on the wire. Without this guarantee, every
         // existing manifest would gain a `scope = "project"` line
         // on the next rewrite: a pointless migration churn.
-        let manifest = GroupManifest::new_user_owned(GroupId::new(), "team-rust", Uuid::now_v7());
+        let manifest = GroupManifest::new_user_owned(GroupId::new(), "team-rust", UserId::new());
         assert_eq!(manifest.scope, GroupScope::Project);
         let text = manifest.to_toml().unwrap();
         assert!(

@@ -5,7 +5,7 @@
 //! needs one of these values imports from here instead of
 //! hardcoding the string.
 
-use uuid::Uuid;
+use crate::id::MemoryId;
 
 /// Default branch name used for all group repositories.
 pub const MAIN_BRANCH: &str = "main";
@@ -38,7 +38,7 @@ pub const ZERO_COMMIT: &str = "0000000000000000000000000000000000000000";
 /// The UUID is the canonical filename so duplicate slugs coexist as
 /// sibling files under the shared slug directory.
 #[must_use]
-pub fn memory_path(slug: &str, id: Uuid) -> String {
+pub fn memory_path(slug: &str, id: MemoryId) -> String {
     format!("{MEMORIES_DIR}/{slug}/{id}{MEMORY_EXTENSION}")
 }
 
@@ -48,7 +48,9 @@ mod tests {
 
     #[test]
     fn memory_path_builds_two_level_path() {
-        let id = Uuid::parse_str("0196e5bb-a000-7000-8000-000000000001").unwrap();
+        let id = MemoryId::from_uuid(
+            uuid::Uuid::parse_str("0196e5bb-a000-7000-8000-000000000001").unwrap(),
+        );
         assert_eq!(
             memory_path("uuidify-memories", id),
             "memories/uuidify-memories/0196e5bb-a000-7000-8000-000000000001.md"

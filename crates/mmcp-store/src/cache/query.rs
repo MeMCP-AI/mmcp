@@ -191,7 +191,8 @@ mod tests {
         let file = MemoryFile::parse(&source).expect("parse");
         let rendered = file.to_string().expect("render");
         let id = Uuid::now_v7();
-        let path = mmcp_core::conventions::memory_path(slug, id);
+        let path =
+            mmcp_core::conventions::memory_path(slug, mmcp_core::id::MemoryId::from_uuid(id));
         crate::memory::write_file_at_path(
             scratch.backend(),
             handle,

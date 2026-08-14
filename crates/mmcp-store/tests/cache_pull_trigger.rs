@@ -10,7 +10,6 @@ use mmcp_core::memory::MemoryFile;
 use mmcp_git::{CommitSpec, GitBackend};
 use mmcp_store::cache;
 use mmcp_store::testing::ScratchHome;
-use uuid::Uuid;
 
 #[tokio::test]
 async fn notify_pull_reindexes_exactly_the_named_groups() {
@@ -45,7 +44,7 @@ async fn notify_pull_reindexes_exactly_the_named_groups() {
     let source = "+++\nname = \"pulled-memory\"\ndescription = \"landed via a simulated pull\"\nkind = \"scratch\"\n+++\n\ncontent that arrived from the remote\n";
     let file = MemoryFile::parse(source).expect("parse");
     let rendered = file.to_string().expect("render");
-    let id = Uuid::now_v7();
+    let id = mmcp_core::id::MemoryId::new();
     let path = mmcp_core::conventions::memory_path("pulled-memory", id);
     scratch
         .backend()

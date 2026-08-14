@@ -8022,7 +8022,7 @@ fn ok_json_with_notes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mmcp_core::id::GroupId;
+    use mmcp_core::id::{GroupId, MemoryId, UserId};
     use mmcp_core::manifest::GroupManifest;
     use mmcp_git::{CommitSpec, GitBackend};
     use tempfile::TempDir;
@@ -8100,7 +8100,7 @@ mod tests {
         protected: bool,
         scope: mmcp_core::manifest::GroupScope,
     ) -> GroupId {
-        let owner = Uuid::now_v7();
+        let owner = UserId::new();
         let group_id = GroupId::new();
         let mut manifest = GroupManifest::new_user_owned(group_id, slug, owner);
         manifest.protected = protected;
@@ -8120,7 +8120,7 @@ mod tests {
                     author_email: "test@example.com".into(),
                     message: format!("seed memory {memory_slug}"),
                     files: vec![(
-                        mmcp_core::conventions::memory_path(memory_slug, Uuid::now_v7()),
+                        mmcp_core::conventions::memory_path(memory_slug, MemoryId::new()),
                         Some(memory_body.as_bytes().to_vec()),
                     )],
                 },
@@ -8142,7 +8142,7 @@ mod tests {
         total: usize,
         mandatory_count: usize,
     ) -> GroupId {
-        let owner = Uuid::now_v7();
+        let owner = UserId::new();
         let group_id = GroupId::new();
         let manifest = GroupManifest::new_user_owned(group_id, slug, owner);
         let handle = state
@@ -8158,7 +8158,7 @@ mod tests {
                     "+++\nname = \"Entry {i}\"\ndescription = \"Description for entry {i}, padded so the fixture reproduces a realistic per-record size.\"\nkind = \"rule\"\nmandatory = {mandatory}\ntags = []\n+++\n# Entry {i}\nBody.\n"
                 );
                 (
-                    mmcp_core::conventions::memory_path(&memory_slug, Uuid::now_v7()),
+                    mmcp_core::conventions::memory_path(&memory_slug, MemoryId::new()),
                     Some(body.into_bytes()),
                 )
             })
@@ -8255,7 +8255,7 @@ mod tests {
                     author_email: "test@example.com".into(),
                     message: "seed broken sibling".into(),
                     files: vec![(
-                        mmcp_core::conventions::memory_path("broken", Uuid::now_v7()),
+                        mmcp_core::conventions::memory_path("broken", MemoryId::new()),
                         Some(BROKEN_MEMORY.as_bytes().to_vec()),
                     )],
                 },
@@ -9830,11 +9830,11 @@ mod tests {
                     message: "seed two more siblings".into(),
                     files: vec![
                         (
-                            mmcp_core::conventions::memory_path("rule-two", Uuid::now_v7()),
+                            mmcp_core::conventions::memory_path("rule-two", MemoryId::new()),
                             Some(OPTIONAL_MEMORY.as_bytes().to_vec()),
                         ),
                         (
-                            mmcp_core::conventions::memory_path("rule-three", Uuid::now_v7()),
+                            mmcp_core::conventions::memory_path("rule-three", MemoryId::new()),
                             Some(OPTIONAL_MEMORY.as_bytes().to_vec()),
                         ),
                     ],
@@ -9916,7 +9916,7 @@ mod tests {
                     author_email: "test@example.com".into(),
                     message: "seed unpinned sibling".into(),
                     files: vec![(
-                        mmcp_core::conventions::memory_path("unpinned", Uuid::now_v7()),
+                        mmcp_core::conventions::memory_path("unpinned", MemoryId::new()),
                         Some(OPTIONAL_MEMORY.as_bytes().to_vec()),
                     )],
                 },
@@ -10010,11 +10010,11 @@ mod tests {
                     message: "seed good sibling and broken sibling".into(),
                     files: vec![
                         (
-                            mmcp_core::conventions::memory_path("good-two", Uuid::now_v7()),
+                            mmcp_core::conventions::memory_path("good-two", MemoryId::new()),
                             Some(OPTIONAL_MEMORY.as_bytes().to_vec()),
                         ),
                         (
-                            mmcp_core::conventions::memory_path("broken", Uuid::now_v7()),
+                            mmcp_core::conventions::memory_path("broken", MemoryId::new()),
                             Some(BROKEN_MEMORY.as_bytes().to_vec()),
                         ),
                     ],
@@ -10106,11 +10106,11 @@ mod tests {
                     message: "seed good sibling and non-UTF8 sibling".into(),
                     files: vec![
                         (
-                            mmcp_core::conventions::memory_path("good-two", Uuid::now_v7()),
+                            mmcp_core::conventions::memory_path("good-two", MemoryId::new()),
                             Some(OPTIONAL_MEMORY.as_bytes().to_vec()),
                         ),
                         (
-                            mmcp_core::conventions::memory_path("not-utf8", Uuid::now_v7()),
+                            mmcp_core::conventions::memory_path("not-utf8", MemoryId::new()),
                             Some(NOT_UTF8.to_vec()),
                         ),
                     ],
@@ -12061,7 +12061,7 @@ mod tests {
             .expect("move");
         // Add a sibling under feedback with a shallower path.
         let entry = server.state.groups.get(&group).await.expect("group entry");
-        let sibling_id = Uuid::now_v7();
+        let sibling_id = MemoryId::new();
         server
             .state
             .backend

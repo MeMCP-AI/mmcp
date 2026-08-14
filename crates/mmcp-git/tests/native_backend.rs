@@ -1,10 +1,9 @@
 //! Integration tests for the native git backend.
 
-use mmcp_core::id::GroupId;
+use mmcp_core::id::{GroupId, UserId};
 use mmcp_core::manifest::{GroupManifest, MANIFEST_FILENAME};
 use mmcp_git::{CommitSpec, FastForwardOutcome, GitBackend, NativeBackend, Rev};
 use tempfile::TempDir;
-use uuid::Uuid;
 
 fn backend_in_tempdir() -> (NativeBackend, TempDir) {
     let tmp = TempDir::new().expect("tempdir");
@@ -13,7 +12,7 @@ fn backend_in_tempdir() -> (NativeBackend, TempDir) {
 }
 
 fn sample_manifest() -> GroupManifest {
-    GroupManifest::new_user_owned(GroupId::new(), "g", Uuid::now_v7())
+    GroupManifest::new_user_owned(GroupId::new(), "g", UserId::new())
 }
 
 fn sample_commit(author: &str, branch: &str, file: &str, contents: &str) -> CommitSpec {

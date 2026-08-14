@@ -263,7 +263,7 @@ mod tests {
         for name in ["alpha", "beta"] {
             let file = sample_memory_file(name);
             let rendered = file.to_string().expect("render memory file");
-            let id = uuid::Uuid::now_v7();
+            let id = mmcp_core::id::MemoryId::new();
             let path = mmcp_core::conventions::memory_path(name, id);
             crate::memory::write_file_at_path(
                 scratch.backend(),
@@ -315,7 +315,7 @@ mod tests {
             .expect("good entry present");
         let file = sample_memory_file("alpha");
         let rendered = file.to_string().expect("render memory file");
-        let id = uuid::Uuid::now_v7();
+        let id = mmcp_core::id::MemoryId::new();
         let path = mmcp_core::conventions::memory_path("alpha", id);
         crate::memory::write_file_at_path(
             scratch.backend(),

@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 
 use mmcp_core::config::{ProjectConfig, SubscriptionsConfig};
-use mmcp_core::id::{GroupId, ProjectUuid};
+use mmcp_core::id::{GroupId, ProjectUuid, UserId};
 use mmcp_core::manifest::GroupManifest;
 use mmcp_core::memory::MemoryKind;
 use mmcp_git::{GitBackend, NativeBackend, Rev};
@@ -20,7 +20,6 @@ use mmcp_store::import_adoc::convert_adoc_to_markdown;
 use mmcp_store::memory::{self as import, SynthFrontmatter, resolve_memory};
 use mmcp_store::testing::ScratchHome;
 use tempfile::TempDir;
-use uuid::Uuid;
 
 #[tokio::test]
 async fn import_list_read_health_and_diagnose_run_without_any_remote() {
@@ -175,7 +174,7 @@ async fn native_backend_is_usable_with_only_a_local_repo_root() {
     let tmp = TempDir::new().expect("tempdir");
     let root: PathBuf = tmp.path().to_path_buf();
     let backend = NativeBackend::new(&root).expect("backend without net");
-    let manifest = GroupManifest::new_user_owned(GroupId::new(), "solo", Uuid::now_v7());
+    let manifest = GroupManifest::new_user_owned(GroupId::new(), "solo", UserId::new());
     let handle = backend
         .create_group_repo(&manifest)
         .await

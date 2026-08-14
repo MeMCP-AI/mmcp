@@ -15,7 +15,6 @@ use mmcp_core::memory::MemoryFile;
 use mmcp_store::cache;
 use mmcp_store::memory::{WriteFileOptions, write_file_at_path};
 use mmcp_store::testing::ScratchHome;
-use uuid::Uuid;
 
 #[tokio::test]
 async fn write_file_at_path_indexes_through_the_global_hook() {
@@ -37,7 +36,7 @@ async fn write_file_at_path_indexes_through_the_global_hook() {
     let source = "+++\nname = \"otter-notes\"\ndescription = \"about otters\"\nkind = \"scratch\"\n+++\n\notters are semiaquatic mammals\n";
     let file = MemoryFile::parse(source).expect("parse sample memory");
     let rendered = file.to_string().expect("render memory file");
-    let id = Uuid::now_v7();
+    let id = mmcp_core::id::MemoryId::new();
     let path = mmcp_core::conventions::memory_path("otter-notes", id);
 
     write_file_at_path(

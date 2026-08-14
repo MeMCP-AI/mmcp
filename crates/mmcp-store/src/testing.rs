@@ -20,7 +20,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use mmcp_core::id::GroupId;
+use mmcp_core::id::{GroupId, UserId};
 use mmcp_core::manifest::GroupManifest;
 use mmcp_git::{GitBackend, NativeBackend};
 use tempfile::TempDir;
@@ -114,7 +114,7 @@ impl ScratchHome {
     pub async fn seed_group(&self, slug: &str) -> Result<SeededGroup, StoreError> {
         let group_id = GroupId::new();
         let owner = Uuid::now_v7();
-        let manifest = GroupManifest::new_user_owned(group_id, slug, owner);
+        let manifest = GroupManifest::new_user_owned(group_id, slug, UserId::from_uuid(owner));
         self.backend.create_group_repo(&manifest).await?;
         self.groups.refresh().await?;
         Ok(SeededGroup {

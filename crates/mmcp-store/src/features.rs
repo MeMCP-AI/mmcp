@@ -1399,7 +1399,7 @@ mod tests {
         // Seed a memory whose frontmatter is a genuine parse
         // failure (no `+++` fences at all), not merely an
         // edge-case-but-valid value.
-        let bad_id = Uuid::now_v7();
+        let bad_id = mmcp_core::id::MemoryId::new();
         let author = scratch.author();
         scratch
             .backend()

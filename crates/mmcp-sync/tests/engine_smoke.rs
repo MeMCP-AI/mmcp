@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use mmcp_core::id::GroupId;
+use mmcp_core::id::{GroupId, UserId};
 use mmcp_core::manifest::GroupManifest;
 use mmcp_git::{GitBackend, NativeBackend, RepoHandle};
 use mmcp_sync::{GroupHandleResolver, ManifestResponse, RemoteGroup, SyncClient, SyncEngine};
@@ -59,7 +59,7 @@ impl mmcp_sync::ScopeIndex for MapResolver {
 async fn seeded_backend() -> (Arc<NativeBackend>, MapResolver, Uuid, TempDir) {
     let tmp = TempDir::new().expect("tempdir");
     let backend = Arc::new(NativeBackend::new(tmp.path()).expect("backend"));
-    let owner = Uuid::now_v7();
+    let owner = UserId::new();
     let group_id = GroupId::new();
     let manifest = GroupManifest::new_user_owned(group_id, "team-rust", owner);
     let handle = backend.create_group_repo(&manifest).await.expect("create");
@@ -97,7 +97,7 @@ async fn push_group_filter_restricts_to_matching_group() {
     let server = MockServer::start().await;
     let (backend, mut resolver, group_uuid, _tmp) = seeded_backend().await;
 
-    let other_owner = Uuid::now_v7();
+    let other_owner = UserId::new();
     let other_id = GroupId::new();
     let other_manifest = GroupManifest::new_user_owned(other_id, "team-python", other_owner);
     let other_handle = backend

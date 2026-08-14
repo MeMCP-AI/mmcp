@@ -15,7 +15,7 @@
 //! a rename to `MemoryError` would ripple across every consumer's error mapper,
 //! not worth it for this chain.
 
-use mmcp_core::id::GroupId;
+use mmcp_core::id::{GroupId, MemoryId};
 use mmcp_core::memory::{MemoryFile, MemoryFrontmatter, MemoryKind};
 use mmcp_git::{CommitSpec, GitBackend, GitError, NativeBackend, RepoHandle, Rev};
 use uuid::Uuid;
@@ -422,7 +422,7 @@ async fn resolve_slug_and_id(
     slug: &str,
     expected: Uuid,
 ) -> Result<ResolvedMemory, ImportError> {
-    let path = mmcp_core::conventions::memory_path(slug, expected);
+    let path = mmcp_core::conventions::memory_path(slug, MemoryId::from_uuid(expected));
     match backend.read_file(handle, &path, &Rev::head()).await {
         Ok(bytes) => {
             verify_id_match(slug, &bytes, expected)?;
@@ -463,7 +463,7 @@ async fn resolve_by_slug(
             Ok(ResolvedMemory {
                 slug: slug.to_string(),
                 id: only,
-                path: mmcp_core::conventions::memory_path(slug, only),
+                path: mmcp_core::conventions::memory_path(slug, MemoryId::from_uuid(only)),
                 addressing_mode: AddressingMode::BySlugOnly,
             })
         }
@@ -865,7 +865,7 @@ pub async fn move_memory_path(
     // Refuse to overwrite a sibling at the destination with the same id.
     // Writing different bytes there silently would lose data;
     // the caller should pick a different target or delete the existing entry first.
-    let new_path = mmcp_core::conventions::memory_path(new_slug, resolved.id);
+    let new_path = mmcp_core::conventions::memory_path(new_slug, MemoryId::from_uuid(resolved.id));
     match backend.read_file(handle, &new_path, &Rev::head()).await {
         Ok(_) => {
             return Err(ImportError::MemoryAlreadyExists {
@@ -942,7 +942,7 @@ pub async fn write_memory_by_id(
         message,
     } = options;
     validate_memory_slug(slug)?;
-    let path = mmcp_core::conventions::memory_path(slug, id);
+    let path = mmcp_core::conventions::memory_path(slug, MemoryId::from_uuid(id));
     let exists = match backend.read_file(handle, &path, &Rev::head()).await {
         Ok(_) => true,
         Err(GitError::PathNotFound(_)) => false,
@@ -1389,7 +1389,7 @@ mod tests {
     async fn test_backend() -> (Arc<NativeBackend>, RepoHandle, TempDir) {
         let tmp = TempDir::new().expect("tempdir");
         let backend = Arc::new(NativeBackend::new(tmp.path()).expect("backend"));
-        let owner = Uuid::now_v7();
+        let owner = mmcp_core::id::UserId::new();
         let group_id = GroupId::new();
         let manifest = GroupManifest::new_user_owned(group_id, "test", owner);
         let handle = backend.create_group_repo(&manifest).await.expect("create");
@@ -1860,7 +1860,7 @@ mod tests {
                 CommitSpec::mmcp_commit(
                     format!("seed {slug}/{id}"),
                     vec![(
-                        mmcp_core::conventions::memory_path(slug, id),
+                        mmcp_core::conventions::memory_path(slug, MemoryId::from_uuid(id)),
                         Some(body.into_bytes()),
                     )],
                     &author.name,
@@ -2013,7 +2013,7 @@ mod tests {
                 CommitSpec::mmcp_commit(
                     format!("seed yam/{id}"),
                     vec![(
-                        mmcp_core::conventions::memory_path("yam", id),
+                        mmcp_core::conventions::memory_path("yam", MemoryId::from_uuid(id)),
                         Some(yaml_body.into_bytes()),
                     )],
                     &author.name,
@@ -2076,7 +2076,7 @@ mod tests {
                 CommitSpec::mmcp_commit(
                     format!("seed bad/{bad_id}"),
                     vec![(
-                        mmcp_core::conventions::memory_path("bad", bad_id),
+                        mmcp_core::conventions::memory_path("bad", MemoryId::from_uuid(bad_id)),
                         Some(b"plain text without frontmatter\n".to_vec()),
                     )],
                     &author.name,

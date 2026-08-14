@@ -5,11 +5,10 @@
 //!
 //! Usage: cargo run --package mmcp-git --example seed_test_group
 
-use mmcp_core::id::GroupId;
+use mmcp_core::id::{GroupId, UserId};
 use mmcp_core::manifest::GroupManifest;
 use mmcp_git::types::CommitSpec;
 use mmcp_git::{GitBackend, NativeBackend};
-use uuid::Uuid;
 
 #[tokio::main]
 async fn main() {
@@ -17,7 +16,7 @@ async fn main() {
     let backend = NativeBackend::new(tmp.path()).expect("init repos root");
 
     let group_id = GroupId::new();
-    let owner = Uuid::now_v7();
+    let owner = UserId::new();
     let manifest = GroupManifest::new_user_owned(group_id, "test-offline", owner);
     let handle = backend
         .create_group_repo(&manifest)

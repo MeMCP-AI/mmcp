@@ -7,7 +7,7 @@
 
 use std::net::SocketAddr;
 
-use mmcp_core::id::GroupId;
+use mmcp_core::id::{GroupId, MemoryId, UserId};
 use mmcp_core::manifest::GroupManifest;
 use mmcp_core::memory::BumpIntent;
 use mmcp_db::entities::group::OwnerKind;
@@ -52,7 +52,7 @@ async fn seed_group(state: &mmcp_server::state::ServerState, slug: &str) -> Uuid
     let group_id = GroupId::new();
     let uuid = *group_id.as_uuid();
     let owner = Uuid::now_v7();
-    let manifest = GroupManifest::new_user_owned(group_id, slug, owner);
+    let manifest = GroupManifest::new_user_owned(group_id, slug, UserId::from_uuid(owner));
     state
         .git
         .create_group_repo(&manifest)
@@ -231,7 +231,7 @@ async fn sync_push_first_publish_assigns_0_1_0_and_records_tag() {
             CommitSpec::mmcp_commit(
                 "seed memory commit",
                 vec![(
-                    mmcp_core::conventions::memory_path("rules", uuid::Uuid::now_v7()),
+                    mmcp_core::conventions::memory_path("rules", MemoryId::new()),
                     Some(b"+++\nname = \"Rules\"\ndescription = \"A rule\"\nkind = \"rule\"\nmandatory = true\ntags = [\"test\"]\n+++\n\nBody.\n".to_vec()),
                 )],
                 "alice",

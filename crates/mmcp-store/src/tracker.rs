@@ -12,6 +12,7 @@
 //! The helper lives in its own concern-named module so neither tracker surface owns it.
 
 use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION, memory_path};
+use mmcp_core::id::MemoryId;
 use mmcp_core::memory::{MemoryFile, MemoryRef, Status};
 use mmcp_git::{GitBackend, NativeBackend, Rev};
 use uuid::Uuid;
@@ -201,8 +202,8 @@ where
         let Ok(id) = Uuid::parse_str(stem) else {
             continue;
         };
-        let old_path = memory_path(old_slug, id);
-        let new_path = memory_path(new_slug, id);
+        let old_path = memory_path(old_slug, MemoryId::from_uuid(id));
+        let new_path = memory_path(new_slug, MemoryId::from_uuid(id));
         let bytes = backend
             .read_file(&entry.handle, &old_path, &Rev::head())
             .await
