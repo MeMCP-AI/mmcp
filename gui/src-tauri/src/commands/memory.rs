@@ -22,10 +22,8 @@ pub struct MemoryRefDto {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FeatureMetadataDto {
-    /// Serde-snake-case: requested, approved, pending, completed,
-    /// blocked, deferred, duplicate, superseded. Kept as a String on
-    /// the wire so the frontend doesn't have to re-declare the enum
-    /// variants.
+    /// Serde-snake-case: requested, approved, pending, completed, blocked, deferred, duplicate, superseded.
+    /// Kept as a String on the wire so the frontend doesn't have to re-declare the enum variants.
     pub status: String,
     pub number: Option<u32>,
     #[serde(default)]
@@ -37,9 +35,8 @@ pub struct FeatureMetadataDto {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IssueMetadataDto {
-    /// Serde-snake-case: open, closed, wontfix, blocked, deferred,
-    /// duplicate, superseded. Kept as a String on the wire to
-    /// mirror `FeatureMetadataDto::status`.
+    /// Serde-snake-case: open, closed, wontfix, blocked, deferred, duplicate, superseded.
+    /// Kept as a String on the wire to mirror `FeatureMetadataDto::status`.
     pub status: String,
     pub number: Option<u32>,
     #[serde(default)]
@@ -243,10 +240,7 @@ fn to_memory_file(dto: MemoryFileDto) -> GuiResult<MemoryFile> {
                 commit: r.commit,
             })
             .collect(),
-        // FR-38: GUI does not yet expose source authoring; the
-        // round-trip preserves whatever was on disk only when the
-        // DTO grows the field. Default-None for now keeps the
-        // existing GUI surface unchanged.
+        // DTO carries no `source` field: every write drops whatever value was previously on disk.
         source: None,
     };
     Ok(MemoryFile {

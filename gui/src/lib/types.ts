@@ -1,8 +1,6 @@
-// Hand-written TS mirrors of the Rust DTOs in
-// gui/src-tauri/src/commands/*.rs. When a future FR wires
-// specta / tauri-specta, this file will be auto-generated. For
-// now, if a Rust DTO shape changes, change the mirror here and
-// grep for the field name to update call sites.
+// Hand-written TS mirrors of the Rust DTOs in gui/src-tauri/src/commands/*.rs.
+// Not code-generated.
+// On a Rust DTO shape change, update the mirror here and grep for the field name to catch call sites.
 
 export type KindStr =
   | 'rule'
@@ -76,17 +74,13 @@ export interface PushReport {
   pushed: number;
 }
 
-/** Raw severity string as emitted by mmcp-store. Rust uses
- * `"error" | "warning" | "info"`; keep the TS type permissive
- * (string) and funnel everything through `normalizeSeverity` in
- * `$lib/utils/diag.ts` so a stale client never silently drops a
- * finding because of a spelling mismatch.
+/** Raw severity string emitted by mmcp-store (`"error" | "warning" | "info"`).
+ * Kept as `string`, not a union, so an unrecognized value doesn't get silently dropped;
+ * normalize via `normalizeSeverity` in `$lib/utils/diag.ts`.
  *
- * Mirrors `mmcp_store::diagnostics::Finding`. The `code` field is
- * a stable slug-style identifier (`manifest_unreadable`,
- * `memory_body_empty`, …) FR-45 uses to map findings to MCP notes;
- * the GUI exposes it for future grouping but doesn't depend on it
- * yet. */
+ * Mirrors `mmcp_store::diagnostics::Finding`.
+ * `code` is a stable slug identifier (e.g. `manifest_unreadable`,
+ * `memory_body_empty`); the GUI exposes it but does not group by it. */
 export interface Finding {
   group: string;
   slug: string | null;
@@ -127,8 +121,7 @@ export interface CommitMeta {
 export interface DiffSpan {
   text: string;
   /**
-   * True for the fragment of an insert/delete line that actually
-   * diverged from its counterpart (inline word-level highlight).
+   * True for the diverged fragment of an insert/delete line (inline word-level highlight).
    * False for the equal/context fragments surrounding it.
    */
   emphasized: boolean;
@@ -159,8 +152,8 @@ export interface GuiErrorPayload {
 }
 
 // --- mmcp-core config DTOs ---------------------------------------
-// Mirror the Rust types in `crates/mmcp-core/src/config/*`. Fields
-// are optional / nullable to match serde(default) + Option<T>.
+// Mirror the Rust types in `crates/mmcp-core/src/config/*`.
+// Fields are optional / nullable to match serde(default) + Option<T>.
 
 export interface UserSyncConfig {
   server_url: string;
