@@ -68,6 +68,18 @@ pub struct LimitsConfig {
     /// import default-slug path) when no per-call override and no
     /// `MMCP_MAX_AUTO_SLUG_LENGTH` environment variable are set.
     pub max_auto_slug_length: Option<usize>,
+
+    /// Overrides `mmcp_auth::password::MIN_PASSWORD_LENGTH`, in
+    /// bytes, the minimum accepted account password length. Beaten
+    /// by a CLI `--min-password-length` override or the
+    /// `MMCP_MIN_PASSWORD_LENGTH` environment variable; wins over
+    /// the compiled-in default when neither of those is set.
+    pub min_password_length: Option<usize>,
+
+    /// Overrides `mmcp_auth::password::MAX_PASSWORD_LENGTH`, in
+    /// bytes, the maximum accepted account password length. Same
+    /// precedence cascade as [`LimitsConfig::min_password_length`].
+    pub max_password_length: Option<usize>,
 }
 
 impl UserConfig {
@@ -111,6 +123,8 @@ group = "my-group"
 
 [limits]
 max_auto_slug_length = 80
+min_password_length = 10
+max_password_length = 128
 "#;
         let cfg = UserConfig::from_toml(text).unwrap();
         assert_eq!(cfg.author.as_ref().unwrap().name.as_deref(), Some("Alice"));
@@ -124,6 +138,16 @@ max_auto_slug_length = 80
             Some("my-group")
         );
         assert_eq!(cfg.limits.as_ref().unwrap().max_auto_slug_length, Some(80));
+        assert_eq!(cfg.limits.as_ref().unwrap().min_password_length, Some(10));
+        assert_eq!(cfg.limits.as_ref().unwrap().max_password_length, Some(128));
+    }
+
+    #[test]
+    fn limits_password_length_fields_are_none_when_omitted() {
+        let text = "[limits]\nmax_auto_slug_length = 80\n";
+        let cfg = UserConfig::from_toml(text).unwrap();
+        assert!(cfg.limits.as_ref().unwrap().min_password_length.is_none());
+        assert!(cfg.limits.as_ref().unwrap().max_password_length.is_none());
     }
 
     #[test]
