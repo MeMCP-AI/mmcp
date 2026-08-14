@@ -483,6 +483,7 @@ fn owner_id_str(owner: &mmcp_core::manifest::GroupOwnerHint) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mmcp_store::FileOperation;
     use mmcp_store::home::MmcpHome;
     use tempfile::TempDir;
 
@@ -735,11 +736,15 @@ mod tests {
     #[test]
     fn set_protected_error_index_refresh_preserves_the_store_source_chain() {
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "repos root vanished");
-        let err = SetProtectedError::IndexRefresh(StoreError::Io(io_err));
+        let err = SetProtectedError::IndexRefresh(StoreError::Io {
+            path: PathBuf::from("/mmcp-home/repos"),
+            operation: FileOperation::ReadDir,
+            source: io_err,
+        });
 
         let chained = std::error::Error::source(&err)
             .and_then(|s| s.downcast_ref::<StoreError>())
             .expect("IndexRefresh must chain the real StoreError, not a stringified copy");
-        assert!(matches!(chained, StoreError::Io(_)));
+        assert!(matches!(chained, StoreError::Io { .. }));
     }
 }
