@@ -54,6 +54,8 @@
         return 'no server';
       case 'unknown':
         return 'starting…';
+      case 'failed':
+        return 'status unavailable';
       case 'idle':
         return 'idle';
       case 'syncing':

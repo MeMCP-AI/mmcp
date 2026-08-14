@@ -1,5 +1,6 @@
 import { syncPull, syncPush, syncStatus } from '$lib/api/sync';
-import { listen } from '@tauri-apps/api/event';
+import { formatErr } from '$lib/utils/error';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 // Broadcast by the Settings window after a successful
 // `set_reference_point` so the main window refreshes the sync
@@ -8,6 +9,7 @@ const WORKSPACE_CHANGED_EVENT = 'workspace:changed';
 
 type Phase =
   | { t: 'unknown' }
+  | { t: 'failed' }
   | { t: 'not_configured' }
   | { t: 'idle'; serverUrl: string }
   | { t: 'syncing'; op: 'pull' | 'push'; serverUrl: string }
@@ -16,10 +18,10 @@ type Phase =
 
 class SyncStore {
   phase = $state<Phase>({ t: 'unknown' });
-  private listenerAttached = false;
+  private unlisten: UnlistenFn | null = null;
 
   async refreshStatus() {
-    this.attachListener();
+    await this.attachListener();
     try {
       const status = await syncStatus();
       if (status.configured && status.server_url) {
@@ -31,6 +33,7 @@ class SyncStore {
         // would stamp the wrong server URL on the status bar.
         if (
           this.phase.t === 'unknown' ||
+          this.phase.t === 'failed' ||
           this.phase.t === 'not_configured' ||
           prev !== url
         ) {
@@ -40,16 +43,24 @@ class SyncStore {
         this.phase = { t: 'not_configured' };
       }
     } catch {
-      this.phase = { t: 'unknown' };
+      // Distinct from the pristine `unknown` initial value so the UI
+      // can tell "not loaded yet" apart from "the status call itself
+      // failed" instead of silently hiding the Pull/Push controls
+      // under the same phase as before any load was attempted.
+      this.phase = { t: 'failed' };
     }
   }
 
-  private attachListener() {
-    if (this.listenerAttached) return;
-    this.listenerAttached = true;
-    void listen(WORKSPACE_CHANGED_EVENT, () => {
+  private async attachListener() {
+    if (this.unlisten) return;
+    this.unlisten = await listen(WORKSPACE_CHANGED_EVENT, () => {
       void this.refreshStatus();
     });
+  }
+
+  unmount() {
+    this.unlisten?.();
+    this.unlisten = null;
   }
 
   async pull() {
@@ -97,7 +108,11 @@ class SyncStore {
   }
 
   get configured(): boolean {
-    return this.phase.t !== 'unknown' && this.phase.t !== 'not_configured';
+    return (
+      this.phase.t !== 'unknown' &&
+      this.phase.t !== 'failed' &&
+      this.phase.t !== 'not_configured'
+    );
   }
 
   get inFlight(): boolean {
@@ -115,13 +130,6 @@ class SyncStore {
         return null;
     }
   }
-}
-
-function formatErr(err: unknown): string {
-  if (err && typeof err === 'object' && 'message' in err) {
-    return String((err as { message: unknown }).message);
-  }
-  return String(err);
 }
 
 export const syncStore = new SyncStore();
