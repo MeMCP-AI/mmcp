@@ -26,8 +26,9 @@
     "vite": "^8.2.0"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.11.1",
     "@lucide/svelte": "^1.28.0",
+    "@tauri-apps/api": "^2.11.1",
+    "dompurify": "^3.4.13",
     "marked": "^18.0.9"
   }
 }

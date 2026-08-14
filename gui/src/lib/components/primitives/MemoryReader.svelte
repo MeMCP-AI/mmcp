@@ -8,6 +8,7 @@
   // component having to know about refs / backlinks.
 
   import { marked } from 'marked';
+  import DOMPurify from 'dompurify';
   import FeatureBadge from '../FeatureBadge.svelte';
   import KindBadge from '../KindBadge.svelte';
   import MandatoryPill from './MandatoryPill.svelte';
@@ -30,7 +31,14 @@
   let { memory, sidebar, maxWidthClass = 'max-w-3xl' }: Props = $props();
 
   marked.setOptions({ breaks: false, gfm: true });
-  const html = $derived(marked.parse(memory.body) as string);
+  // memory.body is markdown loaded from ~/.mmcp/repos, which can
+  // originate from a remote sync-server contributor or an imported
+  // archive: neither is trusted to author script for this reader's
+  // webview. marked (v18) no longer sanitizes its HTML output, so
+  // every render is passed through DOMPurify before reaching
+  // {@html} below.
+  const rawHtml = $derived(marked.parse(memory.body) as string);
+  const html = $derived(DOMPurify.sanitize(rawHtml));
 
   const fm = $derived(memory.frontmatter);
 </script>
