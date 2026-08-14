@@ -22,6 +22,7 @@ use notify_debouncer_mini::{Debouncer, new_debouncer};
 use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{Mutex, RwLock};
+use uuid::Uuid;
 
 use crate::commands::sync::MIRROR_CHANGED_EVENT;
 use crate::error::{GuiError, GuiResult};
@@ -108,12 +109,50 @@ impl AppState {
     }
 }
 
+/// Where one filesystem-watch event, relative to `repos_root`, points.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WatchTarget {
+    /// Inside a specific group repository, carrying its bare UUID —
+    /// the same shape `GroupEntryDto.group_id` uses everywhere else.
+    Group(String),
+    /// At the mirror root itself, or under an entry that doesn't
+    /// look like a real group repository.
+    Root,
+}
+
+/// Classify `rel` (a watch-event path already stripped of the
+/// `repos_root` prefix) as either a change inside a specific group
+/// repository or a change at the mirror root.
+///
+/// Every locally-mirrored group lives at `<repos_root>/<uuid>.git/`
+/// (see `mmcp_store::groups::scan_repos_root`). The emitted
+/// `group_id` must be the bare UUID, never the raw `<uuid>.git`
+/// directory name — emitting the raw name broke the frontend's
+/// per-group refresh entirely, since `GroupEntryDto.group_id` (and
+/// therefore every comparison against it) is always the bare UUID
+/// (issue #130). A top-level entry that isn't a valid `<uuid>.git`
+/// name — a stray directory, a partial clone, anything that doesn't
+/// parse — falls back to [`WatchTarget::Root`] instead of being
+/// emitted as a bogus group id.
+fn classify_watch_path(rel: &Path) -> WatchTarget {
+    let Some(first) = rel.components().next().and_then(|c| c.as_os_str().to_str()) else {
+        return WatchTarget::Root;
+    };
+    let Some(stem) = first.strip_suffix(".git") else {
+        return WatchTarget::Root;
+    };
+    match Uuid::parse_str(stem) {
+        Ok(_) => WatchTarget::Group(stem.to_string()),
+        Err(_) => WatchTarget::Root,
+    }
+}
+
 /// Spawn a debounced recursive watcher on the mirror root. When
 /// any file under a group repo changes, a `mirror:changed` event
-/// fires with the group UUID (the first directory component under
-/// repos_root). Events targeting files directly under repos_root
-/// carry `group_id: null` so the frontend does a full group-list
-/// refresh — picking up newly-cloned group repos after a pull.
+/// fires with the group's bare UUID (see [`classify_watch_path`]).
+/// Events targeting files directly under repos_root carry
+/// `group_id: null` so the frontend does a full group-list refresh —
+/// picking up newly-cloned group repos after a pull.
 fn spawn_mirror_watcher(
     app: &AppHandle,
     repos_root: &Path,
@@ -158,18 +197,14 @@ fn spawn_mirror_watcher(
             let mut groups: HashSet<String> = HashSet::new();
             let mut root_changed = false;
             for event in batch {
-                // Strip the mirror root prefix. First non-empty
-                // path component = group UUID (or `None` if the
-                // event is at the root itself).
                 let Ok(rel) = event.path.strip_prefix(&root) else {
                     continue;
                 };
-                let first = rel.components().next().and_then(|c| c.as_os_str().to_str());
-                match first {
-                    Some(s) if !s.is_empty() => {
-                        groups.insert(s.to_string());
+                match classify_watch_path(rel) {
+                    WatchTarget::Group(id) => {
+                        groups.insert(id);
                     }
-                    _ => root_changed = true,
+                    WatchTarget::Root => root_changed = true,
                 }
             }
             if root_changed && groups.is_empty() {
@@ -237,4 +272,56 @@ fn load_project_sync(
     };
     let cfg: ProjectConfig = project_config::load(&root).map_err(GuiError::from)?;
     Ok(cfg.sync)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Falsification target for issue #130: a change under a real
+    /// `<uuid>.git` directory must classify as `Group(<bare uuid>)`,
+    /// never the raw `<uuid>.git` directory name — the frontend's
+    /// `mirror:changed` comparison is against
+    /// `GroupEntryDto.group_id`, which is always the bare UUID.
+    #[test]
+    fn group_directory_path_yields_a_bare_uuid_parseable_group_id() {
+        let rel = Path::new("019d955d-4cce-77f2-a0b3-0b79ed394612.git/objects/pack/x");
+        let target = classify_watch_path(rel);
+        let WatchTarget::Group(id) = target else {
+            panic!("expected WatchTarget::Group, got {target:?}");
+        };
+        assert!(
+            Uuid::parse_str(&id).is_ok(),
+            "group_id {id} must parse as a UUID"
+        );
+        assert!(
+            !id.ends_with(".git"),
+            "group_id {id} must not carry the .git suffix"
+        );
+        assert_eq!(id, "019d955d-4cce-77f2-a0b3-0b79ed394612");
+    }
+
+    #[test]
+    fn a_file_directly_under_repos_root_is_a_root_change() {
+        assert_eq!(
+            classify_watch_path(Path::new("some-file")),
+            WatchTarget::Root
+        );
+    }
+
+    #[test]
+    fn a_dot_git_directory_that_is_not_a_uuid_falls_back_to_root() {
+        assert_eq!(
+            classify_watch_path(Path::new("not-a-uuid.git/HEAD")),
+            WatchTarget::Root
+        );
+    }
+
+    #[test]
+    fn a_uuid_directory_missing_the_git_suffix_falls_back_to_root() {
+        assert_eq!(
+            classify_watch_path(Path::new("019d955d-4cce-77f2-a0b3-0b79ed394612/HEAD")),
+            WatchTarget::Root
+        );
+    }
 }
