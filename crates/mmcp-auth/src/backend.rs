@@ -39,6 +39,35 @@ pub const MAX_HANDLE_LENGTH: usize = 64;
 /// giving up with [`AuthError::HandleAllocationExhausted`].
 const MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS: u32 = 20;
 
+/// Number of decimal digits in `value`, computed at compile time so
+/// [`SUFFIX_RESERVE_BYTES`] never drifts if
+/// [`MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS`] changes.
+const fn decimal_digit_count(mut value: u32) -> usize {
+    let mut digits = 1;
+    while value >= 10 {
+        value /= 10;
+        digits += 1;
+    }
+    digits
+}
+
+/// Bytes reserved, out of [`MAX_HANDLE_LENGTH`], for a numeric-suffix
+/// retry candidate's `-N` tail: one byte for the separator plus the
+/// widest possible digit count a suffix up to
+/// [`MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS`] can carry.
+///
+/// The base handle is truncated to `MAX_HANDLE_LENGTH -
+/// SUFFIX_RESERVE_BYTES` bytes BEFORE a suffix is appended, so every
+/// suffixed candidate is strictly shorter than a base handle already
+/// truncated to the full cap. Without this reserve, a `base` at or
+/// near `MAX_HANDLE_LENGTH` bytes made `format!("{base}-{suffix}")`
+/// re-truncate back down to exactly `base` on every retry: every
+/// candidate collapsed onto the one handle already known to be
+/// taken, so the collision loop could never find a free handle for a
+/// `{provider}_{provider_user_id}` combination longer than about 62
+/// bytes, defeating the exhaustion guard entirely.
+const SUFFIX_RESERVE_BYTES: usize = 1 + decimal_digit_count(MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS);
+
 // ── AuthUser impl ───────────────────────────────────────────────
 
 /// Wrapper around the database user model that carries the session
@@ -260,6 +289,12 @@ impl AuthnBackend for MmcpAuthBackend {
 /// pre-registers the literal string a real OAuth user would be
 /// assigned could otherwise permanently deny that user their first
 /// OAuth login.
+///
+/// Suffixed candidates truncate from a base already shortened by
+/// [`SUFFIX_RESERVE_BYTES`], not from the full-length `base`
+/// returned when unsuffixed: see that constant's doc comment for why
+/// truncating the suffix onto an already-capped base would otherwise
+/// collapse every candidate back onto `base` itself.
 async fn provision_oauth_handle(
     conn: &DatabaseConnection,
     provider: &str,
@@ -277,8 +312,13 @@ async fn provision_oauth_handle(
     {
         return Ok(base);
     }
+    let suffix_base = truncate_to_byte_length(
+        &format!("{provider}_{provider_user_id}"),
+        MAX_HANDLE_LENGTH - SUFFIX_RESERVE_BYTES,
+    );
     for suffix in 2..=MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS {
-        let candidate = truncate_to_byte_length(&format!("{base}-{suffix}"), MAX_HANDLE_LENGTH);
+        let candidate =
+            truncate_to_byte_length(&format!("{suffix_base}-{suffix}"), MAX_HANDLE_LENGTH);
         if user_repo::find_by_handle(conn, &candidate)
             .await
             .map_err(|source| AuthError::UserLookup {
@@ -425,5 +465,51 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// Regression guard for the base-at-cap collapse: a
+    /// `provider_user_id` long enough that `base` is already
+    /// truncated to exactly `MAX_HANDLE_LENGTH` bytes. Before
+    /// reserving suffix room, `format!("{base}-{suffix}")` truncated
+    /// straight back down to `base` on every retry, so every
+    /// candidate collided with the known-taken base handle and the
+    /// real OAuth user could never log in. Asserts both properties
+    /// [`SUFFIX_RESERVE_BYTES`] exists to guarantee: a suffixed
+    /// candidate is distinct from the base, and successive candidates
+    /// are distinct from each other rather than repeating the same
+    /// collapsed string.
+    #[tokio::test]
+    async fn provision_oauth_handle_keeps_suffix_candidates_distinct_when_base_hits_the_cap() {
+        let conn = test_db().await;
+        let provider_user_id = "1".repeat(100);
+        let base =
+            truncate_to_byte_length(&format!("github_{provider_user_id}"), MAX_HANDLE_LENGTH);
+        assert_eq!(
+            base.len(),
+            MAX_HANDLE_LENGTH,
+            "test setup must actually push the base to the cap"
+        );
+        create_user(&conn, &base).await;
+
+        let first = provision_oauth_handle(&conn, "github", &provider_user_id)
+            .await
+            .expect("provision handle");
+        assert_ne!(
+            first, base,
+            "a suffixed candidate must never collapse back onto the taken base handle"
+        );
+
+        // Squat the first candidate too, so the next retry must be
+        // distinct from BOTH the base and the first candidate, not a
+        // re-truncated repeat of either.
+        create_user(&conn, &first).await;
+        let second = provision_oauth_handle(&conn, "github", &provider_user_id)
+            .await
+            .expect("provision handle");
+        assert_ne!(second, base);
+        assert_ne!(
+            second, first,
+            "successive suffix candidates must differ from each other"
+        );
     }
 }
