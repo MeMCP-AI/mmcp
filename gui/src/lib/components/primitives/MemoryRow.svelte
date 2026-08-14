@@ -7,11 +7,14 @@
   import FeatureBadge from '../FeatureBadge.svelte';
   import KindBadge from '../KindBadge.svelte';
   import MandatoryPill from './MandatoryPill.svelte';
-  import type { MemoryFile } from '$lib/types';
+  import type { MemoryFrontmatter } from '$lib/types';
 
   interface Props {
     slug: string;
-    body: MemoryFile | undefined;
+    /// Only `frontmatter` is ever read below, so any body-bearing
+    /// shape works here — a full `MemoryFile`, a metadata-only
+    /// `MemoryDescriptor`, or a synthesized `{ frontmatter }`.
+    body: { frontmatter: MemoryFrontmatter } | undefined;
     /** Sub-label under the slug, typically `scope · group`. */
     subtitle?: string | null;
     active?: boolean;

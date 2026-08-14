@@ -72,50 +72,78 @@ pub struct MemoryFileDto {
     pub body: String,
 }
 
+/// Build the wire DTO for one frontmatter block. Shared by
+/// [`MemoryFileDto::from`] (full body reads) and
+/// [`MemoryDescriptorDto`] listings (metadata-only reads) so the two
+/// call sites can never drift on which fields the frontend sees.
+fn frontmatter_to_dto(fm: &MemoryFrontmatter) -> MemoryFrontmatterDto {
+    MemoryFrontmatterDto {
+        id: fm.id,
+        name: fm.name.clone(),
+        description: fm.description.clone(),
+        kind: fm.kind.as_str().to_string(),
+        mandatory: fm.mandatory,
+        version: fm.version.as_ref().map(|v| v.to_string()),
+        tags: fm.tags.clone(),
+        refs: fm
+            .refs
+            .iter()
+            .map(|r| MemoryRefDto {
+                target: r.target,
+                commit: r.commit.clone(),
+            })
+            .collect(),
+        feature: fm.feature.as_ref().map(|fm| FeatureMetadataDto {
+            status: fm.status.as_str().to_string(),
+            number: fm.number,
+            depends_on: fm.depends_on.clone(),
+            blocks: fm.blocks.clone(),
+            superseded_by: fm.superseded_by.as_ref().map(|r| MemoryRefDto {
+                target: r.target,
+                commit: r.commit.clone(),
+            }),
+        }),
+        issue: fm.issue.as_ref().map(|im| IssueMetadataDto {
+            status: im.status.as_str().to_string(),
+            number: im.number,
+            depends_on: im.depends_on.clone(),
+            blocks: im.blocks.clone(),
+            superseded_by: im.superseded_by.as_ref().map(|r| MemoryRefDto {
+                target: r.target,
+                commit: r.commit.clone(),
+            }),
+        }),
+    }
+}
+
 impl From<&MemoryFile> for MemoryFileDto {
     fn from(f: &MemoryFile) -> Self {
         MemoryFileDto {
-            frontmatter: MemoryFrontmatterDto {
-                id: f.frontmatter.id,
-                name: f.frontmatter.name.clone(),
-                description: f.frontmatter.description.clone(),
-                kind: f.frontmatter.kind.as_str().to_string(),
-                mandatory: f.frontmatter.mandatory,
-                version: f.frontmatter.version.as_ref().map(|v| v.to_string()),
-                tags: f.frontmatter.tags.clone(),
-                refs: f
-                    .frontmatter
-                    .refs
-                    .iter()
-                    .map(|r| MemoryRefDto {
-                        target: r.target,
-                        commit: r.commit.clone(),
-                    })
-                    .collect(),
-                feature: f.frontmatter.feature.as_ref().map(|fm| FeatureMetadataDto {
-                    status: fm.status.as_str().to_string(),
-                    number: fm.number,
-                    depends_on: fm.depends_on.clone(),
-                    blocks: fm.blocks.clone(),
-                    superseded_by: fm.superseded_by.as_ref().map(|r| MemoryRefDto {
-                        target: r.target,
-                        commit: r.commit.clone(),
-                    }),
-                }),
-                issue: f.frontmatter.issue.as_ref().map(|im| IssueMetadataDto {
-                    status: im.status.as_str().to_string(),
-                    number: im.number,
-                    depends_on: im.depends_on.clone(),
-                    blocks: im.blocks.clone(),
-                    superseded_by: im.superseded_by.as_ref().map(|r| MemoryRefDto {
-                        target: r.target,
-                        commit: r.commit.clone(),
-                    }),
-                }),
-            },
+            frontmatter: frontmatter_to_dto(&f.frontmatter),
             body: f.body.clone(),
         }
     }
+}
+
+/// One memory's frontmatter plus a change-detection identifier, with
+/// no markdown body. Backs [`list_memory_descriptors`]: a single
+/// batched call per group instead of one `load_memory` round trip
+/// per memory (see issue #126).
+#[derive(Debug, Serialize)]
+pub struct MemoryDescriptorDto {
+    pub slug: String,
+    /// The group repository's tip commit at read time. Every
+    /// descriptor in one `list_memory_descriptors` response carries
+    /// the same value — the group is one git repo, so there is no
+    /// cheaper per-file granularity available without walking each
+    /// file's own history. The frontend re-downloads a cached body
+    /// only when this value changes from what it last saw, which is
+    /// a safe, conservative check: zero false negatives (a real
+    /// change always changes the tip), occasional false positives
+    /// (an unrelated file in the same group also triggers a
+    /// re-check) that cost one wasted body read, never a stale read.
+    pub commit: String,
+    pub frontmatter: MemoryFrontmatterDto,
 }
 
 fn parse_kind(s: &str) -> GuiResult<MemoryKind> {
@@ -133,6 +161,7 @@ pub async fn list_memory_slugs(
     group_id: String,
     state: State<'_, AppState>,
 ) -> GuiResult<Vec<String>> {
+    tracing::debug!(group_id = %group_id, "ipc: list_memory_slugs");
     let gid = group_id_from_str(&group_id)?;
     let entry =
         state.index.get(&gid).await.ok_or_else(|| {
@@ -151,12 +180,102 @@ pub async fn list_memory_slugs(
     Ok(slugs)
 }
 
+/// Metadata-only listing for one group: every memory's frontmatter
+/// plus a shared change-detection commit id, with no markdown body.
+/// Resolves the group's tip commit and reads every file's bytes in
+/// one batch (`NativeBackend::read_files`, which resolves the
+/// commit/tree once for the whole call) instead of the home route's
+/// former per-slug `load_memory` round trip. A slug whose path can no
+/// longer be resolved, or whose bytes fail to parse as a memory file
+/// (e.g. a mid-write race with a concurrent commit), is logged and
+/// skipped rather than failing the whole listing — see issue #126.
+#[tauri::command]
+pub async fn list_memory_descriptors(
+    group_id: String,
+    state: State<'_, AppState>,
+) -> GuiResult<Vec<MemoryDescriptorDto>> {
+    tracing::debug!(group_id = %group_id, "ipc: list_memory_descriptors");
+    let gid = group_id_from_str(&group_id)?;
+    let entry =
+        state.index.get(&gid).await.ok_or_else(|| {
+            GuiError::Other(format!("group {group_id} is not in the local mirror"))
+        })?;
+    let mut slugs = state
+        .backend
+        .list_subtrees(
+            &entry.handle,
+            mmcp_core::conventions::MEMORIES_DIR,
+            &Rev::head(),
+        )
+        .await
+        .map_err(GuiError::from)?;
+    slugs.sort();
+
+    let tip = state
+        .backend
+        .tip_commit(&entry.handle, &Rev::head())
+        .await
+        .map_err(GuiError::from)?;
+
+    let mut resolved_slugs = Vec::with_capacity(slugs.len());
+    let mut paths = Vec::with_capacity(slugs.len());
+    for slug in slugs {
+        match resolve_memory(&state.backend, &entry.handle, Some(&slug), None).await {
+            Ok(resolved) => {
+                resolved_slugs.push(slug);
+                paths.push(resolved.path);
+            }
+            Err(err) => {
+                tracing::warn!(group_id = %group_id, slug = %slug, error = %err, "list_memory_descriptors: skipping unresolvable slug");
+            }
+        }
+    }
+
+    let batch = state
+        .backend
+        .read_files(&entry.handle, paths, &Rev::head())
+        .await
+        .map_err(GuiError::from)?;
+
+    let mut out = Vec::with_capacity(batch.len());
+    for (slug, (path, outcome)) in resolved_slugs.into_iter().zip(batch) {
+        let bytes = match outcome {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                tracing::warn!(group_id = %group_id, slug = %slug, path = %path, error = %err, "list_memory_descriptors: skipping unreadable file");
+                continue;
+            }
+        };
+        let text = match std::str::from_utf8(&bytes) {
+            Ok(text) => text,
+            Err(err) => {
+                tracing::warn!(group_id = %group_id, slug = %slug, path = %path, error = %err, "list_memory_descriptors: skipping non-utf8 file");
+                continue;
+            }
+        };
+        let mf = match MemoryFile::parse(text) {
+            Ok(mf) => mf,
+            Err(err) => {
+                tracing::warn!(group_id = %group_id, slug = %slug, path = %path, error = %err, "list_memory_descriptors: skipping unparseable file");
+                continue;
+            }
+        };
+        out.push(MemoryDescriptorDto {
+            slug,
+            commit: tip.id.clone(),
+            frontmatter: frontmatter_to_dto(&mf.frontmatter),
+        });
+    }
+    Ok(out)
+}
+
 #[tauri::command]
 pub async fn load_memory(
     group_id: String,
     slug: String,
     state: State<'_, AppState>,
 ) -> GuiResult<MemoryFileDto> {
+    tracing::debug!(group_id = %group_id, slug = %slug, "ipc: load_memory");
     let gid = group_id_from_str(&group_id)?;
     let entry =
         state.index.get(&gid).await.ok_or_else(|| {

@@ -22,7 +22,7 @@ all = "deny"
 
 [package]
 name = "mmcp-gui-tauri"
-version = "0.1.8"
+version = "0.1.9"
 description = "mmcp-gui: Tauri 2 backend wrapping mmcp-store for the SvelteKit desktop client."
 authors = ["Gabriel GRONDIN"]
 edition = "2024"

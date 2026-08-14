@@ -28,6 +28,7 @@
   import SearchInput from '../primitives/SearchInput.svelte';
   import ThemeSelector from '../ThemeSelector.svelte';
 
+  import { untrack } from 'svelte';
   import { settingsStore } from '$lib/stores/settings.svelte';
   import { selectionStore } from '$lib/stores/selection.svelte';
   import { memoriesStore } from '$lib/stores/memories.svelte';
@@ -35,7 +36,7 @@
   import { matchesMemoryFilter } from '$lib/utils/filter';
   import { classifyMemoryKind, type MemoryClass } from '$lib/utils/memory_kind';
   import { SCOPE_META, SCOPE_ORDER } from '$lib/utils/scope';
-  import type { GroupEntry, GroupScope, KindStr, MemoryFile } from '$lib/types';
+  import type { GroupEntry, GroupScope, KindStr, MemoryFile, MemoryFrontmatter } from '$lib/types';
 
   // ---------------------------------------------------------------
   //  Routing
@@ -75,44 +76,58 @@
   }
 
   // ---------------------------------------------------------------
-  //  Data loading — pre-warm slug lists for every group; load
-  //  bodies eagerly on screens that need them.
+  //  Data loading — metadata-only descriptors pre-warm every group
+  //  for the home dashboard and global search (issue #126); full
+  //  bodies load only for the group/scope/memory the user actually
+  //  opens, never eagerly for every group on Home.
   // ---------------------------------------------------------------
 
+  // One `list_memory_descriptors` call per group instead of one
+  // `load_memory` round trip per memory. Also seeds `memoriesStore
+  // .slugs`, so this effect supersedes the old separate slug-prewarm
+  // effect.
   $effect(() => {
     for (const g of groupsStore.groups) {
-      if (!memoriesStore.slugs[g.group_id] && !memoriesStore.loadingSlugs[g.group_id]) {
-        void memoriesStore.loadSlugs(g.group_id);
+      if (
+        !memoriesStore.descriptors[g.group_id] &&
+        !memoriesStore.isLoadingDescriptors(g.group_id)
+      ) {
+        void memoriesStore.loadDescriptors(g.group_id);
       }
     }
   });
 
+  // Eager body loads stay scoped to what the user is actually
+  // looking at (scope / group / memory) — never Home, which renders
+  // from cached descriptors only (see `allDescriptorEntries` below).
+  // `bodyFor` / `isLoadingBody` reads are wrapped in `untrack()`
+  // because this effect itself writes those values via `loadBody`;
+  // without `untrack`, every arriving body would re-trigger the
+  // whole scan (the O(N^2) pattern issue #126 also flags).
   $effect(() => {
-    const loadBodies = (gid: string) => {
+    const loadBodiesFor = (gid: string) => {
       const slugs = memoriesStore.slugs[gid];
       if (!slugs) return;
       for (const slug of slugs) {
-        if (!memoriesStore.bodyFor(gid, slug) && !memoriesStore.isLoadingBody(gid, slug)) {
-          void memoriesStore.loadBody(gid, slug);
-        }
+        const cached = untrack(
+          () => !!memoriesStore.bodyFor(gid, slug) || memoriesStore.isLoadingBody(gid, slug)
+        );
+        if (!cached) void memoriesStore.loadBody(gid, slug);
       }
     };
-    if (route.t === 'home') {
-      for (const g of groupsStore.groups) loadBodies(g.group_id);
-    } else if (route.t === 'scope') {
+    if (route.t === 'scope') {
       const scope = route.scope;
       for (const g of groupsStore.groups.filter((x) => x.scope === scope)) {
-        loadBodies(g.group_id);
+        loadBodiesFor(g.group_id);
       }
     } else if (route.t === 'group') {
-      loadBodies(route.groupId);
+      loadBodiesFor(route.groupId);
     } else if (route.t === 'memory') {
-      if (
-        !memoriesStore.bodyFor(route.groupId, route.slug) &&
-        !memoriesStore.isLoadingBody(route.groupId, route.slug)
-      ) {
-        void memoriesStore.loadBody(route.groupId, route.slug);
-      }
+      const { groupId, slug } = route;
+      const cached = untrack(
+        () => !!memoriesStore.bodyFor(groupId, slug) || memoriesStore.isLoadingBody(groupId, slug)
+      );
+      if (!cached) void memoriesStore.loadBody(groupId, slug);
     }
   });
 
@@ -146,17 +161,26 @@
     body: MemoryFile;
   }
 
+  // Matches against `memoriesStore.descriptors` (frontmatter-only,
+  // pre-warmed for every group — see the data-loading effects above)
+  // so search covers every memory in the mirror, not just whichever
+  // ones happen to have a cached body. `matchesMemoryFilter` never
+  // reads `body.body`, only frontmatter fields, so a synthesized
+  // empty-body `MemoryFile` matches identically to a real cached one
+  // — falling back to the real cached body when one exists costs
+  // nothing and keeps a single code path for both cases.
   const globalHits = $derived.by<GlobalHit[]>(() => {
     const q = globalQuery.trim();
     if (q.length < 2) return [];
     const out: GlobalHit[] = [];
     for (const g of groupsStore.groups) {
-      const slugs = memoriesStore.slugs[g.group_id] ?? [];
-      for (const slug of slugs) {
-        const body = memoriesStore.bodyFor(g.group_id, slug);
-        if (!body) continue;
-        if (matchesMemoryFilter(slug, body, { query: q })) {
-          out.push({ groupId: g.group_id, slug, group: g, body });
+      for (const d of memoriesStore.descriptorsFor(g.group_id)) {
+        const body = memoriesStore.bodyFor(g.group_id, d.slug) ?? {
+          frontmatter: d.frontmatter,
+          body: ''
+        };
+        if (matchesMemoryFilter(d.slug, body, { query: q })) {
+          out.push({ groupId: g.group_id, slug: d.slug, group: g, body });
           if (out.length >= 12) return out;
         }
       }
@@ -167,34 +191,38 @@
   // ---------------------------------------------------------------
   //  Home-dashboard signals
   // ---------------------------------------------------------------
+  //
+  // Driven by the metadata-only descriptor cache, not `bodyFor` —
+  // Home no longer eager-loads every memory's body (issue #126), so
+  // these widgets read frontmatter straight off the descriptor
+  // listing instead.
 
   interface ClassifiedEntry {
     groupId: string;
     slug: string;
     group: GroupEntry;
-    body: MemoryFile;
+    frontmatter: MemoryFrontmatter;
   }
 
-  const allCachedEntries = $derived.by<ClassifiedEntry[]>(() => {
+  const allDescriptorEntries = $derived.by<ClassifiedEntry[]>(() => {
     const out: ClassifiedEntry[] = [];
     for (const g of groupsStore.groups) {
-      for (const slug of memoriesStore.slugs[g.group_id] ?? []) {
-        const body = memoriesStore.bodyFor(g.group_id, slug);
-        if (body) out.push({ groupId: g.group_id, slug, group: g, body });
+      for (const d of memoriesStore.descriptorsFor(g.group_id)) {
+        out.push({ groupId: g.group_id, slug: d.slug, group: g, frontmatter: d.frontmatter });
       }
     }
     return out;
   });
 
   const mandatoryMemories = $derived(
-    allCachedEntries.filter((e) => e.body.frontmatter.mandatory)
+    allDescriptorEntries.filter((e) => e.frontmatter.mandatory)
   );
 
   const openIssues = $derived(
-    allCachedEntries.filter(
+    allDescriptorEntries.filter(
       (e) =>
-        classifyMemoryKind(e.body.frontmatter.kind) === 'issue' &&
-        e.body.frontmatter.feature?.status === 'requested'
+        classifyMemoryKind(e.frontmatter.kind) === 'issue' &&
+        e.frontmatter.feature?.status === 'requested'
     )
   );
 
@@ -457,7 +485,7 @@
                 <li>
                   <MemoryRow
                     slug={hit.slug}
-                    body={hit.body}
+                    body={{ frontmatter: hit.frontmatter }}
                     subtitle={`${SCOPE_META[hit.group.scope].label} · ${hit.group.slug}`}
                     onSelect={() => gotoMemory(hit.groupId, hit.slug)}
                   />
@@ -481,7 +509,7 @@
                 <li>
                   <MemoryRow
                     slug={hit.slug}
-                    body={hit.body}
+                    body={{ frontmatter: hit.frontmatter }}
                     subtitle={`${SCOPE_META[hit.group.scope].label} · ${hit.group.slug}`}
                     onSelect={() => gotoMemory(hit.groupId, hit.slug)}
                   />

@@ -59,6 +59,17 @@ export interface MemoryFile {
   body: string;
 }
 
+/** Metadata-only listing entry: one memory's frontmatter plus the
+ * owning group's tip commit at read time, no markdown body. Every
+ * entry from the same `list_memory_descriptors` call carries the
+ * same `commit` — see the Rust doc comment on `MemoryDescriptorDto`
+ * for why group-level granularity is the right tradeoff here. */
+export interface MemoryDescriptor {
+  slug: string;
+  commit: string;
+  frontmatter: MemoryFrontmatter;
+}
+
 export interface SyncStatus {
   configured: boolean;
   server_url: string | null;

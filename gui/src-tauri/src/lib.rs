@@ -52,6 +52,7 @@ pub fn run() {
             commands::archive::inspect_archive,
             commands::archive::local_tags,
             commands::memory::list_memory_slugs,
+            commands::memory::list_memory_descriptors,
             commands::memory::load_memory,
             commands::memory::create_memory,
             commands::memory::update_memory,

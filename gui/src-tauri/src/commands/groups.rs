@@ -36,7 +36,9 @@ impl From<&mmcp_store::GroupEntry> for GroupEntryDto {
 
 #[tauri::command]
 pub async fn list_groups(state: State<'_, AppState>) -> GuiResult<Vec<GroupEntryDto>> {
-    Ok(state.index.list().await.iter().map(Into::into).collect())
+    let out: Vec<GroupEntryDto> = state.index.list().await.iter().map(Into::into).collect();
+    tracing::debug!(count = out.len(), "ipc: list_groups");
+    Ok(out)
 }
 
 #[tauri::command]
