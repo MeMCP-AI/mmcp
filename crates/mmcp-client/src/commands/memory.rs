@@ -9,9 +9,10 @@
 //! Each subcommand resolves its group + memory through the
 //! shared `mmcp_store::resolve_group` / `resolve_memory`
 //! primitives (see also: `mmcp_server::routes::mcp::list_memories`
-//! for the MCP-side counterpart). The read path also feeds the
-//! notes channel via `malformed_frontmatter_notes`; the section
-//! reader uses `mmcp_core::memory::body::parse_sections` directly.
+//! for the MCP-side counterpart).
+//! The read path also feeds the notes channel via
+//! `malformed_frontmatter_notes`; the section reader uses
+//! `mmcp_core::memory::body::parse_sections` directly.
 
 use std::io::Read;
 
@@ -190,9 +191,8 @@ pub struct WriteArgs {
     #[arg(long = "override")]
     pub override_: bool,
 
-    /// Bypass the filename-vs-frontmatter id rejection on a
-    /// `ByFilename` write. Drift surfaces as a warn-level note
-    /// instead of a hard error.
+    /// Bypass the filename-vs-frontmatter id rejection on a `ByFilename` write.
+    /// Drift surfaces as a warn-level note instead of a hard error.
     #[arg(long)]
     pub force: bool,
 
@@ -293,9 +293,8 @@ pub struct DeleteArgs {
     #[arg(long)]
     pub message: Option<String>,
 
-    /// Force flag, present for parity with the other write
-    /// tools. `delete_memory` does not render new bytes, so the
-    /// flag has nothing to bypass on the happy path.
+    /// Force flag, present for parity with the other write tools.
+    /// `delete_memory` does not render new bytes, so the flag has nothing to bypass on the happy path.
     #[arg(long)]
     pub force: bool,
 
@@ -391,10 +390,9 @@ async fn run_list(args: ListArgs) -> Result<()> {
     Ok(())
 }
 
-/// Shared slug-path filter. Returns `true` when `slug`
-/// belongs in a listing constrained to `prefix` and the recursion
-/// mode. Mirrors the MCP-side helper of the same name (kept in
-/// sync by the parity test in `serve.rs`).
+/// Shared slug-path filter.
+/// Returns `true` when `slug` belongs in a listing constrained to `prefix` and the recursion mode.
+/// Mirrors the MCP-side helper of the same name (kept in sync by the parity test in `serve.rs`).
 fn slug_matches_filter(slug: &str, prefix: Option<&str>, recursive: bool) -> bool {
     let depth = match prefix {
         None | Some("") | Some("/") => slug.split('/').count(),
@@ -489,9 +487,8 @@ async fn run_move(args: MoveArgs) -> Result<()> {
         .map_err(anyhow::Error::from)?;
     let (slug_opt, id_opt) = parse_addr(&args.addr);
     let author = home.resolve_author();
-    // A slug-rewrite move spans source + target slug
-    // dirs, so coarsen at the group level just like a feature
-    // rename does.
+    // A slug-rewrite move spans source + target slug dirs,
+    // so coarsen at the group level just like a feature rename does.
     let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::coarsen_group_chain(
         *entry.manifest.group_id.as_uuid(),
     ))
@@ -745,8 +742,8 @@ async fn run_write(args: WriteArgs) -> Result<()> {
         .await
         .map_err(anyhow::Error::from)?;
 
-    // Protected-group gate. Same shape as `mmcp import`:
-    // TTY prompts, non-TTY refuses unless `--confirm-protected`.
+    // Protected-group gate.
+    // Same shape as `mmcp import`: TTY prompts, non-TTY refuses unless `--confirm-protected`.
     protected_confirm(&entry, args.confirm_protected)?;
 
     let file = MemoryFile {
@@ -761,10 +758,9 @@ async fn run_write(args: WriteArgs) -> Result<()> {
         .to_string()
         .map_err(|e| anyhow::anyhow!("render: {e}"))?;
 
-    // Group-level create chain (Process-Shared +
-    // Group-Exclusive). The lock layer does not discriminate by
-    // kind, so the shared ticket counter and slug-uniqueness
-    // invariant both serialise on one scope.
+    // Group-level create chain (Process-Shared + Group-Exclusive).
+    // The lock layer does not discriminate by kind,
+    // so the shared ticket counter and slug-uniqueness invariant both serialise on one scope.
     let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::create_chain(
         *entry.manifest.group_id.as_uuid(),
     ))
@@ -1114,10 +1110,9 @@ fn short_id(id: &Uuid) -> String {
     format!("{:.8}", id.simple().to_string())
 }
 
-/// Read a memory's `frontmatter.name` for listing / search
-/// display. Returns `(unreadable)` on failure so a single broken
-/// file doesn't kill the listing: the structural error surfaces
-/// via `mmcp diagnose` instead.
+/// Read a memory's `frontmatter.name` for listing / search display.
+/// Returns `(unreadable)` on failure so a single broken file doesn't kill the listing:
+/// the structural error surfaces via `mmcp diagnose` instead.
 async fn read_title(backend: &NativeBackend, entry: &GroupEntry, path: &str) -> String {
     let Ok(bytes) = backend.read_file(&entry.handle, path, &Rev::head()).await else {
         return "(unreadable)".into();
