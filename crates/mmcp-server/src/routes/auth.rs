@@ -635,6 +635,7 @@ async fn passkey_login_finish(
 /// string one frame earlier, so a caller matching on the password
 /// error's own typed variants (e.g. distinguishing
 /// [`mmcp_auth::AuthError::PasswordBlank`] from
+/// [`mmcp_auth::AuthError::PasswordWhitespaceOnly`] or
 /// [`mmcp_auth::AuthError::PasswordTooShort`]) can still do so.
 #[derive(Debug, Error)]
 enum AuthHttpError {
@@ -744,12 +745,12 @@ mod tests {
             password: "        ".to_string(),
             ..valid_request()
         };
-        assert!(matches!(
-            validate(&req),
-            Err(AuthHttpError::PasswordPolicy(
-                mmcp_auth::AuthError::PasswordBlank
-            ))
-        ));
+        match validate(&req) {
+            Err(AuthHttpError::PasswordPolicy(mmcp_auth::AuthError::PasswordWhitespaceOnly {
+                actual,
+            })) => assert_eq!(actual, 8),
+            other => panic!("expected PasswordWhitespaceOnly, got {other:?}"),
+        }
     }
 
     #[test]

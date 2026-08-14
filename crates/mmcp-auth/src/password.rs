@@ -30,10 +30,12 @@ pub const MIN_PASSWORD_LENGTH: usize = 8;
 /// [`MIN_PASSWORD_LENGTH`]'s doc comment for the resolution cascade.
 pub const MAX_PASSWORD_LENGTH: usize = 256;
 
-/// Validate `plaintext` against the password policy: rejects an
-/// empty or whitespace-only password (checked via `trim`, so a
+/// Validate `plaintext` against the password policy: rejects a truly
+/// empty password ([`AuthError::PasswordBlank`], zero bytes) or a
+/// non-empty password that is entirely whitespace
+/// ([`AuthError::PasswordWhitespaceOnly`], checked via `trim`, so a
 /// password of spaces alone is rejected regardless of its raw
-/// length) and enforces the caller-supplied `min_len` / `max_len`
+/// length), then enforces the caller-supplied `min_len` / `max_len`
 /// bounds, in bytes.
 ///
 /// `min_len` and `max_len` are resolved by the caller through the
@@ -48,8 +50,13 @@ pub fn validate_password_policy(
     min_len: usize,
     max_len: usize,
 ) -> Result<(), AuthError> {
-    if plaintext.trim().is_empty() {
+    if plaintext.is_empty() {
         return Err(AuthError::PasswordBlank);
+    }
+    if plaintext.trim().is_empty() {
+        return Err(AuthError::PasswordWhitespaceOnly {
+            actual: plaintext.len(),
+        });
     }
     let actual = plaintext.len();
     if actual < min_len {
@@ -124,14 +131,18 @@ mod tests {
     }
 
     #[test]
-    fn validate_password_policy_rejects_whitespace_only() {
-        // 8 raw bytes, but blank after trim: must still be rejected
-        // as blank (not as "too short with actual=0", which would be
-        // factually wrong about the real 8-byte input), proving the
-        // check runs on the trimmed value first.
+    fn validate_password_policy_rejects_whitespace_only_as_weak_not_blank() {
+        // 8 raw bytes, but blank after trim: real content was
+        // submitted, so this must be PasswordWhitespaceOnly with the
+        // true 8-byte length (not PasswordBlank, which would falsely
+        // claim nothing was submitted; and not "too short with
+        // actual=0", which would misreport the real 8-byte input).
         let err = validate_password_policy("        ", MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH)
             .unwrap_err();
-        assert!(matches!(err, AuthError::PasswordBlank));
+        match err {
+            AuthError::PasswordWhitespaceOnly { actual } => assert_eq!(actual, 8),
+            other => panic!("expected PasswordWhitespaceOnly, got {other:?}"),
+        }
     }
 
     #[test]

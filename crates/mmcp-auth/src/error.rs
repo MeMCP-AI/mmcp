@@ -16,14 +16,24 @@ pub enum AuthError {
     #[error("invalid credentials")]
     InvalidCredentials,
 
-    /// Password is empty, or trims to an empty string
-    /// (whitespace-only). Distinct from
-    /// [`AuthError::PasswordTooShort`] because a blank password
-    /// carries no meaningful "actual length" a caller should read
-    /// programmatically: reporting `actual: 0` for an 8-byte
-    /// whitespace-only input would be false.
-    #[error("password must not be empty or whitespace-only")]
+    /// Password is truly empty: zero bytes submitted. Distinct from
+    /// [`AuthError::PasswordWhitespaceOnly`], whose input is
+    /// non-empty but entirely whitespace, and from
+    /// [`AuthError::PasswordTooShort`] because a genuinely blank
+    /// password carries no meaningful "actual length" a caller
+    /// should read programmatically: there is nothing to report.
+    #[error("password must not be empty")]
     PasswordBlank,
+
+    /// Password is non-empty but every byte is whitespace (e.g. all
+    /// spaces): the user submitted real content, so this is
+    /// trivially weak, not absent. Distinct from
+    /// [`AuthError::PasswordBlank`] (zero bytes submitted). Unlike
+    /// the old conflated `PasswordBlank` check, a variant that only
+    /// ever means "all-whitespace" can honestly report how many
+    /// whitespace bytes were submitted.
+    #[error("password must not be entirely whitespace ({actual} whitespace bytes submitted)")]
+    PasswordWhitespaceOnly { actual: usize },
 
     /// Password is shorter than the minimum accepted length, in
     /// bytes.
