@@ -1,70 +1,38 @@
 //! Local content/semantic cache for mmcp memories.
 //!
-//! Today mmcp has no local index of memory content beyond the git
-//! clones under `~/.mmcp/repos` themselves: every read walks a
-//! bare repo tree and parses frontmatter on the fly. That is fine
-//! for a single group but does not scale to "search across every
-//! locally-mirrored memory" or "roll a milestone's status up across
-//! groups" without live-walking every group's git repo on every
-//! query. This module is a real, local-machine, SQLite-backed cache
-//! that indexes memory content — not just feature/milestone data —
-//! across every group so those queries become a single local table
-//! scan instead of N git tree walks.
+//! SQLite-backed local index of memory content and feature/milestone data across every group,
+//! so a search or rollup query is a single local table scan instead of a live walk of every
+//! group's git clone under `~/.mmcp/repos`.
 //!
 //! ## Storage choice
 //!
-//! SQLite via `sqlx` directly (not through `sea-orm`'s entity /
-//! migration machinery): the cache is a small, fully-owned, freely
-//! rebuildable derived index — a couple of tables this crate
-//! creates with `CREATE TABLE IF NOT EXISTS` and can safely
-//! `DELETE FROM` + repopulate at will (see [`index::rebuild_full`])
-//! — so there is no user data that ever needs a real migration
-//! chain, and pulling in `sea-orm-migration`'s versioned runner for
-//! that would be ceremony without benefit. Using `sqlx` directly
-//! still resolves to the exact same underlying SQLite build
-//! (bundled `libsqlite3-sys`) `sea-orm` already pulls in elsewhere
-//! in this workspace, so no second copy of the C library enters the
-//! dependency graph and no new database *technology* is introduced,
-//! only a lighter-weight way of talking to the one already in use.
+//! `sqlx` direct over `sea-orm`'s entity/migration machinery: the cache is a fully-rebuildable
+//! derived index (`CREATE TABLE IF NOT EXISTS`, freely `DELETE FROM` and repopulate, see
+//! [`index::rebuild_full`]), so it needs no real migration chain, and both resolve to the same
+//! bundled `libsqlite3-sys` already in the workspace dependency graph.
 //!
 //! ## Location
 //!
-//! `<mmcp-home>/cache/index.sqlite3` — a sibling of `repos/` and
-//! `sessions/` under the existing `~/.mmcp` layout (see
-//! [`crate::home::MmcpHome`]). This is local-machine state, never
-//! committed to any group's git repository; callers that write to
-//! `~/.mmcp` are expected to gitignore or otherwise exclude the
-//! `cache/` subdirectory the same way `repos/` already is.
+//! `<mmcp-home>/cache/index.sqlite3`, a sibling of `repos/` and `sessions/` (see
+//! [`crate::home::MmcpHome`]). Local-machine state only, never committed to a group's git repo.
 //!
 //! ## Update triggers
 //!
-//! - **Local write**: [`crate::memory::write_file_at_path`] — the
-//!   single choke point every memory write with rendered content
-//!   (create, update, `edit_memory_body`, feature/issue create and
-//!   update, archive import) commits through — calls [`notify_write`]
-//!   right after the git commit lands. Best-effort: a cache-write
-//!   failure never fails the underlying memory write, it only gets
-//!   logged, since the cache is a derived artifact and the next
-//!   lazy-build or debug rebuild repairs it.
-//! - **Server pull/sync**: wired at the CLI (`mmcp pull` / `mmcp
-//!   sync`) and MCP (`sync_pull`) call sites in `mmcp-client`, right
-//!   after `SyncEngine::pull` reports which groups advanced. See
-//!   that crate's `commands/sync.rs` and `commands/serve.rs`.
+//! - Local write: see also: crate::memory::write_file_at_path calls [`notify_write`] right
+//!   after each git commit. Best-effort: a cache-write failure never fails the underlying
+//!   memory write, it only logs, since the cache is a derived artifact the next rebuild repairs.
+//! - Server pull/sync: wired at `mmcp-client`'s CLI (`mmcp pull`/`mmcp sync`) and MCP
+//!   (`sync_pull`) call sites, after `SyncEngine::pull` reports which groups advanced.
 //!
 //! ## Missing-index handling
 //!
-//! Lazy: [`query::keyword_search`] and [`query::semantic_search`]
-//! both check [`schema::is_built`] first and transparently call
-//! [`index::rebuild_full`] when the cache has never completed a
-//! build, so the first query against a fresh mirror pays the
-//! rebuild cost and every query after that is a plain lookup. A
-//! debug/admin entry point (`mmcp debug cache-rebuild`, see
-//! `mmcp-client`) also forces a full rebuild on demand regardless
-//! of whether the index already looks built.
+//! Lazy: [`query::keyword_search`] and [`query::semantic_search`] check [`schema::is_built`]
+//! first and call [`index::rebuild_full`] on a never-built cache. `mmcp debug cache-rebuild`
+//! forces a full rebuild on demand regardless of build state.
 //!
 //! ## Semantic search
 //!
-//! See [`embed`] for the embedding approach and its rationale.
+//! See [`embed`] for the embedding approach.
 
 pub mod embed;
 pub mod index;
@@ -217,8 +185,8 @@ pub async fn open_pool(path: &Path) -> Result<SqlitePool, CacheError> {
 /// dispatching to any command). [`notify_write`] reads it back to
 /// decide whether the write-trigger hook has anything to do.
 ///
-/// A `OnceLock` — the same "set once per process" shape `log` and
-/// `tracing` use for their global sink — is the right tool here: a
+/// A `OnceLock`, the same "set once per process" shape `log` and
+/// `tracing` use for their global sink, is the right tool here: a
 /// real `mmcp` invocation is one process with exactly one home, so
 /// there is never a legitimate reason to swap the active pool mid
 /// process. Tests that need to exercise the hook call
@@ -251,7 +219,7 @@ pub async fn init_from_home(home: &MmcpHome) -> Result<(), CacheError> {
 /// `None` means no consumer has started the cache subsystem yet
 /// (e.g. a unit test exercising unrelated store logic, or a CLI
 /// invocation whose command never touches the cache); callers treat
-/// that as "the hook is a no-op", never as an error — the cache is
+/// that as "the hook is a no-op", never as an error: the cache is
 /// a derived artifact, not source-of-truth state, so its absence is
 /// never a reason to fail an unrelated operation.
 #[must_use]
@@ -261,7 +229,7 @@ pub fn active_pool() -> Option<SqlitePool> {
 
 /// Write-trigger hook: called by
 /// [`crate::memory::write_file_at_path`] right after a memory write
-/// commits. Best-effort — parses `rendered` and upserts it into the
+/// commits. Best-effort: parses `rendered` and upserts it into the
 /// active cache pool; any failure (no active pool, unparseable
 /// content, a query error) is swallowed after a `tracing::warn!`
 /// because the cache is a derived artifact that the next lazy build

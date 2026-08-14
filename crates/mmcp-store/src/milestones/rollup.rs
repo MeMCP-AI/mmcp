@@ -1,77 +1,38 @@
 //! Milestone rollup.
 //!
-//! ## Scope narrowed to the milestone's own group (security fix)
+//! [`compute`] counts only features whose `group_id` matches the milestone's own group.
+//! Cross-group counting allows spoofing a victim milestone's status via an unprotected sibling
+//! group: a caller with write access to their own group could file a feature there with
+//! `status: "blocked"` and `milestone: <victim-group's milestone UUID>`, producing a status the
+//! victim group never actually reached, with no access needed to the victim's own group.
+//! A cross-group authorization/allowlist model is a separate, unbuilt feature.
 //!
-//! This module originally folded over every locally-mirrored group's
-//! features by design (D3, "cross-group by design", an explicit
-//! operator ruling overruling the more cautious mono-group default —
-//! see the historical note preserved below). That design has a
-//! concrete exploit: a caller with write access to their OWN
-//! unprotected group can file a feature there with `status:
-//! "blocked"` and `milestone: <victim-group's milestone UUID>`, and
-//! the victim's [`crate::milestones::read_milestone`] /
-//! `list_milestones` then reports a status the victim group never
-//! actually produced, without the attacker ever needing to touch (or
-//! pass the protected-group guard on) the victim's own group.
+//! Queries the [`crate::cache`] local content index (`indexed_memory` table, filtered by
+//! `kind = 'feature'`, `milestone`, `group_id`) rather than walking git live.
 //!
-//! [`compute`] therefore only counts features whose `group_id`
-//! matches the milestone's OWN group. This is a deliberate narrowing
-//! of the original cross-group ambition, not a fix for a bug in it —
-//! a full cross-group authorization / allowlist model (e.g. a
-//! milestone opting specific other groups in) is tracked as a
-//! separate backlog feature request, not built here.
+//! Two consumers: see also: crate::milestones::read_milestone, crate::milestones::list_milestones,
+//! and the milestone check in crate::diagnostics.
 //!
-//! Historical design note (D3, superseded by the narrowing above): a
-//! milestone's features were not required to live in the same
-//! project group as the milestone itself, so computing "what is this
-//! milestone's status right now" meant folding over feature memories
-//! that could be scattered across every locally-mirrored group.
-//! Live-walking every group's git repository on every rollup
-//! computation would not scale, so this module queries the
-//! [`crate::cache`] local content index instead — a single
-//! `indexed_memory` table scan (now `WHERE kind = 'feature' AND
-//! milestone = ? AND group_id = ?`) rather than a live git walk.
-//!
-//! Per global-coding-rules section 13 this lives in its own
-//! concern-named module because it has two consumers from day one:
-//! [`crate::milestones::list_milestones`] (and `read_milestone`) and
-//! the `diagnose` milestone check in [`crate::diagnostics`]. Neither
-//! owns the rollup rule; both call this module's [`compute`].
-//!
-//! ## The rollup rule (design decision, not fully specified by the
-//! ## originating FR — documented here for the next reader)
+//! ## Rollup rule
 //!
 //! A milestone's computed [`RollupStatus`] folds over the
 //! [`FeatureStatus`](mmcp_core::memory::FeatureStatus) of every
 //! feature currently pointing at it:
 //!
 //! 1. `Duplicate` and `Superseded` features are excluded from the
-//!    fold entirely. Both statuses mean "this ticket does not
-//!    represent live remaining work" (a duplicate was filed by
-//!    accident; a superseded feature was replaced by another one
-//!    that, if it also targets this milestone, is already counted
-//!    on its own). Counting them would double-count or count dead
-//!    weight.
-//! 2. If nothing counts (no feature points at the milestone, or
-//!    every pointing feature was excluded by rule 1), the rollup is
-//!    [`RollupStatus::Planning`] — there is no live work yet.
-//! 3. Otherwise, if ANY counted feature is
+//!    fold: neither represents live remaining work.
+//! 2. If nothing counts, the rollup is [`RollupStatus::Planning`].
+//! 3. Otherwise, if any counted feature is
 //!    [`FeatureStatus::Blocked`], the rollup is
-//!    [`RollupStatus::Blocked`]. Blocked wins over every other
-//!    state because it is the one state that needs an operator's
-//!    attention right now — a milestone with 9 completed features
-//!    and 1 blocked one is not "almost done", it is "stuck".
-//! 4. Otherwise, if EVERY counted feature is
+//!    [`RollupStatus::Blocked`], which wins over every other state.
+//! 4. Otherwise, if every counted feature is
 //!    [`FeatureStatus::Completed`], the rollup is
 //!    [`RollupStatus::Completed`].
-//! 5. Otherwise (a mix of `Requested` / `Approved` / `Pending` /
-//!    `Deferred`, with no `Blocked` present and not everything
-//!    `Completed`), the rollup is [`RollupStatus::InProgress`].
+//! 5. Otherwise, the rollup is [`RollupStatus::InProgress`].
 //!
-//! This is a strict, order-independent fold: the same feature set
-//! always produces the same rollup regardless of scan order, which
-//! matters because the underlying cache query has no guaranteed row
-//! order across groups.
+//! Order-independent fold: the same feature set always produces the
+//! same rollup regardless of scan order, since the cache query has
+//! no guaranteed row order across groups.
 
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePool;
@@ -132,7 +93,7 @@ pub struct MilestoneRollup {
 
 /// Compute `milestone_id`'s rollup by scanning the local content
 /// cache, counting only features whose `group_id` matches
-/// `owner_group_id` — the group the milestone itself lives in. See
+/// `owner_group_id`, the group the milestone itself lives in. See
 /// the module doc for why the scope is restricted this way. Lazily
 /// builds the cache first (see [`crate::cache::ensure_built`]) so a
 /// cold cache never returns a false [`RollupStatus::Planning`].
@@ -156,8 +117,8 @@ pub async fn compute(
 /// rows are only ever written without a status by data that predates
 /// the column, which the schema doc already treats as a legitimate
 /// absence, not corruption. A row that DOES carry a status string
-/// that fails [`FeatureStatus::parse`] is a different case entirely —
-/// a real feature whose lifecycle state cannot be read — and is
+/// that fails [`FeatureStatus::parse`] is a different case: a real
+/// feature whose lifecycle state cannot be read. It is
 /// surfaced as [`CacheError::UnparseableFeatureStatus`] instead of
 /// silently excluded, so a rollup never reports a milestone
 /// `Completed` while a real `Blocked` feature is invisible to the
