@@ -18,13 +18,19 @@
 
   $effect(() => {
     let unlisten: (() => void) | null = null;
+    let cancelled = false;
     void (async () => {
       maximized = await win.isMaximized();
-      unlisten = await win.onResized(async () => {
+      const off = await win.onResized(async () => {
         maximized = await win.isMaximized();
       });
+      if (cancelled) off();
+      else unlisten = off;
     })();
-    return () => unlisten?.();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   });
 </script>
 
