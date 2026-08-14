@@ -244,7 +244,7 @@ mod tests {
     use super::*;
 
     /// `git_url_for` must produce `{base_url}/git/{uuid}.git`
-    /// verbatim — mutations that short-circuit the format (e.g.
+    /// verbatim: mutations that short-circuit the format (e.g.
     /// returning an empty or constant string) would otherwise
     /// route pushes at the wrong URL silently.
     #[test]
@@ -293,7 +293,7 @@ mod tests {
 
     /// The `Some(token) if !token.is_empty()` guard specifically
     /// demands a non-empty token. Mutation testing flagged the
-    /// `!token.is_empty()` predicate as escaping — a caller that
+    /// `!token.is_empty()` predicate as escaping: a caller that
     /// stored an empty bearer string must fall back to `None`, not
     /// produce a `Credentials::bearer("")` call that the server
     /// would then silently reject.

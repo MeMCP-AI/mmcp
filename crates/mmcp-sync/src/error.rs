@@ -61,7 +61,7 @@ pub enum SyncError {
     /// Operator has to pull, reconcile, then push again. The raw
     /// stderr is preserved so the CLI can surface the underlying
     /// rejection reason verbatim without paraphrasing.
-    #[error("push diverged: group {group} rejected by remote — {stderr}")]
+    #[error("push diverged: group {group} rejected by remote: {stderr}")]
     PushDiverged { group: Uuid, stderr: String },
 }
 

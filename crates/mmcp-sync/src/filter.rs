@@ -1,7 +1,7 @@
 //! Sync filter taxonomy and the scope-lookup trait the engine
 //! needs to apply it.
 //!
-//! Every effectful sync call (`pull` / `push` / `sync`) now takes a
+//! Every effectful sync call (`pull` / `push` / `sync`) takes a
 //! [`SyncFilter`] that specifies which groups it targets. The three
 //! variants map one-to-one onto the operator-facing selectors:
 //!
@@ -11,8 +11,8 @@
 //! - [`SyncFilter::Scope`]: every locally-known group whose
 //!   [`GroupScope`] matches. The engine asks the caller-supplied
 //!   [`ScopeIndex`] for each group's scope at drain / fetch time.
-//! - [`SyncFilter::All`]: explicit fanout across the whole mirror.
-//!   The only path that reproduces the pre-scoping behaviour.
+//! - [`SyncFilter::All`]: explicit fanout across the whole mirror,
+//!   with no scope restriction.
 //!
 //! Zero selectors and multiple-selector combinations are rejected
 //! at the CLI / MCP boundary (clap `ArgGroup` on the CLI side,

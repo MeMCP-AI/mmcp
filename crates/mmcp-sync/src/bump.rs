@@ -2,9 +2,8 @@
 //!
 //! The git-symmetric push path walks
 //! `server_head..local_head` and registers one `POST /sync/push` per
-//! new commit. Without the retired `PendingQueue` there is no
-//! sidecar metadata carrying the bump intent, so the intent has to
-//! ride on the commit itself.
+//! new commit. The bump intent rides on the commit itself, with no
+//! separate sidecar metadata.
 //!
 //! Convention: trailing `bump: <level>` line, Conventional-Commits
 //! adjacent, accepted with or without leading whitespace and case

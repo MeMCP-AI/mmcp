@@ -4,18 +4,16 @@
 //!
 //! - The **control plane**: a typed `SyncClient` wrapping the
 //!   HTTP endpoints that `mmcp-server` serves under `/sync/*`.
-//!   Today it advertises which groups exist and at what head
-//!   commit; version-bump registration rode on the retired
-//!   `PendingQueue` until the push rewrite made it redundant
-//!   (the bump intent now travels on the commit itself — see
+//!   Advertises which groups exist and at what head commit; the
+//!   bump intent travels on the commit itself (see
 //!   [`bump::parse_bump_intent`]).
 //! - The **content plane**: a `GitBackend` handle that moves the
 //!   actual git objects. The engine calls `backend.push`,
-//!   `backend.fetch`, and `backend.fast_forward` — fetch populates
+//!   `backend.fetch`, and `backend.fast_forward`: fetch populates
 //!   the local tracking ref, pull fast-forwards from it, push
 //!   ships local `main` to the remote.
 //!
-//! `SyncEngine` orchestrates the four verbs — fetch, pull, push,
+//! `SyncEngine` orchestrates the four verbs: fetch, pull, push,
 //! sync. Tests drive the engine through `wiremock` + an in-process
 //! native backend so every path except real network transport is
 //! covered without a running `mmcp-server`.

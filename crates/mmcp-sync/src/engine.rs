@@ -3,11 +3,10 @@
 //! The engine draws a clean line between two concerns:
 //!
 //! - The **control plane**, which lives in `SyncClient` and talks
-//!   JSON over HTTPS to `mmcp-server`. Today it advertises which
+//!   JSON over HTTPS to `mmcp-server`. Advertises which
 //!   groups exist and at what head commit (`/sync/manifest`,
-//!   `/sync/refs/<uuid>`); version-bump registration used to live
-//!   here but moved onto the commit stream itself once the client
-//!   became fully git-native.
+//!   `/sync/refs/<uuid>`); the bump intent travels on the commit
+//!   stream itself.
 //! - The **content plane**, which lives in `GitBackend` and moves
 //!   actual blobs. `fetch` / `pull` / `push` all delegate their
 //!   on-wire work to `backend.fetch` and `backend.push`.
