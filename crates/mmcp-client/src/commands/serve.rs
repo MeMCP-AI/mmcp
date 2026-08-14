@@ -765,8 +765,9 @@ struct SearchMemoriesArgs {
     /// matched it. Mutually exclusive with `query`.
     #[serde(default)]
     pub queries: Option<Vec<String>>,
-    /// Optional maximum number of hits. Defaults to 50. Caps total
-    /// deduped hits across all queries — not per query.
+    /// Optional maximum number of hits.
+    /// Defaults to 50.
+    /// Caps total deduped hits across all queries, not per query.
     #[serde(default)]
     pub limit: Option<u32>,
     /// Optional group filter (UUID or slug). When set, only
@@ -1195,9 +1196,10 @@ struct AddFeatureArgs {
     #[serde(default)]
     pub description: String,
 
-    /// Full FR body as freeform markdown. Convention: `## Need`
-    /// first, optional `## Resolution` / `## Non-goals` sections
-    /// after. Not parsed by the tool — preserved verbatim.
+    /// Full FR body as freeform markdown.
+    /// Convention: `## Need` first, optional `## Resolution` /
+    /// `## Non-goals` sections after.
+    /// Not parsed by the tool, preserved verbatim.
     #[serde(default)]
     pub body: String,
 
@@ -1231,9 +1233,10 @@ struct AddFeatureArgs {
     #[serde(default)]
     pub supersedes: Option<String>,
 
-    /// UUID of the milestone this feature counts toward. Cross-group
-    /// by design (D3): the milestone does not have to live in this
-    /// project's group. Absent means no milestone.
+    /// UUID of the milestone this feature counts toward.
+    /// Cross-group by design: the milestone does not have to live
+    /// in this project's group.
+    /// Absent means no milestone.
     #[serde(default)]
     pub milestone: Option<String>,
 
@@ -1664,12 +1667,13 @@ struct ListIssuesArgs {
 // ── Milestone tool args ─────────────────────────────────────────
 //
 // Sister block to the feature/issue-tracker args above, but a
-// deliberately reduced surface (M5 design): `add_milestone` /
+// deliberately reduced surface: `add_milestone` /
 // `read_milestone` / `update_milestone` / `list_milestones` route
-// through `mmcp_store::milestones` — no delete, no rename, no
-// supersede flow, no depends_on/blocks. `add_milestone` /
-// `update_milestone` call `confirm_protected_write` from the start,
-// matching every other tracker mutator.
+// through `mmcp_store::milestones`, with no delete, no rename, no
+// supersede flow, no depends_on/blocks.
+// `add_milestone` / `update_milestone` call
+// `confirm_protected_write` from the start, matching every other
+// tracker mutator.
 
 /// Args for `add_milestone`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
@@ -1791,8 +1795,8 @@ const MAX_MILESTONE_VERSION_LENGTH: usize = 512;
 /// the value becomes a domain value. `title` / `description` / `body`
 /// are already bounded downstream by `write_file_at_path`'s
 /// content-length choke point, and `slug` downstream by
-/// `validate_slug`, but neither runs until deep inside `mmcp-store` —
-/// well past the MCP boundary this rule targets — and `version` has
+/// `validate_slug`, but neither runs until deep inside `mmcp-store`
+/// (well past the MCP boundary this rule targets), and `version` has
 /// no downstream bound at all. This helper reuses the SAME named
 /// maxima the rest of the project already validates against
 /// (`mmcp_core::memory::MAX_*_LENGTH`, `mmcp_store::MAX_SLUG_LENGTH`)
@@ -3139,10 +3143,11 @@ impl McpServer {
             .resolve_memory_address(&args.group, args.slug.as_deref(), args.id.as_deref())
             .await?;
 
-        // Memory-modify chain — Shared on every ancestor, Exclusive
-        // on the per-memory leaf. Concurrent deletes of *different*
-        // memories proceed in parallel; a coarsening rename
-        // (Exclusive Group) waits for the Shared Group ancestor.
+        // Memory-modify chain: Shared on every ancestor, Exclusive
+        // on the per-memory leaf.
+        // Concurrent deletes of *different* memories proceed in
+        // parallel; a coarsening rename (Exclusive Group) waits for
+        // the Shared Group ancestor.
         let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::memory_chain(
             *entry.manifest.group_id.as_uuid(),
             resolved.id,
@@ -3618,9 +3623,10 @@ impl McpServer {
             .ok_or_else(|| McpError::invalid_params("group not found", None))?;
         // The protection guard lives here too so a debug-mode
         // operator can't accidentally sidestep the typed CRUD
-        // surface to mutate a global rule. `args.path` stands in
-        // for a memory slug — we surface it on the error payload
-        // so callers still see which path tripped the guard.
+        // surface to mutate a global rule.
+        // `args.path` stands in for a memory slug; we surface it on
+        // the error payload so callers still see which path
+        // tripped the guard.
         confirm_protected_write(&peer, &entry, &args.path, "debug_write").await?;
         self.debug_write_file_unguarded(args).await
     }
@@ -5238,12 +5244,12 @@ impl McpServer {
 
     // ── Milestone tools ─────────────────────────────────────────
     //
-    // Reduced-surface tracked kind (M5 design): add / read / update
-    // / list only, routed through `mmcp_store::milestones`. Every
-    // read path attaches the live, cross-group rollup computed by
-    // `mmcp_store::rollup` via the local content cache. The two
-    // mutators run `confirm_protected_write` before touching the
-    // group, mirroring the feature/issue tracker tools exactly.
+    // Reduced-surface tracked kind: add / read / update
+    // / list only, routed through `mmcp_store::milestones`.
+    // Every read path attaches the live, cross-group rollup computed
+    // by `mmcp_store::rollup` via the local content cache.
+    // The two mutators run `confirm_protected_write` before touching
+    // the group, mirroring the feature/issue tracker tools exactly.
 
     #[tool(
         description = "File a new milestone in the current project's group. Slug is auto-minted from the title when omitted. Status defaults to `planning`; supply one of `planning | active | on_hold | completed` to override. A milestone's live status is a separate, computed rollup over the features that point at it via `add_feature`/`update_feature`'s `milestone` field: see `read_milestone` / `list_milestones`. Errors with `project_not_found`, `invalid_slug`, and `memory_already_exists` mirroring the feature/issue tools.",
@@ -6292,8 +6298,9 @@ async fn resolve_sync_filter(
 /// mistake one shape for the other.
 ///
 /// A read/parse failure on any file (git read, non-UTF8 body,
-/// frontmatter parse) or a failed group listing no longer silently
-/// drops the address. Each cause surfaces on the returned notes list
+/// frontmatter parse) or a failed group listing never silently
+/// drops the address.
+/// Each cause surfaces on the returned notes list
 /// under its own code: `group_listing_failed` for a failed group
 /// listing, `memory_read_failed` for a git read failure,
 /// `memory_not_utf8` for a non-UTF8 body, and `frontmatter_parse_failed`
@@ -6352,10 +6359,10 @@ pub(crate) async fn resolve_subscribed_reads(
         let files = match list_memory_files(backend, entry).await {
             Ok(f) => f,
             Err(err) => {
-                // A group listing failure used to drop the
-                // group's entire address contribution with zero
-                // diagnostic: the group-level sibling of the
-                // per-file note below.
+                // A group listing failure surfaces as
+                // `group_listing_failed` rather than dropping the
+                // group's entire address contribution silently:
+                // the group-level sibling of the per-file note below.
                 notes.push(finding_to_note(&Finding {
                     group: entry_uuid.to_string(),
                     slug: None,
@@ -6448,7 +6455,7 @@ pub(crate) async fn resolve_subscribed_reads(
                     };
                 if file.frontmatter.mandatory {
                     // Tag-based subscription is intentionally about
-                    // non-mandatory memories — mandatory entries
+                    // non-mandatory memories; mandatory entries
                     // already surface through `list_memories` on
                     // every in-scope group.
                     continue;
@@ -6573,8 +6580,9 @@ fn feature_record_to_json(
 }
 
 /// Serialize a [`FeatureSummary`] to the body-free JSON shape used
-/// by `list_features`. Same fields as `feature_record_to_json` minus
-/// `body` — listings stay metadata-only so populated FR groups
+/// by `list_features`.
+/// Same fields as `feature_record_to_json` minus
+/// `body`: listings stay metadata-only so populated FR groups
 /// don't blow past the MCP client token cap.
 fn feature_summary_to_json(
     entry: &GroupEntry,
@@ -6856,7 +6864,7 @@ fn map_issue_error_to_mcp(err: mmcp_store::issues::IssueError) -> McpError {
 /// Fetch the process-global local content cache pool, mapping its
 /// absence onto a structured error. Every milestone tool that reads
 /// a rollup (`read_milestone`, `update_milestone`, `list_milestones`)
-/// needs this — unlike the write-trigger hook, a rollup query with
+/// needs this: unlike the write-trigger hook, a rollup query with
 /// no pool has no fallback answer to give, so this surfaces as a
 /// real error rather than silently returning a trivial rollup.
 /// `ClientState::initialize_from` calls `cache::init_from_home`
@@ -7497,27 +7505,27 @@ impl ServerHandler for McpServer {
 
 /// Session-start protocol delivered to every MCP client on handshake.
 ///
-/// This text is the authoritative reading order — CLAUDE.md points at
-/// it rather than duplicating it. When the checkpoint list or tool
-/// usage changes, update this constant; no other surface repeats the
-/// protocol.
+/// This text is the authoritative reading order: CLAUDE.md points at
+/// it rather than duplicating it.
+/// When the checkpoint list or tool usage changes, update this
+/// constant; no other surface repeats the protocol.
 const SESSION_INSTRUCTIONS: &str = concat!(
     "REQUIRED FIRST ACTION: call `bootstrap_context` before answering the user ",
     "or invoking any other tool. The rules for this project live in mmcp ",
     "memories, NOT in this prompt and NOT in CLAUDE.md. Skipping this step ",
     "means working against stale rules. This directive runs on cold boot, ",
     "before any manifest has been fetched.\n\n",
-    "mmcp memory server — the project's single source of truth for coding rules, ",
+    "mmcp memory server: the project's single source of truth for coding rules, ",
     "conventions, and project notes. Memories live in git repositories under ",
     "~/.mmcp/repos and are surfaced through typed MCP tools; never hand-edit TOML.\n\n",
-    "## STOP — bootstrap returns instructions, not rules\n\n",
+    "## STOP: bootstrap returns instructions, not rules\n\n",
     "`bootstrap_context` carries NO memory metadata and NO bodies. It returns the ",
     "groups you are allowed to enumerate (`groups_in_scope`), the addresses your ",
     "project has subscribed to (`subscribed_reads`), and your current ",
     "subscriptions (`subscriptions_summary`). To find rules, call ",
     "`list_memories(group)` for every entry in `groups_in_scope`, decide which ",
-    "entries are relevant — mandatory rules ALWAYS, plus context-relevant ",
-    "non-mandatory ones — and call `read_memory(group, slug)` for each. Do not ",
+    "entries are relevant (mandatory rules ALWAYS, plus context-relevant ",
+    "non-mandatory ones) and call `read_memory(group, slug)` for each. Do not ",
     "write code, do not commit, do not answer the user's task until every ",
     "mandatory entry's BODY has been fetched. For a large group, pass ",
     "`compact=true` and page with `offset`/`limit` on `list_memories`, and ",
@@ -7545,7 +7553,7 @@ const SESSION_INSTRUCTIONS: &str = concat!(
     "- Before starting a new phase or task.\n",
     "- Before a commit cycle (git conventions may have shipped updates).\n",
     "- After a commit cycle (re-align before picking up the next step).\n",
-    "- Any time a rule is corrected, added, or discussed — the memory may have ",
+    "- Any time a rule is corrected, added, or discussed: the memory may have ",
     "been updated; re-read it.\n\n",
     "## On-demand lookups\n\n",
     "Outside the mandatory set, use `search_memories(query)` for cross-group ",
@@ -7556,7 +7564,7 @@ const SESSION_INSTRUCTIONS: &str = concat!(
     "## Authoring and maintenance\n\n",
     "The memory CRUD surface is three separate tools; pick the right one:\n",
     "- `write_memory(group, slug, name, description, kind, body[, tags, mandatory])` ",
-    "CREATES a new memory. Errors with `memory_already_exists` on collision — ",
+    "CREATES a new memory. Errors with `memory_already_exists` on collision: ",
     "the tool will NOT overwrite silently. Pass `override: true` only when you ",
     "genuinely mean replace-the-whole-file (bulk-reset flows); almost never.\n",
     "- `edit_memory(group, slug[, body, name, description, kind, tags_add, ",
@@ -7566,7 +7574,7 @@ const SESSION_INSTRUCTIONS: &str = concat!(
     "- `delete_memory(group, slug[, message])` removes a memory by commit. ",
     "The removal is auditable through `list_versions`; double-delete errors ",
     "with `memory_not_found`.\n\n",
-    "The server builds all frontmatter from typed parameters — you never ",
+    "The server builds all frontmatter from typed parameters: you never ",
     "construct fence blocks by hand. Use `check_health` for surface validation ",
     "(manifest readable, memories parse), `diagnose` for deep structural checks ",
     "(missing fields, empty bodies, cross-group slug collisions, config gaps).\n\n",
@@ -8900,7 +8908,7 @@ mod tests {
             assert_eq!(
                 group.get("is_project").and_then(|v| v.as_bool()),
                 Some(false),
-                "no `.mmcp.toml` in scope in tests — is_project is false",
+                "no `.mmcp.toml` in scope in tests: is_project is false",
             );
         }
     }
@@ -9524,9 +9532,9 @@ mod tests {
             "Global-scoped seed must appear in groups_in_scope; saw: {groups_in_scope:?}",
         );
         for entry in groups_in_scope {
-            // Each entry is addresses + scope only — no name, no
-            // mandatory flag, no tags. Discovery happens via
-            // list_memories.
+            // Each entry is addresses + scope only: no name, no
+            // mandatory flag, no tags.
+            // Discovery happens via list_memories.
             assert!(entry.get("name").is_none());
             assert!(entry.get("mandatory").is_none());
             assert!(entry.get("tags").is_none());
@@ -11622,7 +11630,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_memory_override_surfaces_deprecated_arg_note() {
-        // FR-45 populator: `override: true` on `mcp:write_memory`
+        // `override: true` on `mcp:write_memory`
         // emits a deprecated_arg_form note steering callers
         // toward `mcp:edit_memory` for partial updates.
         let (state, _tmp) = test_state().await;
@@ -11640,7 +11648,7 @@ mod tests {
             .expect("id echoed")
             .to_string();
 
-        // Second call with override: true — expect the note.
+        // Second call with override: true, expect the note.
         let mut retry = write_memory_args(&group, "target", true);
         retry.id = Some(pinned_id.clone());
         let res = server
@@ -11850,7 +11858,7 @@ mod tests {
         );
     }
 
-    // ── edit_memory (FR-016) ──────────────────────────────────────
+    // ── edit_memory ────────────────────────────────────────────────
 
     #[tokio::test]
     async fn edit_memory_replaces_body_leaving_frontmatter_intact() {
@@ -11943,8 +11951,8 @@ mod tests {
 
     #[tokio::test]
     async fn move_memory_relocates_to_nested_path() {
-        // FR-41: move a flat memory to a nested slug path. The id
-        // stays stable; resolving by id surfaces the new slug.
+        // Move a flat memory to a nested slug path.
+        // The id stays stable; resolving by id surfaces the new slug.
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "rules", "flat", SAMPLE_MEMORY).await;
         let server = McpServer::new(state.clone(), ServeMode::Full);
@@ -12008,7 +12016,7 @@ mod tests {
 
     #[tokio::test]
     async fn move_memory_validates_new_slug() {
-        // FR-41: a `..` segment is rejected so callers can't
+        // A `..` segment is rejected so callers can't
         // escape `memories/` via the move tool.
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "rules", "src", SAMPLE_MEMORY).await;
@@ -12031,7 +12039,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_memories_path_prefix_filters_to_subtree() {
-        // FR-41: path_prefix + recursive=false trims the listing
+        // `path_prefix` + recursive=false trims the listing
         // to immediate children; recursive=true (default) walks
         // the whole subtree.
         let (state, _tmp) = test_state().await;
@@ -12141,7 +12149,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_memories_descriptor_splits_slug_and_path() {
-        // FR-41: descriptor splits the on-disk path into a leaf
+        // The descriptor splits the on-disk path into a leaf
         // `slug` (basename) and a segmented `path` (full location).
         // Structure-aware consumers rebuild the joined form via
         // `path.join("/")`.
@@ -12176,7 +12184,7 @@ mod tests {
         assert_eq!(
             entry.get("slug").and_then(|v| v.as_str()),
             Some("scope"),
-            "slug is the leaf only — no `/` separators",
+            "slug is the leaf only: no `/` separators",
         );
         let path: Vec<String> = entry
             .get("path")
@@ -12268,7 +12276,7 @@ mod tests {
         assert_eq!(payload.get("slug").and_then(|v| v.as_str()), Some("ghost"));
     }
 
-    // ── delete_memory (FR-017) ────────────────────────────────────
+    // ── delete_memory ──────────────────────────────────────────────
 
     #[tokio::test]
     async fn delete_memory_removes_slug_from_listing() {
@@ -12330,7 +12338,7 @@ mod tests {
         );
     }
 
-    // ── protected-group guard (FR-019 + FR-011 fallback) ──────────
+    // ── protected-group guard ────────────────────────────────────────
     //
     // The elicitation-enabled path lives behind a Peer<RoleServer>
     // and is exercised end-to-end at the integration / MCP-client
@@ -12539,16 +12547,16 @@ mod tests {
     // ── protected-group guard on the feature-tracker tools ────────
     //
     // `add_feature` / `update_feature` / `delete_feature` /
-    // `rename_feature` used to resolve their target group and write
-    // straight through with no `confirm_protected_write` call
-    // anywhere in the path. `confirm_protected_write` takes a
-    // `Peer<RoleServer>`, which needs a live MCP transport this
-    // crate has no test harness to construct, so these tests (like
-    // the memory-tool suite above) exercise only the pre-elicitation
-    // fallback helper, `ensure_not_protected`, each with the exact
-    // action tag its corresponding tool now passes to
-    // `confirm_protected_write`. That the four call sites actually
-    // pass those tags is a source-level fact (see serve.rs around
+    // `rename_feature` each call `confirm_protected_write` with the
+    // matching action tag.
+    // `confirm_protected_write` takes a `Peer<RoleServer>`, which
+    // needs a live MCP transport this crate has no test harness to
+    // construct, so these tests (like the memory-tool suite above)
+    // exercise only the pre-elicitation fallback helper,
+    // `ensure_not_protected`, each with the exact action tag its
+    // corresponding tool passes to `confirm_protected_write`.
+    // That the four call sites actually pass those tags is a
+    // source-level fact (see serve.rs around
     // add_feature/update_feature/delete_feature/rename_feature),
     // not something these helper-level tests observe directly.
 
@@ -12620,7 +12628,7 @@ mod tests {
         );
     }
 
-    // ── edit_memory_body (FR-026) ─────────────────────────────────
+    // ── edit_memory_body ──────────────────────────────────────────────
 
     const SECTIONED_MEMORY: &str = "+++\nname = \"Sample\"\ndescription = \"A sectioned memory\"\nkind = \"rule\"\nmandatory = false\ntags = [\"sample\"]\n+++\n## Need\n\nneed body\n\n## Resolution\n\nresolution body\n";
 
@@ -12696,10 +12704,10 @@ mod tests {
         );
     }
 
-    /// End-to-end guard on the reported corruption: a stored body
-    /// carries no trailing newline, so an append used to land on the
-    /// last line instead of its own, and a replaced block used to sit
-    /// flush against the following heading.
+    /// A stored body may carry no trailing newline.
+    /// The applier must still place an append on its own line and
+    /// a replaced block clear of the following heading, never
+    /// flush against adjacent content.
     #[tokio::test]
     async fn edit_memory_body_append_lands_on_its_own_line() {
         let (state, _tmp) = test_state().await;
@@ -12965,14 +12973,14 @@ mod tests {
         );
     }
 
-    /// FR-49: every registered tool surfaces a non-empty `icons` list
+    /// Every registered tool surfaces a non-empty `icons` list
     /// on the canonical accessor consumed by `describe_tools`, the
-    /// `mmcp tools` CLI, and the live `tool_router`. A tool that
-    /// drifts outside the matched buckets in `tool_icon_category`
-    /// would still receive icons (default arm = Mutate), so this
-    /// test alone does not catch unmapped names; it does catch any
-    /// regression where the patching step is skipped or the helper
-    /// returns an empty Vec.
+    /// `mmcp tools` CLI, and the live `tool_router`.
+    /// A tool that drifts outside the matched buckets in
+    /// `tool_icon_category` would still receive icons (default arm
+    /// = Mutate), so this test alone does not catch unmapped names;
+    /// it does catch any regression where the patching step is
+    /// skipped or the helper returns an empty Vec.
     #[test]
     fn registered_tools_carry_icons_for_describe_tools_and_cli() {
         for tool in registered_tool_attrs() {
@@ -12994,9 +13002,9 @@ mod tests {
         }
     }
 
-    /// FR-49: spot-check that category routing covers the obvious
-    /// archetypes — one read tool, one debug tool, one sync tool,
-    /// one feature tool, one mutate tool — so a future refactor of
+    /// Spot-check that category routing covers the obvious
+    /// archetypes: one read tool, one debug tool, one sync tool,
+    /// one feature tool, one mutate tool, so a future refactor of
     /// the category match can't silently re-bucket entire families.
     #[test]
     fn tool_icon_category_covers_each_archetype() {
@@ -13011,20 +13019,22 @@ mod tests {
             ToolIconCategory::Debug,
         );
         assert_eq!(tool_icon_category("sync_pull"), ToolIconCategory::Sync);
-        // Unmapped names default to Mutate; the FR-29 test catches
-        // the absence of a tool from the list, not bucket drift.
+        // Unmapped names default to Mutate;
+        // tool_annotations_match_fr029_matrix catches the absence
+        // of a tool from the list, not bucket drift.
         assert_eq!(
             tool_icon_category("future_tool_that_does_not_exist_yet"),
             ToolIconCategory::Mutate,
         );
     }
 
-    /// FR-50: the patching seam decorates each tool with its
-    /// mmcp.* advisory bits. Spot-check the four buckets — sync
-    /// (network + requires_sync), debug (debug_gated), protected-
-    /// group (write_memory hits the FR-019 guard), feature
-    /// (requires_project) — so a refactor of `meta_for_tool`
-    /// cannot silently strip the wire-visible hints.
+    /// The patching seam decorates each tool with its
+    /// mmcp.* advisory bits.
+    /// Spot-check the four buckets: sync (network + requires_sync),
+    /// debug (debug_gated), protected-group (write_memory hits the
+    /// protected-group guard), feature (requires_project), so a
+    /// refactor of `meta_for_tool` cannot silently strip the
+    /// wire-visible hints.
     #[test]
     fn meta_for_tool_covers_each_namespace_bucket() {
         let sync = meta_for_tool("sync_pull").expect("sync_pull has meta");
@@ -13061,10 +13071,11 @@ mod tests {
         assert!(meta_for_tool("list_groups").is_none());
     }
 
-    /// FR-45: every registered tool surfaces a permissive object
+    /// Every registered tool surfaces a permissive object
     /// `output_schema` so MCP clients can validate that the
-    /// response is a JSON object without 46 separate typed
-    /// response structs landing in this commit.
+    /// response is a JSON object.
+    /// Per-tool typed response structs remain a candidate future
+    /// refinement rather than 46 separate structs today.
     #[test]
     fn registered_tools_carry_output_schema() {
         for tool in registered_tool_attrs() {
@@ -13087,9 +13098,10 @@ mod tests {
         }
     }
 
-    /// FR-45: the schema is shared (same `Arc`) across all tools so
-    /// the per-tool patch is cheap. Cloning the Arc bumps the
-    /// reference count rather than rebuilding the JsonObject.
+    /// The schema is shared (same `Arc`) across all tools so
+    /// the per-tool patch is cheap.
+    /// Cloning the Arc bumps the reference count rather than
+    /// rebuilding the JsonObject.
     #[test]
     fn shared_output_schema_returns_same_arc() {
         let a = shared_output_schema();
@@ -13100,7 +13112,7 @@ mod tests {
         );
     }
 
-    /// FR-50: the patching seam decorates `registered_tool_attrs()`
+    /// The patching seam decorates `registered_tool_attrs()`
     /// (consumed by `describe_tools` and the CLI) with the same
     /// meta the live router sees, so harnesses pre-flighting via
     /// either path get matching results.
@@ -13130,11 +13142,11 @@ mod tests {
         );
     }
 
-    /// FR-30: `mmcp serve --mode readonly` filters destructive and
+    /// `mmcp serve --mode readonly` filters destructive and
     /// additive mutators out of the registered tool surface so a
-    /// harness bug or prompt-injection cannot reach them. The check
-    /// runs against the in-memory `tool_router.map` so it does not
-    /// need a full stdio loop.
+    /// harness bug or prompt-injection cannot reach them.
+    /// The check runs against the in-memory `tool_router.map` so it
+    /// does not need a full stdio loop.
     #[tokio::test]
     async fn serve_mode_readonly_excludes_mutating_tools() {
         let (state, _tmp) = test_state().await;
@@ -13156,7 +13168,7 @@ mod tests {
         assert!(!names.contains("sync_push"));
     }
 
-    /// FR-30: `--mode edit` keeps additive mutators (`write_memory`,
+    /// `--mode edit` keeps additive mutators (`write_memory`,
     /// `import_memory`, `add_feature`) but still drops destructive
     /// rewrites and replay-style sync.
     #[tokio::test]
@@ -13182,9 +13194,9 @@ mod tests {
         assert!(!names.contains("sync"));
     }
 
-    /// FR-30: `--mode full` keeps every registered tool. Cross-checks
-    /// against `registered_tool_attrs()` so any future tool addition
-    /// is exercised here without an explicit name list.
+    /// `--mode full` keeps every registered tool.
+    /// Cross-checks against `registered_tool_attrs()` so any future
+    /// tool addition is exercised here without an explicit name list.
     #[tokio::test]
     async fn serve_mode_full_registers_every_tool() {
         let (state, _tmp) = test_state().await;
@@ -13194,7 +13206,7 @@ mod tests {
         assert_eq!(live_count, canonical);
     }
 
-    /// FR-30: the `status` MCP tool echoes the active mode so an
+    /// The `status` MCP tool echoes the active mode so an
     /// operator probing a running server can tell which posture it
     /// was launched with without restarting it.
     #[tokio::test]
@@ -13272,9 +13284,10 @@ mod tests {
         }
     }
 
-    /// FR-31: `describe_tools` returns one entry per registered tool
-    /// with the four annotation hint bits intact. The list mirrors
-    /// FR-29's matrix; if a new tool ships without being added to
+    /// `describe_tools` returns one entry per registered tool
+    /// with the four annotation hint bits intact.
+    /// The list mirrors tool_annotations_match_fr029_matrix's matrix;
+    /// if a new tool ships without being added to
     /// `registered_tool_attrs`, this assertion catches the gap.
     #[tokio::test]
     async fn describe_tools_lists_every_registered_tool() {
@@ -13302,7 +13315,7 @@ mod tests {
         // Every entry surfaces a non-empty name + title and the four
         // hint bits (some may be JSON `null` for tools where the bit
         // is intentionally unset, e.g. read-only tools omit
-        // destructive_hint per FR-29).
+        // destructive_hint).
         for entry in tools {
             let name = entry
                 .get("name")
@@ -13347,11 +13360,12 @@ mod tests {
         );
     }
 
-    /// FR-32: write_memory's `override` arg surfaces as a destructive
+    /// write_memory's `override` arg surfaces as a destructive
     /// hint via `describe_tools`, even though the tool itself is
     /// flagged `destructive_hint = false` (additive in the common
-    /// case). Harnesses that match on the tool-level bit alone would
-    /// miss the silent overwrite — the per-arg hint closes the gap.
+    /// case).
+    /// Harnesses that match on the tool-level bit alone would
+    /// miss the silent overwrite: the per-arg hint closes the gap.
     #[tokio::test]
     async fn describe_tools_surfaces_arg_risk_hints_for_write_memory_override() {
         let (state, _tmp) = test_state().await;
@@ -13395,7 +13409,7 @@ mod tests {
         );
     }
 
-    /// FR-32: read-only tools have no risky args; the field still
+    /// Read-only tools have no risky args; the field still
     /// appears as an empty array so callers can match on shape
     /// without an `Option` branch.
     #[tokio::test]
@@ -13422,8 +13436,8 @@ mod tests {
         assert!(hints.is_empty(), "read_memory must have no risky args");
     }
 
-    /// FR-34: when every registered tool carries annotations (the
-    /// real surface after FR-29), the diagnose helper emits zero
+    /// When every registered tool carries annotations (the
+    /// real production surface), the diagnose helper emits zero
     /// `missing_tool_annotations` notes.
     #[test]
     fn collect_missing_annotation_notes_is_empty_on_real_surface() {
@@ -13435,14 +13449,14 @@ mod tests {
         );
     }
 
-    /// FR-34: a synthetic tool with no `annotations` slot surfaces
+    /// A synthetic tool with no `annotations` slot surfaces
     /// as a `missing_tool_annotations` warn note.
     #[test]
     fn collect_missing_annotation_notes_flags_unannotated_tool() {
         // Take one real tool, blank its annotations to simulate a
-        // future-tool slip-through. The FR-29 build-time test
-        // prevents this on the live surface; this test guards the
-        // runtime check itself.
+        // future-tool slip-through.
+        // tool_annotations_match_fr029_matrix prevents this on the
+        // live surface; this test guards the runtime check itself.
         let mut tools = registered_tool_attrs();
         let mut victim = tools.remove(0);
         victim.annotations = None;
@@ -13461,9 +13475,10 @@ mod tests {
         );
     }
 
-    /// FR-34: diagnose surfaces the annotation-coverage check on the
-    /// notes channel. With the real tool surface this stays clean,
-    /// so no `missing_tool_annotations` codes appear in the output.
+    /// Diagnose surfaces the annotation-coverage check on the
+    /// notes channel.
+    /// With the real tool surface this stays clean, so no
+    /// `missing_tool_annotations` codes appear in the output.
     #[tokio::test]
     async fn diagnose_does_not_flag_annotations_on_clean_surface() {
         let (state, _tmp) = test_state().await;
