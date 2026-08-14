@@ -4,9 +4,9 @@
 //! Every exposed tool answers from real git content read via the
 //! [`NativeBackend`] at `~/.mmcp/repos/`. No database is opened,
 //! no placeholder responses are returned. Tools that need
-//! per-session state (verification, compaction acknowledgement)
-//! are not yet exposed on the MCP router — the `SessionStore` is
-//! wired through so they can land without touching initialization.
+//! per-session state (verification, compaction acknowledgement) has
+//! no exposed tool yet; `SessionStore` is wired through so such
+//! tools can attach without further initialization changes.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -67,8 +67,9 @@ pub async fn run(debug_mode: bool, serve_mode: ServeMode) -> Result<()> {
     Ok(())
 }
 
-/// Everything the MCP server needs to answer tool calls from local
-/// state. No database. Git and flat session files only.
+/// Everything the MCP server needs to answer tool calls from local state.
+/// No database.
+/// Git and flat session files only.
 struct ClientStateInner {
     backend: Arc<NativeBackend>,
     groups: GroupIndex,
@@ -80,7 +81,8 @@ struct ClientStateInner {
     watcher: WatcherHandle,
     /// Resolved commit author from user config cascade.
     author: ResolvedAuthor,
-    /// Debug mode flag. When true, raw git access tools are enabled.
+    /// Debug mode flag.
+    /// When true, raw git access tools are enabled.
     /// Can be toggled at runtime via the `debug_toggle` tool.
     debug: Arc<AtomicBool>,
 }
@@ -109,8 +111,7 @@ impl ClientState {
 
         let (backend, groups) = home.init_backend().await?;
 
-        // Best-effort, same rationale as the CLI's `main`: a cache
-        // init failure never blocks the MCP server from starting.
+        // Best-effort, same rationale as the CLI's `main`: a cache init failure never blocks the MCP server from starting.
         if let Err(err) = mmcp_store::cache::init_from_home(&home).await {
             tracing::warn!(error = %err, "failed to initialise local content cache");
         }
@@ -148,11 +149,12 @@ fn find_current_project_config() -> Option<PathBuf> {
     Some(root.join(PROJECT_MANIFEST))
 }
 
-/// Restrict the registered tool surface to a subset of the FR-029
+/// Restrict the registered tool surface to a subset of the tool
 /// annotation matrix, mirroring Serena's read-only / edit / full
-/// posture. The check happens once at `McpServer::new` time so a
-/// disabled tool is not announced through `tools/list` at all — a
-/// stronger guarantee than the advisory-only annotation hints.
+/// posture.
+/// The check happens once at `McpServer::new` time so a disabled
+/// tool is not announced through `tools/list` at all: a stronger
+/// guarantee than the advisory-only annotation hints.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum ServeMode {
     /// Only tools whose `read_only_hint == Some(true)`.
@@ -170,10 +172,8 @@ pub enum ServeMode {
 }
 
 impl ServeMode {
-    /// Lower-case label round-tripped to clap, the `status` tool
-    /// response, and the FR-031 catalogue. Picked to match the clap
-    /// `ValueEnum` derived names so the CLI surface and the wire
-    /// surface read identically.
+    /// Lower-case label round-tripped to clap, the `status` tool response, and the `describe_tools` catalogue.
+    /// Picked to match the clap `ValueEnum` derived names so the CLI surface and the wire surface read identically.
     pub fn as_label(self) -> &'static str {
         match self {
             Self::Readonly => "readonly",
@@ -183,11 +183,12 @@ impl ServeMode {
     }
 
     /// Decide whether `tool` is allowed under this mode using only
-    /// its FR-029 annotations. Tools that lack annotations
-    /// (which the FR-29 conformance test forbids on the production
-    /// surface) get the conservative answer `false` for narrower
-    /// modes — better to drop a tool than expose it under a stricter
-    /// label than its annotations promise.
+    /// its `ToolAnnotations` (see also:
+    /// tool_annotations_match_fr029_matrix, which forbids missing
+    /// annotations on the production surface).
+    /// A tool with no annotations gets the conservative answer
+    /// `false` for narrower modes: dropping a tool beats exposing
+    /// it under a stricter label than its annotations promise.
     fn allows(self, tool: &rmcp::model::Tool) -> bool {
         match self {
             Self::Full => true,
@@ -208,17 +209,15 @@ impl ServeMode {
     }
 }
 
-/// MCP server exposing the stateless mmcp tools that can be served
-/// purely from local git repos.
+/// MCP server exposing the stateless mmcp tools that can be served purely from local git repos.
 #[derive(Clone)]
 struct McpServer {
     state: ClientState,
-    /// Active filter from the `--mode` flag. Stored so `status`
-    /// and `get_info` can echo the running posture; the actual
-    /// filtering happens once during `new`.
+    /// Active filter from the `--mode` flag.
+    /// Stored so `status` and `get_info` can echo the running posture;
+    /// the actual filtering happens once during `new`.
     mode: ServeMode,
-    // NOTE: `tool_router` is read through the `#[tool_handler]`
-    // macro's generated plumbing, not from our own code.
+    // NOTE: `tool_router` is read through the `#[tool_handler]` macro's generated plumbing, not from our own code.
     #[allow(dead_code)]
     tool_router: ToolRouter<McpServer>,
 }
@@ -228,44 +227,35 @@ struct McpServer {
 struct ListMemoriesArgs {
     /// Group UUID to list memories from.
     pub group: String,
-    /// Optional FR-41 path prefix filter. When set, only memories
-    /// whose slug starts with `<path_prefix>/` (or equals it) are
-    /// returned. The prefix itself is matched literally — no
-    /// wildcards or regexes.
+    /// Optional path prefix filter.
+    /// When set, only memories whose slug starts with `<path_prefix>/` (or equals it) are returned.
+    /// The prefix itself is matched literally: no wildcards or regexes.
     #[serde(default)]
     pub path_prefix: Option<String>,
-    /// FR-41: when `false`, only memories whose slug has exactly
-    /// one segment beyond `path_prefix` (or one segment total when
-    /// no prefix is set) are returned. Defaults to `true` so the
-    /// pre-FR-41 default of "every memory in the group" is
-    /// preserved.
+    /// When `false`, only memories whose slug has exactly one segment beyond `path_prefix`,
+    /// or one segment total when no prefix is set, are returned.
+    /// Defaults to `true`, listing every memory in the group regardless of nesting depth.
     #[serde(default)]
     pub recursive: Option<bool>,
-    /// When `true`, each descriptor drops `description`
-    /// (the single largest per-record field) and returns only
-    /// `slug`, `path`, `name`, `kind`, `mandatory`. Defaults to
-    /// `false` (the full descriptor), matching the shape returned
-    /// before compact mode existed, for callers that don't opt in.
-    /// Use this for a large group to keep the response inside the
-    /// tool output ceiling.
+    /// When `true`, each descriptor drops `description` (the single largest per-record field)
+    /// and returns only `slug`, `path`, `name`, `kind`, `mandatory`.
+    /// Defaults to `false`, the full descriptor, for callers that don't opt in.
+    /// Use this for a large group to keep the response inside the tool output ceiling.
     #[serde(default)]
     pub compact: Option<bool>,
-    /// Zero-based offset into the NON-mandatory portion
-    /// of the filtered listing. Setting either `offset` or `limit`
-    /// activates pagination: the response splits into `mandatory`
-    /// (every `mandatory == true` match, always returned in full,
-    /// never paginated away) and `memories` (the paginated
-    /// non-mandatory window), plus an `envelope`. Leaving both unset
-    /// preserves the shape returned before pagination existed: every
-    /// matching memory in one flat `memories` array, no envelope.
-    /// Set this alongside `limit` on a large group instead of one
-    /// unbounded call.
+    /// Zero-based offset into the NON-mandatory portion of the filtered listing.
+    /// Setting either `offset` or `limit` activates pagination:
+    /// the response splits into `mandatory` (every `mandatory == true` match,
+    /// always returned in full, never paginated away) and `memories`
+    /// (the paginated non-mandatory window), plus an `envelope`.
+    /// Leaving both unset keeps every matching memory in one flat `memories` array, no envelope.
+    /// Set this alongside `limit` on a large group instead of one unbounded call.
     #[serde(default)]
     pub offset: Option<usize>,
-    /// Page size for the non-mandatory window. See
-    /// `offset` for the pagination-activation rule. Defaults to
-    /// [`mmcp_core::memory::DEFAULT_LIST_MEMORIES_LIMIT`] and clamps
-    /// to [`mmcp_core::memory::MAX_LIST_MEMORIES_LIMIT`].
+    /// Page size for the non-mandatory window.
+    /// See `offset` for the pagination-activation rule.
+    /// Defaults to [`mmcp_core::memory::DEFAULT_LIST_MEMORIES_LIMIT`]
+    /// and clamps to [`mmcp_core::memory::MAX_LIST_MEMORIES_LIMIT`].
     #[serde(default)]
     pub limit: Option<usize>,
 }
@@ -281,8 +271,8 @@ struct ReadMemoryArgs {
     /// frontmatter.
     #[serde(default)]
     pub slug: Option<String>,
-    /// Canonical UUID of the memory (FR-028). Optional when `slug`
-    /// is supplied; required when multiple memories share a slug.
+    /// Canonical UUID of the memory.
+    /// Optional when `slug` is supplied; required when multiple memories share a slug.
     #[serde(default)]
     pub id: Option<String>,
     /// Optional branch name, tag name, or commit hex. Defaults to `main`.
@@ -354,7 +344,7 @@ impl ToolMemoryKind {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct MemoryRefArg {
-    /// UUID of the referenced memory (post-FR-028 primary key).
+    /// UUID of the referenced memory (primary key).
     pub target: String,
     /// 40-character lowercase hex commit sha pinning the reference
     /// to a specific revision of the target.
@@ -376,12 +366,12 @@ struct WriteMemoryArgs {
     /// Target group UUID or slug.
     pub group: String,
     /// Memory slug (lowercase alphanumeric + hyphens). Duplicate
-    /// slugs are allowed post-FR-028; the server distinguishes
-    /// memories by `id` inside the shared slug directory.
+    /// slugs are allowed; the server distinguishes memories by
+    /// `id` inside the shared slug directory.
     pub slug: String,
     /// Canonical UUID to stamp into frontmatter and the on-disk
-    /// path (FR-028). Leave absent to mint a fresh UUIDv7; supply
-    /// an explicit id to pin an existing memory or to collide
+    /// path. Leave absent to mint a fresh UUIDv7; supply an
+    /// explicit id to pin an existing memory or to collide
     /// deliberately with `override: true`.
     #[serde(default)]
     pub id: Option<String>,
@@ -404,28 +394,30 @@ struct WriteMemoryArgs {
     /// server stores absent as "no refs".
     #[serde(default)]
     pub refs: Vec<MemoryRefArg>,
-    /// FR-38 provenance UUID. When set, this memory was filed by
-    /// an agent acting on behalf of the named owner (group UUID
-    /// for federated workflows; memory UUID when chaining a
-    /// promoted copy). Absent means the owning group authored the
-    /// memory itself. The string is parsed as a UUID; bad input
-    /// errors with `code: invalid_source`.
+    /// Provenance UUID.
+    /// When set, this memory was filed by an agent acting on
+    /// behalf of the named owner (group UUID for federated
+    /// workflows; memory UUID when chaining a promoted copy).
+    /// Absent means the owning group authored the memory itself.
+    /// The string is parsed as a UUID; bad input errors with
+    /// `code: invalid_source`.
     #[serde(default)]
     pub source: Option<String>,
-    /// Opt into replacing an already-existing memory at this slug.
-    /// `false` (default) makes the tool a strict CREATE — the wire
+    /// Opt into replacing an existing memory at this slug.
+    /// `false` (default) makes the tool a strict CREATE: the wire
     /// name is `override` via serde rename; the Rust field uses a
-    /// suffix to sidestep the reserved keyword. Callers almost
-    /// never want this; prefer `edit_memory` for partial updates
-    /// and reach for `override` only on deliberate replace-whole-
-    /// file flows.
+    /// suffix to sidestep the reserved keyword.
+    /// Callers almost never want this; prefer `edit_memory` for
+    /// partial updates and reach for `override` only on deliberate
+    /// replace-whole-file flows.
     #[serde(default, rename = "override")]
     pub override_: bool,
-    /// FR-28 / D4: bypass the filename-vs-frontmatter id mismatch
-    /// rejection on a `ByFilename` write. Defaults to `false` so
-    /// drift is caught loudly; set `true` only when the caller has
-    /// confirmed they intend to write a new payload at the same
-    /// filename UUID even though the frontmatter id disagrees.
+    /// Bypass the filename-vs-frontmatter id mismatch rejection on
+    /// a `ByFilename` write.
+    /// Defaults to `false` so drift is caught loudly; set `true`
+    /// only when the caller has confirmed they intend to write a
+    /// new payload at the same filename UUID even though the
+    /// frontmatter id disagrees.
     #[serde(default)]
     pub force: bool,
 }
@@ -457,8 +449,8 @@ struct ImportMemoryArgs {
     pub group: String,
 
     /// Memory slug the imported file will land under. Duplicate
-    /// slugs are legal post-FR-028; each import mints a fresh
-    /// UUIDv7 when the source carries no `id` in its frontmatter.
+    /// slugs are legal; each import mints a fresh UUIDv7 when the
+    /// source carries no `id` in its frontmatter.
     pub slug: String,
 
     /// Raw source document. May already carry a `+++` / `---` /
@@ -497,10 +489,10 @@ struct ImportMemoryArgs {
     /// matters for pinned-id flows.
     #[serde(default, rename = "override")]
     pub override_: bool,
-    /// FR-28 / D4: bypass the filename-vs-frontmatter id mismatch
-    /// rejection. Reserved for parity with the other write tools;
-    /// `import_memory` mints / pins ids in lockstep with the
-    /// filename, so the flag is a no-op on the happy path.
+    /// Bypass the filename-vs-frontmatter id mismatch rejection.
+    /// Reserved for parity with the other write tools; `import_memory`
+    /// mints / pins ids in lockstep with the filename, so the flag
+    /// is a no-op on the happy path.
     #[serde(default)]
     pub force: bool,
 }
@@ -521,7 +513,7 @@ struct EditMemoryArgs {
     /// Memory slug (directory). Optional when `id` is supplied.
     #[serde(default)]
     pub slug: Option<String>,
-    /// Canonical UUID of the memory (FR-028).
+    /// Canonical UUID of the memory.
     #[serde(default)]
     pub id: Option<String>,
     /// Replace the markdown body verbatim. Absent leaves it
@@ -564,8 +556,8 @@ struct EditMemoryArgs {
     /// `"update memory {slug}"`.
     #[serde(default)]
     pub message: Option<String>,
-    /// FR-28 / D4: bypass the filename-vs-frontmatter id mismatch
-    /// rejection on a `ByFilename` write. Defaults to `false`.
+    /// Bypass the filename-vs-frontmatter id mismatch rejection on
+    /// a `ByFilename` write. Defaults to `false`.
     #[serde(default)]
     pub force: bool,
 }
@@ -579,21 +571,21 @@ struct DeleteMemoryArgs {
     /// Memory slug to remove. Optional when `id` is supplied.
     #[serde(default)]
     pub slug: Option<String>,
-    /// Canonical UUID of the memory (FR-028).
+    /// Canonical UUID of the memory.
     #[serde(default)]
     pub id: Option<String>,
     /// Commit message override. Absent falls back to
     /// `"delete memory {slug}"`.
     #[serde(default)]
     pub message: Option<String>,
-    /// FR-28 / D4: present for parity with the other write tools;
-    /// `delete_memory` does not render new bytes, so the flag is a
-    /// no-op on the happy path.
+    /// Present for parity with the other write tools; `delete_memory`
+    /// does not render new bytes, so the flag is a no-op on the
+    /// happy path.
     #[serde(default)]
     pub force: bool,
 }
 
-/// Args for `read_memory_body_sections` (FR-026).
+/// Args for `read_memory_body_sections`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
 struct ReadMemoryBodySectionsArgs {
@@ -602,12 +594,12 @@ struct ReadMemoryBodySectionsArgs {
     /// Memory slug to inspect. Optional when `id` is supplied.
     #[serde(default)]
     pub slug: Option<String>,
-    /// Canonical UUID of the memory (FR-028).
+    /// Canonical UUID of the memory.
     #[serde(default)]
     pub id: Option<String>,
 }
 
-/// Args for `edit_memory_body` (FR-026).
+/// Args for `edit_memory_body`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
 struct EditMemoryBodyArgs {
@@ -616,7 +608,7 @@ struct EditMemoryBodyArgs {
     /// Memory slug to mutate. Optional when `id` is supplied.
     #[serde(default)]
     pub slug: Option<String>,
-    /// Canonical UUID of the memory (FR-028).
+    /// Canonical UUID of the memory.
     #[serde(default)]
     pub id: Option<String>,
     /// Ordered list of body edits. Each op is a tagged union
@@ -627,8 +619,8 @@ struct EditMemoryBodyArgs {
     /// Optional override for the git commit message.
     #[serde(default)]
     pub message: Option<String>,
-    /// FR-28 / D4: bypass the filename-vs-frontmatter id mismatch
-    /// rejection on a `ByFilename` write. Defaults to `false`.
+    /// Bypass the filename-vs-frontmatter id mismatch rejection on
+    /// a `ByFilename` write. Defaults to `false`.
     #[serde(default)]
     pub force: bool,
 }
@@ -873,7 +865,7 @@ struct BootstrapContextArgs {
     /// against the local mirror without touching the filesystem;
     /// the response carries no `project_root` and no
     /// subscription resolution (no `.mmcp.toml` is loaded). Use
-    /// `path` instead when you want subscriptions honored. FR-44.
+    /// `path` instead when you want subscriptions honored.
     #[serde(default)]
     pub project: Option<String>,
 
@@ -907,7 +899,7 @@ enum InitClaudeAction {
 ///
 /// This is the serializable counterpart to the CLI's interactive
 /// prompt. Future rmcp releases that expose `ElicitationRequest` can
-/// replace the error-then-retry contract with a synchronous prompt —
+/// replace the error-then-retry contract with a synchronous prompt;
 /// the argument's shape stays the same.
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -955,10 +947,10 @@ struct StatusArgs {
     /// Target project group (UUID or slug). When omitted, the
     /// server falls back to walking `cwd` for a `.mmcp.toml`.
     /// When present, the response returns the minimal shape
-    /// `{project_configured, project_uuid, groups}` — filesystem-
+    /// `{project_configured, project_uuid, groups}`: filesystem-
     /// anchored fields (`project_root`, `sync`) are only emitted
     /// on the cwd-walk branch since an explicit selector does
-    /// not guarantee a local filesystem root. FR-44.
+    /// not guarantee a local filesystem root.
     #[serde(default)]
     pub project: Option<String>,
 }
@@ -982,7 +974,7 @@ struct DescribeToolsArgs {}
 #[schemars(crate = "rmcp::schemars")]
 struct VersionArgs {}
 
-// ── Elicitation payload shapes (FR-011) ──────────────────────────
+// ── Elicitation payload shapes ────────────────────────────────────
 //
 // Each struct defines the JSON schema the server sends in the
 // elicitation request; the client renders a matching form and
@@ -1073,8 +1065,8 @@ struct SyncToolArgs {
 /// - **Slug-less retry**: `{}` when `.mmcp.toml` already stores a
 ///   `project_slug`, so the caller doesn't need to re-specify it.
 ///
-/// Elicitation-based slug defaulting (FR-011) will plug in here
-/// once rmcp exposes the client-side hook: the server will compute
+/// Elicitation-based slug defaulting will plug in here once rmcp
+/// exposes the client-side hook: the server will compute
 /// a slugified project dir basename and ask the client to accept /
 /// override it. Until then, `slug_required` is the pre-elicitation
 /// graceful degradation.
@@ -1172,17 +1164,17 @@ struct CreateGroupArgs {
     pub scope: Option<ToolGroupScope>,
 
     /// When true, the manifest's `protected` flag is set so every
-    /// subsequent mutation goes through the FR-019 confirmation
-    /// guard.
+    /// subsequent mutation goes through the protected-group
+    /// confirmation guard.
     #[serde(default)]
     pub protected: bool,
 }
 
-// ── Feature-request tool arg shapes (FR-007) ─────────────────────
+// ── Feature-request tool arg shapes ───────────────────────────────
 //
 // Each FR tool auto-resolves the project group from the server
 // process's cwd (same discovery as `status`/`bootstrap_context`),
-// so none of these structs carry a `group` field — writing into
+// so none of these structs carry a `group` field: writing into
 // anything other than the project's own FR backlog goes through
 // `write_memory`.
 
@@ -1192,7 +1184,7 @@ struct CreateGroupArgs {
 struct AddFeatureArgs {
     /// Target project group (UUID or slug). When omitted, the
     /// server falls back to walking `cwd` for a `.mmcp.toml` and
-    /// using whichever project it finds. FR-44.
+    /// using whichever project it finds.
     #[serde(default)]
     pub project: Option<String>,
 
@@ -1252,13 +1244,14 @@ struct AddFeatureArgs {
     #[serde(default)]
     pub milestone: Option<String>,
 
-    /// FR-38 provenance UUID. When set, this FR was filed by an
-    /// agent acting on behalf of the named owner — group UUID for
-    /// federated workflows where one project files an FR against
-    /// another, or memory UUID when the FR was promoted from an
-    /// existing reference memory. Absent means the project group
-    /// authored the FR directly. Errors with `code: invalid_source`
-    /// when not parseable as a UUID.
+    /// Provenance UUID.
+    /// When set, this FR was filed by an agent acting on behalf of
+    /// the named owner: group UUID for federated workflows where
+    /// one project files an FR against another, or memory UUID
+    /// when the FR was promoted from an existing reference memory.
+    /// Absent means the project group authored the FR directly.
+    /// Errors with `code: invalid_source` when not parseable as a
+    /// UUID.
     #[serde(default)]
     pub source: Option<String>,
 
@@ -1272,7 +1265,7 @@ struct AddFeatureArgs {
 #[schemars(crate = "rmcp::schemars")]
 struct ReadFeatureArgs {
     /// Target project group (UUID or slug). When omitted, the
-    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    /// server falls back to walking `cwd` for a `.mmcp.toml`.
     #[serde(default)]
     pub project: Option<String>,
 
@@ -1290,7 +1283,7 @@ struct ReadFeatureArgs {
 #[schemars(crate = "rmcp::schemars")]
 struct UpdateFeatureArgs {
     /// Target project group (UUID or slug). When omitted, the
-    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    /// server falls back to walking `cwd` for a `.mmcp.toml`.
     #[serde(default)]
     pub project: Option<String>,
 
@@ -1364,7 +1357,7 @@ struct UpdateFeatureArgs {
 #[schemars(crate = "rmcp::schemars")]
 struct DeleteFeatureArgs {
     /// Target project group (UUID or slug). When omitted, the
-    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    /// server falls back to walking `cwd` for a `.mmcp.toml`.
     #[serde(default)]
     pub project: Option<String>,
 
@@ -1392,7 +1385,7 @@ struct MoveMemoryArgs {
     /// are present they must address the same memory.
     #[serde(default)]
     pub slug: Option<String>,
-    /// Canonical UUID of the memory (FR-028).
+    /// Canonical UUID of the memory.
     #[serde(default)]
     pub id: Option<String>,
     /// New slug path. May be a single segment (`feedback`) or a
@@ -1409,7 +1402,7 @@ struct MoveMemoryArgs {
 #[schemars(crate = "rmcp::schemars")]
 struct RenameFeatureArgs {
     /// Target project group (UUID or slug). When omitted, the
-    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    /// server falls back to walking `cwd` for a `.mmcp.toml`.
     #[serde(default)]
     pub project: Option<String>,
 
@@ -1431,7 +1424,7 @@ struct RenameFeatureArgs {
 #[schemars(crate = "rmcp::schemars")]
 struct ListFeaturesArgs {
     /// Target project group (UUID or slug). When omitted, the
-    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    /// server falls back to walking `cwd` for a `.mmcp.toml`.
     #[serde(default)]
     pub project: Option<String>,
 
@@ -1535,7 +1528,7 @@ struct AddIssueArgs {
 #[schemars(crate = "rmcp::schemars")]
 struct ReadIssueArgs {
     /// Target project group (UUID or slug). When omitted, the
-    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    /// server falls back to walking `cwd` for a `.mmcp.toml`.
     #[serde(default)]
     pub project: Option<String>,
 
@@ -1553,7 +1546,7 @@ struct ReadIssueArgs {
 #[schemars(crate = "rmcp::schemars")]
 struct UpdateIssueArgs {
     /// Target project group (UUID or slug). When omitted, the
-    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    /// server falls back to walking `cwd` for a `.mmcp.toml`.
     #[serde(default)]
     pub project: Option<String>,
 
@@ -1617,7 +1610,7 @@ struct UpdateIssueArgs {
 #[schemars(crate = "rmcp::schemars")]
 struct DeleteIssueArgs {
     /// Target project group (UUID or slug). When omitted, the
-    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    /// server falls back to walking `cwd` for a `.mmcp.toml`.
     #[serde(default)]
     pub project: Option<String>,
 
@@ -1634,7 +1627,7 @@ struct DeleteIssueArgs {
 #[schemars(crate = "rmcp::schemars")]
 struct RenameIssueArgs {
     /// Target project group (UUID or slug). When omitted, the
-    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    /// server falls back to walking `cwd` for a `.mmcp.toml`.
     #[serde(default)]
     pub project: Option<String>,
 
@@ -1656,7 +1649,7 @@ struct RenameIssueArgs {
 #[schemars(crate = "rmcp::schemars")]
 struct ListIssuesArgs {
     /// Target project group (UUID or slug). When omitted, the
-    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    /// server falls back to walking `cwd` for a `.mmcp.toml`.
     #[serde(default)]
     pub project: Option<String>,
 
@@ -1690,7 +1683,7 @@ struct ListIssuesArgs {
 #[schemars(crate = "rmcp::schemars")]
 struct AddMilestoneArgs {
     /// Target project group (UUID or slug). When omitted, the
-    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    /// server falls back to walking `cwd` for a `.mmcp.toml`.
     #[serde(default)]
     pub project: Option<String>,
 
@@ -1727,7 +1720,7 @@ struct AddMilestoneArgs {
 #[schemars(crate = "rmcp::schemars")]
 struct ReadMilestoneArgs {
     /// Target project group (UUID or slug). When omitted, the
-    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    /// server falls back to walking `cwd` for a `.mmcp.toml`.
     #[serde(default)]
     pub project: Option<String>,
 
@@ -1745,7 +1738,7 @@ struct ReadMilestoneArgs {
 #[schemars(crate = "rmcp::schemars")]
 struct UpdateMilestoneArgs {
     /// Target project group (UUID or slug). When omitted, the
-    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    /// server falls back to walking `cwd` for a `.mmcp.toml`.
     #[serde(default)]
     pub project: Option<String>,
 
@@ -1779,7 +1772,7 @@ struct UpdateMilestoneArgs {
 #[schemars(crate = "rmcp::schemars")]
 struct ListMilestonesArgs {
     /// Target project group (UUID or slug). When omitted, the
-    /// server falls back to walking `cwd` for a `.mmcp.toml`. FR-44.
+    /// server falls back to walking `cwd` for a `.mmcp.toml`.
     #[serde(default)]
     pub project: Option<String>,
 
@@ -2611,11 +2604,12 @@ impl McpServer {
         .await;
         let _ = kind;
 
-        // FR-28 / D4: write_memory mints / pins `id` and stamps it
-        // into frontmatter on the lines above, so filename and
-        // frontmatter agree by construction. Address by filename
-        // (the caller specified the slug+id pair) and let the
-        // store-side `validate_id_mismatch` pick up future drift.
+        // write_memory mints / pins `id` and stamps it into
+        // frontmatter on the lines above, so filename and
+        // frontmatter agree by construction.
+        // Address by filename (the caller specified the slug+id
+        // pair) and let the store-side `validate_id_mismatch` pick
+        // up future drift.
         let (commit_id, validation) = mmcp_store::write_memory_by_id(
             &self.state.backend,
             &entry.handle,
@@ -2696,11 +2690,12 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         let entry = self.resolve_group_entry(&args.group).await?;
 
-        // FR-28 / D4: `force` is part of the unified write-tool
-        // wire surface but `import_memory` mints / pins ids in
-        // lockstep with the filename, so the flag has nothing to
-        // bypass on the happy path. Bind to underscore so the
-        // wire arg stays visible to clients.
+        // `force` is part of the unified write-tool wire surface
+        // but `import_memory` mints / pins ids in lockstep with
+        // the filename, so the flag has nothing to bypass on the
+        // happy path.
+        // Bind to underscore so the wire arg stays visible to
+        // clients.
         let _force = args.force;
 
         // Synth fields are together-or-not-at-all. Partial sets
@@ -3148,9 +3143,9 @@ impl McpServer {
         &self,
         args: DeleteMemoryArgs,
     ) -> Result<CallToolResult, McpError> {
-        // FR-28 / D4: `force` is part of the unified write-tool
-        // wire surface but `delete_memory` does not render new
-        // bytes to validate, so the flag has nothing to bypass.
+        // `force` is part of the unified write-tool wire surface
+        // but `delete_memory` does not render new bytes to
+        // validate, so the flag has nothing to bypass.
         // Bind to underscore so the wire arg stays visible.
         let _force = args.force;
         let (entry, resolved) = self
@@ -12842,11 +12837,11 @@ mod tests {
         );
     }
 
-    /// FR-029 regression: every `#[tool(...)]` site in this file must
-    /// carry `ToolAnnotations` with the exact hint bits the project
-    /// committed to in the FR. If a new tool lands without
-    /// `annotations(...)`, the helper will see `annotations = None`
-    /// and fail loudly so the reviewer catches the omission.
+    /// Every `#[tool(...)]` site in this file must carry
+    /// `ToolAnnotations` with the exact hint bits committed for its
+    /// tool. A new tool that lands without `annotations(...)` makes
+    /// the helper see `annotations = None` and fail loudly, catching
+    /// the omission before review.
     #[test]
     fn tool_annotations_match_fr029_matrix() {
         use rmcp::model::Tool;
