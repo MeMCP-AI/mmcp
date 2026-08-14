@@ -1,6 +1,6 @@
 [package]
 name = "mmcp-store"
-description = "mmcp's programmatic store layer: home discovery, group index, project config, memory CRUD, sync orchestration, and diagnostics. Shared by the CLI, the MCP stdio tools, the desktop GUI, and any third-party consumer — carries no clap / rmcp / inquire / egui dependencies so the surface stays consumer-agnostic."
+description = "mmcp's programmatic store layer: home discovery, group index, project config, memory CRUD, sync orchestration, and diagnostics. Shared by the CLI, the MCP stdio tools, the desktop GUI, and any third-party consumer, carries no clap/rmcp/inquire/egui dependencies so the surface stays consumer-agnostic."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,10 +12,9 @@ mmcp-git = { workspace = true }
 mmcp-session = { workspace = true }
 mmcp-sync = { workspace = true }
 
-# Used directly by `home::read_git_global` to parse the operator's
-# global git config; mmcp-git also depends on gix so the transitive
-# dep already compiles, listing it directly keeps the crate-level
-# dep set explicit.
+# Used directly by `home::read_git_global` to parse the operator's global git config;
+# mmcp-git also depends on gix so the transitive dep already compiles,
+# listing it directly keeps the crate-level dep set explicit.
 gix = { workspace = true }
 toml = { workspace = true }
 
@@ -29,24 +28,23 @@ jiff = { workspace = true }
 slug = { workspace = true }
 
 # AsciiDoc -> Markdown conversion used by the `mmcp import` path.
-# Operators get to drop `.adoc` / `.asciidoc` files into imports and
-# the pipeline normalises them to the stored markdown format before
-# `import_memory` runs; `acdc-parser` parses, `acdc-converters-markdown`
-# emits CommonMark against the `Converter` trait in `acdc-converters-core`.
+# Operators drop `.adoc`/`.asciidoc` files into imports,
+# and the pipeline normalises them to the stored markdown format before `import_memory` runs;
+# `acdc-parser` parses, `acdc-converters-markdown` emits CommonMark,
+# against the `Converter` trait in `acdc-converters-core`.
 acdc-parser = { workspace = true }
 acdc-converters-core = { workspace = true }
 acdc-converters-markdown = { workspace = true }
 
-# Optional — pulled in only when the `testing` feature is enabled
-# so downstream consumers can activate the fixture module without
-# paying the tempfile compile cost at release time.
+# Optional, pulled in only when the `testing` feature is enabled,
+# so downstream consumers can activate the fixture module without paying the tempfile compile cost at release time.
 tempfile = { version = "3", optional = true }
 
-# Portable archive container for `archive::export_archive` /
-# `import_archive`. `tar` packages a group's verbatim memory files
-# into one stream; `flate2` adds optional gzip. `flate2` is pinned to
-# its pure-Rust `rust_backend` (miniz_oxide) so no `libz-sys` /
-# `miniz-sys` C binding ever enters the graph.
+# Portable archive container for `archive::export_archive`/`import_archive`.
+# `tar` packages a group's verbatim memory files into one stream;
+# `flate2` adds optional gzip.
+# `flate2` is pinned to its pure-Rust `rust_backend` (miniz_oxide),
+# so no `libz-sys`/`miniz-sys` C binding ever enters the graph.
 tar = "0.4"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
@@ -59,19 +57,17 @@ ndarray = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
-# Self-dependency so integration tests under `tests/*.rs` (compiled
-# as external crates against this one) can reach `mmcp_store::testing`
-# the same way `mmcp-client`'s integration suite already does.
+# Self-dependency so integration tests under `tests/*.rs` (compiled as external crates against this one),
+# can reach `mmcp_store::testing` the same way `mmcp-client`'s integration suite already does.
 mmcp-store = { path = ".", features = ["testing"] }
 
 [features]
-# Opt-in module with tempdir-backed fixtures reused by consumer
-# test suites. `#[cfg(test)]` alone would lock the fixtures to this
-# crate's own tests; gating them behind a feature lets downstream
-# crates (mmcp-client integration tests, mmcp-gui widget tests,
-# future third-party consumers) pull in the same helpers via
-# `mmcp-store = { …, features = ["testing"] }` without paying the
-# fixture compile cost at release time.
+# Opt-in module with tempdir-backed fixtures reused by consumer test suites.
+# `#[cfg(test)]` alone would lock the fixtures to this crate's own tests;
+# gating them behind a feature lets downstream crates,
+# mmcp-client integration tests, mmcp-gui widget tests, future third-party consumers,
+# pull in the same helpers via `mmcp-store = { ..., features = ["testing"] }`,
+# without paying the fixture compile cost at release time.
 testing = ["dep:tempfile"]
 
 [lints]
