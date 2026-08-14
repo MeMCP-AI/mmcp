@@ -1,7 +1,12 @@
 //! Synchronous repository operations against a bare git repo.
 //!
 //! These functions are invoked from `spawn_blocking` inside the async
-//! backend so the whole `gix` call tree stays synchronous.
+//! backend so the whole `gix` call tree stays synchronous. Every
+//! function that needs an open repository takes an already-opened
+//! `&gix::Repository`: [`crate::native::NativeBackend`] owns the
+//! cached [`gix::ThreadSafeRepository`] handle and hands out a
+//! thread-local view per call, so this module never re-opens a repo
+//! itself.
 
 use std::ffi::OsString;
 use std::path::Path;
@@ -14,8 +19,46 @@ use gix::objs::tree::EntryKind;
 use crate::error::GitError;
 use crate::types::{CommitMeta, CommitSpec, Credentials, FastForwardOutcome, PushReport, Rev};
 
-fn gix_err<E: std::fmt::Display>(err: E) -> GitError {
-    GitError::Gix(err.to_string())
+/// Wrap a `gix` failure while resolving a revision to a commit, or
+/// while walking the commit graph (ancestry checks, history walks).
+fn resolve_rev_err<E: std::error::Error + Send + Sync + 'static>(err: E) -> GitError {
+    GitError::ResolveRev {
+        source: Box::new(err),
+    }
+}
+
+/// Wrap a `gix` failure while reading a blob or descending a tree to
+/// find one.
+fn read_blob_err<E: std::error::Error + Send + Sync + 'static>(err: E) -> GitError {
+    GitError::ReadBlob {
+        source: Box::new(err),
+    }
+}
+
+/// Wrap a `gix` failure while building or writing a new commit object.
+fn commit_err<E: std::error::Error + Send + Sync + 'static>(err: E) -> GitError {
+    GitError::Commit {
+        source: Box::new(err),
+    }
+}
+
+/// Build a [`GitError::Commit`] from an ad hoc message, for invariant
+/// violations that have no underlying `gix` error to wrap.
+fn commit_msg_err(msg: impl Into<String>) -> GitError {
+    GitError::Commit {
+        source: msg.into().into(),
+    }
+}
+
+/// Wrap a `gix` failure while creating or updating a ref: a branch, a
+/// tag, or the target of a fast-forward.
+fn ref_update_err<E: std::error::Error + Send + Sync + 'static>(
+    name: impl Into<String>,
+) -> impl FnOnce(E) -> GitError {
+    move |err| GitError::RefUpdate {
+        name: name.into(),
+        source: Box::new(err),
+    }
 }
 
 /// Name of the env var that overrides the `git` binary path.
@@ -35,14 +78,21 @@ pub(crate) fn git_binary() -> OsString {
         .unwrap_or_else(|| OsString::from("git"))
 }
 
-/// Apply [`Credentials`] to a `git` command by prepending global
-/// `-c` config flags and setting env vars. Does nothing for
-/// [`Credentials::None`] so the ambient git env (SSH agent,
-/// credential helper, `.netrc`) remains in charge.
+/// Apply [`Credentials`] to a `git` command via environment variables,
+/// never argv. Does nothing for [`Credentials::None`] so the ambient
+/// git env (SSH agent, credential helper, `.netrc`) remains in charge.
 ///
-/// For `BearerHttp`, emits `-c http.extraHeader=Authorization: Bearer <token>`
-/// which is the documented way to push a bearer token through the
-/// subprocess without leaking it into the URL or on-disk config.
+/// For `BearerHttp`, sets `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/
+/// `GIT_CONFIG_VALUE_0` (git's environment-based config protocol,
+/// git >= 2.31), the env equivalent of `-c http.extraHeader=Authorization:
+/// Bearer <token>`. Passing it via `-c` puts the token in the
+/// subprocess's argv, readable by any local process listing
+/// (`/proc/<pid>/cmdline`, Process Explorer) for the subprocess's
+/// lifetime; the environment-variable form keeps it out of argv. The
+/// token still appears in the child's environment block
+/// (`/proc/<pid>/environ`), the same exposure `SshCommand` below
+/// already accepts for its own value.
+///
 /// For `SshCommand`, sets `GIT_SSH_COMMAND`.
 ///
 /// Any `-c` flags must appear *before* the git subcommand, so this
@@ -52,8 +102,12 @@ fn apply_credentials(cmd: &mut Command, creds: &Credentials) {
     match creds {
         Credentials::None => {}
         Credentials::BearerHttp(token) => {
-            cmd.arg("-c")
-                .arg(format!("http.extraHeader=Authorization: Bearer {token}"));
+            cmd.env("GIT_CONFIG_COUNT", "1");
+            cmd.env("GIT_CONFIG_KEY_0", "http.extraHeader");
+            cmd.env(
+                "GIT_CONFIG_VALUE_0",
+                format!("Authorization: Bearer {token}"),
+            );
         }
         Credentials::SshCommand(value) => {
             cmd.env("GIT_SSH_COMMAND", value);
@@ -66,7 +120,10 @@ pub fn init_bare(path: &Path) -> Result<(), GitError> {
     if path.exists() {
         return Ok(());
     }
-    gix::init_bare(path).map_err(gix_err)?;
+    gix::init_bare(path).map_err(|e| GitError::OpenRepo {
+        path: path.to_string_lossy().into_owned(),
+        source: Box::new(e),
+    })?;
     // `gix::init_bare` points HEAD at the host's `init.defaultBranch`
     // (often `master`), but mmcp commits to `main`. Pin HEAD to `main`
     // so HEAD resolves to the branch mmcp actually writes, regardless of
@@ -83,12 +140,7 @@ pub fn init_bare(path: &Path) -> Result<(), GitError> {
 pub fn clone(remote_url: &str, dst: &Path, creds: &Credentials) -> Result<(), GitError> {
     let mut cmd = Command::new(git_binary());
     apply_credentials(&mut cmd, creds);
-    let output = cmd
-        .arg("clone")
-        .arg(remote_url)
-        .arg(dst)
-        .output()
-        .map_err(|e| GitError::Gix(format!("spawn git clone: {e}")))?;
+    let output = cmd.arg("clone").arg(remote_url).arg(dst).output()?;
     if !output.status.success() {
         return Err(GitError::transport(
             "clone",
@@ -115,9 +167,7 @@ pub fn fetch(
     for spec in refspecs {
         cmd.arg(spec);
     }
-    let output = cmd
-        .output()
-        .map_err(|e| GitError::Gix(format!("spawn git fetch: {e}")))?;
+    let output = cmd.output()?;
     if !output.status.success() {
         return Err(GitError::transport(
             "fetch",
@@ -128,15 +178,18 @@ pub fn fetch(
     Ok(())
 }
 
-/// Push `refspecs` (local, remote, force) from the bare repo at
-/// `repo_path` to `remote_url`.
+/// Push `refspecs` (local, remote, force) from `repo` to `remote_url`.
+/// `repo` is used only for the local-ref preflight check; the push
+/// itself still shells out to the `git` binary so it works against
+/// any smart-HTTP-capable remote.
 pub fn push(
-    repo_path: &Path,
+    repo: &gix::Repository,
     remote_url: &str,
     refspecs: &[(String, String, bool)],
     creds: &Credentials,
 ) -> Result<PushReport, GitError> {
-    preflight_local_refs(repo_path, refspecs)?;
+    preflight_local_refs(repo, refspecs)?;
+    let repo_path = repo.git_dir();
     ensure_remote(repo_path, remote_url)?;
     let mut cmd = Command::new(git_binary());
     apply_credentials(&mut cmd, creds);
@@ -149,9 +202,7 @@ pub fn push(
         };
         cmd.arg(spec);
     }
-    let output = cmd
-        .output()
-        .map_err(|e| GitError::Gix(format!("spawn git push: {e}")))?;
+    let output = cmd.output()?;
     if !output.status.success() {
         return Err(GitError::transport(
             "push",
@@ -174,12 +225,10 @@ pub fn push(
 /// Pure-local ref manipulation through `gix`; no network. See
 /// [`crate::GitBackend::fast_forward`] for the contract.
 pub fn fast_forward(
-    repo_path: &Path,
+    repo: &gix::Repository,
     local_ref: &str,
     target_ref: &str,
 ) -> Result<FastForwardOutcome, GitError> {
-    let repo = open_bare(repo_path)?;
-
     // Target must exist; this is the whole point of calling FF
     // after a fetch. Missing target is an operator error, not a
     // transient.
@@ -201,7 +250,7 @@ pub fn fast_forward(
                 gix::refs::transaction::PreviousValue::MustNotExist,
                 "mmcp: fast-forward (create)",
             )
-            .map_err(gix_err)?;
+            .map_err(ref_update_err(local_ref))?;
             Ok(FastForwardOutcome::Advanced {
                 from: None,
                 to: target_commit.to_string(),
@@ -211,11 +260,13 @@ pub fn fast_forward(
             commit: target_commit.to_string(),
         }),
         Some(local_id) => {
-            if is_ancestor(&repo, local_id, target_commit)? {
-                let mut reference = repo.find_reference(local_ref).map_err(gix_err)?;
+            if is_ancestor(repo, local_id, target_commit)? {
+                let mut reference = repo
+                    .find_reference(local_ref)
+                    .map_err(ref_update_err(local_ref))?;
                 reference
                     .set_target_id(target_commit, "mmcp: fast-forward")
-                    .map_err(gix_err)?;
+                    .map_err(ref_update_err(local_ref))?;
                 Ok(FastForwardOutcome::Advanced {
                     from: Some(local_id.to_string()),
                     to: target_commit.to_string(),
@@ -241,9 +292,9 @@ fn is_ancestor(
     if ancestor == descendant {
         return Ok(true);
     }
-    let walk = repo.rev_walk([descendant]).all().map_err(gix_err)?;
+    let walk = repo.rev_walk([descendant]).all().map_err(resolve_rev_err)?;
     for info in walk {
-        let info = info.map_err(gix_err)?;
+        let info = info.map_err(resolve_rev_err)?;
         if info.id == ancestor {
             return Ok(true);
         }
@@ -252,21 +303,20 @@ fn is_ancestor(
 }
 
 /// Verify every local ref named in the outgoing refspecs actually
-/// resolves in the bare repo. Turns git's opaque "src refspec does
-/// not match any" into an actionable `nothing to push` error with
-/// the offending ref name, which otherwise looks identical to a
+/// resolves in `repo`. Turns git's opaque "src refspec does not
+/// match any" into an actionable `nothing to push` error with the
+/// offending ref name, which otherwise looks identical to a
 /// remote-rejection and sends debuggers down the wrong path.
 ///
 /// Empty refspec lists (used by tests exercising error paths) skip
 /// the check so the subprocess surfaces its own error.
 fn preflight_local_refs(
-    repo_path: &Path,
+    repo: &gix::Repository,
     refspecs: &[(String, String, bool)],
 ) -> Result<(), GitError> {
     if refspecs.is_empty() {
         return Ok(());
     }
-    let repo = open_bare(repo_path)?;
     for (local, _remote, _force) in refspecs {
         // Delete refspec (`:refs/heads/foo`) has an empty source
         // and is always valid.
@@ -276,7 +326,7 @@ fn preflight_local_refs(
         if repo.find_reference(local.as_str()).is_err() {
             return Err(GitError::Transport {
                 op: "push",
-                url: repo_path.to_string_lossy().into_owned(),
+                url: repo.git_dir().to_string_lossy().into_owned(),
                 stderr: format!(
                     "nothing to push: local ref `{local}` does not exist \
                      (repository has no commits yet, or the branch name is wrong)"
@@ -299,8 +349,7 @@ fn ensure_remote(repo_path: &Path, remote_url: &str) -> Result<(), GitError> {
         .arg("set-url")
         .arg("origin")
         .arg(remote_url)
-        .output()
-        .map_err(|e| GitError::Gix(format!("spawn git remote set-url: {e}")))?;
+        .output()?;
     if set.status.success() {
         return Ok(());
     }
@@ -311,23 +360,15 @@ fn ensure_remote(repo_path: &Path, remote_url: &str) -> Result<(), GitError> {
         .arg("add")
         .arg("origin")
         .arg(remote_url)
-        .output()
-        .map_err(|e| GitError::Gix(format!("spawn git remote add: {e}")))?;
+        .output()?;
     if !add.status.success() {
-        return Err(GitError::Gix(format!(
-            "git remote add origin failed: {}",
-            String::from_utf8_lossy(&add.stderr)
-        )));
+        return Err(GitError::transport(
+            "remote-add",
+            remote_url,
+            String::from_utf8_lossy(&add.stderr).into_owned(),
+        ));
     }
     Ok(())
-}
-
-/// Open a bare repository at `path`.
-fn open_bare(path: &Path) -> Result<gix::Repository, GitError> {
-    if !path.exists() {
-        return Err(GitError::RepoNotFound(path.to_string_lossy().into_owned()));
-    }
-    gix::open(path).map_err(gix_err)
 }
 
 /// Resolve a `Rev` to a concrete commit object id.
@@ -377,6 +418,39 @@ fn resolve_head(repo: &gix::Repository) -> Result<gix::ObjectId, GitError> {
     Err(GitError::RevNotFound("HEAD".to_string()))
 }
 
+/// Resolve `rev` to its tip commit and return that commit's metadata,
+/// without walking history.
+///
+/// Callers that only need the tip commit (for example: "does this
+/// group have any commits at all") use this instead of
+/// [`walk_history`], which additionally rev-walks the whole ancestry
+/// and diffs every commit's blob at a path.
+pub fn tip_commit(repo: &gix::Repository, rev: &Rev) -> Result<CommitMeta, GitError> {
+    let commit_id = resolve_rev(repo, rev)?;
+    let commit_obj = repo.find_object(commit_id).map_err(resolve_rev_err)?;
+    let decoded_commit: gix::objs::Commit = commit_obj
+        .into_commit()
+        .decode()
+        .map_err(resolve_rev_err)?
+        .into_owned()
+        .map_err(resolve_rev_err)?;
+    Ok(commit_meta(commit_id, &decoded_commit))
+}
+
+/// Build a [`CommitMeta`] from a decoded commit object and its id.
+fn commit_meta(id: gix::ObjectId, commit: &gix::objs::Commit) -> CommitMeta {
+    let message_str = commit.message.to_string();
+    let subject = message_str.lines().next().unwrap_or("").to_string();
+    CommitMeta {
+        id: id.to_string(),
+        subject,
+        message: message_str,
+        author_name: commit.author.name.to_string(),
+        author_email: commit.author.email.to_string(),
+        timestamp: commit.author.time.seconds,
+    }
+}
+
 /// Walk `path` inside `tree`, returning the object id of the blob if
 /// any. Handles nested directories separated by `/`.
 fn find_blob_in_tree(
@@ -390,8 +464,8 @@ fn find_blob_in_tree(
     }
     let mut current_tree_id = root_tree_id;
     for (idx, name) in components.iter().enumerate() {
-        let tree_obj = repo.find_object(current_tree_id).map_err(gix_err)?;
-        let tree: gix::objs::Tree = tree_obj.into_tree().decode().map_err(gix_err)?.into();
+        let tree_obj = repo.find_object(current_tree_id).map_err(read_blob_err)?;
+        let tree: gix::objs::Tree = tree_obj.into_tree().decode().map_err(read_blob_err)?.into();
         let name_bytes = name.as_bytes();
         let entry = tree
             .entries
@@ -421,31 +495,34 @@ fn find_blob_in_tree(
 ///
 /// Empty prefix means the root tree. Missing prefix returns an
 /// empty vector rather than an error.
-pub fn list_tree(repo_path: &Path, path_prefix: &str, rev: &Rev) -> Result<Vec<String>, GitError> {
-    let repo = open_bare(repo_path)?;
-    let commit_id = match resolve_rev(&repo, rev) {
+pub fn list_tree(
+    repo: &gix::Repository,
+    path_prefix: &str,
+    rev: &Rev,
+) -> Result<Vec<String>, GitError> {
+    let commit_id = match resolve_rev(repo, rev) {
         Ok(id) => id,
         // A brand-new repo with no `main` branch yet has nothing to
         // list; that is an empty tree, not an error.
         Err(GitError::RevNotFound(_)) => return Ok(Vec::new()),
         Err(other) => return Err(other),
     };
-    let commit_obj = repo.find_object(commit_id).map_err(gix_err)?;
+    let commit_obj = repo.find_object(commit_id).map_err(resolve_rev_err)?;
     let commit: gix::objs::Commit = commit_obj
         .into_commit()
         .decode()
-        .map_err(gix_err)?
+        .map_err(resolve_rev_err)?
         .into_owned()
-        .map_err(gix_err)?;
+        .map_err(resolve_rev_err)?;
 
     // Walk from the commit's root tree down into `path_prefix`.
-    let target_tree_id = match resolve_tree_prefix(&repo, commit.tree, path_prefix)? {
+    let target_tree_id = match resolve_tree_prefix(repo, commit.tree, path_prefix)? {
         Some(id) => id,
         None => return Ok(Vec::new()),
     };
 
-    let obj = repo.find_object(target_tree_id).map_err(gix_err)?;
-    let tree: gix::objs::Tree = obj.into_tree().decode().map_err(gix_err)?.into();
+    let obj = repo.find_object(target_tree_id).map_err(read_blob_err)?;
+    let tree: gix::objs::Tree = obj.into_tree().decode().map_err(read_blob_err)?.into();
     let mut out = Vec::new();
     for entry in tree.entries {
         if matches!(
@@ -464,31 +541,30 @@ pub fn list_tree(repo_path: &Path, path_prefix: &str, rev: &Rev) -> Result<Vec<S
 /// given revision. Mirror of [`list_tree`] but filtered to
 /// directory entries instead of blobs.
 pub fn list_subtrees(
-    repo_path: &Path,
+    repo: &gix::Repository,
     path_prefix: &str,
     rev: &Rev,
 ) -> Result<Vec<String>, GitError> {
-    let repo = open_bare(repo_path)?;
-    let commit_id = match resolve_rev(&repo, rev) {
+    let commit_id = match resolve_rev(repo, rev) {
         Ok(id) => id,
         Err(GitError::RevNotFound(_)) => return Ok(Vec::new()),
         Err(other) => return Err(other),
     };
-    let commit_obj = repo.find_object(commit_id).map_err(gix_err)?;
+    let commit_obj = repo.find_object(commit_id).map_err(resolve_rev_err)?;
     let commit: gix::objs::Commit = commit_obj
         .into_commit()
         .decode()
-        .map_err(gix_err)?
+        .map_err(resolve_rev_err)?
         .into_owned()
-        .map_err(gix_err)?;
+        .map_err(resolve_rev_err)?;
 
-    let target_tree_id = match resolve_tree_prefix(&repo, commit.tree, path_prefix)? {
+    let target_tree_id = match resolve_tree_prefix(repo, commit.tree, path_prefix)? {
         Some(id) => id,
         None => return Ok(Vec::new()),
     };
 
-    let obj = repo.find_object(target_tree_id).map_err(gix_err)?;
-    let tree: gix::objs::Tree = obj.into_tree().decode().map_err(gix_err)?.into();
+    let obj = repo.find_object(target_tree_id).map_err(read_blob_err)?;
+    let tree: gix::objs::Tree = obj.into_tree().decode().map_err(read_blob_err)?.into();
     let mut out = Vec::new();
     for entry in tree.entries {
         if entry.mode.kind() == EntryKind::Tree {
@@ -514,8 +590,8 @@ fn resolve_tree_prefix(
     }
     let mut current = root_tree_id;
     for name in components {
-        let obj = repo.find_object(current).map_err(gix_err)?;
-        let tree: gix::objs::Tree = obj.into_tree().decode().map_err(gix_err)?.into();
+        let obj = repo.find_object(current).map_err(read_blob_err)?;
+        let tree: gix::objs::Tree = obj.into_tree().decode().map_err(read_blob_err)?.into();
         let name_bytes = name.as_bytes();
         let entry = tree
             .entries
@@ -532,21 +608,64 @@ fn resolve_tree_prefix(
     Ok(Some(current))
 }
 
+/// Read the blob at `path` inside `tree_id`.
+fn read_blob_at_tree(
+    repo: &gix::Repository,
+    tree_id: gix::ObjectId,
+    path: &str,
+) -> Result<Bytes, GitError> {
+    let blob_id = find_blob_in_tree(repo, tree_id, path)?
+        .ok_or_else(|| GitError::PathNotFound(path.to_string()))?;
+    let blob = repo.find_object(blob_id).map_err(read_blob_err)?;
+    Ok(Bytes::from(blob.data.clone()))
+}
+
 /// Read the contents of `path` inside the commit at `rev`.
-pub fn read_file(repo_path: &Path, path: &str, rev: &Rev) -> Result<Bytes, GitError> {
-    let repo = open_bare(repo_path)?;
-    let commit_id = resolve_rev(&repo, rev)?;
-    let commit_obj = repo.find_object(commit_id).map_err(gix_err)?;
+pub fn read_file(repo: &gix::Repository, path: &str, rev: &Rev) -> Result<Bytes, GitError> {
+    let commit_id = resolve_rev(repo, rev)?;
+    let commit_obj = repo.find_object(commit_id).map_err(resolve_rev_err)?;
     let commit: gix::objs::Commit = commit_obj
         .into_commit()
         .decode()
-        .map_err(gix_err)?
+        .map_err(resolve_rev_err)?
         .into_owned()
-        .map_err(gix_err)?;
-    let blob_id = find_blob_in_tree(&repo, commit.tree, path)?
-        .ok_or_else(|| GitError::PathNotFound(path.to_string()))?;
-    let blob = repo.find_object(blob_id).map_err(gix_err)?;
-    Ok(Bytes::from(blob.data.clone()))
+        .map_err(resolve_rev_err)?;
+    read_blob_at_tree(repo, commit.tree, path)
+}
+
+/// Per-path outcome of a [`read_files`] batch: the requested path
+/// paired with its read result, so one missing or unreadable file
+/// never aborts the whole batch.
+pub type BatchReadResult = Vec<(String, Result<Bytes, GitError>)>;
+
+/// Read the contents of every path in `paths` at the same revision.
+///
+/// The commit and its root tree are resolved once and reused for
+/// every lookup, instead of paying the resolve cost per file like
+/// calling [`read_file`] in a loop would. Each path keeps its own
+/// outcome, in request order, so one missing or unreadable path
+/// never aborts the batch.
+pub fn read_files(
+    repo: &gix::Repository,
+    paths: &[String],
+    rev: &Rev,
+) -> Result<BatchReadResult, GitError> {
+    let commit_id = resolve_rev(repo, rev)?;
+    let commit_obj = repo.find_object(commit_id).map_err(resolve_rev_err)?;
+    let commit: gix::objs::Commit = commit_obj
+        .into_commit()
+        .decode()
+        .map_err(resolve_rev_err)?
+        .into_owned()
+        .map_err(resolve_rev_err)?;
+
+    Ok(paths
+        .iter()
+        .map(|path| {
+            let outcome = read_blob_at_tree(repo, commit.tree, path);
+            (path.clone(), outcome)
+        })
+        .collect())
 }
 
 /// Node in the in-memory tree we build before flushing to git.
@@ -567,8 +686,8 @@ impl TreeNode {
 
 /// Load `tree_id` into an in-memory [`TreeNode::Dir`] recursively.
 fn load_tree(repo: &gix::Repository, tree_id: gix::ObjectId) -> Result<TreeNode, GitError> {
-    let obj = repo.find_object(tree_id).map_err(gix_err)?;
-    let tree: gix::objs::Tree = obj.into_tree().decode().map_err(gix_err)?.into();
+    let obj = repo.find_object(tree_id).map_err(commit_err)?;
+    let tree: gix::objs::Tree = obj.into_tree().decode().map_err(commit_err)?.into();
     let mut entries = std::collections::BTreeMap::new();
     for entry in tree.entries {
         let node = match entry.mode.kind() {
@@ -585,11 +704,13 @@ fn load_tree(repo: &gix::Repository, tree_id: gix::ObjectId) -> Result<TreeNode,
 /// intermediate directories as needed, and apply the given leaf edit.
 fn apply_edit(node: &mut TreeNode, components: &[&str], leaf: TreeNode) -> Result<(), GitError> {
     let TreeNode::Dir(map) = node else {
-        return Err(GitError::Gix(
-            "path component collides with an existing blob".to_string(),
+        return Err(commit_msg_err(
+            "path component collides with an existing blob",
         ));
     };
-    let (head, rest) = components.split_first().expect("non-empty components");
+    let Some((head, rest)) = components.split_first() else {
+        return Err(commit_msg_err("empty path component in commit file list"));
+    };
     let key = BString::from(*head);
     if rest.is_empty() {
         if matches!(leaf, TreeNode::Blob(None)) {
@@ -606,7 +727,7 @@ fn apply_edit(node: &mut TreeNode, components: &[&str], leaf: TreeNode) -> Resul
 /// Recursively flush an in-memory tree to the object database.
 fn flush_tree(repo: &gix::Repository, node: &TreeNode) -> Result<Option<gix::ObjectId>, GitError> {
     let TreeNode::Dir(map) = node else {
-        return Err(GitError::Gix("flush_tree expects a Dir".to_string()));
+        return Err(commit_msg_err("flush_tree expects a Dir"));
     };
     let mut entries: Vec<gix::objs::tree::Entry> = Vec::new();
     for (name, child) in map {
@@ -635,7 +756,7 @@ fn flush_tree(repo: &gix::Repository, node: &TreeNode) -> Result<Option<gix::Obj
     }
     entries.sort();
     let tree = gix::objs::Tree { entries };
-    Ok(Some(repo.write_object(&tree).map_err(gix_err)?.detach()))
+    Ok(Some(repo.write_object(&tree).map_err(commit_err)?.detach()))
 }
 
 /// Construct a new tree by applying the edits in `files` on top of
@@ -657,7 +778,10 @@ fn build_tree(
         }
         let leaf = match contents {
             Some(bytes) => {
-                let blob_id = repo.write_blob(bytes.as_slice()).map_err(gix_err)?.detach();
+                let blob_id = repo
+                    .write_blob(bytes.as_slice())
+                    .map_err(commit_err)?
+                    .detach();
                 TreeNode::Blob(Some(blob_id))
             }
             None => TreeNode::Blob(None),
@@ -672,33 +796,32 @@ fn build_tree(
             let empty = gix::objs::Tree {
                 entries: Vec::new(),
             };
-            Ok(repo.write_object(&empty).map_err(gix_err)?.detach())
+            Ok(repo.write_object(&empty).map_err(commit_err)?.detach())
         }
     }
 }
 
 /// Create a new commit on the given branch applying a set of file
 /// edits. The branch is created if it does not yet exist.
-pub fn write_commit(repo_path: &Path, spec: CommitSpec) -> Result<String, GitError> {
-    let repo = open_bare(repo_path)?;
+pub fn write_commit(repo: &gix::Repository, spec: CommitSpec) -> Result<String, GitError> {
     let branch_ref = format!("refs/heads/{}", spec.branch);
 
     let (parent_commit_id, parent_tree_id) = match repo.find_reference(branch_ref.as_str()) {
         Ok(reference) => {
             let parent_commit_id = reference.id().detach();
-            let commit_obj = repo.find_object(parent_commit_id).map_err(gix_err)?;
+            let commit_obj = repo.find_object(parent_commit_id).map_err(commit_err)?;
             let commit: gix::objs::Commit = commit_obj
                 .into_commit()
                 .decode()
-                .map_err(gix_err)?
+                .map_err(commit_err)?
                 .into_owned()
-                .map_err(gix_err)?;
+                .map_err(commit_err)?;
             (Some(parent_commit_id), Some(commit.tree))
         }
         Err(_) => (None, None),
     };
 
-    let new_tree_id = build_tree(&repo, parent_tree_id, &spec.files)?;
+    let new_tree_id = build_tree(repo, parent_tree_id, &spec.files)?;
 
     let now = gix::date::Time::now_local_or_utc();
     let signature = gix::actor::Signature {
@@ -715,14 +838,14 @@ pub fn write_commit(repo_path: &Path, spec: CommitSpec) -> Result<String, GitErr
         message: BString::from(spec.message.as_str()),
         extra_headers: Vec::new(),
     };
-    let commit_id = repo.write_object(&commit).map_err(gix_err)?.detach();
+    let commit_id = repo.write_object(&commit).map_err(commit_err)?.detach();
 
     let log_message = "mmcp: write commit";
     match repo.find_reference(branch_ref.as_str()) {
         Ok(mut reference) => {
             reference
                 .set_target_id(commit_id, log_message)
-                .map_err(gix_err)?;
+                .map_err(ref_update_err(branch_ref.as_str()))?;
         }
         Err(_) => {
             repo.reference(
@@ -731,7 +854,7 @@ pub fn write_commit(repo_path: &Path, spec: CommitSpec) -> Result<String, GitErr
                 gix::refs::transaction::PreviousValue::MustNotExist,
                 log_message,
             )
-            .map_err(gix_err)?;
+            .map_err(ref_update_err(branch_ref.as_str()))?;
         }
     }
 
@@ -739,8 +862,7 @@ pub fn write_commit(repo_path: &Path, spec: CommitSpec) -> Result<String, GitErr
 }
 
 /// Create a lightweight tag pointing at `target_hex`.
-pub fn tag(repo_path: &Path, name: &str, target_hex: &str) -> Result<(), GitError> {
-    let repo = open_bare(repo_path)?;
+pub fn tag(repo: &gix::Repository, name: &str, target_hex: &str) -> Result<(), GitError> {
     let target = gix::ObjectId::from_hex(target_hex.as_bytes())
         .map_err(|_| GitError::RevNotFound(target_hex.to_string()))?;
     let refname = format!("refs/tags/{name}");
@@ -750,7 +872,7 @@ pub fn tag(repo_path: &Path, name: &str, target_hex: &str) -> Result<(), GitErro
         gix::refs::transaction::PreviousValue::Any,
         "mmcp: tag",
     )
-    .map_err(gix_err)?;
+    .map_err(ref_update_err(refname.as_str()))?;
     Ok(())
 }
 
@@ -767,29 +889,27 @@ pub fn tag(repo_path: &Path, name: &str, target_hex: &str) -> Result<(), GitErro
 /// Reads start from whatever `HEAD` points at, so the walker works
 /// against repos whose default branch is not `main` (cloned from
 /// `master`-based forges, custom-named defaults, etc.).
-pub fn walk_history(repo_path: &Path, path: &str) -> Result<Vec<CommitMeta>, GitError> {
-    let repo = open_bare(repo_path)?;
-
-    let head = match resolve_rev(&repo, &Rev::Head) {
+pub fn walk_history(repo: &gix::Repository, path: &str) -> Result<Vec<CommitMeta>, GitError> {
+    let head = match resolve_rev(repo, &Rev::Head) {
         Ok(id) => id,
         Err(GitError::RevNotFound(_)) => return Ok(Vec::new()),
         Err(other) => return Err(other),
     };
 
     let mut out = Vec::new();
-    let walk = repo.rev_walk([head]).all().map_err(gix_err)?;
+    let walk = repo.rev_walk([head]).all().map_err(resolve_rev_err)?;
     for info in walk {
-        let info = info.map_err(gix_err)?;
-        let commit_obj = repo.find_object(info.id).map_err(gix_err)?;
+        let info = info.map_err(resolve_rev_err)?;
+        let commit_obj = repo.find_object(info.id).map_err(resolve_rev_err)?;
         let decoded_commit: gix::objs::Commit = commit_obj
             .into_commit()
             .decode()
-            .map_err(gix_err)?
+            .map_err(resolve_rev_err)?
             .into_owned()
-            .map_err(gix_err)?;
+            .map_err(resolve_rev_err)?;
 
         // No blob at `path` → this commit can't be a modification of it.
-        let Some(current_blob) = find_blob_in_tree(&repo, decoded_commit.tree, path)? else {
+        let Some(current_blob) = find_blob_in_tree(repo, decoded_commit.tree, path)? else {
             continue;
         };
 
@@ -798,14 +918,14 @@ pub fn walk_history(repo_path: &Path, path: &str) -> Result<Vec<CommitMeta>, Git
         // commit is not a modification of it.
         let mut matches_parent = false;
         for parent_id in &decoded_commit.parents {
-            let parent_obj = repo.find_object(*parent_id).map_err(gix_err)?;
+            let parent_obj = repo.find_object(*parent_id).map_err(resolve_rev_err)?;
             let parent_commit: gix::objs::Commit = parent_obj
                 .into_commit()
                 .decode()
-                .map_err(gix_err)?
+                .map_err(resolve_rev_err)?
                 .into_owned()
-                .map_err(gix_err)?;
-            if let Some(parent_blob) = find_blob_in_tree(&repo, parent_commit.tree, path)?
+                .map_err(resolve_rev_err)?;
+            if let Some(parent_blob) = find_blob_in_tree(repo, parent_commit.tree, path)?
                 && parent_blob == current_blob
             {
                 matches_parent = true;
@@ -816,17 +936,7 @@ pub fn walk_history(repo_path: &Path, path: &str) -> Result<Vec<CommitMeta>, Git
             continue;
         }
 
-        let message_str = decoded_commit.message.to_string();
-        let subject = message_str.lines().next().unwrap_or("").to_string();
-
-        out.push(CommitMeta {
-            id: info.id.to_string(),
-            subject,
-            message: message_str,
-            author_name: decoded_commit.author.name.to_string(),
-            author_email: decoded_commit.author.email.to_string(),
-            timestamp: decoded_commit.author.time.seconds,
-        });
+        out.push(commit_meta(info.id, &decoded_commit));
     }
     Ok(out)
 }

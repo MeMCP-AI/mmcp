@@ -8,10 +8,9 @@ use thiserror::Error;
 /// Keeps the path portion intact so the forge + repo are still visible.
 /// Falls back to the original string if parsing fails.
 fn redact_url(url: &str) -> String {
-    if let Some(rest) = url.split_once("://").map(|(_, r)| r)
+    if let Some((scheme, rest)) = url.split_once("://")
         && let Some(at_idx) = rest.find('@')
     {
-        let (scheme, _) = url.split_once("://").expect("checked above");
         return format!("{scheme}://<redacted>@{}", &rest[at_idx + 1..]);
     }
     url.to_string()
@@ -32,14 +31,64 @@ pub enum GitError {
     #[error("revision not found: {0}")]
     RevNotFound(String),
 
-    /// I/O failure while accessing the repository on disk.
+    /// I/O failure while accessing the repository on disk, or while
+    /// spawning the `git` subprocess for `clone`/`fetch`/`push`.
     #[error("git I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// Underlying `gix` error wrapped into a string so our public API
-    /// does not depend on `gix` types.
-    #[error("gix error: {0}")]
-    Gix(String),
+    /// Failed to open or initialize the bare repository at `path`.
+    /// Wraps the underlying `gix` error so the source chain survives
+    /// without exposing `gix` types in this crate's public API.
+    #[error("failed to open repository at {path}: {source}")]
+    OpenRepo {
+        path: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// Failed to resolve a revision to a commit, or to walk the commit
+    /// graph (ancestry checks, history walks).
+    #[error("failed to resolve revision: {source}")]
+    ResolveRev {
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// Failed to read a blob, or to descend a tree while locating one.
+    #[error("failed to read blob: {source}")]
+    ReadBlob {
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// Failed to build or write a new commit object.
+    #[error("failed to write commit: {source}")]
+    Commit {
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// Failed to create or update a ref: a branch, a tag, or the
+    /// target of a fast-forward.
+    #[error("failed to update ref {name}: {source}")]
+    RefUpdate {
+        name: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// Failed to decode or encode the group `.mmcp.toml` manifest.
+    /// `operation` names the direction (`"decode"` or `"encode"`).
+    #[error("failed to {operation} manifest: {source}")]
+    Manifest {
+        operation: &'static str,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// The blocking task driving a `gix` call panicked or was cancelled.
+    #[error("git task join error: {0}")]
+    TaskJoin(#[from] tokio::task::JoinError),
 
     /// The backend is configured but the operation is not supported.
     /// Used by the native backend for network operations that require
