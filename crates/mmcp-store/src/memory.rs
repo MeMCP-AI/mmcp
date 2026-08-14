@@ -1,24 +1,19 @@
 //! Memory CRUD primitives plus the `import_memory` upsert wrapper.
 //!
-//! Three typed primitives (`create_memory_file`, `update_memory_file`,
-//! `delete_memory_file`) wrap `NativeBackend::write_commit` with
-//! existence checks so every consumer — the CLI, the MCP tools, the
-//! GUI, or any third-party caller — enforces a strict contract
-//! without re-implementing the probe. Each primitive maps a missing
-//! or collision slug to a structured [`ImportError`] variant.
+//! Three typed primitives (`create_memory_file`, `update_memory_file`, `delete_memory_file`),
+//! wrap `NativeBackend::write_commit` with existence checks,
+//! so every consumer, the CLI, the MCP tools, the GUI, or any third-party caller,
+//! enforces a strict contract without re-implementing the probe.
+//! Each primitive maps a missing or collision slug to a structured [`ImportError`] variant.
 //!
-//! `import_memory` is the higher-level wrapper used by the CLI
-//! `mmcp import` path and by the MCP `write_memory` tool: it parses
-//! or synthesises frontmatter, chooses between create and update
-//! based on the caller-supplied `override_existing` flag, and
-//! commits.
+//! `import_memory` is the higher-level wrapper used by the CLI `mmcp import` path,
+//! and by the MCP `write_memory` tool:
+//! it parses or synthesises frontmatter, chooses between create and update,
+//! based on the caller-supplied `override_existing` flag, and commits.
 //!
-//! History: ported from `crates/mmcp-client/src/commands/import.rs`
-//! during the FR-020 extraction. `ImportError` keeps its historical
-//! name even though the module now covers broader CRUD concerns; a
-//! rename to `MemoryError` is a cosmetic follow-up that would
-//! ripple across every consumer's error mapper, not worth it for
-//! this chain.
+//! `ImportError` keeps its name even though the module covers broader CRUD concerns;
+//! a rename to `MemoryError` would ripple across every consumer's error mapper,
+//! not worth it for this chain.
 
 use mmcp_core::id::GroupId;
 use mmcp_core::memory::{MemoryFile, MemoryFrontmatter, MemoryKind};
@@ -86,12 +81,10 @@ pub enum ImportError {
     #[error("memory '{slug}' already exists in this group")]
     MemoryAlreadyExists { slug: String },
 
-    /// An `update` or `delete` was attempted against a slug that
-    /// has no file in the group. Distinct from `GroupNotFound`,
-    /// which signals a missing group altogether. Post-FR-028 the
-    /// lookup may have been keyed on either `slug`, `id`, or both,
-    /// so both fields are optional; callers populate whichever
-    /// addresses they actually tried.
+    /// An `update` or `delete` was attempted against a slug that has no file in the group.
+    /// Distinct from `GroupNotFound`, which signals a missing group altogether.
+    /// The lookup may have been keyed on either `slug`, `id`, or both,
+    /// so both fields are optional; callers populate whichever addresses they actually tried.
     #[error("memory not found (slug={slug:?}, id={id:?})")]
     MemoryNotFound {
         slug: Option<String>,
@@ -190,10 +183,9 @@ pub struct MemorySlugDir {
 /// holds at least one direct `.md` blob; intermediate path nodes
 /// (only subtrees, no direct files) are traversed transparently.
 ///
-/// FR-41 introduces `/`-separated slug paths; this helper is the
-/// shared enumeration primitive every listing surface (memories,
-/// features, issues, tracker, diagnostics) routes through so a
-/// nested slug never goes invisible.
+/// Slug paths may contain `/`-separated segments; this helper is the shared enumeration primitive,
+/// every listing surface (memories, features, issues, tracker, diagnostics) routes through,
+/// so a nested slug never goes invisible.
 pub async fn list_memory_slug_dirs(
     backend: &NativeBackend,
     handle: &RepoHandle,
@@ -214,10 +206,9 @@ pub async fn list_memory_slug_dirs(
                 filenames: files,
             });
         }
-        // Always recurse: a leaf may also have child slug paths
-        // (e.g. `feedback/<uuid>.md` and `feedback/git/<uuid>.md`
-        // can coexist). Skipping recursion on `has_md` would hide
-        // the children.
+        // Always recurse: a leaf may also have child slug paths,
+        // (e.g. `feedback/<uuid>.md` and `feedback/git/<uuid>.md` can coexist).
+        // Skipping recursion on `has_md` would hide the children.
         let subs = backend.list_subtrees(handle, &prefix, rev).await?;
         for name in subs {
             let child_prefix = format!("{prefix}/{name}");
@@ -238,9 +229,8 @@ pub async fn list_memory_slug_dirs(
 /// `.md` file inside surfaces as one entry; duplicate slugs appear
 /// as multiple entries with distinct UUIDs.
 ///
-/// Used by diagnostics and any other consumer that needs to read
-/// every memory exactly once. FR-41-aware: nested slug paths
-/// surface alongside flat ones because the walk is recursive.
+/// Used by diagnostics and any other consumer that needs to read every memory exactly once.
+/// Nested slug paths surface alongside flat ones because the walk is recursive.
 pub async fn list_all_memory_files(
     backend: &NativeBackend,
     handle: &RepoHandle,
@@ -268,70 +258,58 @@ pub async fn list_all_memory_files(
     Ok(out)
 }
 
-/// How a [`ResolvedMemory`] was reached. Branches the write
-/// enforcement rules in Slice D (FR-28): filename-addressed writes
-/// reject on id mismatch unless `force`, frontmatter-addressed
-/// writes accept with a `malformed_frontmatter` warning note, and
-/// slug-only queries skip the mismatch check because no id was
-/// provided to compare against.
+/// How a [`ResolvedMemory`] was reached.
+/// Branches the write enforcement rule:
+/// filename-addressed writes reject on id mismatch unless `force`,
+/// frontmatter-addressed writes accept with a `malformed_frontmatter` warning note,
+/// and slug-only queries skip the mismatch check because no id was provided to compare against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum AddressingMode {
-    /// Reached via the filename fast path — file at
-    /// `memories/<slug>/<id>.md` exists AND its frontmatter id
-    /// matches the queried id. Writes in this mode treat the
-    /// filename UUID as authoritative and surface mismatches as
-    /// hard rejections (unless the caller passes `force: true`).
+    /// Reached via the filename fast path:
+    /// file at `memories/<slug>/<id>.md` exists AND its frontmatter id matches the queried id.
+    /// Writes in this mode treat the filename UUID as authoritative,
+    /// and surface mismatches as hard rejections (unless the caller passes `force: true`).
     ByFilename,
-    /// Reached by scanning frontmatter ids across the group after
-    /// the filename fast path missed. Either the file was
-    /// hand-crafted with a non-UUID filename, or its filename
-    /// UUID disagrees with the stored frontmatter id. Writes in
-    /// this mode accept the edit and emit a
-    /// `malformed_frontmatter` warning so the drift stays visible.
+    /// Reached by scanning frontmatter ids across the group after the filename fast path missed.
+    /// Either the file was hand-crafted with a non-UUID filename,
+    /// or its filename UUID disagrees with the stored frontmatter id.
+    /// Writes in this mode accept the edit and emit a `malformed_frontmatter` warning,
+    /// so the drift stays visible.
     ByFrontmatter,
-    /// Reached via slug-only resolution; no id was supplied, so
-    /// there is no filename/frontmatter comparison to make. Writes
-    /// branch through this mode the same way they always have. The
-    /// default: the mismatch check is a no-op without an id to
-    /// compare against, so it is the safe "off" sentinel for a
-    /// `Default`-derived options struct.
+    /// Reached via slug-only resolution; no id was supplied, so there is no filename/frontmatter comparison to make.
+    /// The default: the mismatch check is a no-op without an id to compare against,
+    /// so it is the safe "off" sentinel for a `Default`-derived options struct.
     #[default]
     BySlugOnly,
 }
 
-/// Outcome of the filename-vs-frontmatter id check that
-/// [`validate_id_mismatch`] runs on every write. Callers map this
-/// onto FR-45 notes (`id_mismatch_accepted` / `id_mismatch_forced`)
-/// at the tool boundary.
+/// Outcome of the filename-vs-frontmatter id check that [`validate_id_mismatch`] runs on every write.
+/// Callers map this onto `id_mismatch_accepted`/`id_mismatch_forced` notes at the tool boundary.
 ///
-/// `Match` is the silent common case. The two mismatch variants
-/// distinguish acceptance paths: `MismatchAccepted` rides on
-/// frontmatter-as-truth (D4b/D4c), `MismatchForced` rides on
-/// caller-asserted override of the filename addressing rule (D4a
-/// + force).
+/// `Match` is the silent common case.
+/// The two mismatch variants distinguish acceptance paths:
+/// `MismatchAccepted` rides on frontmatter-as-truth, `MismatchForced` rides on caller-asserted override,
+/// of the filename addressing rule (via `force`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdValidation {
-    /// Filename UUID and frontmatter id agree, or one of them was
-    /// absent (no comparison possible).
+    /// Filename UUID and frontmatter id agree, or one of them was absent (no comparison possible).
     Match,
-    /// Filename ≠ frontmatter; the write was addressed by
-    /// frontmatter / slug only, so frontmatter is source of truth
-    /// and the write proceeds. Surface as a `id_mismatch_accepted`
-    /// note.
+    /// Filename != frontmatter; the write was addressed by frontmatter/slug only,
+    /// so frontmatter is source of truth and the write proceeds.
+    /// Surface as an `id_mismatch_accepted` note.
     MismatchAccepted { filename: Uuid, frontmatter: Uuid },
-    /// Filename ≠ frontmatter; the write was addressed by filename
-    /// UUID and the caller passed `force = true` to override the
-    /// rejection rule. Surface as a `id_mismatch_forced` note.
+    /// Filename != frontmatter; the write was addressed by filename UUID,
+    /// and the caller passed `force = true` to override the rejection rule.
+    /// Surface as an `id_mismatch_forced` note.
     MismatchForced { filename: Uuid, frontmatter: Uuid },
 }
 
-/// Compare the filename UUID encoded in `path` against the
-/// frontmatter `id` stamped in `rendered`. Apply the D4 enforcement
-/// rules and return the resulting [`IdValidation`].
+/// Compare the filename UUID encoded in `path` against the frontmatter `id` stamped in `rendered`.
+/// Applies the enforcement rules above and returns the resulting [`IdValidation`].
 ///
-/// Pure function (no I/O). Callers commit only after the validation
-/// resolves to a non-error outcome; the FR-45 note emitted from the
-/// returned variant tags the response so consumers see the drift.
+/// Pure function (no I/O).
+/// Callers commit only after the validation resolves to a non-error outcome;
+/// the note emitted from the returned variant tags the response so consumers see the drift.
 pub fn validate_id_mismatch(
     path: &str,
     rendered: &str,
@@ -383,13 +361,11 @@ fn filename_uuid_from_path(path: &str) -> Option<Uuid> {
     Uuid::parse_str(stem).ok()
 }
 
-/// Extract the `<slug>` segment from a `memories/<slug>/<uuid>.md`
-/// path (slug may itself contain `/`-joined sub-segments per FR-41).
-/// Returns `None` when `path` does not follow the two-level
-/// convention (e.g. `.mmcp.toml`, a hand-crafted debug write).
-/// Shared by the cache write-trigger hook in
-/// [`write_file_at_path`] so it never re-derives the slug from
-/// scratch.
+/// Extract the `<slug>` segment from a `memories/<slug>/<uuid>.md` path,
+/// (slug may itself contain `/`-joined sub-segments).
+/// Returns `None` when `path` does not follow the two-level convention,
+/// (e.g. `.mmcp.toml`, a hand-crafted debug write).
+/// Shared by the cache write-trigger hook in [`write_file_at_path`] so it never re-derives the slug from scratch.
 fn slug_from_memory_path(path: &str) -> Option<String> {
     let rest = path
         .strip_prefix(mmcp_core::conventions::MEMORIES_DIR)?
