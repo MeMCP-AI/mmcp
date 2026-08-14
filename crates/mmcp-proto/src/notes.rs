@@ -1,4 +1,4 @@
-//! Standard notes channel for MCP tool responses (FR-45).
+//! Standard notes channel for MCP tool responses.
 //!
 //! Every MCP tool response envelope carries an optional
 //! `notes: Vec<Note>` field. Any code path inside the server
@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 /// Severity level for a [`Note`]. Callers can render info as a
 /// plain tip, warn as a yellow prefix, error as a red prefix (but
-/// error here is still a non-fatal signal — failed calls return
+/// error here is still a non-fatal signal: failed calls return
 /// a proper `McpError` / `ProtoError` instead).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,9 +41,8 @@ pub enum NoteLevel {
 /// One entry in the notes channel.
 ///
 /// `code` is a stable machine-readable identifier drawn from a
-/// documented vocabulary (see the FR-45 body for the initial set
-/// and the ongoing changelog). `context` carries structured
-/// payload — the target UUID, file path, remote URL, whatever
+/// documented, versioned vocabulary. `context` carries structured
+/// payload: the target UUID, file path, remote URL, whatever
 /// the specific note code promises to ship.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Note {
