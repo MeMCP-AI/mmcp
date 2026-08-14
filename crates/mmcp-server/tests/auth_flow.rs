@@ -2,17 +2,14 @@
 
 use std::net::SocketAddr;
 
+use mmcp_server::config::ServerConfig;
+
+mod common;
+
 async fn start_server() -> SocketAddr {
-    let cfg = mmcp_server::config::ServerConfig {
-        bind: "127.0.0.1:0".parse().unwrap(),
-        database_url: "sqlite::memory:".to_string(),
-        repo_root: tempfile::tempdir().unwrap().keep(),
+    let cfg = ServerConfig {
         token_key: [42u8; 32],
-        oauth_providers: vec![],
-        origin: "http://localhost:8787".to_string(),
-        push_token: None,
-        min_password_length: mmcp_auth::MIN_PASSWORD_LENGTH,
-        max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
+        ..common::test_server_config(tempfile::tempdir().unwrap().keep())
     };
     let state = mmcp_server::state::ServerState::initialize(&cfg)
         .await

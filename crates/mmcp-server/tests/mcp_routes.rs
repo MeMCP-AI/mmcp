@@ -16,21 +16,13 @@ use serde_json::json;
 use tempfile::TempDir;
 use uuid::Uuid;
 
+mod common;
+
 /// Bring up the full server on an ephemeral port, backed by in-
 /// memory sqlite and a tempdir repo root.
 async fn start_server() -> (SocketAddr, mmcp_server::state::ServerState, TempDir) {
     let tmp = TempDir::new().expect("tempdir");
-    let cfg = mmcp_server::config::ServerConfig {
-        bind: "127.0.0.1:0".parse().unwrap(),
-        database_url: "sqlite::memory:".to_string(),
-        repo_root: tmp.path().to_path_buf(),
-        token_key: [0u8; 32],
-        oauth_providers: vec![],
-        origin: "http://localhost:8787".to_string(),
-        push_token: None,
-        min_password_length: mmcp_auth::MIN_PASSWORD_LENGTH,
-        max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
-    };
+    let cfg = common::test_server_config(tmp.path().to_path_buf());
     let state = mmcp_server::state::ServerState::initialize(&cfg)
         .await
         .expect("state init");

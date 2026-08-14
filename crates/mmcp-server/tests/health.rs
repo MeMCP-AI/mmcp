@@ -2,19 +2,11 @@
 
 use std::net::SocketAddr;
 
+mod common;
+
 /// Start the server on an ephemeral port and return its address.
 async fn start_server() -> SocketAddr {
-    let cfg = mmcp_server::config::ServerConfig {
-        bind: "127.0.0.1:0".parse().unwrap(),
-        database_url: "sqlite::memory:".to_string(),
-        repo_root: tempfile::tempdir().unwrap().keep(),
-        token_key: [0u8; 32],
-        oauth_providers: vec![],
-        origin: "http://localhost:8787".to_string(),
-        push_token: None,
-        min_password_length: mmcp_auth::MIN_PASSWORD_LENGTH,
-        max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
-    };
+    let cfg = common::test_server_config(tempfile::tempdir().unwrap().keep());
     let state = mmcp_server::state::ServerState::initialize(&cfg)
         .await
         .expect("server init");

@@ -6,24 +6,16 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use uuid::Uuid;
 
-use mmcp_server::{config::ServerConfig, state::ServerState};
+use mmcp_server::state::ServerState;
+
+mod common;
 
 /// Spin up a full `ServerState` backed by an in-memory SQLite and a
 /// tempdir-hosted repo root. Mirrors the bootstrap used by
 /// `tests/health.rs` and `tests/auth_flow.rs`.
 async fn bootstrap_state() -> (ServerState, TempDir) {
     let tmp = TempDir::new().expect("tempdir");
-    let cfg = ServerConfig {
-        bind: "127.0.0.1:0".parse().unwrap(),
-        database_url: "sqlite::memory:".to_string(),
-        repo_root: tmp.path().to_path_buf(),
-        token_key: [0u8; 32],
-        oauth_providers: vec![],
-        origin: "http://localhost:8787".to_string(),
-        push_token: None,
-        min_password_length: mmcp_auth::MIN_PASSWORD_LENGTH,
-        max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
-    };
+    let cfg = common::test_server_config(tmp.path().to_path_buf());
     let state = ServerState::initialize(&cfg).await.expect("state init");
     (state, tmp)
 }

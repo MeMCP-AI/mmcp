@@ -11,21 +11,17 @@ use mmcp_server::state::ServerState;
 use serde_json::json;
 use tempfile::TempDir;
 
+mod common;
+
 /// Bootstrap the server with the caller's choice of OAuth providers.
 /// The listener is an ephemeral port on loopback; nothing touches
 /// the real filesystem beyond a tempdir repo root.
 async fn start_server_with_oauth(providers: Vec<OAuthProviderConfig>) -> (SocketAddr, TempDir) {
     let tmp = TempDir::new().expect("tempdir");
     let cfg = ServerConfig {
-        bind: "127.0.0.1:0".parse().unwrap(),
-        database_url: "sqlite::memory:".to_string(),
-        repo_root: tmp.path().to_path_buf(),
         token_key: [7u8; 32],
         oauth_providers: providers,
-        origin: "http://localhost:8787".to_string(),
-        push_token: None,
-        min_password_length: mmcp_auth::MIN_PASSWORD_LENGTH,
-        max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
+        ..common::test_server_config(tmp.path().to_path_buf())
     };
     let state = ServerState::initialize(&cfg).await.expect("state init");
     let app = mmcp_server::app::build_router(state);
