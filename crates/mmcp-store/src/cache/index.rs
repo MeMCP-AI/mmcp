@@ -19,21 +19,18 @@ pub struct RebuildStats {
     pub memories_indexed: usize,
 }
 
-/// Rebuild the whole cache from scratch: every memory in every
-/// locally-mirrored group, read at each group's current `HEAD`.
-/// Existing rows are cleared first so a memory deleted or moved
-/// upstream does not linger as a stale hit. This is both the lazy
-/// -build-on-read primitive (see [`super::query`]) and the body of
-/// the debug/admin "force rebuild" entry point.
+/// Rebuild the whole cache from scratch: every memory in every locally-mirrored group,
+/// read at each group's current `HEAD`.
+/// Existing rows are cleared first so a memory deleted or moved upstream does not linger as a stale hit.
+/// This is both the lazy-build-on-read primitive (see [`super::query`]),
+/// and the body of the debug/admin "force rebuild" entry point.
 ///
-/// The clear, the repopulate loop, and the `mark_built` stamp all
-/// run inside ONE sqlite transaction. A partial failure (e.g. a git
-/// error walking one group) rolls the whole attempt back rather than
-/// leaving `indexed_memory` truncated while [`super::schema::is_built`]
-/// still reports the PREVIOUS build as current: readers keep serving
-/// the last known-good index instead of a half-emptied one, and the
-/// build-completion flag never observably disagrees with the row
-/// data it describes.
+/// The clear, the repopulate loop, and the `mark_built` stamp all run inside ONE sqlite transaction.
+/// A partial failure (e.g. a git error walking one group) rolls the whole attempt back,
+/// rather than leaving `indexed_memory` truncated while [`super::schema::is_built`],
+/// still reports the PREVIOUS build as current:
+/// readers keep serving the last known-good index instead of a half-emptied one,
+/// and the build-completion flag never observably disagrees with the row data it describes.
 pub async fn rebuild_full(
     pool: &SqlitePool,
     backend: &NativeBackend,
@@ -57,23 +54,20 @@ pub async fn rebuild_full(
 }
 
 /// Re-index every memory in exactly the groups named by `group_ids`,
-/// leaving every other group's rows untouched. Used by the sync
-/// pull-trigger hook (see `mmcp-client`'s `commands/sync.rs` and
-/// `commands/serve.rs`): re-walking only the groups a pull actually
-/// advanced is cheap and precise, unlike [`rebuild_full`]'s
-/// whole-mirror sweep. A no-op (not an error) if the index has never
-/// completed its first build — a pull-triggered partial update on
-/// top of a cache that was never built would leave every other
-/// local group looking indexed when it is not; the next read simply
-/// pays for the full lazy build instead.
+/// leaving every other group's rows untouched.
+/// Used by the sync pull-trigger hook (see `mmcp-client`'s `commands/sync.rs` and `commands/serve.rs`):
+/// re-walking only the groups a pull actually advanced is cheap and precise,
+/// unlike [`rebuild_full`]'s whole-mirror sweep.
+/// A no-op (not an error) if the index has never completed its first build:
+/// a pull-triggered partial update on top of a never-built cache,
+/// would leave every other local group looking indexed when it is not;
+/// the next read simply pays for the full lazy build instead.
 ///
-/// Every requested group's clear-and-repopulate runs inside ONE
-/// sqlite transaction, same rationale as [`rebuild_full`]: a git
-/// error walking one group rolls back every group already
-/// deleted/repopulated in this call, so the other requested groups
-/// are never left with truncated rows while the untouched
-/// [`super::schema::is_built`] flag keeps claiming a fully-built
-/// index.
+/// Every requested group's clear-and-repopulate runs inside ONE sqlite transaction,
+/// same rationale as [`rebuild_full`]:
+/// a git error walking one group rolls back every group already deleted/repopulated in this call,
+/// so the other requested groups are never left with truncated rows,
+/// while the untouched [`super::schema::is_built`] flag keeps claiming a fully-built index.
 pub async fn rebuild_groups(
     pool: &SqlitePool,
     backend: &NativeBackend,
@@ -107,11 +101,11 @@ pub async fn rebuild_groups(
     Ok(stats)
 }
 
-/// Read and upsert every memory currently in `entry`'s group at
-/// `HEAD`. Returns the number of memories indexed. Shared body for
-/// [`rebuild_full`] and [`rebuild_groups`]; callers own clearing any
-/// stale rows for the group before calling this, and own committing
-/// or rolling back `tx`.
+/// Read and upsert every memory currently in `entry`'s group at `HEAD`.
+/// Returns the number of memories indexed.
+/// Shared body for [`rebuild_full`] and [`rebuild_groups`];
+/// callers own clearing any stale rows for the group before calling this,
+/// and own committing or rolling back `tx`.
 async fn index_group(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     backend: &NativeBackend,
@@ -190,15 +184,13 @@ pub fn build_record(
     }
 }
 
-/// Insert or replace one memory's row, recomputing its embedding
-/// (see [`super::embed`]) from the current name, description, tags,
-/// and body every time — an edit that changes the text must not
-/// leave a stale embedding behind.
+/// Insert or replace one memory's row, recomputing its embedding (see [`super::embed`]),
+/// from the current name, description, tags, and body every time:
+/// an edit that changes the text must not leave a stale embedding behind.
 ///
-/// Generic over the executor so [`index_group`] can run every upsert
-/// inside the caller's transaction (see [`rebuild_full`] and
-/// [`rebuild_groups`]) while the write-trigger hook
-/// ([`super::notify_write`]) keeps passing the plain pool.
+/// Generic over the executor so [`index_group`] can run every upsert inside the caller's transaction,
+/// (see [`rebuild_full`] and [`rebuild_groups`]),
+/// while the write-trigger hook ([`super::notify_write`]) keeps passing the plain pool.
 pub async fn upsert_record<'e, E>(executor: E, record: &IndexedRecord) -> Result<(), CacheError>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,

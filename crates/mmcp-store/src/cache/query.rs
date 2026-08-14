@@ -9,15 +9,13 @@ use crate::groups::GroupIndex;
 
 use super::{CacheError, SearchHit};
 
-/// Substring/keyword lookup across name, description, tags, slug,
-/// and body. Case-insensitive (SQLite `LIKE` is ASCII
-/// case-insensitive by default, which is sufficient for the short
-/// English-heavy identifiers and prose this cache indexes).
+/// Substring/keyword lookup across name, description, tags, slug, and body.
+/// Case-insensitive (SQLite `LIKE` is ASCII case-insensitive by default),
+/// sufficient for the short English-heavy identifiers and prose this cache indexes.
 ///
-/// Lazy-build-on-read: if the index has never completed a full
-/// build (see [`super::schema::is_built`]), this transparently runs
-/// [`super::index::rebuild_full`] first so the caller never has to
-/// know or care whether the cache was cold.
+/// Lazy-build-on-read: if the index has never completed a full build (see [`super::schema::is_built`]),
+/// this transparently runs [`super::index::rebuild_full`] first,
+/// so the caller never has to know or care whether the cache was cold.
 pub async fn keyword_search(
     pool: &SqlitePool,
     backend: &NativeBackend,
@@ -42,14 +40,12 @@ pub async fn keyword_search(
     rows.into_iter().map(Row::into_hit).collect()
 }
 
-/// Semantic-similarity lookup: embed `query` (see [`super::embed`])
-/// and rank every indexed memory by cosine similarity against its
-/// stored embedding, returning the top `limit` matches with their
-/// score. A brute-force scan over every row rather than an
-/// approximate-nearest-neighbour index — appropriate at the "modest
-/// local dataset" scale this cache targets; see the module docs on
-/// [`super::embed`] for why an ANN index is deliberately not used
-/// here.
+/// Semantic-similarity lookup: embed `query` (see [`super::embed`]),
+/// and rank every indexed memory by cosine similarity against its stored embedding,
+/// returning the top `limit` matches with their score.
+/// A brute-force scan over every row, not an approximate-nearest-neighbour index,
+/// appropriate at the "modest local dataset" scale this cache targets.
+/// See the module docs on [`super::embed`] for why an ANN index is deliberately not used here.
 ///
 /// Lazy-build-on-read, same as [`keyword_search`].
 pub async fn semantic_search(
@@ -108,10 +104,9 @@ pub async fn semantic_search(
         .collect()
 }
 
-/// Run [`super::index::rebuild_full`] iff the index has never
-/// completed a build. Returns `true` when a rebuild actually ran.
-/// The shared lazy-build primitive every cache query entry point
-/// calls before touching `indexed_memory`.
+/// Run [`super::index::rebuild_full`] iff the index has never completed a build.
+/// Returns `true` when a rebuild actually ran.
+/// The shared lazy-build primitive every cache query entry point calls before touching `indexed_memory`.
 pub async fn ensure_built(
     pool: &SqlitePool,
     backend: &NativeBackend,
