@@ -21,7 +21,7 @@ use crate::groups::{GroupEntry, GroupIndex};
 use crate::home::ResolvedAuthor;
 use crate::memory::{
     AddressingMode, ImportError, WriteFileOptions, WriteMemoryOptions, resolve_memory,
-    slugify_filename, validate_slug, write_file_at_path, write_memory_by_id,
+    slugify_filename, validate_memory_slug, write_file_at_path, write_memory_by_id,
 };
 
 /// Errors specific to milestone operations.
@@ -108,7 +108,7 @@ pub async fn add_milestone(
         Some(raw) => raw,
         None => slugify_filename(&spec.title),
     };
-    validate_slug(&slug).map_err(MilestoneError::Memory)?;
+    validate_memory_slug(&slug).map_err(MilestoneError::Memory)?;
 
     let id = Uuid::now_v7();
     let metadata = MilestoneMetadata {
@@ -170,7 +170,7 @@ pub async fn read_milestone(
     slug: &str,
     rev: Option<&str>,
 ) -> Result<MilestoneRecord, MilestoneError> {
-    validate_slug(slug).map_err(MilestoneError::Memory)?;
+    validate_memory_slug(slug).map_err(MilestoneError::Memory)?;
     let resolved = resolve_memory(backend, &entry.handle, Some(slug), None)
         .await
         .map_err(MilestoneError::Memory)?;
@@ -199,10 +199,12 @@ pub async fn read_milestone(
     let text = String::from_utf8_lossy(&bytes).into_owned();
     let file =
         MemoryFile::parse(&text).map_err(|e| MilestoneError::Memory(ImportError::Parse(e)))?;
-    let mut record = record_from_file(slug, file, String::new())?;
+    // Compute the live rollup BEFORE building the record: `record_from_file` takes it as a
+    // required constructor parameter (never a mutable stub a caller might forget to overwrite),
+    // so no path through this module can hand back a fabricated `Planning`/0/0/0 placeholder.
     let owner_group_id = *entry.manifest.group_id.as_uuid();
-    record.rollup = rollup::compute(pool, backend, groups, owner_group_id, resolved.id).await?;
-    Ok(record)
+    let rollup = rollup::compute(pool, backend, groups, owner_group_id, resolved.id).await?;
+    record_from_file(slug, file, String::new(), rollup)
 }
 
 /// Apply partial mutations and commit a new revision.
@@ -336,32 +338,32 @@ fn build_memory_file(
     }
 }
 
+/// Gates on `[milestone]` block PRESENCE, not `frontmatter.kind`, via [`crate::tracker::require_block`],
+/// mirroring `features::record_from_file` / `issues::record_from_file`'s gating exactly.
+///
+/// `rollup` is a REQUIRED constructor parameter, never a mutable stub a caller overwrites after the
+/// fact: the only legitimate zero-features rollup is `add_milestone`'s freshly-minted-UUID case,
+/// which never routes through this function and builds its `MilestoneRecord` directly. Every other
+/// caller must pass the value [`super::rollup::compute`] actually returned, so a fabricated
+/// `Planning`/0/0/0 placeholder can never reach a caller unrecomputed.
 fn record_from_file(
     slug: &str,
     file: MemoryFile,
     commit_id: String,
+    rollup: MilestoneRollup,
 ) -> Result<MilestoneRecord, MilestoneError> {
-    let metadata = match file.frontmatter.milestone {
-        Some(meta) => meta,
-        None => {
-            return Err(MilestoneError::NotAMilestone {
-                slug: slug.to_string(),
-                kind: file.frontmatter.kind.as_str().to_string(),
-            });
-        }
-    };
+    let kind = file.frontmatter.kind.as_str().to_string();
+    let metadata =
+        crate::tracker::require_block(slug, &kind, file.frontmatter.milestone, |slug, kind| {
+            MilestoneError::NotAMilestone { slug, kind }
+        })?;
     Ok(MilestoneRecord {
         slug: slug.to_string(),
         title: file.frontmatter.name,
         description: file.frontmatter.description,
         body: file.body,
         status: metadata.status,
-        rollup: MilestoneRollup {
-            status: RollupStatus::Planning,
-            counted: 0,
-            completed: 0,
-            blocked: 0,
-        },
+        rollup,
         commit_id,
     })
 }
