@@ -1,38 +1,32 @@
 //! Milestone rollup.
 //!
 //! [`compute`] counts only features whose `group_id` matches the milestone's own group.
-//! Cross-group counting allows spoofing a victim milestone's status via an unprotected sibling
-//! group: a caller with write access to their own group could file a feature there with
-//! `status: "blocked"` and `milestone: <victim-group's milestone UUID>`, producing a status the
-//! victim group never actually reached, with no access needed to the victim's own group.
+//! Cross-group counting allows spoofing a victim milestone's status via an unprotected sibling group.
+//! A caller with write access to their own group can file a feature there,
+//! targeting the victim's milestone UUID with `status: "blocked"`.
+//! The victim group then reports a status it never actually reached, with no access needed to its own group.
 //! A cross-group authorization/allowlist model is a separate, unbuilt feature.
 //!
-//! Queries the [`crate::cache`] local content index (`indexed_memory` table, filtered by
-//! `kind = 'feature'`, `milestone`, `group_id`) rather than walking git live.
+//! Queries the [`crate::cache`] local content index instead of walking git live,
+//! filtered by `kind = 'feature'`, `milestone`, `group_id` on the `indexed_memory` table.
 //!
 //! Two consumers: see also: crate::milestones::read_milestone, crate::milestones::list_milestones,
 //! and the milestone check in crate::diagnostics.
 //!
 //! ## Rollup rule
 //!
-//! A milestone's computed [`RollupStatus`] folds over the
-//! [`FeatureStatus`](mmcp_core::memory::FeatureStatus) of every
-//! feature currently pointing at it:
+//! [`RollupStatus`] folds over every feature's [`FeatureStatus`] pointing at this milestone:
 //!
-//! 1. `Duplicate` and `Superseded` features are excluded from the
-//!    fold: neither represents live remaining work.
+//! 1. `Duplicate` and `Superseded` features are excluded: neither represents live remaining work.
 //! 2. If nothing counts, the rollup is [`RollupStatus::Planning`].
-//! 3. Otherwise, if any counted feature is
-//!    [`FeatureStatus::Blocked`], the rollup is
-//!    [`RollupStatus::Blocked`], which wins over every other state.
-//! 4. Otherwise, if every counted feature is
-//!    [`FeatureStatus::Completed`], the rollup is
-//!    [`RollupStatus::Completed`].
+//! 3. Otherwise, if any counted feature is [`FeatureStatus::Blocked`],
+//!    the rollup is [`RollupStatus::Blocked`], which wins over every other state.
+//! 4. Otherwise, if every counted feature is [`FeatureStatus::Completed`],
+//!    the rollup is [`RollupStatus::Completed`].
 //! 5. Otherwise, the rollup is [`RollupStatus::InProgress`].
 //!
-//! Order-independent fold: the same feature set always produces the
-//! same rollup regardless of scan order, since the cache query has
-//! no guaranteed row order across groups.
+//! Order-independent fold: the same feature set always produces the same rollup regardless of scan order,
+//! since the cache query has no guaranteed row order across groups.
 
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePool;
@@ -44,11 +38,10 @@ use mmcp_git::NativeBackend;
 use crate::cache::CacheError;
 use crate::groups::GroupIndex;
 
-/// Computed status of a milestone, folded over the lifecycle states
-/// of every feature IN THE MILESTONE'S OWN GROUP whose
-/// [`FeatureMetadata::milestone`](mmcp_core::memory::FeatureMetadata::milestone)
-/// points at it. See the module doc for the exact fold rule and for
-/// why the scope is restricted to one group.
+/// Computed status of a milestone.
+/// Folds over the lifecycle state of every feature in the milestone's own group,
+/// linked via [`FeatureMetadata::milestone`](mmcp_core::memory::FeatureMetadata::milestone).
+/// See the module doc for the exact fold rule and for why the scope is restricted to one group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RollupStatus {
@@ -56,16 +49,14 @@ pub enum RollupStatus {
     Planning,
     /// At least one counted feature is `Blocked`.
     Blocked,
-    /// Every counted feature is `Completed`, and at least one
-    /// feature counts.
+    /// Every counted feature is `Completed`, and at least one feature counts.
     Completed,
     /// A mix of non-terminal states, with no `Blocked` present.
     InProgress,
 }
 
 impl RollupStatus {
-    /// Canonical lowercase string, matching the serde `snake_case`
-    /// serialization.
+    /// Canonical lowercase string, matching the serde `snake_case` serialization.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -77,26 +68,24 @@ impl RollupStatus {
     }
 }
 
-/// Full result of folding a milestone's linked features, returned
-/// by [`compute`]. Carries the raw counts alongside the folded
-/// [`RollupStatus`] so a caller can render "7/9 features completed"
-/// without a second query.
+/// Full result of folding a milestone's linked features, returned by [`compute`].
+/// Carries the raw counts alongside the folded [`RollupStatus`],
+/// so a caller can render "7/9 features completed" without a second query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MilestoneRollup {
     pub status: RollupStatus,
-    /// Number of features that counted toward the fold (excludes
-    /// `Duplicate` / `Superseded`).
+    /// Number of features that counted toward the fold (excludes `Duplicate` / `Superseded`).
     pub counted: usize,
     pub completed: usize,
     pub blocked: usize,
 }
 
-/// Compute `milestone_id`'s rollup by scanning the local content
-/// cache, counting only features whose `group_id` matches
-/// `owner_group_id`, the group the milestone itself lives in. See
-/// the module doc for why the scope is restricted this way. Lazily
-/// builds the cache first (see [`crate::cache::ensure_built`]) so a
-/// cold cache never returns a false [`RollupStatus::Planning`].
+/// Compute `milestone_id`'s rollup by scanning the local content cache,
+/// counting only features whose `group_id` matches `owner_group_id`,
+/// the group the milestone itself lives in.
+/// See the module doc for why the scope is restricted this way.
+/// Lazily builds the cache first (see [`crate::cache::ensure_built`]).
+/// A cold cache never returns a false [`RollupStatus::Planning`].
 pub async fn compute(
     pool: &SqlitePool,
     backend: &NativeBackend,
@@ -109,20 +98,18 @@ pub async fn compute(
     Ok(fold(&statuses))
 }
 
-/// Query-only half of [`compute`], split out so the fold logic
-/// itself (the part with the actual rule, and the part worth unit
-/// testing in isolation) never needs a live pool.
+/// Query-only half of [`compute`].
+/// Split out so the fold logic, the actual rule and the part worth unit testing, never needs a live pool.
 ///
-/// A row with no status at all (`NULL`) is skipped: `kind = 'feature'`
-/// rows are only ever written without a status by data that predates
-/// the column, which the schema doc already treats as a legitimate
-/// absence, not corruption. A row that DOES carry a status string
-/// that fails [`FeatureStatus::parse`] is a different case: a real
-/// feature whose lifecycle state cannot be read. It is
-/// surfaced as [`CacheError::UnparseableFeatureStatus`] instead of
-/// silently excluded, so a rollup never reports a milestone
-/// `Completed` while a real `Blocked` feature is invisible to the
-/// fold because its status string no longer parses.
+/// A row with no status at all (`NULL`) is skipped.
+/// `kind = 'feature'` rows are only ever written without a status by data that predates the column.
+/// The schema doc already treats that as a legitimate absence, not corruption.
+///
+/// A row that DOES carry a status string that fails [`FeatureStatus::parse`] is a different case:
+/// a real feature whose lifecycle state cannot be read.
+/// It surfaces as [`CacheError::UnparseableFeatureStatus`] instead of silently excluding the row.
+/// Otherwise a rollup could report a milestone `Completed`,
+/// while a real `Blocked` feature stays invisible because its status string no longer parses.
 async fn fetch_feature_statuses(
     pool: &SqlitePool,
     owner_group_id: Uuid,
@@ -145,9 +132,9 @@ async fn fetch_feature_statuses(
         .collect()
 }
 
-/// The rollup rule itself. See the module doc for the full
-/// rationale; kept as a free function over a plain slice so it is
-/// trivially unit-testable without a database.
+/// The rollup rule itself.
+/// See the module doc for the full rationale.
+/// Kept as a free function over a plain slice, trivially unit-testable without a database.
 fn fold(statuses: &[FeatureStatus]) -> MilestoneRollup {
     let counted: Vec<FeatureStatus> = statuses
         .iter()
@@ -231,9 +218,8 @@ mod tests {
 
     #[test]
     fn duplicate_and_superseded_are_excluded_from_the_denominator() {
-        // A milestone with one completed feature and one superseded
-        // one is Completed, not InProgress: the superseded feature
-        // does not represent live remaining work.
+        // A milestone with one completed feature and one superseded feature is Completed, not InProgress:
+        // the superseded feature does not represent live remaining work.
         let rollup = fold(&[FeatureStatus::Completed, FeatureStatus::Superseded]);
         assert_eq!(rollup.status, RollupStatus::Completed);
         assert_eq!(rollup.counted, 1);
@@ -318,12 +304,10 @@ mod tests {
 
     #[tokio::test]
     async fn compute_ignores_a_feature_filed_in_a_different_group() {
-        // Security regression: a feature filed in group B and
-        // pointed at group A's milestone must never influence group
-        // A's rollup. Without the group_id predicate this reproduces
-        // the cross-group rollup-injection finding, where a Blocked
-        // feature in an unrelated, unprotected group silently flips
-        // the victim milestone away from Completed.
+        // Security regression.
+        // A feature filed in group B and pointed at group A's milestone must never influence group A's rollup.
+        // Without the group_id predicate this reproduces the cross-group rollup-injection finding,
+        // where a Blocked feature in an unrelated, unprotected group flips the victim milestone off Completed.
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let pool = crate::cache::open_pool(&tmp.path().join("index.sqlite3"))
             .await
