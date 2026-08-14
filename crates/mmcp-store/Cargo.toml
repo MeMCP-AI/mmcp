@@ -19,7 +19,6 @@ gix = { workspace = true }
 toml = { workspace = true }
 
 thiserror = { workspace = true }
-anyhow = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }

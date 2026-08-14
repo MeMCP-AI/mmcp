@@ -3723,7 +3723,6 @@ dependencies = [
  "acdc-converters-core",
  "acdc-converters-markdown",
  "acdc-parser",
- "anyhow",
  "flate2",
  "gix",
  "jiff",
