@@ -5,59 +5,58 @@ use serde::{Deserialize, Serialize};
 /// Built-in memory kinds shipped with mmcp.
 ///
 /// Each kind carries behavioral implications, not just classification.
-/// The retrieval layer inspects the kind to decide whether to attach
-/// staleness warnings, whether edits are restricted to appends, and
-/// whether versioning applies.
+/// The retrieval layer inspects the kind to decide whether to attach staleness warnings,
+/// whether edits are restricted to appends, and whether versioning applies.
 ///
-/// Users may register custom kinds on top of these defaults, but the
-/// core set is fixed because server-side logic branches on it.
+/// Users may register custom kinds on top of these defaults,
+/// but the core set is fixed because server-side logic branches on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryKind {
-    /// Stable convention or guideline. Session-agnostic, no automatic
-    /// staleness warning attached.
+    /// Stable convention or guideline.
+    /// Session-agnostic, no automatic staleness warning attached.
     Rule,
 
-    /// Point-in-time fact about the project (status, counts, test
-    /// results). Retrieval always attaches a "may be stale" warning
-    /// because snapshots rot by definition.
+    /// Point-in-time fact about the project (status, counts, test results).
+    /// Retrieval always attaches a "may be stale" warning because snapshots rot by definition.
     Snapshot,
 
-    /// Append-only record (decisions, incidents). Edits may only add
-    /// entries; prior entries are immutable.
+    /// Append-only record (decisions, incidents).
+    /// Edits may only add entries; prior entries are immutable.
     Log,
 
-    /// Pointer to an external resource (Linear project, Grafana
-    /// dashboard, spec URL). Rarely changes; no staleness warning.
+    /// Pointer to an external resource (Linear project, Grafana dashboard, spec URL).
+    /// Rarely changes; no staleness warning.
     Reference,
 
-    /// Short-lived working notes. Not versioned, no warnings.
+    /// Short-lived working notes.
+    /// Not versioned, no warnings.
     Scratch,
 
-    /// Feature request. Carries a structured
-    /// [`FeatureMetadata`](crate::memory::FeatureMetadata) block in
-    /// frontmatter (status, depends_on, blocks) so the feature
-    /// lifecycle tools can filter and cross-reference without
-    /// parsing the body.
+    /// Feature request.
+    /// Carries a structured
+    /// [`FeatureMetadata`](crate::memory::FeatureMetadata)
+    /// block in frontmatter (status, depends_on, blocks)
+    /// so the feature lifecycle tools can filter and cross-reference without parsing the body.
     Feature,
 
-    /// Issue tracker entry. Sister kind to `Feature`. Carries a
-    /// structured [`IssueMetadata`](crate::memory::IssueMetadata)
-    /// block in frontmatter (status, depends_on, blocks). The
-    /// hybrid model permits a memory to carry both `[feature]`
-    /// and `[issue]` blocks; listings filter by block presence.
+    /// Issue tracker entry.
+    /// Sister kind to `Feature`.
+    /// Carries a structured [`IssueMetadata`](crate::memory::IssueMetadata)
+    /// block in frontmatter (status, depends_on, blocks).
+    /// The hybrid model permits a memory to carry both `[feature]` and `[issue]` blocks;
+    /// listings filter by block presence.
     Issue,
 
     /// Milestone: a grouping container over features, possibly
-    /// spanning multiple project groups. Carries a structured
-    /// [`MilestoneMetadata`](crate::memory::MilestoneMetadata)
-    /// block in frontmatter. Deliberately a reduced-surface tracked
-    /// kind: no supersede flow, no `depends_on` /
-    /// `blocks`, no shared ticket-number counter. Individual
-    /// features opt into a milestone via
-    /// [`FeatureMetadata::milestone`](crate::memory::FeatureMetadata::milestone);
-    /// the milestone's own live status is computed by
-    /// `mmcp_store::rollup`, never stored here.
+    /// spanning multiple project groups.
+    /// Carries a structured [`MilestoneMetadata`](crate::memory::MilestoneMetadata) block in frontmatter.
+    /// Deliberately a reduced-surface tracked kind: no supersede flow,
+    /// no `depends_on` / `blocks`, no shared ticket-number counter.
+    /// Individual features opt into a milestone
+    /// via [`FeatureMetadata::milestone`](crate::memory::FeatureMetadata::milestone);
+    /// the milestone's own live status is computed by `mmcp_store::rollup`,
+    /// never stored here.
     Milestone,
 }
 
