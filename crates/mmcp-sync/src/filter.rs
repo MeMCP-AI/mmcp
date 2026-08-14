@@ -1,41 +1,33 @@
 //! Sync filter taxonomy and the scope-lookup trait the engine
 //! needs to apply it.
 //!
-//! Every effectful sync call (`pull` / `push` / `sync`) takes a
-//! [`SyncFilter`] that specifies which groups it targets. The three
-//! variants map one-to-one onto the operator-facing selectors:
+//! Every effectful sync call (`pull` / `push` / `sync`) takes a [`SyncFilter`] that specifies which groups it targets.
+//! The three variants map one-to-one onto the operator-facing selectors:
 //!
-//! - [`SyncFilter::Group`]: a single group, addressed by UUID. The
-//!   caller resolved slug-to-UUID already; the engine never touches
-//!   text.
-//! - [`SyncFilter::Scope`]: every locally-known group whose
-//!   [`GroupScope`] matches. The engine asks the caller-supplied
-//!   [`ScopeIndex`] for each group's scope at drain / fetch time.
-//! - [`SyncFilter::All`]: explicit fanout across the whole mirror,
-//!   with no scope restriction.
+//! - [`SyncFilter::Group`]: a single group, addressed by UUID.
+//!   The caller resolved slug-to-UUID already; the engine never touches text.
+//! - [`SyncFilter::Scope`]: every locally-known group whose [`GroupScope`] matches.
+//!   The engine asks the caller-supplied [`ScopeIndex`] for each group's scope at drain / fetch time.
+//! - [`SyncFilter::All`]: explicit fanout across the whole mirror, with no scope restriction.
 //!
-//! Zero selectors and multiple-selector combinations are rejected
-//! at the CLI / MCP boundary (clap `ArgGroup` on the CLI side,
-//! `resolve_sync_filter` on the MCP side), so the engine never sees
-//! an ambiguous filter.
+//! Zero selectors and multiple-selector combinations are rejected at the CLI / MCP boundary:
+//! clap `ArgGroup` on the CLI side, `resolve_sync_filter` on the MCP side.
+//! The engine never sees an ambiguous filter.
 //!
-//! The [`ScopeIndex`] trait is narrow on purpose: the engine only
-//! needs to answer "what scope is group X?". Handle resolution is
-//! still the [`crate::engine::GroupHandleResolver`] trait's job; the
-//! two concerns stay decoupled so callers that already have an
-//! in-memory scope map (test fixtures) don't need to wire a full
-//! group index to drive a scoped drain.
+//! The [`ScopeIndex`] trait is narrow on purpose: the engine only needs to answer "what scope is group X?".
+//! Handle resolution is still the [`crate::engine::GroupHandleResolver`] trait's job;
+//! the two concerns stay decoupled so callers that already have an in-memory scope map (test fixtures)
+//! don't need to wire a full group index to drive a scoped drain.
 
 use mmcp_core::manifest::GroupScope;
 use uuid::Uuid;
 
 /// Caller-supplied selector for sync operations.
 ///
-/// Required argument on `SyncEngine::pull` / `push` / `sync`. The
-/// variants are intentionally the only way a caller can scope the
-/// operation - there is no implicit "all" default on the engine
-/// side, so a newly-added sync entrypoint cannot accidentally
-/// inherit a whole-mirror default.
+/// Required argument on `SyncEngine::pull` / `push` / `sync`.
+/// The variants are intentionally the only way a caller can scope the operation -
+/// there is no implicit "all" default on the engine side,
+/// so a newly-added sync entrypoint cannot accidentally inherit a whole-mirror default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncFilter {
     /// Target exactly one group by UUID.
@@ -43,31 +35,27 @@ pub enum SyncFilter {
     /// Target every locally-known group whose manifest carries the
     /// given [`GroupScope`].
     Scope(GroupScope),
-    /// Explicit opt-in to the whole local mirror. Must be supplied
-    /// literally by the caller; the engine never synthesizes it.
+    /// Explicit opt-in to the whole local mirror.
+    /// Must be supplied literally by the caller; the engine never synthesizes it.
     All,
 }
 
 /// Look up a group's [`GroupScope`] by UUID.
 ///
 /// Implemented by `mmcp-store`'s `GroupIndex` in the next commit;
-/// the engine depends on the trait so test fixtures can plug a
-/// small in-memory map in without dragging the store layer.
-/// Narrow-by-design: the only reason the engine talks to the
-/// scope index is to filter by `GroupScope`, so the trait has one
-/// method.
+/// the engine depends on the trait so test fixtures can plug a small in-memory map in without dragging the store layer.
+/// Narrow-by-design: the only reason the engine talks to the scope index is to filter by `GroupScope`,
+/// so the trait has one method.
 ///
 /// `Send + Sync` supertraits mirror [`crate::GroupHandleResolver`]
-/// so the engine's async methods can spawn onto a multi-threaded
-/// runtime (the MCP tool router boxes returned futures with a
-/// `Send` bound).
+/// so the engine's async methods can spawn onto a multi-threaded runtime.
+/// The MCP tool router boxes returned futures with a `Send` bound.
 pub trait ScopeIndex: Send + Sync {
-    /// Return the scope recorded for `group_id` if the index knows
-    /// about it, or `None` when the group is absent. The engine
-    /// treats absence as "does not match any scope" - a
-    /// [`SyncFilter::Scope`] drain silently skips unknown groups,
-    /// and the CLI / MCP layer is where operator-visible errors
-    /// about unknown groups are raised.
+    /// Return the scope recorded for `group_id` if the index knows about it,
+    /// or `None` when the group is absent.
+    /// The engine treats absence as "does not match any scope" -
+    /// a [`SyncFilter::Scope`] drain silently skips unknown groups,
+    /// and the CLI / MCP layer is where operator-visible errors about unknown groups are raised.
     fn scope_of(&self, group_id: Uuid) -> Option<GroupScope>;
 }
 

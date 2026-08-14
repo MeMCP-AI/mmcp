@@ -1,30 +1,24 @@
 //! Parse a [`BumpIntent`] out of a git commit message.
 //!
-//! The git-symmetric push path walks
-//! `server_head..local_head` and registers one `POST /sync/push` per
-//! new commit. The bump intent rides on the commit itself, with no
-//! separate sidecar metadata.
+//! The git-symmetric push path walks `server_head..local_head` and registers one `POST /sync/push` per new commit.
+//! The bump intent rides on the commit itself, with no separate sidecar metadata.
 //!
-//! Convention: trailing `bump: <level>` line, Conventional-Commits
-//! adjacent, accepted with or without leading whitespace and case
-//! insensitive on the key. Recognised values are `patch`, `minor`,
-//! `major`. Anything else - absent trailer, mis-spelled key,
-//! unknown level - falls back to [`BumpIntent::default`], which is
-//! `Minor` and documented as the "typical rule tweak" level in
-//! [`mmcp_core::memory::bump`].
+//! Convention: trailing `bump: <level>` line, Conventional-Commits adjacent,
+//! accepted with or without leading whitespace and case insensitive on the key.
+//! Recognised values are `patch`, `minor`, `major`.
+//! Anything else - absent trailer, mis-spelled key, unknown level - falls back to [`BumpIntent::default`],
+//! which is `Minor` and documented as the "typical rule tweak" level in [`mmcp_core::memory::bump`].
 
 use mmcp_core::memory::BumpIntent;
 
-/// Scan `message` from the bottom up looking for a `bump: <level>`
-/// trailer and return the parsed [`BumpIntent`], falling back to
-/// [`BumpIntent::default`] when absent or unrecognised.
+/// Scan `message` from the bottom up looking for a `bump: <level>` trailer and return the parsed [`BumpIntent`],
+/// falling back to [`BumpIntent::default`] when absent or unrecognised.
 ///
-/// Only the first `bump:` line encountered from the bottom wins so
-/// operators can override a defaulted trailer by appending a later
-/// line. Lines above the first blank gap from the end are
-/// considered the trailer block, matching git-interpret-trailers
-/// behaviour; lines embedded in the body are ignored to avoid
-/// false matches on prose like `the bump: minor change`.
+/// Only the first `bump:` line encountered from the bottom wins.
+/// Operators can override a defaulted trailer by appending a later line.
+/// Lines above the first blank gap from the end are considered the trailer block,
+/// matching git-interpret-trailers behaviour;
+/// lines embedded in the body are ignored to avoid false matches on prose like `the bump: minor change`.
 #[must_use]
 pub fn parse_bump_intent(message: &str) -> BumpIntent {
     for line in trailer_block(message) {
@@ -35,9 +29,9 @@ pub fn parse_bump_intent(message: &str) -> BumpIntent {
     BumpIntent::default()
 }
 
-/// Return an iterator over the trailing block of lines in
-/// `message`, from bottom to top, up to (but not including) the
-/// first empty line. Empty messages yield an empty iterator.
+/// Return an iterator over the trailing block of lines in `message`, from bottom to top,
+/// up to (but not including) the first empty line.
+/// Empty messages yield an empty iterator.
 fn trailer_block(message: &str) -> impl Iterator<Item = &str> {
     // Collect tail lines in reverse order until we hit a blank,
     // mirroring the git-interpret-trailers "last paragraph" rule.
@@ -61,9 +55,9 @@ fn parse_level(level: &str) -> Option<BumpIntent> {
     }
 }
 
-/// Case-insensitive `strip_prefix`. Kept private because the only
-/// caller is the bump-trailer scanner - a general-purpose helper
-/// would belong in an extension crate, not here.
+/// Case-insensitive `strip_prefix`.
+/// Kept private because the only caller is the bump-trailer scanner -
+/// a general-purpose helper would belong in an extension crate, not here.
 trait StripPrefixIgnoreCase {
     fn strip_prefix_ignore_case(&self, prefix: &str) -> Option<&str>;
 }
