@@ -21,7 +21,7 @@ fn gix_err<E: std::fmt::Display>(err: E) -> GitError {
 /// Name of the env var that overrides the `git` binary path.
 ///
 /// Lets operators point mmcp at a specific git install without
-/// touching `PATH` — useful on Windows where Git for Windows often
+/// touching `PATH`: useful on Windows where Git for Windows often
 /// lives under `C:\Program Files\Git\cmd\git.exe`, and in containers
 /// where multiple git versions coexist.
 pub const GIT_BIN_ENV: &str = "MMCP_GIT_BIN";
@@ -70,7 +70,7 @@ pub fn init_bare(path: &Path) -> Result<(), GitError> {
     // `gix::init_bare` points HEAD at the host's `init.defaultBranch`
     // (often `master`), but mmcp commits to `main`. Pin HEAD to `main`
     // so HEAD resolves to the branch mmcp actually writes, regardless of
-    // the host git config — otherwise the repo looks empty-HEAD and the
+    // the host git config: otherwise the repo looks empty-HEAD and the
     // group scan skips it.
     std::fs::write(
         path.join("HEAD"),
@@ -268,7 +268,7 @@ fn preflight_local_refs(
     }
     let repo = open_bare(repo_path)?;
     for (local, _remote, _force) in refspecs {
-        // Delete refspec — `:refs/heads/foo` — has an empty source
+        // Delete refspec (`:refs/heads/foo`) has an empty source
         // and is always valid.
         if local.is_empty() {
             continue;
@@ -356,7 +356,7 @@ fn resolve_rev(repo: &gix::Repository, rev: &Rev) -> Result<gix::ObjectId, GitEr
 
 /// Resolve `HEAD` to a commit, tolerating a branch-name mismatch.
 ///
-/// A repo's HEAD can point at an unborn or missing branch — it was
+/// A repo's HEAD can point at an unborn or missing branch: it was
 /// init'd with `init.defaultBranch=master` while mmcp committed to
 /// `main`, or it was cloned from a `master` remote. Fall back to the
 /// `main` then `master` branch so reads never break on the
@@ -760,7 +760,7 @@ pub fn tag(repo_path: &Path, name: &str, target_hex: &str) -> Result<(), GitErro
 /// when its blob at `path` differs from *every* parent's blob at
 /// the same path (or the path didn't exist in any parent). Commits
 /// that merely carry the file forward unchanged from a parent are
-/// filtered out — otherwise every commit since the file was
+/// filtered out: otherwise every commit since the file was
 /// introduced would appear, which is how GUIs get surprising
 /// "100 commits" counts on a memory that was only edited twice.
 ///

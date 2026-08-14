@@ -47,7 +47,7 @@ pub trait GitBackend: Send + Sync {
     /// the operation works against any smart-HTTP-capable server
     /// without bringing in an HTTP client dependency.
     ///
-    /// `creds` selects the authentication mechanism — see
+    /// `creds` selects the authentication mechanism: see
     /// [`Credentials`] for the variants. Use [`Credentials::None`]
     /// to rely on the ambient git environment.
     async fn clone_to(
@@ -141,8 +141,8 @@ pub trait GitBackend: Send + Sync {
 
     /// List every subtree (directory) directly under `path_prefix`
     /// at the given revision. Mirror of [`list_tree`] but for
-    /// directory entries, introduced for FR-028 so resolvers can
-    /// enumerate slug directories under `memories/`.
+    /// directory entries, so resolvers can enumerate slug
+    /// directories under `memories/`.
     ///
     /// Returned values are the subtree names *relative to*
     /// `path_prefix`. Nested subtrees are not recursed into.

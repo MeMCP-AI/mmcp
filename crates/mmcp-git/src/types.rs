@@ -94,7 +94,7 @@ impl Rev {
 
     /// Whatever the repo's `HEAD` currently points at. Use this for
     /// reads when the caller does not know (or care) which branch name
-    /// the repo actually uses — safe against any default-branch
+    /// the repo actually uses: safe against any default-branch
     /// convention.
     #[must_use]
     pub fn head() -> Self {
@@ -162,7 +162,7 @@ impl CommitSpec {
 /// spawns: [`Credentials::BearerHttp`] maps to an HTTP bearer header
 /// via `-c http.extraHeader=...`, [`Credentials::SshCommand`] sets
 /// `GIT_SSH_COMMAND`, and [`Credentials::None`] lets the user's
-/// environment (SSH agent, credential helper, `.netrc`) decide —
+/// environment (SSH agent, credential helper, `.netrc`) decide:
 /// the sensible default when mmcp is a plain git CLI wrapper.
 ///
 /// Keep the enum non-exhaustive so backends that understand richer
@@ -182,7 +182,7 @@ pub enum Credentials {
     /// personal access tokens and for mmcp-server's own push flow.
     BearerHttp(String),
 
-    /// Exact value for the `GIT_SSH_COMMAND` env var — typically
+    /// Exact value for the `GIT_SSH_COMMAND` env var: typically
     /// `ssh -i /path/to/key -o IdentitiesOnly=yes`. Lets callers point
     /// git at a specific key without touching the ambient SSH config.
     SshCommand(String),
@@ -210,8 +210,8 @@ impl Credentials {
 /// sync engine's pull path: `AlreadyAt` and `Advanced` both mean
 /// "safe to publish as updated"; `NotFastForward` means local work
 /// diverged from the remote and the caller needs to resolve the
-/// split (step 7 of the sync plan upgrades this to the structured
-/// `pull_diverged` error; today the engine records it silently).
+/// split; the engine currently records it without raising a typed
+/// error.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FastForwardOutcome {
     /// `local_ref` already pointed at `target_ref`'s commit; the

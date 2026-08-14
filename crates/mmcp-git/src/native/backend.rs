@@ -42,7 +42,7 @@ impl NativeBackend {
     /// Filesystem path for a group's bare repository.
     ///
     /// Exposed so callers outside this crate can probe existence
-    /// before invoking [`GitBackend::create_group_repo`] — the
+    /// before invoking [`GitBackend::create_group_repo`]: the
     /// `<repos_root>/<uuid>.git` layout is already a de-facto public
     /// contract that the client's `GroupIndex` relies on.
     pub fn repo_path(&self, group_id: uuid::Uuid) -> PathBuf {
