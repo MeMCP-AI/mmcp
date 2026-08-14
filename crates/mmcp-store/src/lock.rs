@@ -55,7 +55,8 @@ use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use uuid::Uuid;
 
-/// Lock scope. Each variant identifies a node in the hierarchy.
+/// Lock scope.
+/// Each variant identifies a node in the hierarchy.
 ///
 /// `Process` is the singleton root used by group-creation paths that mutate the local mirror's directory layout.
 /// `Group(uuid)` covers everything inside one group repo.
@@ -259,11 +260,9 @@ mod tests {
         drop(b_guard);
     }
 
-    /// Ancestor-prefix rule: a thread holding `Shared Group(g)`
-    /// blocks every other thread that asks for `Exclusive Group(g)`,
-    /// no matter what their leaf intent was. The narrower writer
-    /// can therefore safely rely on the ancestor lock as a barrier
-    /// against coarsening writes.
+    /// Ancestor-prefix rule: a thread holding `Shared Group(g)` blocks every other thread
+    /// that asks for `Exclusive Group(g)`, no matter what their leaf intent was.
+    /// The narrower writer can therefore safely rely on the ancestor lock as a barrier against coarsening writes.
     #[tokio::test]
     async fn exclusive_group_blocks_until_shared_holders_release() {
         let group = Uuid::now_v7();

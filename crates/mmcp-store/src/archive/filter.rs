@@ -1,10 +1,9 @@
 //! Multi-facet memory filter shared by archive export and import.
 //!
-//! A memory passes when it satisfies every set facet (AND across
-//! facets). Each facet supports include and exclude; tag inclusion is
-//! any-of by default or all-of when `require_all_tags` is set. Search
-//! is full-text over name, description, tags, slug, and body. An empty
-//! filter matches everything, so the "all memories" path pays no cost.
+//! A memory passes when it satisfies every set facet (AND across facets).
+//! Each facet supports include and exclude; tag inclusion is any-of by default or all-of when `require_all_tags` is set.
+//! Search is full-text over name, description, tags, slug, and body.
+//! An empty filter matches everything, so the "all memories" path pays no cost.
 
 use mmcp_core::memory::{MemoryFrontmatter, MemoryKind};
 
@@ -22,8 +21,8 @@ pub struct MemoryFilter {
     pub kinds: Vec<MemoryKind>,
     /// Exclude these kinds.
     pub exclude_kinds: Vec<MemoryKind>,
-    /// Include memories carrying these tags (any-of, or all-of when
-    /// `require_all_tags`). Empty = no tag-include constraint.
+    /// Include memories carrying these tags (any-of, or all-of when `require_all_tags`).
+    /// Empty = no tag-include constraint.
     pub tags: Vec<String>,
     /// Require every tag in `tags` rather than any one of them.
     pub require_all_tags: bool,
@@ -120,12 +119,11 @@ impl MemoryFilter {
     }
 }
 
-/// Parse a memory-kind facet string, case-insensitively. Delegates
-/// to the canonical [`MemoryKind::from_str`](std::str::FromStr)
-/// parser (after lowercasing, this facet's one point of divergence
-/// from the create-time `parse_kind`) so the accepted-kind set stays
-/// identical everywhere. Returns `None` for an unknown kind so
-/// callers can reject the input with a clear message.
+/// Parse a memory-kind facet string, case-insensitively.
+/// Delegates to the canonical [`MemoryKind::from_str`](std::str::FromStr) parser
+/// (after lowercasing, this facet's one point of divergence from the create-time `parse_kind`)
+/// so the accepted-kind set stays identical everywhere.
+/// Returns `None` for an unknown kind so callers can reject the input with a clear message.
 #[must_use]
 pub fn parse_memory_kind(value: &str) -> Option<MemoryKind> {
     value.trim().to_lowercase().parse().ok()

@@ -43,11 +43,10 @@ pub const ADOC_EXTENSIONS: &[&str] = &["adoc", "asciidoc"];
 
 /// True when `filename` looks like an AsciiDoc source.
 ///
-/// Matches on the last `.`-separated segment of the name, so paths
-/// are fine as long as the caller hands the full base name (not a
-/// stripped stem). Empty string and bare `.adoc` (no stem) both
-/// return false - a memory slug must survive the stem-extraction
-/// in [`crate::memory::slugify_filename`].
+/// Matches on the last `.`-separated segment of the name,
+/// so paths are fine as long as the caller hands the full base name (not a stripped stem).
+/// Empty string and bare `.adoc` (no stem) both return false:
+/// a memory slug must survive the stem-extraction in [`crate::memory::slugify_filename`].
 #[must_use]
 pub fn is_adoc_filename(filename: &str) -> bool {
     // A bare `.adoc` has an empty stem - nothing survives to become
@@ -87,10 +86,9 @@ pub enum AdocConvertError {
 /// between imported adoc content and semantic section addressing
 /// coherent.
 ///
-/// Pre/post-processing is layered around the upstream converter to
-/// recover content acdc would otherwise drop or mangle (description
-/// lists, `linkgit:` macros, warning comments). See the module-level
-/// docs for the rationale and `tests` for the regression coverage.
+/// Pre/post-processing is layered around the upstream converter to recover content
+/// acdc would otherwise drop or mangle (description lists, `linkgit:` macros, warning comments).
+/// See the module-level docs for the rationale and `tests` for the regression coverage.
 pub fn convert_adoc_to_markdown(source: &str) -> Result<String, AdocConvertError> {
     let normalized = preprocess_adoc(source);
     let parser_options = ParserOptions::builder().with_setext().build();
@@ -324,14 +322,12 @@ fn description_list_rewrite(lines: &[&str], start: usize) -> Option<DescriptionL
     })
 }
 
-/// Find the position and length of a description-list marker, ignoring
-/// occurrences inside backtick-delimited literal spans (so `\`a::b\``
-/// stays untouched). AsciiDoc supports `::`, `:::`, and `::::` as
-/// progressively-nested dlist markers; we collapse all of them into
-/// the same `**label**\n\nbody` rewrite (the hierarchy is lossy but
-/// the content survives, which is the priority). Returns `None`
-/// when no marker is present or the line starts with the marker
-/// (a bare `::` is not a label).
+/// Find the position and length of a description-list marker,
+/// ignoring occurrences inside backtick-delimited literal spans (so `\`a::b\`` stays untouched).
+/// AsciiDoc supports `::`, `:::`, and `::::` as progressively-nested dlist markers;
+/// all of them collapse into the same `**label**\n\nbody` rewrite
+/// (the hierarchy is lossy but the content survives, which is the priority).
+/// Returns `None` when no marker is present or the line starts with the marker (a bare `::` is not a label).
 fn find_dlist_marker(line: &str) -> Option<(usize, usize)> {
     let bytes = line.as_bytes();
     let mut in_backtick = false;
@@ -359,9 +355,8 @@ fn find_dlist_marker(line: &str) -> Option<(usize, usize)> {
     None
 }
 
-/// Detect AsciiDoc block attribute lines like `[source,rust]` or
-/// `[verse]`. These look like description-list labels because of the
-/// `[..]` shape but should never be rewritten.
+/// Detect AsciiDoc block attribute lines like `[source,rust]` or `[verse]`.
+/// These look like description-list labels because of the `[..]` shape but should never be rewritten.
 fn is_attribute_line(label: &str) -> bool {
     let t = label.trim();
     t.starts_with('[') && t.ends_with(']')
@@ -394,10 +389,8 @@ fn postprocess_markdown(raw: &str) -> String {
 }
 
 fn strip_linkgit_macros(line: &str) -> String {
-    // Match `linkgit:NAME\[N\]` (escaped) or `linkgit:NAME[N]` (raw)
-    // and replace with backticked `NAME(N)`. We do this manually to
-    // avoid pulling in a regex dep just for this; the format is
-    // tightly bounded.
+    // Match `linkgit:NAME\[N\]` (escaped) or `linkgit:NAME[N]` (raw) and replace with backticked `NAME(N)`.
+    // Done manually to avoid pulling in a regex dep just for this; the format is tightly bounded.
     let mut out = String::with_capacity(line.len());
     let bytes = line.as_bytes();
     let mut i = 0;
@@ -633,10 +626,9 @@ mod tests {
 
     #[test]
     fn debug_preprocess_handles_emphasized_dlist_label() {
-        // In `gitremote-helpers.adoc` the labels are wrapped in
-        // AsciiDoc single-quote emphasis, e.g. `'unchanged'::` and
-        // `'option verbosity' <n>::`. The preprocessor must rewrite
-        // both into bold paragraphs and absorb their bodies.
+        // In `gitremote-helpers.adoc` the labels are wrapped in AsciiDoc single-quote emphasis,
+        // e.g. `'unchanged'::` and `'option verbosity' <n>::`.
+        // The preprocessor must rewrite both into bold paragraphs and absorb their bodies.
         let source = "= Title\n\n\
             REF LIST ATTRIBUTES\n\
             -------------------\n\n\
@@ -743,12 +735,10 @@ HEAD::
 
     #[test]
     fn convert_absorbs_plus_attached_ordered_list_into_description_item() {
-        // `gitrepository-layout.adoc`'s `objects::` entry uses a
-        // `+` continuation followed by a `.`-prefixed ordered list
-        // *at column 0*. AsciiDoc treats the ordered list as
-        // attached to the description item; the preprocessor must
-        // absorb it instead of breaking the item early at the
-        // first non-indented line.
+        // `gitrepository-layout.adoc`'s `objects::` entry uses a `+` continuation
+        // followed by a `.`-prefixed ordered list *at column 0*.
+        // AsciiDoc treats the ordered list as attached to the description item;
+        // the preprocessor must absorb it instead of breaking the item early at the first non-indented line.
         let source = "= Title\n\nobjects::\n\
             \tBody one.\n\
             +\n\

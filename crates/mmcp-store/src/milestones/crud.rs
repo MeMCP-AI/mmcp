@@ -58,8 +58,8 @@ pub struct AddSpec {
     pub message: Option<String>,
 }
 
-/// Input for [`update_milestone`]. Every field is optional; `Some(v)`
-/// replaces, `None` leaves untouched.
+/// Input for [`update_milestone`].
+/// Every field is optional; `Some(v)` replaces, `None` leaves untouched.
 #[derive(Debug, Clone, Default)]
 pub struct UpdateSpec {
     pub title: Option<String>,
@@ -602,13 +602,11 @@ mod tests {
 
     #[tokio::test]
     async fn cross_group_feature_does_not_influence_milestone_rollup() {
-        // Security regression: a feature filed in an unrelated group
-        // and pointed at this milestone must NOT count toward the
-        // rollup. The rollup scope was narrowed to the milestone's
-        // own group precisely because the old cross-group fold let
-        // any caller with write access to any unprotected group
-        // inject a status into a victim milestone without ever
-        // touching the victim's group.
+        // Security regression: a feature filed in an unrelated group and pointed at this milestone
+        // must NOT count toward the rollup.
+        // The rollup scope is limited to the milestone's own group:
+        // a cross-group fold would let any caller with write access to any unprotected group
+        // inject a status into a victim milestone without ever touching the victim's group.
         let scratch = ScratchHome::new().await.expect("scratch home");
         let milestone_group = scratch
             .seed_group("milestone-owner-group")
@@ -798,15 +796,12 @@ mod tests {
         )
         .await
         .expect("flip pending feature to blocked");
-        // This test opens its OWN cache pool (`scratch_pool`) rather
-        // than the process-global one `cache::notify_write` pushes
-        // incremental updates through (see `cache::mod`'s doc on
-        // `ACTIVE_POOL`), so `ensure_built` alone would keep
-        // reading the snapshot from the first `read_milestone` call
-        // above. A real CLI/MCP process wires the write-trigger hook
-        // to the SAME pool it queries, so this manual rebuild only
-        // stands in for that already-tested live-update path; the
-        // fold logic under test is identical either way.
+        // This test opens its OWN cache pool (`scratch_pool`) rather than the process-global one
+        // `cache::notify_write` pushes incremental updates through (see `cache::mod`'s doc on `ACTIVE_POOL`),
+        // so `ensure_built` alone would keep reading the snapshot from the first `read_milestone` call above.
+        // A real CLI/MCP process wires the write-trigger hook to the SAME pool it queries,
+        // so this manual rebuild only stands in for that already-tested live-update path;
+        // the fold logic under test is identical either way.
         crate::cache::rebuild_full(&pool, scratch.backend(), scratch.groups())
             .await
             .expect("rebuild cache after status flip");

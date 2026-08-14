@@ -40,21 +40,18 @@ pub fn build_engine(
 /// Resolver that walks the live [`GroupIndex`] snapshot to answer
 /// `resolve` calls from the sync engine.
 pub struct IndexResolver {
-    /// The live group index; exposed for tests and for callers
-    /// that need to poke at the cache after a resolver has been
-    /// constructed. Not meaningful outside the sync engine's
-    /// trait dispatch.
+    /// The live group index.
+    /// Exposed for tests and for callers that need to poke at the cache after a resolver has been constructed.
+    /// Not meaningful outside the sync engine's trait dispatch.
     pub index: GroupIndex,
 }
 
 impl GroupHandleResolver for IndexResolver {
     fn resolve(&self, group_id: Uuid) -> Option<RepoHandle> {
-        // The engine currently calls `resolve` from a sync
-        // context. A short-lived blocking call into the async
-        // RwLock is acceptable because the index is updated
-        // rarely and contention is minimal in practice. If this
-        // becomes a hot path we can switch the trait method to
-        // an async signature.
+        // `resolve` runs from a sync context.
+        // A short-lived blocking call into the async RwLock is acceptable.
+        // The index updates rarely and contention stays minimal in practice.
+        // A hot path would require switching the trait method to an async signature.
         tokio::runtime::Handle::try_current()
             .ok()
             .and_then(|handle| {
@@ -68,23 +65,19 @@ impl GroupHandleResolver for IndexResolver {
     }
 
     fn iter_group_ids(&self) -> Vec<Uuid> {
-        // `try_list_ids` is the non-blocking snapshot on
-        // `GroupIndex`. Same rationale as `scope_of`: the engine
-        // calls iter from inside an async runtime, and a
-        // `block_on` would panic. Empty result is treated by the
-        // engine as "no groups to push", which is the correct
-        // behaviour when the index is mid-rewrite.
+        // `try_list_ids` is the non-blocking snapshot on `GroupIndex`.
+        // Same rationale as `scope_of`: the engine calls iter from inside an async runtime, and a `block_on` would panic.
+        // An empty result is treated by the engine as "no groups to push", the correct behaviour when the index is mid-rewrite.
         self.index.try_list_ids()
     }
 }
 
 impl ScopeIndex for IndexResolver {
     fn scope_of(&self, group_id: Uuid) -> Option<GroupScope> {
-        // `try_scope_of` is the non-blocking lookup on `GroupIndex`
-        // so this impl stays safe to call from inside an async
-        // runtime. Unlike `resolve`, there is no block_on bridge
-        // here - the engine's filter dispatch needs to run on the
-        // current worker without requisitioning a second thread.
+        // `try_scope_of` is the non-blocking lookup on `GroupIndex`.
+        // This impl stays safe to call from inside an async runtime.
+        // Unlike `resolve`, there is no block_on bridge here.
+        // The engine's filter dispatch runs on the current worker without a second thread.
         self.index
             .try_scope_of(&mmcp_core::id::GroupId::from_uuid(group_id))
     }

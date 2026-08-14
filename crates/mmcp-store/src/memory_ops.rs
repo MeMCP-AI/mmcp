@@ -40,8 +40,8 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum MemoryEditOp {
     /// Create or replace a whole section (heading line + body).
-    /// Matched by `path`. When absent, the new section is appended
-    /// at the end of the body at the requested `level`.
+    /// Matched by `path`.
+    /// When absent, the new section is appended at the end of the body at the requested `level`.
     UpsertSection {
         path: String,
         level: u8,
@@ -49,12 +49,12 @@ pub enum MemoryEditOp {
         body: String,
     },
 
-    /// Remove a whole section. Nested subsections are removed
-    /// together with their parent.
+    /// Remove a whole section.
+    /// Nested subsections are removed together with their parent.
     DeleteSection { path: String },
 
-    /// Insert a new section immediately before `anchor_path`. The
-    /// anchor must exist.
+    /// Insert a new section immediately before `anchor_path`.
+    /// The anchor must exist.
     InsertSectionBefore {
         anchor_path: String,
         level: u8,
@@ -62,10 +62,10 @@ pub enum MemoryEditOp {
         body: String,
     },
 
-    /// Insert a new section immediately after `anchor_path`. The
-    /// anchor must exist. When the anchor has children, the new
-    /// section is inserted AFTER the whole anchor subtree so it
-    /// lands as the anchor's next sibling.
+    /// Insert a new section immediately after `anchor_path`.
+    /// The anchor must exist.
+    /// When the anchor has children, the new section is inserted AFTER the whole anchor subtree
+    /// so it lands as the anchor's next sibling.
     InsertSectionAfter {
         anchor_path: String,
         level: u8,
@@ -73,8 +73,8 @@ pub enum MemoryEditOp {
         body: String,
     },
 
-    /// Move `target_path` so it sits immediately before
-    /// `anchor_path`. Both must exist and must not overlap.
+    /// Move `target_path` so it sits immediately before `anchor_path`.
+    /// Both must exist and must not overlap.
     MoveSectionBefore {
         target_path: String,
         anchor_path: String,
@@ -87,35 +87,34 @@ pub enum MemoryEditOp {
         anchor_path: String,
     },
 
-    /// Replace the body of the section at `path` without touching
-    /// the heading line or any nested subsections. The new `body`
-    /// is the content between the heading and the next peer.
+    /// Replace the body of the section at `path` without touching the heading line or any nested subsections.
+    /// The new `body` is the content between the heading and the next peer.
     ReplaceSectionBody { path: String, body: String },
 
     /// Insert `content` at the zero-based line index `line`.
-    /// Lines at and after `line` shift down. `line` may equal the
-    /// current line count to append at EOF.
+    /// Lines at and after `line` shift down.
+    /// `line` may equal the current line count to append at EOF.
     InsertAtLine { line: u32, content: String },
 
-    /// Replace the half-open line range `[start, end)` with
-    /// `content`. `end >= start`; `end <= current_line_count`.
+    /// Replace the half-open line range `[start, end)` with `content`.
+    /// `end >= start`; `end <= current_line_count`.
     ReplaceLines {
         start: u32,
         end: u32,
         content: String,
     },
 
-    /// Delete the half-open line range `[start, end)`. Same bounds
-    /// as `ReplaceLines`.
+    /// Delete the half-open line range `[start, end)`.
+    /// Same bounds as `ReplaceLines`.
     DeleteLines { start: u32, end: u32 },
 }
 
 /// Heading level reserved for the synthetic preamble section.
 const PREAMBLE_LEVEL: u8 = 0;
 
-/// Failure modes of [`apply_ops`]. Each variant carries enough
-/// context for the MCP tool layer to map into a structured error
-/// payload (`section_not_found`, `invalid_line_range`, etc.).
+/// Failure modes of [`apply_ops`].
+/// Each variant carries enough context for the MCP tool layer to map into a structured error payload
+/// (`section_not_found`, `invalid_line_range`, etc.).
 #[derive(Debug, thiserror::Error)]
 pub enum MemoryEditError {
     /// A section target or anchor path did not resolve to any
@@ -123,8 +122,8 @@ pub enum MemoryEditError {
     #[error("section `{path}` not found in body")]
     SectionNotFound { path: String },
 
-    /// Move target and anchor resolve to the same section, or the
-    /// target is an ancestor of the anchor. Both cases would loop.
+    /// Move target and anchor resolve to the same section, or the target is an ancestor of the anchor.
+    /// Both cases would loop.
     #[error("move op would loop: target `{target}` contains or equals anchor `{anchor}`")]
     MoveWouldLoop { target: String, anchor: String },
 
@@ -142,47 +141,41 @@ pub enum MemoryEditError {
         line_count: u32,
     },
 
-    /// `InsertAtLine` target is past the last valid insertion
-    /// point. The valid range is `0..=line_count`.
+    /// `InsertAtLine` target is past the last valid insertion point.
+    /// The valid range is `0..=line_count`.
     #[error("line {line} is past the end of the body ({line_count} lines)")]
     LinePastEof { line: u32, line_count: u32 },
 
-    /// The parser itself rejected the body. Wrapped so the MCP
-    /// tool can surface a structured error rather than an opaque
-    /// failure.
+    /// The parser itself rejected the body.
+    /// Wrapped so the MCP tool can surface a structured error rather than an opaque failure.
     #[error(transparent)]
     Parse(#[from] BodyParseError),
 
-    /// A resolved byte range did not index the body. Signals a bug
-    /// in the range computation rather than bad caller input, since
-    /// every range is derived from a section span or a line index.
+    /// A resolved byte range did not index the body.
+    /// Signals a bug in the range computation rather than bad caller input,
+    /// since every range is derived from a section span or a line index.
     #[error(transparent)]
     Splice(#[from] SpliceError),
 
-    /// `UpsertSection` was aimed at the synthetic preamble. Upsert
-    /// renders a heading, and the preamble is by definition the span
-    /// before the first heading, so the two cannot both hold.
+    /// `UpsertSection` was aimed at the synthetic preamble.
+    /// Upsert renders a heading, and the preamble is by definition the span before the first heading,
+    /// so the two cannot both hold.
     /// `ReplaceSectionBody` is the op that rewrites preamble prose.
     #[error("the preamble holds no heading; use replace_section_body to rewrite it")]
     PreambleNotUpsertable,
 
-    /// Appending the section produced a different path than the one
-    /// requested, because the new heading nests under the document's
-    /// last section instead of becoming its sibling. Left unreported
-    /// the next upsert would miss the same path and append again,
-    /// without bound.
+    /// Appending the section produced a different path than the one requested,
+    /// because the new heading nests under the document's last section instead of becoming its sibling.
+    /// Left unreported, the next upsert would miss the same path and append again, without bound.
     #[error(
         "upsert of `{requested}` at this level appends as `{produced}`; target that path instead"
     )]
     UpsertPathUnreachable { requested: String, produced: String },
 
-    /// The section was written but does not contain everything that
-    /// was rendered into it. A heading in the supplied body at the
-    /// section's own level or shallower closes the section instead of
-    /// nesting inside it, and a body leaving a code fence open stops
-    /// the heading from parsing as one at all. Either way the path no
-    /// longer addresses the whole section, so the next upsert appends
-    /// a second copy.
+    /// The section was written but does not contain everything that was rendered into it.
+    /// A heading in the supplied body at the section's own level or shallower closes the section instead of nesting inside it,
+    /// and a body leaving a code fence open stops the heading from parsing as one at all.
+    /// Either way the path no longer addresses the whole section, so the next upsert appends a second copy.
     #[error(
         "upsert of `{requested}` wrote a section that does not contain its own body; the body must nest below the section's level and must not leave a construct open"
     )]
@@ -253,20 +246,19 @@ fn upsert_section(
     section_body: &str,
 ) -> Result<String, MemoryEditError> {
     require_level(level)?;
-    // Upsert always renders a heading, so aiming it at the preamble
-    // asks for a heading in the span that is defined as preceding the
-    // first heading. Left unguarded it degenerated into a plain
-    // insert at offset zero, prepending a fresh copy on every call.
+    // Upsert always renders a heading, so aiming it at the preamble asks for a heading
+    // in the span defined as preceding the first heading.
+    // Left unguarded, this would degenerate into a plain insert at offset zero,
+    // prepending a fresh copy on every call.
     if path == Section::PREAMBLE_PATH {
         return Err(MemoryEditError::PreambleNotUpsertable);
     }
     let rendered = render_new_section(level, heading, section_body, line_terminator(body));
     let sections = parse_sections(body)?;
 
-    // A known path replaces the section's full span (heading + body +
-    // nested) and the replacement lands at the same index. An unknown
-    // one appends at end of body, so it lands one past the last
-    // existing section.
+    // A known path replaces the section's full span (heading + body + nested),
+    // and the replacement lands at the same index.
+    // An unknown one appends at end of body, so it lands one past the last existing section.
     let (spliced, written_idx) = match sections.iter().position(|s| s.path == path) {
         Some(idx) => (
             splice(body, section_byte_range(body, &sections, idx), &rendered)?,
@@ -278,23 +270,22 @@ fn upsert_section(
         ),
     };
 
-    // The written section must come back addressable at the requested
-    // path AND must still contain everything that was rendered into
-    // it. Either failure leaves a section the caller cannot target
-    // again, so the next upsert appends another copy, without bound.
+    // The written section must come back addressable at the requested path
+    // AND must still contain everything that was rendered into it.
+    // Either failure leaves a section the caller cannot target again,
+    // so the next upsert appends another copy, without bound.
     let sections_after = parse_sections(&spliced)?;
     let Some(written) = sections_after.get(written_idx) else {
-        // The rendered heading did not survive as a heading at all,
-        // which happens when the append lands inside a construct the
-        // body left open, such as an unterminated code fence.
+        // The rendered heading did not survive as a heading at all.
+        // This happens when the append lands inside a construct the body left open,
+        // such as an unterminated code fence.
         return Err(MemoryEditError::UpsertSectionNotSelfContained {
             requested: path.to_string(),
         });
     };
 
-    // A path is built from the heading trail, so a level deeper than
-    // the neighbouring heading nests the section under it and yields a
-    // path other than the one requested.
+    // The path comes from the heading trail.
+    // Nesting one level deeper than the neighbouring heading yields a different path than the one requested.
     if written.path != path {
         return Err(MemoryEditError::UpsertPathUnreachable {
             requested: path.to_string(),
@@ -302,10 +293,10 @@ fn upsert_section(
         });
     }
 
-    // Conversely, a heading in the supplied body at the section's own
-    // level or shallower ends the section rather than nesting inside
-    // it, so part of what was rendered lands outside the span the path
-    // addresses. The span must cover every rendered line.
+    // Conversely,
+    // a heading in the body at the section's own level or shallower ends the section instead of nesting inside it,
+    // so part of what was rendered lands outside the span the path addresses.
+    // The span must cover every rendered line.
     let written_start = written.line_start;
     let subtree_end = subtree_end_idx(&sections_after, written_idx);
     let total_lines = spliced.split_inclusive('\n').count();
@@ -394,24 +385,20 @@ fn move_section(
     }
 
     let target = section_byte_range(body, &sections, target_idx);
-    // Taken verbatim, blank lines included. Those blanks are the
-    // author's spacing, and the destination seam only adds a separator
-    // when one is missing, so carrying them across keeps a move and
-    // its inverse an identity.
+    // Taken verbatim, blank lines included.
+    // Those blanks are the author's spacing, and the destination seam only adds a separator
+    // when one is missing, so carrying them across keeps a move and its inverse an identity.
     let extracted = body[target.clone()].to_string();
     let removal_reached_eof = target.end == body.len();
     let mut without_target = splice(body, target, "")?;
-    // Lifting the final section leaves behind the blank line that
-    // separated it. A deletion keeps that line, because the caller
-    // asked to remove a span and nothing else, but a relocation must
-    // drop it or moving a section away and back never restores the
-    // original body.
+    // Lifting the final section leaves behind the blank line that separated it.
+    // A deletion keeps that line, because the caller asked to remove a span and nothing else,
+    // but a relocation must drop it, or moving a section away and back never restores the original body.
     if removal_reached_eof {
         drop_one_trailing_blank_line(&mut without_target);
     }
 
-    // Re-parse without the target so the anchor's byte range in
-    // the new body is correct.
+    // Re-parse without the target so the anchor's byte range in the new body is correct.
     let new_sections = parse_sections(&without_target)?;
     let anchor_idx = new_sections
         .iter()
@@ -439,13 +426,12 @@ fn replace_section_body(
     let section = &sections[idx];
     let lines: Vec<&str> = body.split_inclusive('\n').collect();
 
-    // The section's own body runs from the end of its heading
-    // construct to its first real child, or to the end of its subtree
-    // when it has none. The heading's line span comes from the parser:
-    // assuming one line eats a setext underline and demotes the
-    // heading to a paragraph. `line_end` is not usable here because it
-    // stops at the next heading of any kind, including one quoted
-    // inside this very section.
+    // The section's own body runs from the end of its heading construct to its first real child,
+    // or to the end of its subtree when it has none.
+    // The heading's line span comes from the parser: assuming one line eats a setext underline
+    // and demotes the heading to a paragraph.
+    // `line_end` is not usable here because it stops at the next heading of any kind,
+    // including one quoted inside this very section.
     let subtree_end = subtree_end_idx(&sections, idx);
     let subtree_end_line = sections
         .get(subtree_end)
@@ -546,30 +532,27 @@ fn section_byte_range(body: &str, sections: &[Section], idx: usize) -> Range<usi
     byte_offset_of_line(&lines, section.line_start)..byte_offset_of_line(&lines, end_line)
 }
 
-/// Index of the first sibling / ancestor section after the subtree
-/// rooted at `sections[idx]`. Equal to `sections.len()` when the
-/// subtree runs to EOF.
+/// Index of the first sibling / ancestor section after the subtree rooted at `sections[idx]`.
+/// Equal to `sections.len()` when the subtree runs to EOF.
 ///
-/// The synthetic preamble sits at level zero and owns no subtree: it
-/// is the span before the first heading, not an ancestor of it. Every
-/// real heading is level one or deeper, so a level comparison alone
-/// would hand the preamble the whole document and turn a preamble
-/// edit into a full-body wipe.
+/// The synthetic preamble sits at level zero and owns no subtree:
+/// it is the span before the first heading, not an ancestor of it.
+/// Every real heading is level one or deeper,
+/// so a level comparison alone would hand the preamble the whole document
+/// and turn a preamble edit into a full-body wipe.
 fn subtree_end_idx(sections: &[Section], idx: usize) -> usize {
     let root = &sections[idx];
-    // Neither the preamble nor a heading nested in a container roots a
-    // subtree of the document outline: the preamble is the span before
-    // the first heading, and a contained heading owns only its own
-    // lines inside its quote or list item.
+    // Neither the preamble nor a heading nested in a container roots a subtree of the document outline:
+    // the preamble is the span before the first heading,
+    // and a contained heading owns only its own lines inside its quote or list item.
     if root.level == PREAMBLE_LEVEL || root.container_depth > 0 {
         return (idx + 1).min(sections.len());
     }
     for (offset, section) in sections.iter().enumerate().skip(idx + 1) {
-        // A heading inside a block quote or a list item belongs to
-        // that container, not to the outline, so it never closes the
-        // section it happens to sit in. Treating it as a peer cuts a
-        // section's span short, which truncates a delete or a move
-        // without a word.
+        // A heading inside a block quote or a list item belongs to that container, not to the outline,
+        // so it never closes the section it happens to sit in.
+        // Treating it as a peer cuts a section's span short,
+        // which truncates a delete or a move without a word.
         if section.container_depth > 0 {
             continue;
         }
@@ -580,17 +563,15 @@ fn subtree_end_idx(sections: &[Section], idx: usize) -> usize {
     sections.len()
 }
 
-/// Remove one trailing blank line, leaving every other byte as it
-/// stands. Trimming the whole run instead would delete blank lines
-/// the author wrote, and rewriting the surviving terminator would
-/// downgrade a CRLF line ending nothing asked to touch.
+/// Remove one trailing blank line, leaving every other byte as it stands.
+/// Trimming the whole run instead would delete blank lines the author wrote,
+/// and rewriting the surviving terminator would downgrade a CRLF line ending nothing asked to touch.
 fn drop_one_trailing_blank_line(text: &mut String) {
     let Some(head) = text.strip_suffix('\n') else {
         return;
     };
     let head = head.strip_suffix('\r').unwrap_or(head);
-    // What remains still closes with a terminator only when the text
-    // ended on an empty line.
+    // What remains still closes with a terminator only when the text ended on an empty line.
     if !(head.is_empty() || head.ends_with('\n')) {
         return;
     }
@@ -598,9 +579,8 @@ fn drop_one_trailing_blank_line(text: &mut String) {
     text.truncate(text.len() - terminator_len);
 }
 
-/// Convert a line index (zero-based) into a byte offset into the
-/// original body. `line == line_count` maps to the end-of-body
-/// byte (appending past the last line).
+/// Convert a line index (zero-based) into a byte offset into the original body.
+/// `line == line_count` maps to the end-of-body byte (appending past the last line).
 fn byte_offset_of_line(lines: &[&str], line: usize) -> usize {
     lines.iter().take(line).map(|l| l.len()).sum()
 }
@@ -906,9 +886,8 @@ done body
         assert_eq!(out, "intro\n\nadded note\n\n## Need\n\nneed body\n");
     }
 
-    /// The preamble is the span before the first heading, not the
-    /// document root. Treating it as a root made every preamble edit
-    /// swallow the entire body.
+    /// The preamble is the span before the first heading, not the document root.
+    /// Treating it as a root made every preamble edit swallow the entire body.
     #[test]
     fn delete_preamble_keeps_every_heading_section() {
         let body = "intro\n\n## Need\n\nneed body\n";
@@ -1000,8 +979,8 @@ done body
         assert_eq!(out, "- item\n  note\n  ## InList\n\nafter\n");
     }
 
-    /// An op addressing line zero must not rewrite the tail. Trailing
-    /// blank lines are content, not padding to be normalized away.
+    /// An op addressing line zero must not rewrite the tail.
+    /// Trailing blank lines are content, not padding to be normalized away.
     #[test]
     fn an_op_far_from_the_tail_leaves_the_tail_alone() {
         let out = apply_ops(
@@ -1015,9 +994,8 @@ done body
         assert_eq!(out, "X\n\n## A\n\na\n\n\n\n## B\n\nb\n\n\n");
     }
 
-    /// A deletion removes the requested span and nothing more. Blank
-    /// lines around it are the author's content, including the ones
-    /// left exposed at end of body.
+    /// A deletion removes the requested span and nothing more.
+    /// Blank lines around it are the author's content, including the ones left exposed at end of body.
     #[test]
     fn deleting_the_last_section_leaves_neighbouring_blank_lines_alone() {
         let out = apply_ops(
@@ -1058,9 +1036,8 @@ done body
         assert_eq!(out, "a\nb\nc\nd\r\n\r\n");
     }
 
-    /// Appending a level deeper than the last heading nests the new
-    /// section, so its path is not the one requested. Writing it
-    /// anyway made every repeat append another copy.
+    /// Appending a level deeper than the last heading nests the new section, so its path is not the one requested.
+    /// Writing it anyway made every repeat append another copy.
     #[test]
     fn upsert_that_would_nest_under_the_last_section_is_rejected() {
         let err = apply_ops(
@@ -1099,11 +1076,9 @@ done body
         assert_eq!(once, "# A\n\na\n\n# B\n\nb\n\n## ZZ\n\nz\n");
     }
 
-    /// Lines mmcp emits follow the document, so a CRLF body gains no
-    /// LF islands from the heading and its separator. The supplied
-    /// body is the author's text and goes in byte for byte: a memory
-    /// may hold a fenced block documenting a protocol that mandates
-    /// its own line endings.
+    /// Lines mmcp emits follow the document, so a CRLF body gains no LF islands from the heading and its separator.
+    /// The supplied body is the author's text and goes in byte for byte:
+    /// a memory may hold a fenced block documenting a protocol that mandates its own line endings.
     #[test]
     fn a_section_written_into_a_crlf_body_uses_crlf_for_generated_lines() {
         let out = apply_ops(
@@ -1135,13 +1110,11 @@ done body
         );
     }
 
-    /// A section body containing its own subheading is ordinary
-    /// authoring. The reachability guard must identify the section it
-    /// wrote by position, not by taking the document's last one.
-    /// A heading in the body at the section's own level or shallower
-    /// closes the section instead of nesting in it, so part of what
-    /// was written falls outside the path. Accepting that let every
-    /// repeat append another copy of the body.
+    /// A section body containing its own subheading is ordinary authoring.
+    /// The reachability guard must identify the section it wrote by position, not by taking the document's last one.
+    /// A heading in the body at the section's own level or shallower closes the section instead of nesting in it,
+    /// so part of what was written falls outside the path.
+    /// Accepting that let every repeat append another copy of the body.
     #[test]
     fn upsert_whose_body_escapes_the_section_is_rejected() {
         for escaping_body in ["# Top\n\nt", "## Peer\n\np"] {
@@ -1162,10 +1135,9 @@ done body
         }
     }
 
-    /// A heading quoted inside a section is an example, not the start
-    /// of the next section. Counting it as a peer cut every span short
-    /// at that line, so a delete removed half a section and a move
-    /// tore one in two, both without a word.
+    /// A heading quoted inside a section is an example, not the start of the next section.
+    /// Counting it as a peer cut every span short at that line,
+    /// so a delete removed half a section and a move tore one in two, both without a word.
     const QUOTED_HEADING_SAMPLE: &str =
         "## A\n\nintro\n\n> quoted\n> ## InQuote\n\ntail of A\n\n## B\n\nb\n";
 
@@ -1292,10 +1264,9 @@ done body
         assert_eq!(out, "## A\n\na\n\n## ZZ\n\nintro\n\n### Detail\n\nd\n");
     }
 
-    /// Replacing a section at a level that renests it changes the
-    /// path the caller must use next. Silently accepting that on the
-    /// replace branch while rejecting it on the append branch made
-    /// one condition behave two ways.
+    /// Replacing a section at a level that renests it changes the path the caller must use next.
+    /// Silently accepting that on the replace branch while rejecting it on the append branch
+    /// made one condition behave two ways.
     #[test]
     fn upsert_that_would_renest_an_existing_section_is_rejected() {
         let err = apply_ops(
@@ -1493,8 +1464,8 @@ done body
 
     #[test]
     fn composition_insert_then_move() {
-        // Compose: insert a new section, then move an existing one
-        // before it. Exercises the re-parse-per-op invariant.
+        // Compose: insert a new section, then move an existing one before it.
+        // Exercises the re-parse-per-op invariant.
         let out = apply_ops(
             SAMPLE,
             &[

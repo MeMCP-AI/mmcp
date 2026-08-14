@@ -59,8 +59,8 @@ pub struct DiagReport {
 
 // ── Health (surface) ────────────────────────────────────────
 
-/// Quick surface check: manifest parseable, all memories parse,
-/// required fields present. No hints, no deep analysis.
+/// Quick surface check: manifest parseable, all memories parse, required fields present.
+/// No hints, no deep analysis.
 pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> GroupReport {
     let gid = entry.manifest.group_id.as_uuid().to_string();
     let slug = entry.manifest.slug.clone();
@@ -185,7 +185,8 @@ pub async fn health_check_all(backend: &NativeBackend, groups: &GroupIndex) -> V
 
 // ── Diagnose (deep) ─────────────────────────────────────────
 
-/// Deep diagnostic analysis. Runs everything health does plus:
+/// Deep diagnostic analysis.
+/// Runs everything health does plus:
 /// - Missing optional fields (tags, version) as info hints
 /// - Empty body detection
 /// - Empty group (zero memories)
@@ -200,18 +201,14 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
     let rev = Rev::head();
     let group_scope = entry.manifest.scope;
 
-    // Track feature numbers seen within this group so we can flag
-    // duplicates after the per-memory loop. `add_feature` enforces
-    // monotonic uniqueness on writes, but a manual edit could
-    // reintroduce a collision.
+    // Tracks feature numbers seen within this group to flag duplicates after the per-memory loop.
+    // `add_feature` enforces monotonic uniqueness on writes, but a manual edit could reintroduce a collision.
     let mut feature_numbers: std::collections::HashMap<u32, Vec<String>> =
         std::collections::HashMap::new();
 
-    // Index every feature in this group by its UUID so the
-    // post-loop supersede-chain integrity pass can look targets up
-    // without a second pass over the files. Value is
-    // `(slug, status, refs)`, enough to verify reciprocity
-    // without carrying the full frontmatter around.
+    // Indexes every feature in this group by its UUID so the post-loop supersede-chain integrity pass
+    // can look targets up without a second pass over the files.
+    // Value is `(slug, status, refs)`, enough to verify reciprocity without carrying the full frontmatter around.
     let mut features_by_id: std::collections::HashMap<
         Uuid,
         (
@@ -353,14 +350,11 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
             }
         }
 
-        // Slug/name drift: fire only when the slug and slugified
-        // name share *no* meaningful tokens. Substring containment
-        // is too loose: a short curated slug ("global-coding-
-        // rules-rust") and a full title ("Rust Coding Rules")
-        // legitimately differ as abbreviation vs. expansion and
-        // shouldn't spam the report. Zero-overlap is a strong
-        // signal the name actually changed without the slug
-        // rotating.
+        // Slug/name drift fires only when the slug and slugified name share *no* meaningful tokens.
+        // Substring containment is too loose,
+        // since a short curated slug like "global-coding-rules-rust" and a full title like "Rust Coding Rules"
+        // legitimately differ as abbreviation vs. expansion.
+        // Zero-overlap is a strong signal the name actually changed without the slug rotating.
         let name_slug = slugify_filename(&fm.name);
         if !name_slug.is_empty() && name_slug != mem_slug && !tokens_overlap(mem_slug, &name_slug) {
             report.findings.push(Finding {
@@ -400,8 +394,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
             _ => {}
         }
 
-        // Every `kind = "feature"` memory should carry a
-        // sequential `number`.
+        // Every `kind = "feature"` memory should carry a sequential `number`.
         if fm.kind == MemoryKind::Feature && fm.feature.as_ref().and_then(|f| f.number).is_none() {
             report.findings.push(Finding {
                 group: gid.clone(),
@@ -413,8 +406,8 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
             });
         }
 
-        // Kind vs `[feature]` subtable consistency. A `feature`
-        // kind must carry a `[feature]` block; no other kind may.
+        // Kind vs `[feature]` subtable consistency.
+        // A `feature` kind must carry a `[feature]` block; no other kind may.
         match (fm.kind, fm.feature.as_ref()) {
             (MemoryKind::Feature, None) => report.findings.push(Finding {
                 group: gid.clone(),
@@ -502,14 +495,12 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
         }
     }
 
-    // Supersede-chain integrity: every feature with a typed
-    // `superseded_by` back-link should have its target present in
-    // the same group, reciprocating via a `refs` entry pointing
-    // back at the source's UUID. Catches the half-landed
-    // two-commit supersede case: commit A wrote the new feature,
+    // Supersede-chain integrity: every feature with a typed `superseded_by` back-link
+    // should have its target present in the same group,
+    // reciprocating via a `refs` entry pointing back at the source's UUID.
+    // Catches the half-landed two-commit supersede case: commit A wrote the new feature,
     // commit B never flipped the old one's status, or the reverse,
-    // commit B flipped it but an operator later removed the new
-    // feature's ref by hand.
+    // commit B flipped it but an operator later removed the new feature's ref by hand.
     for (old_slug, old_uuid, link) in &supersede_links {
         match features_by_id.get(&link.target) {
             None => {
@@ -564,12 +555,10 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
         }
     }
 
-    // Walk every leaf slug dir so stray non-UUID filenames are
-    // surfaced. Nested slug paths surface as separate leaf entries;
-    // intermediate path nodes are not "empty leaves".
-    // `list_all_memory_files` silently skips non-UUID files, so
-    // without this pass a `memories/rules/scratch.md` would never
-    // show up in diagnostics.
+    // Walk every leaf slug dir so stray non-UUID filenames are surfaced.
+    // Nested slug paths surface as separate leaf entries; intermediate path nodes are not "empty leaves".
+    // `list_all_memory_files` silently skips non-UUID files,
+    // so without this pass a `memories/rules/scratch.md` would never show up in diagnostics.
     if let Ok(slug_dirs) = crate::memory::list_memory_slug_dirs(backend, &entry.handle, &rev).await
     {
         for slug_dir in slug_dirs {
@@ -622,9 +611,8 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
     report
 }
 
-/// Human-readable name of a [`GroupScope`] for diagnostic
-/// messages. The serde rename_all derives the same lowercase
-/// tokens we want to quote back at operators.
+/// Human-readable name of a [`GroupScope`] for diagnostic messages.
+/// The serde rename_all derives the same lowercase tokens quoted back at operators.
 fn scope_str(scope: GroupScope) -> &'static str {
     match scope {
         GroupScope::Global => "global",
@@ -685,11 +673,10 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
         }
     }
 
-    // Build a single registry of every memory across the mirror so
-    // downstream cross-ref validation and duplicate-UUID detection
-    // share one pass over the repos. Each entry is keyed by UUID;
-    // the value carries enough context to point operators at the
-    // offending file when a collision fires.
+    // Build a single registry of every memory across the mirror so downstream cross-ref validation
+    // and duplicate-UUID detection share one pass over the repos.
+    // Each entry is keyed by UUID; the value carries enough context
+    // to point operators at the offending file when a collision fires.
     #[derive(Clone)]
     struct MemoryRecord {
         group_id: String,
@@ -723,8 +710,8 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
         }
     }
 
-    // Duplicate UUIDs across memories. Every memory's UUID is its
-    // primary key; two memories sharing one breaks `resolve_by_id`
+    // Duplicate UUIDs across memories.
+    // Every memory's UUID is its primary key; two memories sharing one breaks `resolve_by_id`
     // and makes cross-refs ambiguous.
     for (uuid, records) in &by_id {
         if records.len() > 1 {
@@ -1072,12 +1059,11 @@ fn check_project_config(findings: &mut Vec<Finding>) {
     }
 }
 
-/// Return true when two slug-shaped strings share at least one
-/// substantive token. "Substantive" = length ≥ 3 and not one of
-/// a short stopword list we keep inline (no dep needed). Used to
-/// gate the slug/name drift heuristic so curated-short-label vs.
-/// full-title pairs (e.g. `global-coding-rules-rust` vs.
-/// `rust-coding-rules`) don't trip the check.
+/// Return true when two slug-shaped strings share at least one substantive token.
+/// "Substantive" = length ≥ 3 and not one of a short inline stopword list (no dep needed).
+/// Used to gate the slug/name drift heuristic
+/// so curated-short-label vs. full-title pairs (e.g. `global-coding-rules-rust` vs. `rust-coding-rules`)
+/// don't trip the check.
 fn tokens_overlap(a: &str, b: &str) -> bool {
     const STOPWORDS: &[&str] = &[
         "the", "and", "for", "with", "from", "into", "that", "this", "but", "not", "are", "you",

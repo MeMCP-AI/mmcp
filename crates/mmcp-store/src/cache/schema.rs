@@ -88,10 +88,9 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), CacheError> {
     Ok(())
 }
 
-/// Whether `table` already has a column named `column`, via
-/// `PRAGMA table_info`. Used by [`ensure_schema`] to detect a
-/// pre-migration `indexed_memory` table without hand-parsing SQLite
-/// error text.
+/// Whether `table` already has a column named `column`, via `PRAGMA table_info`.
+/// Used by [`ensure_schema`] to detect a pre-migration `indexed_memory` table
+/// without hand-parsing SQLite error text.
 async fn has_column(pool: &SqlitePool, table: &str, column: &str) -> Result<bool, CacheError> {
     // The table-valued-function form of `PRAGMA table_info` projects just the `name` column,
     // so the result binds cleanly onto a one-column `(String,)` row.

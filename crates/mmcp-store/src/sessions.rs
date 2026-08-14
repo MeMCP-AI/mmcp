@@ -29,8 +29,8 @@ pub struct SessionState {
     /// Stable session identifier from the AI client.
     pub session_id: String,
 
-    /// User that owns this session, if authenticated. Local-only
-    /// clients leave this `None`.
+    /// User that owns this session, if authenticated.
+    /// Local-only clients leave this `None`.
     #[serde(default)]
     pub user_id: Option<Uuid>,
 
@@ -135,9 +135,9 @@ impl SessionStore {
         }
     }
 
-    /// Atomically write `state` to disk. The write goes to a
-    /// sibling `.tmp` file which is then renamed over the final
-    /// path so concurrent readers never observe a partial file.
+    /// Atomically write `state` to disk.
+    /// The write goes to a sibling `.tmp` file which is then renamed over the final path
+    /// so concurrent readers never observe a partial file.
     pub fn save(&self, state: &SessionState) -> Result<(), StoreError> {
         let path = self.path_for(&state.session_id);
         let text = toml::to_string_pretty(state)?;
@@ -157,9 +157,9 @@ impl SessionStore {
             .unwrap_or_else(|| SessionState::new(session_id.to_string(), now)))
     }
 
-    /// Create or refresh a session, setting the auth and project
-    /// context and the transcript path. Never bumps the turn
-    /// counter. Returns the persisted state.
+    /// Create or refresh a session, setting the auth and project context and the transcript path.
+    /// Never bumps the turn counter.
+    /// Returns the persisted state.
     pub fn upsert_session(
         &self,
         session_id: &str,
@@ -188,9 +188,8 @@ impl SessionStore {
         Ok(next)
     }
 
-    /// Inspect the transcript file (if any) and, on compaction,
-    /// set the session's `post_compaction` flag. The transcript
-    /// signature is always updated to the current file contents.
+    /// Inspect the transcript file (if any) and, on compaction, set the session's `post_compaction` flag.
+    /// The transcript signature is always updated to the current file contents.
     ///
     /// Returns `true` when a compaction was detected on this call.
     pub fn check_transcript(&self, session_id: &str) -> Result<bool, StoreError> {
@@ -221,8 +220,8 @@ impl SessionStore {
         Ok(compacted)
     }
 
-    /// Clear the post-compaction flag. Called by the caller once it
-    /// has re-read every mandatory memory.
+    /// Clear the post-compaction flag.
+    /// Called by the caller once it has re-read every mandatory memory.
     // NOTE: part of the session-scoped tool surface (verify, refresh).
     // Kept public so callers can depend on a stable API before those
     // tools are wired onto the MCP router.

@@ -31,9 +31,9 @@ use super::manifest::{
 /// gzip-compressed archives without the caller declaring which.
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 
-/// Hard cap on the total (post-decompression) bytes import reads from
-/// an archive, so a gzip bomb or a corrupt length cannot exhaust
-/// memory. Generous for archives of text memories.
+/// Hard cap on the total (post-decompression) bytes import reads from an archive,
+/// so a gzip bomb or a corrupt length cannot exhaust memory.
+/// Generous for archives of text memories.
 const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Hard cap on a single archive entry's (post-decompression) bytes.
@@ -48,24 +48,24 @@ pub struct ImportArchiveOptions {
     /// Remap every archived memory into this existing local group
     /// instead of recreating the original groups by uuid.
     pub into_group: Option<GroupId>,
-    /// Replace a memory whose uuid already exists with differing
-    /// content. Off means such a collision is reported, not written.
+    /// Replace a memory whose uuid already exists with differing content.
+    /// Off means such a collision is reported, not written.
     pub overwrite: bool,
     /// Mint fresh UUIDs for every imported memory (fork / copy)
     /// rather than preserving the archived identities.
     pub new_ids: bool,
-    /// Permit writes into protected existing groups. The surfaces set
-    /// this only after confirming the write with the operator.
+    /// Permit writes into protected existing groups.
+    /// The surfaces set this only after confirming the write with the operator.
     pub allow_protected: bool,
-    /// When non-empty, import only these archived groups (matched by
-    /// uuid or slug). Empty imports every group in the archive.
+    /// When non-empty, import only these archived groups (matched by uuid or slug).
+    /// Empty imports every group in the archive.
     pub select_groups: Vec<String>,
-    /// Facet filter narrowing which memories are replayed. Empty
-    /// imports every memory in the selected groups. Snapshot mode only.
+    /// Facet filter narrowing which memories are replayed.
+    /// Empty imports every memory in the selected groups.
+    /// Snapshot mode only.
     pub filter: MemoryFilter,
-    /// History mode: overwrite a group that already exists locally with
-    /// the restored repo. Off skips groups already present (the clean
-    /// machine case installs them either way).
+    /// History mode: overwrite a group that already exists locally with the restored repo.
+    /// Off skips groups already present (the clean machine case installs them either way).
     pub force_restore: bool,
 }
 
@@ -266,9 +266,8 @@ async fn import_snapshot(
     Ok(report)
 }
 
-/// History restore: install each selected group's bare repo verbatim,
-/// preserving full git history. Whole-repo and all-or-nothing per
-/// group, so the snapshot-only knobs are rejected up front.
+/// History restore: install each selected group's bare repo verbatim, preserving full git history.
+/// Whole-repo and all-or-nothing per group, so the snapshot-only knobs are rejected up front.
 async fn import_history(
     backend: &NativeBackend,
     groups: &GroupIndex,
@@ -293,9 +292,9 @@ async fn import_history(
         return Err(ArchiveError::SnapshotOnlyOption { option: "filter" });
     }
 
-    // A forced restore can overwrite an existing (possibly protected)
-    // group, so it takes the same confirmation backstop. Without force,
-    // existing groups are skipped and nothing is overwritten.
+    // A forced restore can overwrite an existing (possibly protected) group,
+    // so it takes the same confirmation backstop.
+    // Without force, existing groups are skipped and nothing is overwritten.
     if options.force_restore {
         protected_precheck(groups, manifest, None, options).await?;
     }
@@ -312,9 +311,8 @@ async fn import_history(
     Ok(report)
 }
 
-/// Install one archived group's bare repo, skipping it when it already
-/// exists unless `force_restore`. On a clean machine the group is
-/// absent and is installed fresh.
+/// Install one archived group's bare repo, skipping it when it already exists unless `force_restore`.
+/// On a clean machine the group is absent and is installed fresh.
 async fn restore_one_group(
     backend: &NativeBackend,
     groups: &GroupIndex,
@@ -388,10 +386,9 @@ async fn restore_one_group(
     Ok(outcome)
 }
 
-/// Atomically install a bare repo's `files` at `repo_path`: stage in a
-/// sibling temp dir, then rename into place so a partial write never
-/// leaves a broken repo. Replaces an existing repo (the caller gates
-/// that on `force_restore`).
+/// Atomically install a bare repo's `files` at `repo_path`: stage in a sibling temp dir,
+/// then rename into place so a partial write never leaves a broken repo.
+/// Replaces an existing repo (the caller gates that on `force_restore`).
 fn install_bare_repo(repo_path: &Path, files: &[(String, Vec<u8>)]) -> Result<(), ArchiveError> {
     let parent = repo_path.parent().ok_or_else(|| ArchiveError::Malformed {
         detail: format!("repo path {} has no parent", repo_path.display()),
@@ -576,10 +573,10 @@ async fn import_one_memory(
         return Ok(());
     }
 
-    // Identity-preserving import. The id is the frontmatter id, falling
-    // back to the archive filename uuid so id-less files keep their
-    // identity and a re-import stays idempotent rather than minting a
-    // fresh duplicate every run.
+    // Identity-preserving import.
+    // The id is the frontmatter id, falling back to the archive filename uuid
+    // so id-less files keep their identity and a re-import stays idempotent
+    // rather than minting a fresh duplicate every run.
     let Some((id, prepared)) = ensure_id(content, filename_id)? else {
         return Err(ArchiveError::Malformed {
             detail: format!("memory `{slug}` has no id in frontmatter or filename"),
@@ -675,9 +672,8 @@ async fn protected_precheck(
     Ok(())
 }
 
-/// Whether an archived group is in scope for this import. An empty
-/// selection imports every group; otherwise a group matches by its
-/// uuid string or its slug.
+/// Whether an archived group is in scope for this import.
+/// An empty selection imports every group; otherwise a group matches by its uuid string or its slug.
 fn group_selected(select: &[String], group_meta: &super::manifest::ArchivedGroupMeta) -> bool {
     select.is_empty()
         || select
@@ -696,10 +692,9 @@ fn ensure_supported(manifest: &ArchiveManifest) -> Result<(), ArchiveError> {
     Ok(())
 }
 
-/// Read every tar entry into a path-keyed map, transparently
-/// decompressing a gzip stream. Rejects duplicate paths so a crafted
-/// archive cannot shadow the table of contents the protected-group
-/// confirmation was driven from.
+/// Read every tar entry into a path-keyed map, transparently decompressing a gzip stream.
+/// Rejects duplicate paths so a crafted archive cannot shadow the table of contents
+/// the protected-group confirmation was driven from.
 fn read_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, ArchiveError> {
     let reader = open_reader(bytes);
     let mut archive = tar::Archive::new(reader);

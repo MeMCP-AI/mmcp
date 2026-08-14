@@ -35,9 +35,8 @@ pub struct ResolvedAuthor {
 
 /// Resolved mmcp home directory layout.
 ///
-/// Constructed once via [`MmcpHome::discover`] or
-/// [`MmcpHome::from_root`], then passed around by reference or
-/// clone. Every path mmcp consumers need is derived from this struct.
+/// Constructed once via [`MmcpHome::discover`] or [`MmcpHome::from_root`], then passed around by reference or clone.
+/// Every path mmcp consumers need is derived from this struct.
 #[derive(Debug, Clone)]
 pub struct MmcpHome {
     root: PathBuf,
@@ -62,8 +61,8 @@ impl MmcpHome {
         })
     }
 
-    /// Build from an explicit root path. Used by tests and by
-    /// callers that already know the root.
+    /// Build from an explicit root path.
+    /// Used by tests and by callers that already know the root.
     #[must_use]
     pub fn from_root(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
@@ -93,8 +92,8 @@ impl MmcpHome {
         self.root.join(USER_CONFIG_FILE)
     }
 
-    /// Load the user-level config. Returns `UserConfig::default()`
-    /// if the file does not exist.
+    /// Load the user-level config.
+    /// Returns `UserConfig::default()` if the file does not exist.
     pub fn load_user_config(&self) -> Result<UserConfig> {
         let path = self.user_config_path();
         if !path.exists() {
@@ -105,9 +104,9 @@ impl MmcpHome {
         UserConfig::from_toml(&text).map_err(|e| anyhow::anyhow!("parsing {}: {e}", path.display()))
     }
 
-    /// Persist the user-level config. Creates the home directory
-    /// if it does not yet exist so callers can write the first
-    /// config without a separate `init` step.
+    /// Persist the user-level config.
+    /// Creates the home directory if it does not yet exist,
+    /// so callers can write the first config without a separate `init` step.
     pub fn save_user_config(&self, cfg: &UserConfig) -> Result<()> {
         let path = self.user_config_path();
         if let Some(parent) = path.parent() {
@@ -179,10 +178,9 @@ impl MmcpHome {
 
 /// Read a single value from git's global config via gix (no subprocess).
 ///
-/// Keys are dotted (e.g. `user.name`). Returns `None` if the config
-/// file is missing, unreadable, the key is unset, or the value is
-/// empty. Shared by author resolution (Tier 2) and by the diagnose
-/// command so the two never drift apart.
+/// Keys are dotted (e.g. `user.name`).
+/// Returns `None` if the config file is missing, unreadable, the key is unset, or the value is empty.
+/// Shared by author resolution (Tier 2) and by the diagnose command so the two never drift apart.
 pub fn read_git_global(key: &str) -> Option<String> {
     let file = gix::config::File::from_globals().ok()?;
     let (section, name) = key.split_once('.')?;

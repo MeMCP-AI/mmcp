@@ -13,9 +13,9 @@ pub const ARCHIVE_GROUPS_DIR: &str = "groups";
 /// history-mode archive (`groups/<uuid>/git/...`).
 pub const ARCHIVE_GIT_DIR: &str = "git";
 
-/// Archive layout version. Bumped only on a breaking layout change;
-/// a reader rejects any archive whose `format_version` exceeds the
-/// version it was built with.
+/// Archive layout version.
+/// Bumped only on a breaking layout change;
+/// a reader rejects any archive whose `format_version` exceeds the version it was built with.
 pub const ARCHIVE_FORMAT_VERSION: u32 = 1;
 
 /// What an archive carries for each group.

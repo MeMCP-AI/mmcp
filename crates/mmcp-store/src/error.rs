@@ -41,9 +41,8 @@ pub enum StoreError {
     #[error("manifest error: {0}")]
     Manifest(#[from] mmcp_core::manifest::ManifestError),
 
-    /// Transcript signing / compaction detection failure surfaced
-    /// by `mmcp-session::compute_signature`. Used by the session
-    /// store's `check_transcript` path.
+    /// Transcript signing / compaction detection failure surfaced by `mmcp-session::compute_signature`.
+    /// Used by the session store's `check_transcript` path.
     #[error("transcript signature error: {0}")]
     Transcript(#[from] mmcp_session::SessionError),
 }

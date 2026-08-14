@@ -1,19 +1,15 @@
 //! Typed CRUD over issue tracker memories.
 //!
-//! Sister surface to [`crate::features`]. Wraps the generic memory
-//! layer with issue-aware semantics: every write / read commits a
-//! memory whose [`MemoryKind`] is `Issue`, carrying a structured
-//! [`IssueMetadata`] block in frontmatter. Cross-references take
-//! any UUID, so an issue may depend on a feature, another issue,
-//! or any future tracker kind. The shared ticket counter lives in
-//! [`crate::tracker`] so feature and issue numbers occupy one
-//! per-group monotonic sequence (GitHub-style).
+//! Sister surface to [`crate::features`].
+//! Wraps the generic memory layer with issue-aware semantics: every write / read commits a memory
+//! whose [`MemoryKind`] is `Issue`, carrying a structured [`IssueMetadata`] block in frontmatter.
+//! Cross-references take any UUID, so an issue may depend on a feature, another issue, or any future tracker kind.
+//! The shared ticket counter lives in [`crate::tracker`],
+//! so feature and issue numbers occupy one per-group monotonic sequence (GitHub-style).
 //!
-//! The hybrid model from the design discussion permits a memory
-//! to carry both a `[feature]` and an `[issue]` block. This
-//! module's create path always writes a pure-issue memory; hybrid
-//! promotion is a future workflow on top of the existing memory
-//! editor surface.
+//! The hybrid model permits a memory to carry both a `[feature]` and an `[issue]` block.
+//! This module's create path always writes a pure-issue memory;
+//! hybrid promotion is a future workflow on top of the existing memory editor surface.
 //!
 //! Cross-kind and cross-group supersede generalisation is staged
 //! for a later slice. v1 supersede targets resolve in the caller's
@@ -43,10 +39,9 @@ pub enum IssueError {
     #[error(transparent)]
     Memory(#[from] ImportError),
 
-    /// Raised when `read_issue` / `update_issue` / `delete_issue`
-    /// target a memory that exists but is neither an `Issue` kind
-    /// nor a hybrid memory carrying an `[issue]` block. Keeps the
-    /// issue tools from silently operating on unrelated memories.
+    /// Raised when `read_issue` / `update_issue` / `delete_issue` target a memory that exists
+    /// but is neither an `Issue` kind nor a hybrid memory carrying an `[issue]` block.
+    /// Keeps the issue tools from silently operating on unrelated memories.
     #[error("memory '{slug}' exists in this group but does not carry an issue metadata block")]
     NotAnIssue { slug: String, kind: String },
 
@@ -111,10 +106,9 @@ pub struct UpdateSpec {
     pub message: Option<String>,
 }
 
-/// Typed return shape for every read / write path on the issue
-/// surface. Mirrors the on-disk frontmatter closely so downstream
-/// consumers (CLI formatter, MCP JSON serializer, future
-/// issue-bridge) have one canonical shape to convert from.
+/// Typed return shape for every read / write path on the issue surface.
+/// Mirrors the on-disk frontmatter closely so downstream consumers
+/// (CLI formatter, MCP JSON serializer, future issue-bridge) have one canonical shape to convert from.
 #[derive(Debug, Clone)]
 pub struct IssueRecord {
     pub slug: String,
@@ -178,13 +172,11 @@ struct SupersedeTarget {
     head_commit: String,
 }
 
-/// Create a new issue in the group. Errors with
-/// `IssueError::Memory(ImportError::MemoryAlreadyExists)` when the
-/// slug already points at something on disk.
+/// Create a new issue in the group.
+/// Errors with `IssueError::Memory(ImportError::MemoryAlreadyExists)` when the slug already points at something on disk.
 ///
-/// When `spec.supersedes` is set, runs the two-commit supersede
-/// flow against the resolved target (same kind, same group only
-/// in v1).
+/// When `spec.supersedes` is set, runs the two-commit supersede flow against the resolved target
+/// (same kind, same group only in v1).
 pub async fn add_issue(
     backend: &NativeBackend,
     entry: &GroupEntry,
@@ -386,8 +378,8 @@ pub async fn read_issue(
     record_from_file(slug, file, String::new())
 }
 
-/// Update an issue by slug. Public wrapper acquiring the per-group
-/// lock chain; delegates to [`update_issue_unlocked`].
+/// Update an issue by slug.
+/// Public wrapper acquiring the per-group lock chain; delegates to [`update_issue_unlocked`].
 pub async fn update_issue(
     backend: &NativeBackend,
     entry: &GroupEntry,
@@ -516,9 +508,9 @@ async fn read_memory_refs(
     Ok(file.frontmatter.refs)
 }
 
-/// Rename every issue under `old_slug` to `new_slug` in one atomic
-/// commit. UUIDs stay stable across the rename. An explicit
-/// `message` override is bounded via [`resolve_commit_message`].
+/// Rename every issue under `old_slug` to `new_slug` in one atomic commit.
+/// UUIDs stay stable across the rename.
+/// An explicit `message` override is bounded via [`resolve_commit_message`].
 pub async fn rename_issue(
     backend: &NativeBackend,
     entry: &GroupEntry,
@@ -537,8 +529,8 @@ pub async fn rename_issue(
         return list_issues_for_slug(backend, entry, old_slug).await;
     }
 
-    // Refuse rename when a source memory does not carry an [issue]
-    // block. Mirrors the feature side's not-a-feature guard.
+    // Refuse rename when a source memory does not carry an [issue] block.
+    // Mirrors the feature side's not-a-feature guard.
     let planned = crate::tracker::plan_slug_rename(backend, entry, old_slug, new_slug, |file| {
         if file.frontmatter.issue.is_none() {
             Some(IssueError::NotAnIssue {

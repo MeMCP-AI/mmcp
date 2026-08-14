@@ -27,11 +27,9 @@ use crate::home::ResolvedAuthor;
 #[derive(Debug, Clone)]
 pub struct ImportResult {
     pub slug: String,
-    /// Canonical UUID minted for this memory (or taken from the
-    /// source's frontmatter when it carried one). Callers use this
-    /// to address the memory across the two-level
-    /// `memories/<slug>/<uuid>.md` layout without re-resolving by
-    /// slug, which is ambiguous once siblings exist.
+    /// Canonical UUID minted for this memory (or taken from the source's frontmatter when it carried one).
+    /// Callers use this to address the memory across the two-level `memories/<slug>/<uuid>.md` layout
+    /// without re-resolving by slug, which is ambiguous once siblings exist.
     pub id: Uuid,
     pub commit_id: String,
 }
@@ -46,10 +44,7 @@ pub struct SynthFrontmatter {
 
 /// Errors specific to memory CRUD operations.
 ///
-/// Named `ImportError` for historical reasons (this module started
-/// out as the `mmcp import` implementation); it now covers the
-/// shared create/update/delete primitives too. A rename is a
-/// cosmetic follow-up.
+/// Create, update, delete, and import share this one error type.
 #[derive(Debug, thiserror::Error)]
 pub enum ImportError {
     #[error(
@@ -75,9 +70,8 @@ pub enum ImportError {
     #[error("group not found: {0}")]
     GroupNotFound(String),
 
-    /// A `create` was attempted against a slug that is already on
-    /// disk. The caller picks between `update` (edit-in-place) and
-    /// `create` with an explicit override to replace.
+    /// A `create` was attempted against a slug that is already on disk.
+    /// The caller picks between `update` (edit-in-place) and `create` with an explicit override to replace.
     #[error("memory '{slug}' already exists in this group")]
     MemoryAlreadyExists { slug: String },
 
@@ -91,15 +85,13 @@ pub enum ImportError {
         id: Option<Uuid>,
     },
 
-    /// A slug-only lookup resolved to more than one memory under
-    /// `memories/<slug>/`. The caller must re-query with an
-    /// explicit `id` from the candidate list.
+    /// A slug-only lookup resolved to more than one memory under `memories/<slug>/`.
+    /// The caller must re-query with an explicit `id` from the candidate list.
     #[error("memory slug '{slug}' has multiple entries; disambiguate with id")]
     MemoryAmbiguous { slug: String, candidates: Vec<Uuid> },
 
-    /// Both `slug` and `id` were supplied but the on-disk memory's
-    /// frontmatter carries a different id. Signals either a stale
-    /// client cache or a corrupted frontmatter pair.
+    /// Both `slug` and `id` were supplied but the on-disk memory's frontmatter carries a different id.
+    /// Signals either a stale client cache or a corrupted frontmatter pair.
     #[error("memory '{slug}' id mismatch: expected {expected}, got {got}")]
     MemoryIdMismatch {
         slug: String,
@@ -107,12 +99,10 @@ pub enum ImportError {
         got: Uuid,
     },
 
-    /// A write addressed by filename UUID (the caller specified the
-    /// filename path explicitly, or resolved via the filename fast
-    /// path) carried a frontmatter `id` that disagrees with the
-    /// filename. Slice D rejects this by default; callers that
-    /// genuinely intend to overwrite a drifted file pass `force =
-    /// true` to flip the rejection into an accepted-with-note path.
+    /// A write addressed by filename UUID (the caller specified the filename path explicitly,
+    /// or resolved via the filename fast path) carried a frontmatter `id` that disagrees with the filename.
+    /// Rejected by default; callers that genuinely intend to overwrite a drifted file
+    /// pass `force = true` to flip the rejection into an accepted-with-note path.
     #[error(
         "filename-addressed write to '{path}' has id mismatch: filename {filename}, frontmatter {frontmatter} (pass force=true to override)"
     )]
@@ -127,32 +117,28 @@ pub enum ImportError {
     #[error("resolve_memory requires at least one of slug or id")]
     ResolveArgsMissing,
 
-    /// A user-supplied string field (body, name, description, a
-    /// tag, or an explicit commit-message override) exceeded its
-    /// bounded maximum length. See `mmcp_core::memory` for the
-    /// named constants (`MAX_BODY_LENGTH`, `MAX_NAME_LENGTH`,
-    /// `MAX_DESCRIPTION_LENGTH`, `MAX_TAG_LENGTH`, `MAX_TAG_COUNT`,
-    /// `MAX_MESSAGE_LENGTH`).
+    /// A user-supplied string field (body, name, description, a tag, or an explicit commit-message override)
+    /// exceeded its bounded maximum length.
+    /// See `mmcp_core::memory` for the named constants
+    /// (`MAX_BODY_LENGTH`, `MAX_NAME_LENGTH`, `MAX_DESCRIPTION_LENGTH`, `MAX_TAG_LENGTH`,
+    /// `MAX_TAG_COUNT`, `MAX_MESSAGE_LENGTH`).
     #[error("field too long: {0}")]
     FieldTooLong(#[from] mmcp_core::memory::FieldLengthError),
 
-    /// [`parse_creatable_kind`] was pointed at a tracked kind
-    /// (`feature` / `issue` / `milestone`). Tracked kinds carry a
-    /// structured metadata subtable (`[feature]` / `[issue]` /
-    /// `[milestone]`) this plain memory-write path never populates;
-    /// accepting one here would silently create a memory `diagnose`
-    /// then flags as defective and every tracked-kind routing entry
-    /// point (`read_milestone` etc.) rejects as `not_a_*`.
+    /// [`parse_creatable_kind`] was pointed at a tracked kind (`feature` / `issue` / `milestone`).
+    /// Tracked kinds carry a structured metadata subtable (`[feature]` / `[issue]` / `[milestone]`)
+    /// this plain memory-write path never populates;
+    /// accepting one here would silently create a memory `diagnose` then flags as defective,
+    /// and every tracked-kind routing entry point (`read_milestone` etc.) rejects as `not_a_*`.
     #[error(
         "kind '{kind}' is a tracked kind and cannot be created via memory create/edit; use the dedicated add_{kind} command instead"
     )]
     NotACreatableKind { kind: String },
 }
 
-/// Per-file reference to a memory on disk. Returned by
-/// [`list_all_memory_files`] so callers get a direct path plus
-/// the slug/id pair the `memories/<slug>/<uuid>.md` layout
-/// encodes.
+/// Per-file reference to a memory on disk.
+/// Returned by [`list_all_memory_files`] so callers get a direct path
+/// plus the slug/id pair the `memories/<slug>/<uuid>.md` layout encodes.
 #[derive(Debug, Clone)]
 pub struct MemoryFileRef {
     pub slug: String,
@@ -161,10 +147,9 @@ pub struct MemoryFileRef {
 }
 
 /// One leaf slug directory found by [`list_memory_slug_dirs`].
-/// "Leaf" means a tree node that holds at least one direct `.md`
-/// blob; intermediate path nodes that only contain subtrees are
-/// not surfaced. The `slug` field is the full slash-joined path
-/// from `memories/` down (e.g. `feedback/git/commit-phase`).
+/// "Leaf" means a tree node that holds at least one direct `.md` blob;
+/// intermediate path nodes that only contain subtrees are not surfaced.
+/// The `slug` field is the full slash-joined path from `memories/` down (e.g. `feedback/git/commit-phase`).
 #[derive(Debug, Clone)]
 pub struct MemorySlugDir {
     /// Path slug (one or more `/`-joined segments, no leading
@@ -172,16 +157,14 @@ pub struct MemorySlugDir {
     pub slug: String,
     /// Full in-repo directory path: `memories/<slug>`.
     pub dir: String,
-    /// Direct file entries returned by `list_tree(dir)`. Includes
-    /// non-UUID names so diagnostics can flag schema violations
-    /// without re-listing.
+    /// Direct file entries returned by `list_tree(dir)`.
+    /// Includes non-UUID names so diagnostics can flag schema violations without re-listing.
     pub filenames: Vec<String>,
 }
 
-/// Walk the `memories/` tree recursively and surface every leaf
-/// slug directory under it. A directory counts as a leaf iff it
-/// holds at least one direct `.md` blob; intermediate path nodes
-/// (only subtrees, no direct files) are traversed transparently.
+/// Walk the `memories/` tree recursively and surface every leaf slug directory under it.
+/// A directory counts as a leaf iff it holds at least one direct `.md` blob;
+/// intermediate path nodes (only subtrees, no direct files) are traversed transparently.
 ///
 /// Slug paths may contain `/`-separated segments; this helper is the shared enumeration primitive,
 /// every listing surface (memories, features, issues, tracker, diagnostics) routes through,
@@ -194,8 +177,8 @@ pub async fn list_memory_slug_dirs(
     let root = mmcp_core::conventions::MEMORIES_DIR;
     let ext = mmcp_core::conventions::MEMORY_EXTENSION;
     let mut out = Vec::new();
-    // Iterative DFS so async recursion doesn't need Box::pin per
-    // descent. Each frame holds (full git path, accumulated slug).
+    // Iterative DFS so async recursion doesn't need Box::pin per descent.
+    // Each frame holds (full git path, accumulated slug).
     let mut stack: Vec<(String, String)> = vec![(root.to_string(), String::new())];
     while let Some((prefix, slug_prefix)) = stack.pop() {
         let files = backend.list_tree(handle, &prefix, rev).await?;
@@ -224,10 +207,9 @@ pub async fn list_memory_slug_dirs(
     Ok(out)
 }
 
-/// Walk every memory file in the group at `rev`. Every leaf slug
-/// directory under `memories/` is enumerated and every UUID-named
-/// `.md` file inside surfaces as one entry; duplicate slugs appear
-/// as multiple entries with distinct UUIDs.
+/// Walk every memory file in the group at `rev`.
+/// Every leaf slug directory under `memories/` is enumerated and every UUID-named `.md` file inside
+/// surfaces as one entry; duplicate slugs appear as multiple entries with distinct UUIDs.
 ///
 /// Used by diagnostics and any other consumer that needs to read every memory exactly once.
 /// Nested slug paths surface alongside flat ones because the walk is recursive.
@@ -316,16 +298,15 @@ pub fn validate_id_mismatch(
     addressing_mode: AddressingMode,
     force: bool,
 ) -> Result<IdValidation, ImportError> {
-    // Extract filename UUID from path stem `<uuid>.md`. If the
-    // path doesn't end in a UUID stem (hand-crafted slugs), there
-    // is nothing to compare; treat as Match.
+    // Extract filename UUID from path stem `<uuid>.md`.
+    // If the path doesn't end in a UUID stem (hand-crafted slugs), there is nothing to compare; treat as Match.
     let filename = filename_uuid_from_path(path);
     let frontmatter = parse_frontmatter_id(rendered.as_bytes());
     let (filename, frontmatter) = match (filename, frontmatter) {
         (Some(f), Some(g)) => (f, g),
-        // Either side absent means no comparison applies. Diagnose
-        // separately flags missing frontmatter ids; the resolver
-        // already requires one for `ByFrontmatter` resolution.
+        // Either side absent means no comparison applies.
+        // Diagnose separately flags missing frontmatter ids;
+        // the resolver already requires one for `ByFrontmatter` resolution.
         _ => return Ok(IdValidation::Match),
     };
     if filename == frontmatter {
@@ -350,9 +331,8 @@ pub fn validate_id_mismatch(
     }
 }
 
-/// Extract the trailing `<uuid>.md` stem from a `memories/<slug>/<uuid>.md`
-/// path. Returns `None` for hand-crafted filenames whose stem is
-/// not a UUID.
+/// Extract the trailing `<uuid>.md` stem from a `memories/<slug>/<uuid>.md` path.
+/// Returns `None` for hand-crafted filenames whose stem is not a UUID.
 fn filename_uuid_from_path(path: &str) -> Option<Uuid> {
     let stem = path
         .rsplit('/')
@@ -374,18 +354,17 @@ fn slug_from_memory_path(path: &str) -> Option<String> {
     Some(slug.to_string())
 }
 
-/// Addressing result from [`resolve_memory`]. Carries the slug,
-/// the canonical UUID, and the in-repo path
-/// (`memories/<slug>/<uuid>.md`) that a subsequent `read_file` can
-/// consume verbatim.
+/// Addressing result from [`resolve_memory`].
+/// Carries the slug, the canonical UUID, and the in-repo path (`memories/<slug>/<uuid>.md`)
+/// that a subsequent `read_file` can consume verbatim.
 #[derive(Debug, Clone)]
 pub struct ResolvedMemory {
     pub slug: String,
     pub id: Uuid,
     pub path: String,
-    /// How the resolver located this entry. Callers that write
-    /// branch on this to decide whether a filename/frontmatter id
-    /// mismatch is a hard reject or a soft warning.
+    /// How the resolver located this entry.
+    /// Callers that write branch on this to decide whether a filename/frontmatter id mismatch
+    /// is a hard reject or a soft warning.
     pub addressing_mode: AddressingMode,
 }
 
@@ -523,8 +502,8 @@ async fn resolve_by_id(
         }
     }
 
-    // Step 1: filename fast path. Stem already matches `expected`;
-    // verify the frontmatter id agrees before declaring a hit.
+    // Step 1: filename fast path.
+    // Stem already matches `expected`; verify the frontmatter id agrees before declaring a hit.
     for (slug, path) in &step1_candidates {
         let Ok(bytes) = backend.read_file(handle, path, &rev).await else {
             continue;
@@ -539,9 +518,9 @@ async fn resolve_by_id(
         }
     }
 
-    // Step 2: hand-crafted memories (non-UUID filenames). Parse
-    // frontmatter and match on its id. Reached only when step 1
-    // missed because most repos have no non-UUID files.
+    // Step 2: hand-crafted memories (non-UUID filenames).
+    // Parse frontmatter and match on its id.
+    // Reached only when step 1 missed because most repos have no non-UUID files.
     for (slug, path) in &step2_candidates {
         let Ok(bytes) = backend.read_file(handle, path, &rev).await else {
             continue;
@@ -617,12 +596,10 @@ pub async fn read_frontmatter(
 
 /// Read every memory's frontmatter in a group at `rev`.
 ///
-/// Wraps [`list_all_memory_files`] + per-file frontmatter parse
-/// into one fan-out call. Per-file errors land inside each entry's
-/// `frontmatter` field rather than aborting the iteration, so one
-/// malformed file in a 100-memory group does not blank the whole
-/// listing. Top-level git errors (the directory walk itself) still
-/// surface as `Err`.
+/// Wraps [`list_all_memory_files`] + per-file frontmatter parse into one fan-out call.
+/// Per-file errors land inside each entry's `frontmatter` field rather than aborting the iteration,
+/// so one malformed file in a 100-memory group does not blank the whole listing.
+/// Top-level git errors (the directory walk itself) still surface as `Err`.
 pub async fn read_frontmatters_in_group(
     backend: &NativeBackend,
     handle: &RepoHandle,
@@ -673,10 +650,9 @@ fn parse_frontmatter_id(bytes: &[u8]) -> Option<Uuid> {
     file.frontmatter.id
 }
 
-/// Optional config for [`write_file_at_path`]. The mandatory
-/// inputs (`backend`, `handle`, `path`, `rendered`, `author`) stay
-/// positional; this bundles the addressing/override knobs most
-/// callers thread straight through from a resolver or CLI args.
+/// Optional config for [`write_file_at_path`].
+/// The mandatory inputs (`backend`, `handle`, `path`, `rendered`, `author`) stay positional;
+/// this bundles the addressing/override knobs most callers thread straight through from a resolver or CLI args.
 ///
 /// `addressing_mode` and `force` drive the id-mismatch check;
 /// `message` overrides the auto-generated commit message.
@@ -689,11 +665,9 @@ pub struct WriteFileOptions<'a> {
     pub message: Option<&'a str>,
 }
 
-/// Enforce the bounded-length invariants `global-security-rules`
-/// mandates on the rendered content of every write that reaches
-/// [`write_file_at_path`]: parse `rendered` and check its
-/// frontmatter (`name`, `description`, `tags`) and body against
-/// `mmcp_core::memory`'s named maxima.
+/// Enforce the bounded-length invariants on the rendered content of every write
+/// that reaches [`write_file_at_path`]: parse `rendered` and check its frontmatter
+/// (`name`, `description`, `tags`) and body against `mmcp_core::memory`'s named maxima.
 ///
 /// This is the single choke point every memory write with rendered content,
 /// create, update, `edit_memory_body`, feature/issue create and update, and archive import,
@@ -792,8 +766,8 @@ pub async fn write_file_at_path(
     Ok((commit_id, validation))
 }
 
-/// Commit a deletion of `path`. Unconditional; callers probe first
-/// if they want a "not found" error.
+/// Commit a deletion of `path`.
+/// Unconditional; callers probe first if they want a "not found" error.
 pub async fn delete_file_at_path(
     backend: &NativeBackend,
     handle: &RepoHandle,
@@ -852,10 +826,9 @@ pub async fn move_memory_path(
     validate_memory_slug(new_slug)?;
     let resolved = resolve_memory(backend, handle, old_slug, id).await?;
     if resolved.slug == new_slug {
-        // No-op: the move target is the source. Returning a fake
-        // commit id would mislead callers; surface the unchanged
-        // path so they know the memory already lives where they
-        // asked.
+        // No-op: the move target is the source.
+        // Returning a fake commit id would mislead callers;
+        // surface the unchanged path so they know the memory already lives where they asked.
         return Ok(MoveMemoryOutcome {
             old_slug: resolved.slug.clone(),
             new_slug: resolved.slug,
@@ -865,10 +838,9 @@ pub async fn move_memory_path(
             commit_id: String::new(),
         });
     }
-    // Refuse to overwrite a sibling at the destination with the
-    // same id. Writing different bytes there silently would lose
-    // data; the caller should pick a different target or delete
-    // the existing entry first.
+    // Refuse to overwrite a sibling at the destination with the same id.
+    // Writing different bytes there silently would lose data;
+    // the caller should pick a different target or delete the existing entry first.
     let new_path = mmcp_core::conventions::memory_path(new_slug, resolved.id);
     match backend.read_file(handle, &new_path, &Rev::head()).await {
         Ok(_) => {
@@ -912,12 +884,10 @@ pub async fn move_memory_path(
     })
 }
 
-/// Optional config for [`write_memory_by_id`]. Wraps the
-/// [`WriteFileOptions`] tail (`addressing_mode`, `force`,
-/// `message`) delegated to [`write_file_at_path`] plus the
-/// create-or-override toggle this entry point owns. Same
-/// field-init-shorthand-plus-`..Default::default()` construction
-/// pattern.
+/// Optional config for [`write_memory_by_id`].
+/// Wraps the [`WriteFileOptions`] tail (`addressing_mode`, `force`, `message`)
+/// delegated to [`write_file_at_path`] plus the create-or-override toggle this entry point owns.
+/// Same field-init-shorthand-plus-`..Default::default()` construction pattern.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WriteMemoryOptions<'a> {
     pub override_existing: bool,
@@ -981,7 +951,6 @@ pub async fn write_memory_by_id(
     .await
 }
 
-/// Create a fresh memory file. Errors with
 /// Import a memory into a group repo.
 ///
 /// Parses `content` as a full memory file (frontmatter + body);
@@ -991,7 +960,7 @@ pub async fn write_memory_by_id(
 /// the id is taken from frontmatter when present, otherwise a fresh UUIDv7 is minted.
 ///
 /// `override_existing` only matters when an explicit id from frontmatter collides with an existing file.
-/// With a freshly minted id, the write always creates a new sibling under the slug directory,
+/// With a freshly minted id, the write always creates a new sibling under the slug directory
 /// (duplicate slugs are legal).
 pub async fn import_memory(
     backend: &NativeBackend,
@@ -1056,18 +1025,16 @@ pub async fn import_memory(
     })
 }
 
-/// Maximum number of `/`-separated segments in a memory slug
-/// path. Bounded so a malicious or buggy caller cannot blow the
-/// directory tree out arbitrarily.
+/// Maximum number of `/`-separated segments in a memory slug path.
+/// Bounded so a malicious or buggy caller cannot blow the directory tree out arbitrarily.
 pub const MAX_SLUG_SEGMENTS: usize = 8;
 
-/// Maximum total slug length, including separators. 256 is well
-/// above the legitimate need (8 segments × 30 chars + 7 separators
-/// = 247) while still bounded.
+/// Maximum total slug length, including separators.
+/// 256 is well above the legitimate need (8 segments × 30 chars + 7 separators = 247) while still bounded.
 pub const MAX_SLUG_LENGTH: usize = 256;
 
-/// Validate a single slug segment (no `/`). Used both for memory
-/// slug components and for top-level identifiers like group slugs
+/// Validate a single slug segment (no `/`).
+/// Used both for memory slug components and for top-level identifiers like group slugs
 /// where path separators are never legal.
 pub fn validate_slug_segment(segment: &str) -> Result<(), ImportError> {
     if segment.is_empty() {
@@ -1087,11 +1054,11 @@ pub fn validate_slug_segment(segment: &str) -> Result<(), ImportError> {
     Ok(())
 }
 
-/// Validate a memory slug path. A slug is one to
-/// [`MAX_SLUG_SEGMENTS`] `/`-joined segments; each segment matches
-/// the single-segment rules in [`validate_slug_segment`]. Total
-/// length is capped at [`MAX_SLUG_LENGTH`]. Existing flat slugs are
-/// just zero-`/` paths and stay valid.
+/// Validate a memory slug path.
+/// A slug is one to [`MAX_SLUG_SEGMENTS`] `/`-joined segments;
+/// each segment matches the single-segment rules in [`validate_slug_segment`].
+/// Total length is capped at [`MAX_SLUG_LENGTH`].
+/// Existing flat slugs are just zero-`/` paths and stay valid.
 pub fn validate_memory_slug(slug: &str) -> Result<(), ImportError> {
     if slug.is_empty() || slug.len() > MAX_SLUG_LENGTH {
         return Err(ImportError::InvalidSlug(slug.to_string()));
@@ -1123,30 +1090,26 @@ pub fn validate_slug(slug: &str) -> Result<(), ImportError> {
     validate_memory_slug(slug)
 }
 
-/// Compiled-in fallback for the auto-slug length cap applied by
-/// [`slugify_filename`] when deriving a default slug from a title
-/// (`add_issue`, `add_feature`, milestone creation, and file import
-/// all fall back to this path when the caller supplies no explicit
-/// slug). This is a production default for auto-generation, not an
-/// acceptance ceiling: [`MAX_SLUG_LENGTH`] still governs what
-/// `validate_memory_slug` *accepts*, and stays untouched.
+/// Compiled-in fallback for the auto-slug length cap applied by [`slugify_filename`]
+/// when deriving a default slug from a title
+/// (`add_issue`, `add_feature`, milestone creation, and file import all fall back to this path
+/// when the caller supplies no explicit slug).
+/// This is a production default for auto-generation, not an acceptance ceiling:
+/// [`MAX_SLUG_LENGTH`] still governs what `validate_memory_slug` *accepts*, and stays untouched.
 ///
-/// Value fixed at 64 by explicit operator directive (2026-08-12), not
-/// independently derived from a specific reference system; it is only
-/// the LOWEST-precedence tier of [`resolve_max_auto_slug_length`] and
-/// is overridable per-call, per-machine (env var), or per-user
-/// (config file); see that function's doc comment for the full
-/// cascade. Duplicate slugs are legal regardless of which tier wins,
-/// since memories address by slug+UUID, not slug alone (see the
-/// `uuidify-memories-allow-duplicate-slugs` project memory), so two
-/// long titles colliding on the same truncated slug is not a
-/// correctness problem needing a disambiguating suffix.
+/// Value fixed at 64, not independently derived from a specific reference system.
+/// The LOWEST-precedence tier of [`resolve_max_auto_slug_length`],
+/// overridable per-call, per-machine (env var), or per-user (config file);
+/// see that function's doc comment for the full cascade.
+/// Duplicate slugs are legal regardless of which tier wins,
+/// since memories address by slug+UUID, not slug alone,
+/// so two long titles colliding on the same truncated slug is not a correctness problem
+/// needing a disambiguating suffix.
 pub const DEFAULT_MAX_AUTO_SLUG_LENGTH: usize = 64;
 
-/// Environment variable that overrides the auto-slug length cap for
-/// every invocation on this machine, second in precedence behind an
-/// explicit per-call override. Mirrors the `MMCP_HOME` naming
-/// convention (see [`crate::home`]).
+/// Environment variable that overrides the auto-slug length cap for every invocation on this machine,
+/// second in precedence behind an explicit per-call override.
+/// Mirrors the `MMCP_HOME` naming convention (see [`crate::home`]).
 pub const MAX_AUTO_SLUG_LENGTH_ENV: &str = "MMCP_MAX_AUTO_SLUG_LENGTH";
 
 /// Derive a slug from a filename.
@@ -1160,20 +1123,18 @@ pub const MAX_AUTO_SLUG_LENGTH_ENV: &str = "MMCP_MAX_AUTO_SLUG_LENGTH";
 /// `coding-rules-adoc`; the on-disk memory still lands as `.md`.
 ///
 /// The result is then capped via [`truncate_slug_at_hyphen_boundary`]
-/// at [`resolve_max_auto_slug_length`]'s compiled-in default tier (no
-/// per-call override) so an auto-derived slug from a long title stays
-/// a sane, readable identifier instead of growing unboundedly with
-/// the title. Callers that need a one-off cap call
-/// [`slugify_filename_with_cap`] directly.
+/// at [`resolve_max_auto_slug_length`]'s compiled-in default tier (no per-call override)
+/// so an auto-derived slug from a long title stays a sane, readable identifier
+/// instead of growing unboundedly with the title.
+/// Callers that need a one-off cap call [`slugify_filename_with_cap`] directly.
 pub fn slugify_filename(filename: &str) -> String {
     slugify_filename_with_cap(filename, None)
 }
 
-/// Same as [`slugify_filename`], but `override_max_len`, when
-/// `Some` and non-zero, takes precedence over every other tier of
-/// [`resolve_max_auto_slug_length`]. Exists so a future MCP tool /
-/// CLI flag can request a one-off cap without touching the env var or
-/// user config that every other call on the machine shares.
+/// Same as [`slugify_filename`], but `override_max_len`, when `Some` and non-zero,
+/// takes precedence over every other tier of [`resolve_max_auto_slug_length`].
+/// Exists so a future MCP tool / CLI flag can request a one-off cap
+/// without touching the env var or user config that every other call on the machine shares.
 pub fn slugify_filename_with_cap(filename: &str, override_max_len: Option<usize>) -> String {
     let stem = strip_known_import_extension(filename);
     let slug = slug::slugify(stem);
@@ -1181,20 +1142,18 @@ pub fn slugify_filename_with_cap(filename: &str, override_max_len: Option<usize>
     truncate_slug_at_hyphen_boundary(&slug, max_len)
 }
 
-/// Resolve the effective auto-slug length cap. Highest-precedence
-/// source wins:
+/// Resolve the effective auto-slug length cap.
+/// Highest-precedence source wins:
 /// 1. `override_len`, an explicit per-call argument.
 /// 2. [`MAX_AUTO_SLUG_LENGTH_ENV`] environment variable.
 /// 3. `~/.mmcp/config.toml` `[limits] max_auto_slug_length`
 ///    ([`mmcp_core::config::UserConfig`]).
 /// 4. [`DEFAULT_MAX_AUTO_SLUG_LENGTH`], the compiled-in fallback.
 ///
-/// A zero or unparsable value at any tier is treated as absent and
-/// falls through to the next tier, logged rather than silently
-/// discarded: a broken override must never make slug generation
-/// itself fail. The tier-selection logic itself lives in
-/// [`resolve_from_tiers`], kept separate from the I/O (env var read,
-/// config file read) so its precedence rules are unit-testable
+/// A zero or unparsable value at any tier is treated as absent and falls through to the next tier,
+/// logged rather than silently discarded: a broken override must never make slug generation itself fail.
+/// The tier-selection logic itself lives in [`resolve_from_tiers`], kept separate from the I/O
+/// (env var read, config file read) so its precedence rules are unit-testable
 /// without mutating process-global environment state.
 fn resolve_max_auto_slug_length(override_len: Option<usize>) -> usize {
     let env_raw = std::env::var(MAX_AUTO_SLUG_LENGTH_ENV).ok();
@@ -1203,12 +1162,11 @@ fn resolve_max_auto_slug_length(override_len: Option<usize>) -> usize {
     resolve_from_tiers(override_len, env_len, config_len)
 }
 
-/// Parse the raw [`MAX_AUTO_SLUG_LENGTH_ENV`] value, if any, into a
-/// tier value. Logs and falls through (returns `None`) when the
-/// variable is present but not a valid number, rather than silently
-/// discarding it. Split out from [`resolve_max_auto_slug_length`] so
-/// this parse behavior is unit-testable without mutating
-/// process-global environment state.
+/// Parse the raw [`MAX_AUTO_SLUG_LENGTH_ENV`] value, if any, into a tier value.
+/// Logs and falls through (returns `None`) when the variable is present but not a valid number,
+/// rather than silently discarding it.
+/// Split out from [`resolve_max_auto_slug_length`]
+/// so this parse behavior is unit-testable without mutating process-global environment state.
 fn parse_env_auto_slug_length(raw: Option<&str>) -> Option<usize> {
     let raw = raw?;
     match raw.parse::<usize>() {
@@ -1263,14 +1221,11 @@ fn resolve_from_tiers(
     DEFAULT_MAX_AUTO_SLUG_LENGTH
 }
 
-/// Read `[limits] max_auto_slug_length` from the user-level
-/// `~/.mmcp/config.toml`, if present. Mirrors the read-only,
-/// missing-file-or-section-means-`None` style already used by
-/// `MmcpHome::resolve_author` for the same config file (see
-/// [`crate::home`]); never errors, since a broken or absent user
-/// config must never fail slug generation. A discovery or parse
-/// failure is logged before falling through, rather than discarded
-/// with no signal.
+/// Read `[limits] max_auto_slug_length` from the user-level `~/.mmcp/config.toml`, if present.
+/// Mirrors the read-only, missing-file-or-section-means-`None` style already used by
+/// `MmcpHome::resolve_author` for the same config file (see [`crate::home`]);
+/// never errors, since a broken or absent user config must never fail slug generation.
+/// A discovery or parse failure is logged before falling through, rather than discarded with no signal.
 fn user_config_max_auto_slug_length() -> Option<usize> {
     let home = match crate::home::MmcpHome::discover() {
         Ok(home) => home,
@@ -1295,17 +1250,15 @@ fn user_config_max_auto_slug_length() -> Option<usize> {
     cfg.limits.and_then(|limits| limits.max_auto_slug_length)
 }
 
-/// Truncate `slug` to at most `max_len` bytes, landing on the last
-/// hyphen boundary at or before the cap so the result never splits a
-/// word mid-character and never ends with a dangling hyphen. Returns
-/// `slug` unchanged (cloned) when it is already within the cap.
+/// Truncate `slug` to at most `max_len` bytes, landing on the last hyphen boundary at or before the cap
+/// so the result never splits a word mid-character and never ends with a dangling hyphen.
+/// Returns `slug` unchanged (cloned) when it is already within the cap.
 ///
-/// `slug::slugify` output is pure ASCII (it transliterates Unicode
-/// before hyphenating), so byte-slicing at `max_len` never lands
-/// mid-character. When the first `max_len` bytes contain no hyphen at
-/// all (a single word longer than the cap), this falls back to a hard
-/// cut at `max_len`, the only case where the result can still end
-/// mid-word, since there is no boundary to land on.
+/// `slug::slugify` output is pure ASCII (it transliterates Unicode before hyphenating),
+/// so byte-slicing at `max_len` never lands mid-character.
+/// When the first `max_len` bytes contain no hyphen at all (a single word longer than the cap),
+/// this falls back to a hard cut at `max_len`,
+/// the only case where the result can still end mid-word, since there is no boundary to land on.
 fn truncate_slug_at_hyphen_boundary(slug: &str, max_len: usize) -> String {
     if slug.len() <= max_len {
         return slug.to_string();
@@ -1317,11 +1270,9 @@ fn truncate_slug_at_hyphen_boundary(slug: &str, max_len: usize) -> String {
     }
 }
 
-/// Return `filename` with its trailing `.md` / `.adoc` / `.asciidoc`
-/// extension stripped, if any. Case-insensitive on the extension so
-/// `README.MD` and `Notes.ADOC` slim down the same as their lower-case
-/// siblings. Returns the input unchanged when no known extension
-/// matches.
+/// Return `filename` with its trailing `.md` / `.adoc` / `.asciidoc` extension stripped, if any.
+/// Case-insensitive on the extension so `README.MD` and `Notes.ADOC` slim down the same as their lower-case siblings.
+/// Returns the input unchanged when no known extension matches.
 fn strip_known_import_extension(filename: &str) -> &str {
     let Some((stem, ext)) = filename.rsplit_once('.') else {
         return filename;
@@ -1347,23 +1298,21 @@ fn strip_known_import_extension(filename: &str) -> &str {
     filename
 }
 
-/// Parse a kind string into `MemoryKind` for SYNTAX only. Delegates
-/// to the canonical [`MemoryKind::from_str`](std::str::FromStr)
-/// parser, so every caller accepts exactly the same kind set (all
-/// eight, tracked kinds included) as the archive filter and the GUI
-/// DTO converter. Used directly by contexts that legitimately need
-/// every kind, such as archive re-import; a plain memory CREATE /
-/// `edit --kind` entry point should call [`parse_creatable_kind`]
-/// instead, which layers the create-time policy on top.
+/// Parse a kind string into `MemoryKind` for SYNTAX only.
+/// Delegates to the canonical [`MemoryKind::from_str`](std::str::FromStr) parser,
+/// so every caller accepts exactly the same kind set (all eight, tracked kinds included)
+/// as the archive filter and the GUI DTO converter.
+/// Used directly by contexts that legitimately need every kind, such as archive re-import;
+/// a plain memory CREATE / `edit --kind` entry point should call [`parse_creatable_kind`] instead,
+/// which layers the create-time policy on top.
 pub fn parse_kind(s: &str) -> Result<MemoryKind, ImportError> {
     Ok(s.parse::<MemoryKind>()?)
 }
 
-/// The five kinds a plain memory CREATE (or `edit --kind`) may
-/// target. Tracked kinds are deliberately excluded: they are created
-/// through their own dedicated command (`add_feature` / `add_issue`
-/// / `add_milestone`), which populates the structured metadata
-/// subtable this path never does.
+/// The five kinds a plain memory CREATE (or `edit --kind`) may target.
+/// Tracked kinds are deliberately excluded: they are created through their own dedicated command
+/// (`add_feature` / `add_issue` / `add_milestone`), which populates the structured metadata subtable
+/// this path never does.
 const CREATABLE_KINDS: &[MemoryKind] = &[
     MemoryKind::Rule,
     MemoryKind::Snapshot,
@@ -1372,13 +1321,11 @@ const CREATABLE_KINDS: &[MemoryKind] = &[
     MemoryKind::Scratch,
 ];
 
-/// Parse a kind string for `mmcp memory create` / `mmcp memory edit
-/// --kind`. Delegates to [`parse_kind`] for syntax (so the error
-/// text on a genuinely unknown kind matches every other kind-parsing
-/// call site), then re-applies the create-time policy restriction to
-/// [`CREATABLE_KINDS`], returning [`ImportError::NotACreatableKind`]
-/// for a syntactically valid but tracked kind instead of silently
-/// creating a memory the tracked-kind tooling will reject.
+/// Parse a kind string for `mmcp memory create` / `mmcp memory edit --kind`.
+/// Delegates to [`parse_kind`] for syntax (so the error text on a genuinely unknown kind
+/// matches every other kind-parsing call site), then re-applies the create-time policy restriction
+/// to [`CREATABLE_KINDS`], returning [`ImportError::NotACreatableKind`] for a syntactically valid
+/// but tracked kind instead of silently creating a memory the tracked-kind tooling will reject.
 pub fn parse_creatable_kind(s: &str) -> Result<MemoryKind, ImportError> {
     let kind = parse_kind(s)?;
     if CREATABLE_KINDS.contains(&kind) {
@@ -1503,12 +1450,11 @@ mod tests {
 
     #[test]
     fn slugify_filename_strips_adoc_and_asciidoc_extensions() {
-        // The import bridge converts adoc sources to markdown before
-        // storage, but the slug is still derived from the original
-        // file name. Without this strip, an operator importing
-        // `coding-rules.adoc` would end up with the `coding-rules-adoc`
-        // slug, which carries the source format into a field that
-        // should only reflect the memory's identity.
+        // The import bridge converts adoc sources to markdown before storage,
+        // but the slug is still derived from the original file name.
+        // Without this strip, an operator importing `coding-rules.adoc` would end up
+        // with the `coding-rules-adoc` slug, which carries the source format
+        // into a field that should only reflect the memory's identity.
         assert_eq!(slugify_filename("coding-rules.adoc"), "coding-rules");
         assert_eq!(slugify_filename("CODING-RULES.ADOC"), "coding-rules");
         assert_eq!(slugify_filename("team/guide.asciidoc"), "team-guide");
@@ -1517,13 +1463,11 @@ mod tests {
 
     #[test]
     fn slugify_filename_caps_absurdly_long_titles_at_a_hyphen_boundary() {
-        // Real auto-derived issue titles from this project's own
-        // slug-length incident, both filed with zero length cap and
-        // both far past any sane directory-name length. Pinned via an
-        // explicit override (rather than the ambient `slugify_filename`
-        // default) so the assertion is deterministic regardless of
-        // this machine's `MMCP_MAX_AUTO_SLUG_LENGTH` env var or
-        // `~/.mmcp/config.toml` `[limits]` override.
+        // Real auto-derived issue titles, both filed with zero length cap
+        // and both far past any sane directory-name length.
+        // Pinned via an explicit override (rather than the ambient `slugify_filename` default)
+        // so the assertion is deterministic regardless of this machine's `MMCP_MAX_AUTO_SLUG_LENGTH`
+        // env var or `~/.mmcp/config.toml` `[limits]` override.
         let cargo_build_title = "cargo-build-s-windows-exe-stash-step-fails-across-drives-cargo-target-dir-on-a-different-drive-than-the-project.md";
         let list_memories_title = "list-memories-corrupts-feature-kind-records-into-kind-rule-null-null-instead-of-failing-loudly-root-cause-status-requested-rejected-by-the-current-featurestatus-enum.md";
         let cap = DEFAULT_MAX_AUTO_SLUG_LENGTH;
@@ -1705,11 +1649,10 @@ mod tests {
     fn parse_kind_round_trips() {
         assert_eq!(parse_kind("rule").unwrap(), MemoryKind::Rule);
         assert_eq!(parse_kind("reference").unwrap(), MemoryKind::Reference);
-        // Delegating to the canonical MemoryKind::from_str widens
-        // this syntax-only parser to accept every kind, matching the
-        // archive filter and GUI decoders. A memory CREATE / `edit
-        // --kind` entry point must go through `parse_creatable_kind`
-        // instead, which re-applies the narrower policy below.
+        // Delegating to the canonical MemoryKind::from_str widens this syntax-only parser
+        // to accept every kind, matching the archive filter and GUI decoders.
+        // A memory CREATE / `edit --kind` entry point must go through `parse_creatable_kind` instead,
+        // which re-applies the narrower policy below.
         assert_eq!(parse_kind("feature").unwrap(), MemoryKind::Feature);
         assert_eq!(parse_kind("issue").unwrap(), MemoryKind::Issue);
         assert!(parse_kind("bogus").is_err());
@@ -1982,10 +1925,9 @@ mod tests {
         let other = Uuid::now_v7();
         seed_two_level_memory(&backend, &handle, "mm", real, &author).await;
 
-        // Caller supplies `other`; the two-level path `memories/mm/<other>.md`
-        // doesn't exist, so the resolver falls back to the legacy flat
-        // path `memories/mm.md`. That also doesn't exist here, so the
-        // error should be MemoryNotFound with both keys populated.
+        // Caller supplies `other`; the two-level path `memories/mm/<other>.md` doesn't exist,
+        // so the resolver falls back to the legacy flat path `memories/mm.md`.
+        // That also doesn't exist here, so the error should be MemoryNotFound with both keys populated.
         let err = resolve_memory(&backend, &handle, Some("mm"), Some(other))
             .await
             .expect_err("not found");
@@ -2415,9 +2357,9 @@ mod tests {
         assert!(!outcome.commit_id.is_empty());
     }
 
-    /// Seed an arbitrary file at an arbitrary path. Used by the
-    /// addressing-mode tests to construct hand-crafted layouts the
-    /// regular `import_memory` path won't produce on its own.
+    /// Seed an arbitrary file at an arbitrary path.
+    /// Used by the addressing-mode tests to construct hand-crafted layouts
+    /// the regular `import_memory` path won't produce on its own.
     async fn seed_raw(
         backend: &NativeBackend,
         handle: &RepoHandle,
@@ -2544,8 +2486,8 @@ mod tests {
         let author = test_author();
         let id = Uuid::now_v7();
         seed_two_level_memory(&backend, &handle, "rules", id, &author).await;
-        // Drop a hand-crafted sibling that also claims `id` in its
-        // frontmatter. Step 1 should still win.
+        // Drop a hand-crafted sibling that also claims `id` in its frontmatter.
+        // Step 1 should still win.
         let dup_body = format!(
             "+++\nid = \"{id}\"\nname = \"dup\"\ndescription = \"d\"\nkind = \"rule\"\n+++\nbody\n"
         );

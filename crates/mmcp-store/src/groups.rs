@@ -72,17 +72,12 @@ impl GroupIndex {
 
     /// Non-blocking scope lookup for use from sync contexts.
     ///
-    /// Returns `Some(scope)` when the group is indexed and the
-    /// index is not being rewritten; `None` when either condition
-    /// fails. The sync engine's `ScopeIndex::scope_of` impl goes
-    /// through this helper, which needs a non-blocking path
-    /// because it runs inside an already-driving tokio runtime and
-    /// a `block_on` would panic with "Cannot start a runtime from
-    /// within a runtime". The index's `RwLock` is never held
-    /// across an await point and refresh is rare, so `try_read`
-    /// almost always succeeds; when it does not, the engine treats
-    /// the result as "unknown" and the caller retries on its next
-    /// tick.
+    /// Returns `Some(scope)` when the group is indexed and the index is not being rewritten, `None` otherwise.
+    /// The sync engine's `ScopeIndex::scope_of` impl goes through this helper for a non-blocking path.
+    /// It runs inside an already-driving tokio runtime,
+    /// where a `block_on` would panic with "Cannot start a runtime from within a runtime".
+    /// The index's `RwLock` is never held across an await point and refresh is rare, so `try_read` almost always succeeds.
+    /// When it does not, the engine treats the result as "unknown" and the caller retries on its next tick.
     #[must_use]
     pub fn try_scope_of(&self, group_id: &GroupId) -> Option<mmcp_core::manifest::GroupScope> {
         self.inner
@@ -93,12 +88,10 @@ impl GroupIndex {
 
     /// Non-blocking snapshot of every indexed group's UUID.
     ///
-    /// Mirrors [`try_scope_of`]: the sync engine's
-    /// `GroupHandleResolver::iter_group_ids` calls this from an
-    /// async worker without bridging through `block_on`, so it has
-    /// to stay non-blocking. Returns an empty vector when the lock
-    /// is held by a writer; callers treat that as "no groups" and
-    /// retry on the next tick.
+    /// Mirrors [`try_scope_of`]: the sync engine's `GroupHandleResolver::iter_group_ids` calls this from an async worker.
+    /// No `block_on` bridge is available there, so this stays non-blocking.
+    /// Returns an empty vector when the lock is held by a writer.
+    /// Callers treat that as "no groups" and retry on the next tick.
     #[must_use]
     pub fn try_list_ids(&self) -> Vec<Uuid> {
         self.inner
@@ -125,8 +118,8 @@ impl GroupIndex {
         self.inner.read().await.is_empty()
     }
 
-    /// Rebuild the index from the filesystem. Called on startup and
-    /// whenever the watcher reports that the repos root changed.
+    /// Rebuild the index from the filesystem.
+    /// Called on startup and whenever the watcher reports that the repos root changed.
     pub async fn refresh(&self) -> Result<(), StoreError> {
         let entries = scan_repos_root(&self.repos_root, self.backend.as_ref()).await?;
         let mut guard = self.inner.write().await;
@@ -144,10 +137,9 @@ impl GroupIndex {
 /// Walk `repos_root` and return one [`GroupEntry`] per `<uuid>.git`
 /// directory that has a readable manifest on the `main` branch.
 ///
-/// Directories that look like group repos but are missing a
-/// manifest, or whose manifest fails to parse, are logged at
-/// `warn` level and skipped. The scan never fails the whole index
-/// because of a single broken repo.
+/// Directories that look like group repos but are missing a manifest, or whose manifest fails to parse,
+/// are logged at `warn` level and skipped.
+/// The scan never fails the whole index because of a single broken repo.
 async fn scan_repos_root(
     repos_root: &Path,
     backend: &NativeBackend,

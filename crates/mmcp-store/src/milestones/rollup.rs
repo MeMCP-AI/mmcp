@@ -10,7 +10,7 @@
 //! Queries the [`crate::cache`] local content index instead of walking git live,
 //! filtered by `kind = 'feature'`, `milestone`, `group_id` on the `indexed_memory` table.
 //!
-//! Two consumers: see also: crate::milestones::read_milestone, crate::milestones::list_milestones,
+//! Consumers: see also: crate::milestones::read_milestone, crate::milestones::list_milestones,
 //! and the milestone check in crate::diagnostics.
 //!
 //! ## Rollup rule

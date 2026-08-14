@@ -52,9 +52,9 @@ pub enum FeatureError {
     #[error(transparent)]
     Memory(#[from] ImportError),
 
-    /// Raised when `read_feature` / `update_feature` / `delete_feature`
-    /// target a memory that exists but carries a non-Fr kind. Keeps
-    /// the FR tools from silently operating on unrelated memories.
+    /// Raised when `read_feature` / `update_feature` / `delete_feature` target a memory
+    /// that exists but carries a non-Fr kind.
+    /// Keeps the FR tools from silently operating on unrelated memories.
     #[error("memory '{slug}' exists in this group but is kind '{kind}', not a feature request")]
     NotAFeature { slug: String, kind: String },
 
@@ -64,36 +64,30 @@ pub enum FeatureError {
     #[error("feature title is required when no slug is provided")]
     TitleRequired,
 
-    /// `resolve_project_group` found no `.mmcp.toml` on any ancestor
-    /// of the supplied cwd. FR tools run in the project scope by
-    /// default, so they refuse to operate outside an initialised
-    /// project rather than silently writing into an unrelated group.
+    /// `resolve_project_group` found no `.mmcp.toml` on any ancestor of the supplied cwd.
+    /// FR tools run in the project scope by default,
+    /// so they refuse to operate outside an initialised project rather than silently writing into an unrelated group.
     #[error(
         "no mmcp project found: run `mmcp init project` first or `cd` into a directory with a `.mmcp.toml`"
     )]
     ProjectNotFound,
 
-    /// `resolve_project_group` loaded the project config but could
-    /// not find the backing group in the local mirror. Typically
-    /// means `mmcp pull` has not yet cloned it.
+    /// `resolve_project_group` loaded the project config but could not find the backing group in the local mirror.
+    /// Typically means `mmcp pull` has not yet cloned it.
     #[error(
         "project group {project_uuid} is not present in the local mirror; run `mmcp pull` or `mmcp init project` to populate it"
     )]
     ProjectGroupMissing { project_uuid: String },
 
-    /// `.mmcp.toml` was found but failed to load. Separate variant
-    /// so the wire code can disambiguate "no config" from "broken
-    /// config".
+    /// `.mmcp.toml` was found but failed to load.
+    /// Separate variant so the wire code can disambiguate "no config" from "broken config".
     #[error("failed to load project config at {path}: {detail}")]
     ProjectConfigBroken { path: String, detail: String },
 
-    /// Malformed cross-reference input parsed through
-    /// [`mmcp_core::memory::xrefs`]. Surfaces both the
-    /// `InvalidCrossRef` and `InvalidMemoryRef` cases so
-    /// `map_feature_error_to_mcp` and the CLI handlers can
-    /// pattern-match through one variant on the feature side
-    /// without losing the field-attribution detail the parser
-    /// recorded.
+    /// Malformed cross-reference input parsed through [`mmcp_core::memory::xrefs`].
+    /// Surfaces both the `InvalidCrossRef` and `InvalidMemoryRef` cases
+    /// so `map_feature_error_to_mcp` and the CLI handlers can pattern-match through one variant
+    /// on the feature side without losing the field-attribution detail the parser recorded.
     #[error(transparent)]
     Xref(#[from] mmcp_core::memory::XrefError),
 
@@ -102,10 +96,9 @@ pub enum FeatureError {
     #[error("supersedes target '{query}' does not resolve in this project group")]
     SupersedesUnknown { query: String },
 
-    /// `supersedes` pointed at an FR whose current status rules out
-    /// supersession: `Duplicate` or `Superseded`. The
-    /// already-superseded case carries the typed back-link so
-    /// callers can chase to the tip of the chain.
+    /// `supersedes` pointed at an FR whose current status rules out supersession:
+    /// `Duplicate` or `Superseded`.
+    /// The already-superseded case carries the typed back-link so callers can chase to the tip of the chain.
     #[error("supersedes target '{slug}' has status '{}' which cannot be superseded", status.as_str())]
     SupersedesInvalidStatus {
         slug: String,
@@ -149,19 +142,16 @@ pub struct AddSpec {
     pub number: Option<u32>,
     pub depends_on: Vec<Uuid>,
     pub blocks: Vec<Uuid>,
-    /// Typed cross-references attached to the new FR. When
-    /// [`AddSpec::supersedes`] is set and this is empty, the
-    /// supersede flow auto-populates one entry pointing at the
-    /// old FR at its pre-supersede commit. Callers that want an
-    /// explicit refs list plus the auto-entry should include the
-    /// old-FR ref themselves; the flow dedupes by `target`.
+    /// Typed cross-references attached to the new FR.
+    /// When [`AddSpec::supersedes`] is set and this is empty, the supersede flow auto-populates
+    /// one entry pointing at the old FR at its pre-supersede commit.
+    /// Callers that want an explicit refs list plus the auto-entry should include the old-FR ref themselves;
+    /// the flow dedupes by `target`.
     pub refs: Vec<MemoryRef>,
-    /// Slug or UUID (string form) of an existing FR in the same
-    /// project group to supersede. When present, `add_feature`
-    /// runs the two-commit supersede flow: commit A writes the
-    /// new FR, commit B re-writes the old FR with
-    /// `status = Superseded` and `superseded_by` pointing at the
-    /// new FR's commit A.
+    /// Slug or UUID (string form) of an existing FR in the same project group to supersede.
+    /// When present, `add_feature` runs the two-commit supersede flow:
+    /// commit A writes the new FR, commit B re-writes the old FR with `status = Superseded`
+    /// and `superseded_by` pointing at the new FR's commit A.
     pub supersedes: Option<String>,
     /// Provenance.
     /// When set, this feature was filed by an agent acting on behalf of the named owner,
@@ -191,28 +181,23 @@ pub struct UpdateSpec {
     pub status: Option<FeatureStatus>,
     pub depends_on: Option<Vec<Uuid>>,
     pub blocks: Option<Vec<Uuid>>,
-    /// Compose-dedup add-side for `refs`. Entries with the same
-    /// `target` as an existing ref replace it (commit sha wins
-    /// from the add side); truly new entries are appended.
+    /// Compose-dedup add-side for `refs`.
+    /// Entries with the same `target` as an existing ref replace it (commit sha wins from the add side);
+    /// truly new entries are appended.
     pub refs_add: Option<Vec<MemoryRef>>,
-    /// Compose-dedup remove-side for `refs`. Removes every
-    /// existing ref whose `target` matches any uuid in this list,
-    /// ignoring commit sha so callers do not have to remember
-    /// which revision a ref was pinned to.
+    /// Compose-dedup remove-side for `refs`.
+    /// Removes every existing ref whose `target` matches any uuid in this list,
+    /// ignoring commit sha so callers do not have to remember which revision a ref was pinned to.
     pub refs_remove: Option<Vec<Uuid>>,
-    /// Typed back-link retry path for the two-commit supersede
-    /// flow. Set when commit B of [`add_feature`]'s supersede
-    /// needs to be re-run after a partial landing:
-    /// `update_feature(old_slug, UpdateSpec { status:
-    /// Superseded, superseded_by: Some(ref), ..default })`.
+    /// Typed back-link retry path for the two-commit supersede flow.
+    /// Set when commit B of [`add_feature`]'s supersede needs to be re-run after a partial landing:
+    /// `update_feature(old_slug, UpdateSpec { status: Superseded, superseded_by: Some(ref), ..default })`.
     /// `None` leaves the existing back-link untouched.
     pub superseded_by: Option<MemoryRef>,
-    /// Replacement milestone UUID; `Some(None)` clears the link,
-    /// `None` leaves it untouched. Mirrors the `Option<Option<T>>`
-    /// shape nowhere else in this struct because every other field
-    /// already has an unambiguous "clear" sentinel (`Some(Vec::new())`
-    /// for lists); a bare `Option<Uuid>` cannot distinguish "leave
-    /// untouched" from "clear".
+    /// Replacement milestone UUID; `Some(None)` clears the link, `None` leaves it untouched.
+    /// Mirrors the `Option<Option<T>>` shape nowhere else in this struct
+    /// because every other field already has an unambiguous "clear" sentinel (`Some(Vec::new())` for lists);
+    /// a bare `Option<Uuid>` cannot distinguish "leave untouched" from "clear".
     pub milestone: Option<Option<Uuid>>,
     pub message: Option<String>,
 }
@@ -235,11 +220,10 @@ pub struct FeatureRecord {
     pub number: Option<u32>,
     pub depends_on: Vec<Uuid>,
     pub blocks: Vec<Uuid>,
-    /// Typed back-link to the FR that replaced this one. Present
-    /// when the FR has been through the supersede flow; `None`
-    /// otherwise. Paired with `status = FeatureStatus::Superseded`
-    /// at the frontmatter level via
-    /// [`FeatureMetadata::validate_supersede_invariant`].
+    /// Typed back-link to the FR that replaced this one.
+    /// Present when the FR has been through the supersede flow; `None` otherwise.
+    /// Paired with `status = FeatureStatus::Superseded` at the frontmatter level
+    /// via [`FeatureMetadata::validate_supersede_invariant`].
     pub superseded_by: Option<MemoryRef>,
     /// UUID of the milestone this feature counts toward, if any.
     pub milestone: Option<Uuid>,
@@ -303,27 +287,21 @@ impl FeatureSummary {
     }
 }
 
-/// Create a new FR in the group. Errors with
-/// `FeatureError::Memory(ImportError::MemoryAlreadyExists)` when
-/// the slug already points at something on disk, mirroring the
-/// strict-create contract the rest of the memory surface enforces.
+/// Create a new FR in the group.
+/// Errors with `FeatureError::Memory(ImportError::MemoryAlreadyExists)` when the slug already points
+/// at something on disk, mirroring the strict-create contract the rest of the memory surface enforces.
 ///
-/// When `spec.supersedes` is set, the call runs the two-commit
-/// supersede flow:
+/// When `spec.supersedes` is set, the call runs the two-commit supersede flow:
 ///
-/// 1. Resolve the old FR in the same group. Reject when the old
-///    FR is in a status that cannot be superseded (`Duplicate`,
-///    `Superseded`).
-/// 2. Commit A: write the new FR. Its `refs` list auto-receives
-///    an entry pointing at the old FR pinned to that FR's
-///    pre-supersede HEAD commit.
-/// 3. Commit B: re-write the old FR with `status = Superseded`
-///    and `superseded_by` pointing at commit A.
+/// 1. Resolve the old FR in the same group.
+///    Reject when the old FR is in a status that cannot be superseded (`Duplicate`, `Superseded`).
+/// 2. Commit A: write the new FR.
+///    Its `refs` list auto-receives an entry pointing at the old FR pinned to that FR's pre-supersede HEAD commit.
+/// 3. Commit B: re-write the old FR with `status = Superseded` and `superseded_by` pointing at commit A.
 ///
-/// Commits A and B are sequential. The inconsistency window
-/// between them is small and recoverable: if B fails, callers
-/// complete the chain with `update_feature(old_slug, UpdateSpec {
-/// status: Some(Superseded), superseded_by: Some(ref), .. })`
+/// Commits A and B are sequential.
+/// The inconsistency window between them is small and recoverable: if B fails, callers complete the chain
+/// with `update_feature(old_slug, UpdateSpec { status: Some(Superseded), superseded_by: Some(ref), .. })`
 /// carrying the new FR's ref.
 pub async fn add_feature(
     backend: &NativeBackend,
@@ -425,11 +403,10 @@ pub async fn add_feature(
     )
     .await?;
 
-    // Commit B of the supersede flow: re-write the old FR with
-    // `status = Superseded` and `superseded_by` pointing at the
-    // commit we just wrote above. A failure here leaves the new
-    // FR live but the old one un-superseded; callers recover by
-    // retrying `update_feature` with the same knobs.
+    // Commit B of the supersede flow: re-write the old FR with `status = Superseded`
+    // and `superseded_by` pointing at commit A above.
+    // A failure here leaves the new FR live but the old one un-superseded;
+    // callers recover by retrying `update_feature` with the same knobs.
     //
     // Use the _unlocked variant: `add_feature`'s caller already
     // holds the per-group lock (acquired at the top of this
@@ -553,10 +530,10 @@ async fn next_feature_number(
         .map_err(FeatureError::Memory)
 }
 
-/// Read an FR by slug. When `rev` is `None`, reads the group's
-/// current `main`; otherwise parses `rev` through
-/// [`Rev`](mmcp_git::Rev) so branch names, tags, and commit hexes
-/// all work the same way the generic `read_memory` tool does.
+/// Read an FR by slug.
+/// When `rev` is `None`, reads the group's current `main`; otherwise parses `rev` through
+/// [`Rev`](mmcp_git::Rev) so branch names, tags, and commit hexes all work the same way
+/// the generic `read_memory` tool does.
 pub async fn read_feature(
     backend: &NativeBackend,
     entry: &GroupEntry,
@@ -568,10 +545,9 @@ pub async fn read_feature(
         .await
         .map_err(FeatureError::Memory)?;
     let git_rev = match rev {
-        // Heuristic aligned with the MCP `read_memory` tool: a
-        // 40-char hex string resolves as a commit id; anything else
-        // is treated as a branch or tag name. Kept in the store so
-        // every consumer interprets `rev` the same way.
+        // Heuristic aligned with the MCP `read_memory` tool: a 40-char hex string resolves as a commit id;
+        // anything else is treated as a branch or tag name.
+        // Kept in the store so every consumer interprets `rev` the same way.
         Some(v) => {
             if v.len() == 40 && v.chars().all(|c| c.is_ascii_hexdigit()) {
                 Rev::Commit(v.to_string())
@@ -640,9 +616,9 @@ pub async fn update_feature(
     update_feature_unlocked(backend, entry, slug, spec, author).await
 }
 
-/// Inner, non-locking variant of [`update_feature`]. Every caller
-/// is responsible for acquiring the per-group lock themselves; the
-/// public wrapper does that for external entry points.
+/// Inner, non-locking variant of [`update_feature`].
+/// Every caller is responsible for acquiring the per-group lock themselves;
+/// the public wrapper does that for external entry points.
 pub async fn update_feature_unlocked(
     backend: &NativeBackend,
     entry: &GroupEntry,
@@ -765,13 +741,6 @@ async fn read_memory_refs(
     Ok(file.frontmatter.refs)
 }
 
-/// Merge an add-side and remove-side edit onto an existing typed
-/// refs list. The remove-side runs first by UUID match (commit sha
-/// ignored), then the add-side dedupes-and-replaces by target so
-/// add-side commit pins win on collision.
-/// Commit a deletion. Propagates `MemoryNotFound` verbatim so CLI
-/// and MCP callers can distinguish "slug never existed" from "slug
-/// is an unrelated memory kind" (`FeatureError::NotAFeature`).
 /// Rename every feature under `old_slug` to `new_slug`, committing the moves in a single atomic batch.
 /// UUIDs are stable across the rename so cross-refs in other features keep resolving without any further rewrite:
 /// the slug is a directory-level label, not a primary key.
@@ -798,17 +767,14 @@ pub async fn rename_feature(
     validate_slug(old_slug).map_err(FeatureError::Memory)?;
     validate_slug(new_slug).map_err(FeatureError::Memory)?;
     if old_slug == new_slug {
-        // Explicit short-circuit so operators don't pay a commit
-        // for a no-op. A fresh listing is cheap and matches the
-        // semantics callers expect from "rename to the same slug".
+        // Explicit short-circuit so operators don't pay a commit for a no-op.
+        // A fresh listing is cheap and matches the semantics callers expect from "rename to the same slug".
         return list_features_for_slug(backend, entry, old_slug).await;
     }
 
-    // Plan the moves: one commit, new paths written and old paths
-    // removed in the same tree rewrite so `git log` never shows a
-    // half-renamed state. Rejects a source file that is not a
-    // feature, keeping the tool aligned with `delete_feature`'s
-    // not-a-feature guard.
+    // Plan the moves: one commit, new paths written and old paths removed in the same tree rewrite
+    // so `git log` never shows a half-renamed state.
+    // Rejects a source file that is not a feature, keeping the tool aligned with `delete_feature`'s not-a-feature guard.
     let planned = crate::tracker::plan_slug_rename(backend, entry, old_slug, new_slug, |file| {
         if file.frontmatter.kind != MemoryKind::Feature {
             Some(FeatureError::NotAFeature {
@@ -836,10 +802,9 @@ pub async fn rename_feature(
     list_features_for_slug(backend, entry, new_slug).await
 }
 
-/// Read every feature currently living under `slug` in the
-/// two-level layout. Shared between [`rename_feature`] and
-/// future per-slug enumeration paths so the walk + record
-/// construction stays in one place.
+/// Read every feature currently living under `slug` in the two-level layout.
+/// Shared between [`rename_feature`] and future per-slug enumeration paths
+/// so the walk + record construction stays in one place.
 async fn list_features_for_slug(
     backend: &NativeBackend,
     entry: &GroupEntry,
@@ -855,6 +820,9 @@ async fn list_features_for_slug(
     Ok(out)
 }
 
+/// Commit a deletion.
+/// Propagates `MemoryNotFound` verbatim so CLI and MCP callers can distinguish "slug never existed"
+/// from "slug is an unrelated memory kind" (`FeatureError::NotAFeature`).
 pub async fn delete_feature(
     backend: &NativeBackend,
     entry: &GroupEntry,
@@ -883,8 +851,8 @@ pub async fn delete_feature(
         crate::lock::LockMode::Exclusive,
     )
     .await;
-    // Guard against accidentally deleting an unrelated memory. The
-    // generic delete primitive would happily drop a non-FR memory;
+    // Guard against accidentally deleting an unrelated memory.
+    // The generic delete primitive would happily drop a non-FR memory;
     // routing it through the FR tools would be a surprise.
     let existing = read_feature(backend, entry, slug, None).await;
     match existing {
@@ -1068,9 +1036,8 @@ pub async fn resolve_project_group_with_selector(
     }
 }
 
-/// Build a `MemoryFile` with the Fr kind and a populated feature
-/// block, ready for rendering. Shared between create and update so
-/// the two paths never disagree on serialization shape.
+/// Build a `MemoryFile` with the Fr kind and a populated feature block, ready for rendering.
+/// Shared between create and update so the two paths never disagree on serialization shape.
 fn build_memory_file(
     title: String,
     description: String,
@@ -1304,11 +1271,11 @@ mod tests {
 
     #[tokio::test]
     async fn list_default_hides_completed_and_duplicate_but_keeps_blocked() {
-        // Default listing (status=None, show_all=false) hides only
-        // the terminal-ish statuses: Completed, Duplicate,
-        // Superseded. In-progress-but-gated statuses (Blocked,
-        // Deferred) stay visible so operators can still see what
-        // is waiting on them. Requested stays visible.
+        // Default listing (status=None, show_all=false) hides only the terminal-ish statuses:
+        // Completed, Duplicate, Superseded.
+        // In-progress-but-gated statuses (Blocked, Deferred) stay visible so operators can still see
+        // what is waiting on them.
+        // Requested stays visible.
         let scratch = ScratchHome::new().await.expect("scratch home");
         let entry = seed_mixed_status_fixture(&scratch).await;
 
@@ -1326,9 +1293,8 @@ mod tests {
 
     #[tokio::test]
     async fn list_default_hides_superseded_fr() {
-        // Supersede flow creates a Superseded FR via the canonical
-        // two-commit path. Default listing drops it; show_all
-        // surfaces both the old and the new.
+        // Supersede flow creates a Superseded FR via the canonical two-commit path.
+        // Default listing drops it; show_all surfaces both the old and the new.
         let scratch = ScratchHome::new().await.expect("scratch home");
         let seeded = scratch.seed_group("fr-group").await.expect("seed");
         let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
@@ -1407,12 +1373,10 @@ mod tests {
 
     #[tokio::test]
     async fn list_features_surfaces_parse_error_as_finding_not_silent_drop() {
-        // Regression test for the swallowed-parse-error bug: a
-        // feature memory with corrupt frontmatter must not simply
-        // vanish from the listing with no trace. It is excluded
-        // from `records` (it cannot be trusted) but reported back
-        // as a `Finding` so the caller knows the group's FR count
-        // is not the full on-disk truth.
+        // Regression test for the swallowed-parse-error bug:
+        // a feature memory with corrupt frontmatter must not simply vanish from the listing with no trace.
+        // It is excluded from `records` (it cannot be trusted) but reported back as a `Finding`
+        // so the caller knows the group's FR count is not the full on-disk truth.
         let scratch = ScratchHome::new().await.expect("scratch home");
         let seeded = scratch.seed_group("fr-group").await.expect("seed");
         let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
@@ -1480,10 +1444,8 @@ mod tests {
         let scratch = ScratchHome::new().await.expect("scratch home");
         let seeded = scratch.seed_group("fr-group").await.expect("seed");
 
-        // Fire 8 concurrent add_feature tasks sharing the same
-        // backend + group index. With the lock in place each
-        // one acquires the per-group mutex serially and reads
-        // the fresh max.
+        // Fire 8 concurrent add_feature tasks sharing the same backend + group index.
+        // With the lock in place each one acquires the per-group mutex serially and reads the fresh max.
         let mut handles = Vec::new();
         for i in 0..8u32 {
             let backend = scratch.backend().clone();
@@ -1597,8 +1559,8 @@ mod tests {
         .expect("pin");
         assert_eq!(pinned.number, Some(42));
 
-        // Next unpinned create picks up past the highest existing
-        // number. Numbers below the pin are not reused.
+        // Next unpinned create picks up past the highest existing number.
+        // Numbers below the pin are not reused.
         let next = add_feature(
             scratch.backend(),
             &entry,
@@ -1868,9 +1830,9 @@ mod tests {
         assert_eq!(summaries[0].number, Some(1));
         assert_eq!(summaries[1].number, Some(2));
 
-        // Compile-time guarantee: FeatureSummary has no `body`
-        // field, so the wire shape can never regress to inlining
-        // bodies. The runtime check is the size proxy below.
+        // Compile-time guarantee: FeatureSummary has no `body` field,
+        // so the wire shape can never regress to inlining bodies.
+        // The runtime check is the size proxy below.
         let serialized_size: usize = summaries
             .iter()
             .map(|s| s.title.len() + s.description.len() + s.slug.len() + s.commit_id.len())
@@ -1958,10 +1920,9 @@ mod tests {
 
     #[tokio::test]
     async fn add_feature_with_supersedes_marks_target_superseded() {
-        // Two-commit supersede flow: the new FR is created and the
-        // old FR gets `status = Superseded` plus a typed
-        // `superseded_by` link pointing at the new FR's create
-        // commit. The new FR's refs auto-includes the old one.
+        // Two-commit supersede flow: the new FR is created and the old FR gets `status = Superseded`
+        // plus a typed `superseded_by` link pointing at the new FR's create commit.
+        // The new FR's refs auto-includes the old one.
         let scratch = ScratchHome::new().await.expect("scratch home");
         let seeded = scratch.seed_group("fr-group").await.expect("seed");
         let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");

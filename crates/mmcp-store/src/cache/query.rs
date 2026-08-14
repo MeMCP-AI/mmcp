@@ -289,11 +289,9 @@ mod tests {
             .await
             .expect("open pool");
 
-        // A query that never contains the literal word "quokka"
-        // still ranks the marsupial memory first because it shares
-        // more vocabulary with the query than the finance memory
-        // does. This is what distinguishes semantic_search from a
-        // plain keyword LIKE scan.
+        // A query that never contains the literal word "quokka" still ranks the marsupial memory first
+        // because it shares more vocabulary with the query than the finance memory does.
+        // This is what distinguishes semantic_search from a plain keyword LIKE scan.
         let hits = semantic_search(
             &pool,
             scratch.backend(),

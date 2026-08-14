@@ -66,11 +66,9 @@ pub async fn next_ticket_number(
     Ok(max + 1)
 }
 
-/// Compose the merged cross-reference list for an update: removals
-/// apply first, then each addition replaces any existing ref to the
-/// same target. Shared between `update_feature` and `update_issue`,
-/// which resolved `refs_remove` / `refs_add` identically before
-/// this extraction.
+/// Compose the merged cross-reference list for an update.
+/// Removals apply first, then each addition replaces any existing ref to the same target.
+/// Shared between `update_feature` and `update_issue`.
 pub(crate) fn compose_refs(
     current: Vec<MemoryRef>,
     remove: Option<&[Uuid]>,
@@ -203,11 +201,9 @@ where
     Ok(moves)
 }
 
-/// Count how many memory files under `slug`'s two-level directory
-/// are valid UUID-named entries. Shared between
-/// `list_features_for_slug` and `list_issues_for_slug`, whose walk
-/// and filter shape is identical; the per-record read stays
-/// kind-specific (`read_feature` / `read_issue`) in each caller.
+/// Count how many memory files under `slug`'s two-level directory are valid UUID-named entries.
+/// Shared between `list_features_for_slug` and `list_issues_for_slug`; the walk and filter shape is identical.
+/// The per-record read stays kind-specific (`read_feature` / `read_issue`) in each caller.
 pub(crate) async fn count_slug_entries(
     backend: &NativeBackend,
     entry: &GroupEntry,

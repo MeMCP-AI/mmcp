@@ -20,8 +20,8 @@ use super::manifest::{
     ArchiveManifest, ArchiveMode, ArchivedGroupMeta,
 };
 
-/// Unix mode bits stamped on every archive entry: owner read/write,
-/// group/other read. Archived memories are data, never executable.
+/// Unix mode bits stamped on every archive entry: owner read/write, group/other read.
+/// Archived memories are data, never executable.
 const ARCHIVE_ENTRY_MODE: u32 = 0o644;
 
 /// Fixed modification time (epoch seconds) on every entry so two
@@ -38,10 +38,12 @@ const GIT_EXCLUDED_TOP: [&str; 2] = ["hooks", "logs"];
 /// the toggles they care about.
 #[derive(Debug, Clone, Default)]
 pub struct ExportOptions {
-    /// gzip the tar stream (pure-Rust flate2). Off means a plain tar.
+    /// gzip the tar stream (pure-Rust flate2).
+    /// Off means a plain tar.
     pub gzip: bool,
-    /// Facet filter narrowing which memories are packed. Empty matches
-    /// every memory in the selected groups. Snapshot mode only.
+    /// Facet filter narrowing which memories are packed.
+    /// Empty matches every memory in the selected groups.
+    /// Snapshot mode only.
     pub filter: MemoryFilter,
     /// What to capture: a HEAD snapshot (default) or each group's full
     /// git history (the bare repo, verbatim).
@@ -50,10 +52,9 @@ pub struct ExportOptions {
 
 /// Package `groups` into a snapshot archive written to `writer`.
 ///
-/// Each group contributes its verbatim `.mmcp.toml` plus every memory
-/// file at HEAD; feature and issue memories ride along as ordinary
-/// memory files. Returns the table of contents that was written so
-/// callers can report the per-group counts.
+/// Each group contributes its verbatim `.mmcp.toml` plus every memory file at HEAD;
+/// feature and issue memories ride along as ordinary memory files.
+/// Returns the table of contents that was written so callers can report the per-group counts.
 pub async fn export_archive<W: Write>(
     backend: &NativeBackend,
     groups: &[GroupEntry],
@@ -115,8 +116,8 @@ pub async fn export_archive<W: Write>(
     Ok(manifest)
 }
 
-/// Pack a group's HEAD memory files (filtered) under `base`, returning
-/// the count packed. The snapshot half of [`export_archive`].
+/// Pack a group's HEAD memory files (filtered) under `base`, returning the count packed.
+/// The snapshot half of [`export_archive`].
 async fn pack_snapshot_memories(
     backend: &NativeBackend,
     group: &GroupEntry,
@@ -148,8 +149,8 @@ async fn pack_snapshot_memories(
 
 /// Walk a group's bare repository and return every git file as
 /// `(forward-slash relative path, bytes)`, sorted for determinism.
-/// `hooks/` and `logs/` are skipped. Offloaded to a blocking task
-/// since it reads the disk synchronously.
+/// `hooks/` and `logs/` are skipped.
+/// Offloaded to a blocking task since it reads the disk synchronously.
 async fn pack_git_dir(repo_path: &Path) -> Result<Vec<(String, Vec<u8>)>, ArchiveError> {
     let repo_path = repo_path.to_path_buf();
     tokio::task::spawn_blocking(move || -> Result<Vec<(String, Vec<u8>)>, ArchiveError> {
@@ -247,11 +248,9 @@ fn append_bytes<W: Write>(
     Ok(())
 }
 
-/// Export `groups` to `path` atomically: pack into a sibling temp file
-/// and rename onto `path` only on success, so a mid-export failure
-/// never truncates or leaves a partial file at the operator's chosen
-/// destination. The shared entry point for the CLI, MCP, and GUI
-/// surfaces so all three publish archives the same way.
+/// Export `groups` to `path` atomically: pack into a sibling temp file and rename onto `path` only on success,
+/// so a mid-export failure never truncates or leaves a partial file at the operator's chosen destination.
+/// The shared entry point for the CLI, MCP, and GUI surfaces so all three publish archives the same way.
 pub async fn export_archive_to_path(
     backend: &NativeBackend,
     groups: &[GroupEntry],
@@ -274,10 +273,9 @@ pub async fn export_archive_to_path(
     Ok(manifest)
 }
 
-/// Distinct tags across the memories of `groups`, sorted. Backs the
-/// export dialog's tag autocomplete (the universe of tags a user can
-/// filter by). Malformed frontmatter is skipped rather than failing
-/// the whole listing.
+/// Distinct tags across the memories of `groups`, sorted.
+/// Backs the export dialog's tag autocomplete (the universe of tags a user can filter by).
+/// Malformed frontmatter is skipped rather than failing the whole listing.
 pub async fn collect_group_tags(
     backend: &NativeBackend,
     groups: &[GroupEntry],
@@ -299,9 +297,9 @@ pub async fn collect_group_tags(
     Ok(tags)
 }
 
-/// A same-directory temp path for the atomic export. Same directory so
-/// the rename stays on one filesystem; the pid keeps concurrent
-/// exports from colliding on the staging file.
+/// A same-directory temp path for the atomic export.
+/// Same directory so the rename stays on one filesystem;
+/// the pid keeps concurrent exports from colliding on the staging file.
 fn temp_sibling(path: &Path) -> PathBuf {
     let mut name = path
         .file_name()
