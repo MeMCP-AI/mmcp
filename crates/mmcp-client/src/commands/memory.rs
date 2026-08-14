@@ -73,15 +73,14 @@ pub struct ListArgs {
     /// Target group (UUID or slug).
     pub group: String,
 
-    /// Literal slug-path prefix to filter on. Pass
-    /// `feedback` to list every memory whose slug starts with
-    /// `feedback` or `feedback/...`.
+    /// Literal slug-path prefix to filter on.
+    /// Pass `feedback` to list every memory whose slug starts with `feedback` or `feedback/...`.
     #[arg(long)]
     pub prefix: Option<String>,
 
-    /// When set, only memories whose slug has at most one
-    /// path segment beyond `--prefix` (or one segment total when
-    /// no prefix is set) are listed. Default lists every match.
+    /// When set, only memories whose slug has at most one path segment beyond `--prefix` are listed.
+    /// With no prefix, the same one-segment limit applies to the whole slug.
+    /// Default lists every match.
     #[arg(long)]
     pub no_recursive: bool,
 }
@@ -91,9 +90,8 @@ pub struct TreeArgs {
     /// Target group (UUID or slug).
     pub group: String,
 
-    /// Optional literal slug-path prefix; the tree is
-    /// rooted at this node so the listing fits the question
-    /// "what's under feedback/git?".
+    /// Optional literal slug-path prefix.
+    /// The tree is rooted at this node so the listing fits the question "what's under feedback/git?".
     #[arg(long)]
     pub prefix: Option<String>,
 }
@@ -307,12 +305,10 @@ pub struct DeleteArgs {
 
 #[derive(Debug, Args)]
 pub struct SearchArgs {
-    /// One or more case-insensitive substrings matched against slug
-    /// and `name` in frontmatter. Pass multiple positional values
-    /// for the multi-query form: each positional is a
-    /// separate query, results dedupe by memory UUID, and the
-    /// rendered table grows a `matched` column listing which
-    /// queries hit each row.
+    /// One or more case-insensitive substrings matched against slug and `name` in frontmatter.
+    /// Pass multiple positional values for the multi-query form: each positional is a separate query.
+    /// Results dedupe by memory UUID,
+    /// and the rendered table grows a `matched` column listing which queries hit each row.
     #[arg(num_args = 1..)]
     pub query: Vec<String>,
 
@@ -325,8 +321,9 @@ pub struct SearchArgs {
     #[arg(long)]
     pub scope: Option<String>,
 
-    /// Maximum number of hits. Default 50. Caps total deduped hits
-    /// across all queries, not per query.
+    /// Maximum number of hits.
+    /// Default 50.
+    /// Caps total deduped hits across all queries, not per query.
     #[arg(long)]
     pub limit: Option<usize>,
 }
