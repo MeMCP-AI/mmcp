@@ -2125,7 +2125,10 @@ mod tests {
                 CommitSpec::mmcp_commit(
                     format!("seed not-utf8/{bad_id}"),
                     vec![(
-                        mmcp_core::conventions::memory_path("not-utf8", bad_id),
+                        mmcp_core::conventions::memory_path(
+                            "not-utf8",
+                            MemoryId::from_uuid(bad_id),
+                        ),
                         Some(invalid_bytes),
                     )],
                     &author.name,
