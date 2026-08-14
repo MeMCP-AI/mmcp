@@ -1,19 +1,15 @@
 //! mmcp home directory layout.
 //!
 //! Single source of truth for the `~/.mmcp/` directory structure.
-//! Every consumer that needs repos, sessions, or the home root
+//! Every consumer that needs repos, sessions, or the home root,
 //! imports from here instead of re-deriving paths from env vars.
 //!
-//! The home root can be overridden via the `MMCP_HOME` environment
-//! variable for testing, portable installs, or custom layouts.
-//! When unset, defaults to `$HOME/.mmcp` (or `$USERPROFILE/.mmcp`
-//! on Windows).
+//! The home root can be overridden via the `MMCP_HOME` environment variable,
+//! for testing, portable installs, or custom layouts.
+//! When unset, defaults to `$HOME/.mmcp` (or `$USERPROFILE/.mmcp` on Windows).
 //!
-//! History: ported from `crates/mmcp-client/src/home.rs` during
-//! the FR-020 extraction. The composition helper `init_backend`
-//! that used to live here stays in `mmcp-client` until `GroupIndex`
-//! follows this module into `mmcp-store`, at which point both
-//! rejoin as a free function on this crate.
+//! The composition helper `init_backend` lives in `mmcp-client` until `GroupIndex`
+//! follows this module into `mmcp-store`; then both rejoin as a free function here.
 
 use std::path::{Path, PathBuf};
 

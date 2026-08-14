@@ -1,18 +1,13 @@
 //! In-memory index of every group repository cloned locally.
 //!
-//! The index is built by walking `~/.mmcp/repos/`, treating each
-//! `<uuid>.git/` directory as one bare group repository, opening it
-//! through the [`NativeBackend`], and reading the `.mmcp.toml`
-//! manifest at `HEAD:.mmcp.toml` to learn the group's slug, owner,
-//! and display name.
+//! The index is built by walking `~/.mmcp/repos/`,
+//! treating each `<uuid>.git/` directory as one bare group repository,
+//! opened through the [`NativeBackend`].
+//! Reads the `.mmcp.toml` manifest at `HEAD:.mmcp.toml` to learn the group's slug, owner, and display name.
 //!
-//! The index is kept behind an `Arc<RwLock<_>>` so MCP tool
-//! handlers on the serve side and the file-watcher task (still in
-//! `mmcp-client`) can share ownership without cloning the whole
-//! map.
-//!
-//! History: ported from `crates/mmcp-client/src/state/groups.rs`
-//! during the FR-020 extraction.
+//! The index is kept behind an `Arc<RwLock<_>>`,
+//! so MCP tool handlers on the serve side and the file-watcher task (still in `mmcp-client`),
+//! can share ownership without cloning the whole map.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

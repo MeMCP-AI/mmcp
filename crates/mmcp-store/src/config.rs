@@ -1,22 +1,19 @@
 //! Project configuration loader shared by every mmcp consumer.
 //!
-//! `.mmcp.toml` at a project root describes the project's stable
-//! UUID, optional slug, the sync server it talks to, and the group
-//! loading preferences. This module owns the walk-up discovery
-//! (`find_project_root`), the TOML read (`load`), and the TOML
-//! write (`save`). The typed `ProjectConfig` struct itself lives in
-//! `mmcp-core::config::project`; this module is the I/O layer.
-//!
-//! History: ported from `crates/mmcp-client/src/config.rs` during
-//! the FR-020 extraction.
+//! `.mmcp.toml` at a project root describes the project's stable UUID, optional slug,
+//! the sync server it talks to, and the group loading preferences.
+//! This module owns the walk-up discovery (`find_project_root`), the TOML read (`load`),
+//! and the TOML write (`save`).
+//! The typed `ProjectConfig` struct itself lives in `mmcp-core::config::project`;
+//! this module is the I/O layer.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use mmcp_core::config::ProjectConfig;
 
-/// Project-level manifest file name. Same as the group repo
-/// manifest - a single `.mmcp.toml` convention everywhere.
+/// Project-level manifest file name.
+/// Same as the group repo manifest, a single `.mmcp.toml` convention everywhere.
 pub use mmcp_core::manifest::MANIFEST_FILENAME as PROJECT_MANIFEST;
 
 /// Locate the project root by walking up from `start` until a

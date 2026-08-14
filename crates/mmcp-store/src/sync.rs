@@ -1,18 +1,12 @@
 //! Sync engine wiring shared across every mmcp consumer.
 //!
-//! `build_engine` constructs a ready-to-use
-//! [`SyncEngine`](mmcp_sync::SyncEngine) and its [`IndexResolver`]
-//! (which maps group UUIDs to the local bare repo via the
-//! `GroupIndex` cache). Callers — CLI `mmcp pull` / `mmcp push` /
-//! `mmcp sync`, the MCP `sync_pull` / `sync_push` / `sync` tools,
-//! and `mmcp-gui`'s sync action handlers — all go through this one
-//! helper so the engine configuration never drifts between surfaces.
+//! `build_engine` constructs a ready-to-use [`SyncEngine`](mmcp_sync::SyncEngine) and its [`IndexResolver`],
+//! which maps group UUIDs to the local bare repo via the `GroupIndex` cache.
+//! Callers, CLI `mmcp pull`/`mmcp push`/`mmcp sync`, the MCP `sync_pull`/`sync_push`/`sync` tools,
+//! and `mmcp-gui`'s sync action handlers, all go through this one helper,
+//! so the engine configuration never drifts between surfaces.
 //!
-//! History: ported from `crates/mmcp-client/src/commands/sync.rs`
-//! during the FR-020 extraction. The CLI `run` function (clap
-//! dispatch + stdout formatting + exit-code mapping) stays in the
-//! client crate. The `PendingQueue` slot that used to live in this
-//! tuple retired when push went git-symmetric.
+//! The CLI `run` function (clap dispatch, stdout formatting, exit-code mapping) stays in the client crate.
 
 use std::sync::Arc;
 

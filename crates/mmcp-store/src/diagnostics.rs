@@ -1,25 +1,19 @@
 //! Health (surface) and diagnostic (deep) checks for memory repos.
 //!
-//! - **Health**: quick pass/fail per group. Is the manifest valid?
-//!   Do all memory files parse? Returns counts and errors only.
-//! - **Diagnose**: deep analysis. Reports missing optional fields,
-//!   naming drift, empty groups, semver parse issues, directory/
-//!   manifest UUID mismatches, and structural hints.
+//! - **Health**: quick pass/fail per group, manifest validity and frontmatter parse,
+//!   returns counts and errors only.
+//! - **Diagnose**: deep analysis: missing optional fields, naming drift, empty groups,
+//!   semver parse issues, directory/manifest UUID mismatches, and structural hints.
 //!
-//! Neither endpoint ever modifies data. Consumers (CLI check /
-//! diagnose, MCP `check_health` / `diagnose` tools, GUI diagnostic
-//! widgets) receive typed `GroupReport` / `DiagReport` structs and
-//! decide how to render them.
+//! Neither endpoint ever modifies data.
+//! Consumers, CLI check/diagnose, MCP `check_health`/`diagnose` tools, GUI diagnostic widgets,
+//! receive typed `GroupReport`/`DiagReport` structs and decide how to render them.
 //!
-//! History: ported from `crates/mmcp-client/src/commands/health.rs`
-//! during the FR-020 extraction. The CLI runners
-//! (`run_check`, `run_diagnose`, `print_reports`) stay in the
-//! client crate because they carry exit-code + stdout shaping that
-//! belong in the binary.
+//! CLI runners (`run_check`, `run_diagnose`, `print_reports`) live in
+//! the client crate: they carry exit-code and stdout shaping that
+//! belongs in the binary.
 //!
-//! Naming: `Finding` (formerly `Issue`) is the per-check record.
-//! Renamed when the tracker `Issue` kind landed so the lexical
-//! collision with `MemoryKind::Issue` does not bite code review.
+//! Naming: `Finding` is the per-check record, avoiding a lexical collision with `MemoryKind::Issue`.
 
 use mmcp_core::manifest::{GroupScope, MANIFEST_SCHEMA_VERSION};
 use mmcp_core::memory::{MemoryFile, MemoryKind, parse_sections};
@@ -33,11 +27,10 @@ use crate::memory::slugify_filename;
 
 // ── Shared types ────────────────────────────────────────────
 
-/// One finding emitted by a check. `code` is a stable slug-style
-/// identifier (e.g. `manifest_unreadable`, `memory_body_empty`)
-/// that lets consumers branch without parsing the free-form
-/// `message`. FR-45 maps each finding onto a [`mmcp_proto::Note`]
-/// at the MCP tool boundary using this code.
+/// One finding emitted by a check.
+/// `code` is a stable slug-style identifier (e.g. `manifest_unreadable`, `memory_body_empty`),
+/// that lets consumers branch without parsing the free-form `message`.
+/// The MCP tool boundary maps each finding onto a [`mmcp_proto::Note`] using this code.
 #[derive(Debug, Clone, Serialize)]
 pub struct Finding {
     pub group: String,
@@ -208,16 +201,16 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
     let group_scope = entry.manifest.scope;
 
     // Track feature numbers seen within this group so we can flag
-    // duplicates after the per-memory loop. Post-FR-027 `add_feature`
-    // enforces monotonic uniqueness on writes, but a manual edit
-    // could reintroduce a collision.
+    // duplicates after the per-memory loop. `add_feature` enforces
+    // monotonic uniqueness on writes, but a manual edit could
+    // reintroduce a collision.
     let mut feature_numbers: std::collections::HashMap<u32, Vec<String>> =
         std::collections::HashMap::new();
 
     // Index every feature in this group by its UUID so the
     // post-loop supersede-chain integrity pass can look targets up
     // without a second pass over the files. Value is
-    // `(slug, status, refs)` — enough to verify reciprocity
+    // `(slug, status, refs)`, enough to verify reciprocity
     // without carrying the full frontmatter around.
     let mut features_by_id: std::collections::HashMap<
         Uuid,
@@ -362,7 +355,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
 
         // Slug/name drift: fire only when the slug and slugified
         // name share *no* meaningful tokens. Substring containment
-        // was too loose — a short curated slug ("global-coding-
+        // is too loose: a short curated slug ("global-coding-
         // rules-rust") and a full title ("Rust Coding Rules")
         // legitimately differ as abbreviation vs. expansion and
         // shouldn't spam the report. Zero-overlap is a strong
@@ -382,7 +375,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
             });
         }
 
-        // FR-028: frontmatter `id` must match the filename UUID.
+        // Frontmatter `id` must match the filename UUID.
         match fm.id {
             None => report.findings.push(Finding {
                 group: gid.clone(),
@@ -407,7 +400,7 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
             _ => {}
         }
 
-        // FR-027: every `kind = "feature"` memory should carry a
+        // Every `kind = "feature"` memory should carry a
         // sequential `number`.
         if fm.kind == MemoryKind::Feature && fm.feature.as_ref().and_then(|f| f.number).is_none() {
             report.findings.push(Finding {
@@ -479,10 +472,9 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
             );
         }
 
-        // FR-025 awareness: a `mandatory = true` memory living in a
-        // non-`global` group will only fan out to projects that
-        // explicitly adopt the group, which is rarely what authors
-        // intend for mandatory-read rules.
+        // A `mandatory = true` memory living in a non-`global` group
+        // only fans out to projects that explicitly adopt the group,
+        // rarely what authors intend for mandatory-read rules.
         if fm.mandatory && group_scope != GroupScope::Global {
             report.findings.push(Finding {
                 group: gid.clone(),
@@ -496,8 +488,8 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
             });
         }
 
-        // FR-026 section parser: surface malformed CommonMark so a
-        // body that `edit_memory_body` would choke on is visible in
+        // Surface malformed CommonMark sections so a body that
+        // `edit_memory_body` would choke on is visible in
         // diagnostics.
         if let Err(err) = parse_sections(&file.body) {
             report.findings.push(Finding {
@@ -514,10 +506,10 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
     // `superseded_by` back-link should have its target present in
     // the same group, reciprocating via a `refs` entry pointing
     // back at the source's UUID. Catches the half-landed
-    // two-commit supersede case (commit A wrote the new FR,
-    // commit B never flipped the old FR — or in the opposite
-    // direction, commit B flipped the old FR but an operator
-    // later removed the new FR's ref by hand).
+    // two-commit supersede case: commit A wrote the new feature,
+    // commit B never flipped the old one's status, or the reverse,
+    // commit B flipped it but an operator later removed the new
+    // feature's ref by hand.
     for (old_slug, old_uuid, link) in &supersede_links {
         match features_by_id.get(&link.target) {
             None => {
@@ -573,8 +565,8 @@ pub async fn diagnose_group(backend: &NativeBackend, entry: &GroupEntry) -> Grou
     }
 
     // Walk every leaf slug dir so stray non-UUID filenames are
-    // surfaced. FR-41-aware: nested paths surface as separate leaf
-    // entries; intermediate path nodes are not "empty leaves".
+    // surfaced. Nested slug paths surface as separate leaf entries;
+    // intermediate path nodes are not "empty leaves".
     // `list_all_memory_files` silently skips non-UUID files, so
     // without this pass a `memories/rules/scratch.md` would never
     // show up in diagnostics.
@@ -731,9 +723,9 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
         }
     }
 
-    // Duplicate UUIDs across memories. Post-FR-028 every memory's
-    // UUID is its primary key; two memories sharing one breaks
-    // `resolve_by_id` and makes cross-refs ambiguous.
+    // Duplicate UUIDs across memories. Every memory's UUID is its
+    // primary key; two memories sharing one breaks `resolve_by_id`
+    // and makes cross-refs ambiguous.
     for (uuid, records) in &by_id {
         if records.len() > 1 {
             let locations: Vec<String> = records
@@ -829,10 +821,10 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
 
             // Milestone reference: `feature.milestone` must resolve
             // to an existing memory, and that memory must itself be
-            // a milestone. Cross-group by design (D3), so `by_id`
-            // (already built cross-group above) is exactly the
-            // right registry to check against — no extra git walk
-            // needed.
+            // a milestone, regardless of which group it lives in.
+            // `by_id` (already built cross-group above) is exactly
+            // the right registry to check against, no extra git
+            // walk needed.
             if let Some(milestone_id) = feat.milestone {
                 match by_id.get(&milestone_id) {
                     None => report.findings.push(Finding {
