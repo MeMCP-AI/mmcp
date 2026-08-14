@@ -104,7 +104,7 @@ async fn info_refs(
     let uuid = parse_group_path(&group_id)?;
     let repo_path = ensure_group(&state, uuid).await?;
     if query.service == "git-receive-pack" {
-        enforce_write(&headers, uuid)?;
+        enforce_write(&state, &headers, uuid)?;
     }
     let protocol_version = negotiated_protocol_version(&headers);
     let service = query.service.clone();
@@ -182,7 +182,7 @@ async fn receive_pack(
     body: Body,
 ) -> Result<Response, GitHttpError> {
     let uuid = parse_group_path(&group_id)?;
-    enforce_write(&headers, uuid)?;
+    enforce_write(&state, &headers, uuid)?;
     let repo_path = ensure_group(&state, uuid).await?;
     // Serialize writes per-group so two concurrent pushes can't race the
     // receive-pack state machine and leave refs in an inconsistent
@@ -333,18 +333,24 @@ fn service_announcement(service: &str) -> Vec<u8> {
 
 /// Enforce write access for `receive-pack` requests.
 ///
-/// Until the full auth stack lands the server requires a shared-secret
-/// bearer token supplied via `MMCP_PUSH_TOKEN`. Missing or wrong token
-/// returns 401/403. Real role-based enforcement replaces this once
-/// there's a real authenticated user.
-fn enforce_write(headers: &HeaderMap, _group_id: Uuid) -> Result<(), GitHttpError> {
-    let expected = match std::env::var("MMCP_PUSH_TOKEN") {
-        Ok(token) if !token.is_empty() => token,
-        _ => {
-            return Err(GitHttpError::Forbidden(
-                "push disabled: set MMCP_PUSH_TOKEN",
-            ));
-        }
+/// A single global bearer token, resolved through the typed config
+/// layer (`ServerConfig::push_token`, env `MMCP_PUSH_TOKEN`),
+/// authorizes pushes to EVERY group hosted by this server; there is
+/// no per-group token concept yet. `group_id` plays no role in the
+/// authorization decision itself; it is accepted only so a rejected
+/// push's audit log line names the group being targeted. Missing or
+/// wrong token returns 403/401. Real per-group role-based
+/// enforcement replaces this once there's a real authenticated user
+/// and a per-group token store.
+fn enforce_write(
+    state: &ServerState,
+    headers: &HeaderMap,
+    group_id: Uuid,
+) -> Result<(), GitHttpError> {
+    let Some(expected) = state.push_token.as_deref() else {
+        return Err(GitHttpError::Forbidden(
+            "push disabled: set MMCP_PUSH_TOKEN",
+        ));
     };
     let auth = headers
         .get("authorization")
@@ -352,6 +358,7 @@ fn enforce_write(headers: &HeaderMap, _group_id: Uuid) -> Result<(), GitHttpErro
         .unwrap_or_default();
     let presented = auth.strip_prefix("Bearer ").unwrap_or("");
     if presented != expected {
+        tracing::warn!(group = %group_id, "push rejected: invalid or missing bearer token");
         return Err(GitHttpError::Unauthorized);
     }
     Ok(())
@@ -378,14 +385,16 @@ impl IntoResponse for GitHttpError {
             GitHttpError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response(),
             GitHttpError::Unauthorized => {
                 // Emit `WWW-Authenticate` so stock git's HTTP auth flow
-                // can respond with a Basic-auth challenge instead of
-                // surfacing a bare 401. Without this header, git
-                // clients treat the request as a hard failure rather
-                // than retrying with credentials from the user's
-                // credential helper.
+                // retries with credentials from the user's credential
+                // helper instead of surfacing a bare 401. The scheme
+                // must match what the server actually accepts: the
+                // only acceptance path is `strip_prefix("Bearer ")`
+                // above, so the challenge advertises Bearer, not
+                // Basic; a Basic challenge would make every
+                // credential-helper retry fail by construction.
                 (
                     StatusCode::UNAUTHORIZED,
-                    [("WWW-Authenticate", r#"Basic realm="mmcp""#)],
+                    [("WWW-Authenticate", r#"Bearer realm="mmcp""#)],
                     "missing or invalid token".to_string(),
                 )
                     .into_response()
@@ -394,5 +403,94 @@ impl IntoResponse for GitHttpError {
                 (StatusCode::FORBIDDEN, msg.to_string()).into_response()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::HeaderValue;
+
+    use super::*;
+
+    /// Bootstrap a real `ServerState` with the caller's choice of
+    /// push token, so `enforce_write` is exercised through the typed
+    /// config layer end to end, not a hand-rolled stand-in.
+    async fn state_with_push_token(push_token: Option<&str>) -> (ServerState, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cfg = crate::config::ServerConfig {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            database_url: "sqlite::memory:".to_string(),
+            repo_root: tmp.path().to_path_buf(),
+            token_key: [0u8; 32],
+            oauth_providers: vec![],
+            origin: "http://localhost:8787".to_string(),
+            push_token: push_token.map(str::to_string),
+            min_password_length: mmcp_auth::MIN_PASSWORD_LENGTH,
+            max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
+        };
+        let state = ServerState::initialize(&cfg).await.expect("state init");
+        (state, tmp)
+    }
+
+    fn bearer_headers(token: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_str(&format!("Bearer {token}")).expect("valid header value"),
+        );
+        headers
+    }
+
+    #[tokio::test]
+    async fn enforce_write_rejects_with_forbidden_when_no_push_token_is_configured() {
+        let (state, _tmp) = state_with_push_token(None).await;
+        let err = enforce_write(&state, &HeaderMap::new(), Uuid::now_v7()).unwrap_err();
+        assert!(matches!(err, GitHttpError::Forbidden(_)));
+    }
+
+    #[tokio::test]
+    async fn enforce_write_rejects_with_unauthorized_on_wrong_token() {
+        let (state, _tmp) = state_with_push_token(Some("s3cr3t")).await;
+        let err = enforce_write(&state, &bearer_headers("wrong"), Uuid::now_v7()).unwrap_err();
+        assert!(matches!(err, GitHttpError::Unauthorized));
+    }
+
+    #[tokio::test]
+    async fn enforce_write_rejects_with_unauthorized_when_header_is_missing() {
+        let (state, _tmp) = state_with_push_token(Some("s3cr3t")).await;
+        let err = enforce_write(&state, &HeaderMap::new(), Uuid::now_v7()).unwrap_err();
+        assert!(matches!(err, GitHttpError::Unauthorized));
+    }
+
+    #[tokio::test]
+    async fn enforce_write_accepts_the_matching_bearer_token() {
+        let (state, _tmp) = state_with_push_token(Some("s3cr3t")).await;
+        assert!(enforce_write(&state, &bearer_headers("s3cr3t"), Uuid::now_v7()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn enforce_write_authorizes_every_group_id_under_the_single_global_token() {
+        // Documents the current model explicitly: `group_id` plays no
+        // role in the authorization decision, so two different
+        // groups both pass under the same global token.
+        let (state, _tmp) = state_with_push_token(Some("s3cr3t")).await;
+        assert!(enforce_write(&state, &bearer_headers("s3cr3t"), Uuid::now_v7()).is_ok());
+        assert!(enforce_write(&state, &bearer_headers("s3cr3t"), Uuid::now_v7()).is_ok());
+    }
+
+    #[test]
+    fn unauthorized_response_advertises_a_bearer_challenge_matching_what_is_accepted() {
+        let response = GitHttpError::Unauthorized.into_response();
+        let challenge = response
+            .headers()
+            .get("WWW-Authenticate")
+            .expect("WWW-Authenticate header present")
+            .to_str()
+            .expect("header is valid utf-8");
+        assert!(
+            challenge.starts_with("Bearer"),
+            "challenge scheme must match the Bearer-only acceptance path in enforce_write, \
+             got: {challenge}"
+        );
     }
 }
