@@ -11,10 +11,12 @@ use crate::types::{
 
 /// A pluggable git storage backend.
 ///
-/// All methods are async because some backends (Forgejo, Gitea,
-/// GitHub, GitLab) hit remote REST APIs, while others (the native
-/// backend) talk to the local filesystem and wrap synchronous `gix`
-/// calls in `spawn_blocking`.
+/// [`NativeBackend`](crate::native::NativeBackend) is the only
+/// implementor today: it talks to bare repositories on the local
+/// filesystem and wraps synchronous `gix` calls in `spawn_blocking`.
+/// The trait stays async-only so a future remote-forge backend (one
+/// that hits a REST API instead of the local filesystem) can
+/// implement it without a signature change.
 #[async_trait]
 pub trait GitBackend: Send + Sync {
     /// Create a new group repository and commit its initial
