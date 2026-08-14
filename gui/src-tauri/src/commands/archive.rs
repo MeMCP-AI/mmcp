@@ -7,6 +7,9 @@
 //! it lists local groups/memories for export and inspects a chosen
 //! archive for import, then calls export / import with the picks.
 
+use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
+
 use mmcp_core::id::GroupId;
 use mmcp_store::{
     ArchiveManifest, ExportOptions, ImportArchiveOptions, MemoryFilter, parse_memory_kind,
@@ -16,8 +19,23 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 use crate::commands::sync::MIRROR_CHANGED_EVENT;
-use crate::error::{GuiError, GuiResult};
+use crate::error::{GuiArchiveError, GuiResult};
 use crate::state::AppState;
+
+/// Maximum size, in bytes, `inspect_archive` / `import_archive` will
+/// read into memory for a single archive file. Confinement to a
+/// picked path (below) already limits *which* file can be read; this
+/// bounds *how much* of it a single IPC call pulls into memory.
+const MAX_ARCHIVE_READ_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Path most recently returned by the "Import mmcp archive" native
+/// picker in [`pick_import_path`]. `inspect_archive` / `import_archive`
+/// refuse any `input` that doesn't canonicalize to this value,
+/// confining their filesystem reads to a path the operator actually
+/// chose through the dialog rather than trusting an arbitrary
+/// IPC-supplied string.
+static LAST_PICKED_IMPORT_PATH: LazyLock<Mutex<Option<PathBuf>>> =
+    LazyLock::new(|| Mutex::new(None));
 
 /// Memory filter facets sent from the dialog's advanced panel.
 #[derive(Debug, Default, Deserialize)]
@@ -76,7 +94,7 @@ fn parse_kinds(values: &[String]) -> GuiResult<Vec<mmcp_core::memory::MemoryKind
         .iter()
         .map(|value| {
             parse_memory_kind(value)
-                .ok_or_else(|| GuiError::Other(format!("unknown kind '{value}'")))
+                .ok_or_else(|| GuiArchiveError::UnknownKind(value.clone()).into())
         })
         .collect()
 }
@@ -141,7 +159,7 @@ pub async fn export_archive(
         out
     };
     if selected.is_empty() {
-        return Err(GuiError::Other("no groups to export".into()));
+        return Err(GuiArchiveError::NoGroupsSelected.into());
     }
 
     let suggested = if gzip {
@@ -171,11 +189,16 @@ pub async fn export_archive(
 /// Open a native picker for an archive to import and return its path,
 /// or `None` if the operator dismisses the dialog. The frontend then
 /// inspects the archive before committing to an import.
+///
+/// The canonicalized path is also stashed as the one path
+/// `inspect_archive` / `import_archive` will accept, so those commands
+/// never trust an arbitrary IPC-supplied filesystem path (see
+/// [`read_confined_archive`]).
 #[tauri::command]
 pub async fn pick_import_path(app: AppHandle) -> GuiResult<Option<String>> {
     let main = app
         .get_webview_window("main")
-        .ok_or_else(|| GuiError::Other("main window is not available".into()))?;
+        .ok_or(GuiArchiveError::NoMainWindow)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -184,22 +207,28 @@ pub async fn pick_import_path(app: AppHandle) -> GuiResult<Option<String>> {
         .pick_file(move |picked| {
             let _ = tx.send(picked);
         });
-    let picked = rx
-        .await
-        .map_err(|e| GuiError::Other(format!("dialog channel: {e}")))?;
-    Ok(picked.and_then(|p| {
-        p.into_path()
-            .ok()
-            .map(|pb| pb.to_string_lossy().into_owned())
-    }))
+    let picked = rx.await.map_err(|_| GuiArchiveError::DialogChannelClosed)?;
+    let Some(picked) = picked else {
+        return Ok(None);
+    };
+    let path = picked
+        .into_path()
+        .map_err(|e| GuiArchiveError::DialogPathUnusable(e.to_string()))?;
+    let canonical = path
+        .canonicalize()
+        .map_err(|source| GuiArchiveError::Read {
+            path: path.to_string_lossy().into_owned(),
+            source,
+        })?;
+    *last_picked_import_path() = Some(canonical.clone());
+    Ok(Some(canonical.to_string_lossy().into_owned()))
 }
 
 /// Enumerate an archive's groups and the memory slugs each carries, so
 /// the import dialog can offer group- and memory-level selection.
 #[tauri::command]
 pub async fn inspect_archive(input: String) -> GuiResult<Vec<ArchiveGroupListingDto>> {
-    let bytes = std::fs::read(&input)
-        .map_err(|e| GuiError::Other(format!("reading archive {input}: {e}")))?;
+    let bytes = read_confined_archive(&input)?;
     let listing = mmcp_store::list_archive(&bytes)?;
     Ok(listing
         .into_iter()
@@ -249,8 +278,7 @@ pub async fn import_archive(
     overwrite: bool,
     new_ids: bool,
 ) -> GuiResult<Option<ImportArchiveReportDto>> {
-    let bytes = std::fs::read(&input)
-        .map_err(|e| GuiError::Other(format!("reading archive {input}: {e}")))?;
+    let bytes = read_confined_archive(&input)?;
     let manifest = mmcp_store::inspect_archive(&bytes)?;
 
     let into = match &into_group {
@@ -305,13 +333,10 @@ pub async fn import_archive(
 }
 
 /// Open a native save picker parented to the main window.
-async fn pick_save_path(
-    app: &AppHandle,
-    suggested_name: &str,
-) -> GuiResult<Option<std::path::PathBuf>> {
+async fn pick_save_path(app: &AppHandle, suggested_name: &str) -> GuiResult<Option<PathBuf>> {
     let main = app
         .get_webview_window("main")
-        .ok_or_else(|| GuiError::Other("main window is not available".into()))?;
+        .ok_or(GuiArchiveError::NoMainWindow)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -321,13 +346,11 @@ async fn pick_save_path(
         .save_file(move |picked| {
             let _ = tx.send(picked);
         });
-    let picked = rx
-        .await
-        .map_err(|e| GuiError::Other(format!("dialog channel: {e}")))?;
+    let picked = rx.await.map_err(|_| GuiArchiveError::DialogChannelClosed)?;
     match picked {
         Some(target) => {
             Ok(Some(target.into_path().map_err(|e| {
-                GuiError::Other(format!("dialog path: {e}"))
+                GuiArchiveError::DialogPathUnusable(e.to_string())
             })?))
         }
         None => Ok(None),
@@ -379,5 +402,125 @@ async fn confirm_protected(
             let _ = tx.send(confirmed);
         });
     rx.await
-        .map_err(|e| GuiError::Other(format!("dialog channel: {e}")))
+        .map_err(|_| GuiArchiveError::DialogChannelClosed.into())
+}
+
+/// Read `input` after confirming it is the path most recently
+/// returned by [`pick_import_path`] and that its size is within
+/// [`MAX_ARCHIVE_READ_BYTES`]. Confines archive reads to a path the
+/// operator actually selected through the native file picker rather
+/// than trusting an arbitrary IPC-supplied string, and caps how much
+/// of it a single call pulls into memory.
+fn read_confined_archive(input: &str) -> GuiResult<Vec<u8>> {
+    let candidate = PathBuf::from(input);
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|source| GuiArchiveError::Read {
+            path: input.to_string(),
+            source,
+        })?;
+
+    let picked = last_picked_import_path();
+    ensure_path_was_picked(input, &canonical, picked.as_deref())?;
+    drop(picked);
+
+    let metadata = std::fs::metadata(&canonical).map_err(|source| GuiArchiveError::Read {
+        path: input.to_string(),
+        source,
+    })?;
+    ensure_within_size_cap(input, metadata.len(), MAX_ARCHIVE_READ_BYTES)?;
+
+    std::fs::read(&canonical).map_err(|source| {
+        GuiArchiveError::Read {
+            path: input.to_string(),
+            source,
+        }
+        .into()
+    })
+}
+
+/// Lock [`LAST_PICKED_IMPORT_PATH`]. The lock is only ever held across
+/// a few non-blocking statements (never across an `.await`), so
+/// poisoning would mean an earlier holder panicked mid-critical-section
+/// — a bug elsewhere in this module, not a condition callers recover
+/// from.
+fn last_picked_import_path() -> std::sync::MutexGuard<'static, Option<PathBuf>> {
+    LAST_PICKED_IMPORT_PATH
+        .lock()
+        .expect("archive picker mutex poisoned by an earlier panic")
+}
+
+/// `input` (the raw string an IPC caller supplied) is only accepted
+/// when its canonicalized form matches the path the operator actually
+/// chose through the native picker.
+fn ensure_path_was_picked(
+    input: &str,
+    canonical: &Path,
+    picked: Option<&Path>,
+) -> Result<(), GuiArchiveError> {
+    if picked == Some(canonical) {
+        Ok(())
+    } else {
+        Err(GuiArchiveError::PathNotPicked {
+            path: input.to_string(),
+        })
+    }
+}
+
+/// `size` bytes at `path` must not exceed `max`.
+fn ensure_within_size_cap(path: &str, size: u64, max: u64) -> Result<(), GuiArchiveError> {
+    if size > max {
+        Err(GuiArchiveError::TooLarge {
+            path: path.to_string(),
+            size,
+            max,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_not_picked_is_refused() {
+        let canonical = PathBuf::from("/mirror/archive.tar");
+        let err = ensure_path_was_picked("archive.tar", &canonical, None).unwrap_err();
+        assert!(matches!(err, GuiArchiveError::PathNotPicked { path } if path == "archive.tar"));
+    }
+
+    #[test]
+    fn path_picked_but_different_is_refused() {
+        let canonical = PathBuf::from("/mirror/archive.tar");
+        let other = PathBuf::from("/mirror/other.tar");
+        let err = ensure_path_was_picked("archive.tar", &canonical, Some(&other)).unwrap_err();
+        assert!(matches!(err, GuiArchiveError::PathNotPicked { .. }));
+    }
+
+    #[test]
+    fn path_matching_the_picked_path_is_accepted() {
+        let canonical = PathBuf::from("/mirror/archive.tar");
+        ensure_path_was_picked("archive.tar", &canonical, Some(&canonical)).unwrap();
+    }
+
+    #[test]
+    fn size_over_the_cap_is_refused() {
+        let err = ensure_within_size_cap("archive.tar", 200, 100).unwrap_err();
+        assert!(matches!(
+            err,
+            GuiArchiveError::TooLarge {
+                size: 200,
+                max: 100,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn size_within_the_cap_is_accepted() {
+        ensure_within_size_cap("archive.tar", 50, 100).unwrap();
+        ensure_within_size_cap("archive.tar", 100, 100).unwrap();
+    }
 }
