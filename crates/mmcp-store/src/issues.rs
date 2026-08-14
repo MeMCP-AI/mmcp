@@ -81,19 +81,17 @@ pub struct AddSpec {
     pub description: String,
     pub body: String,
     pub status: IssueStatus,
-    /// Optional explicit number override. Leave absent to let
-    /// `add_issue` mint the next sequential number from the shared
-    /// tracker counter.
+    /// Optional explicit number override.
+    /// Leave absent to let `add_issue` mint the next sequential number from the shared tracker counter.
     pub number: Option<u32>,
     pub depends_on: Vec<Uuid>,
     pub blocks: Vec<Uuid>,
     pub refs: Vec<MemoryRef>,
-    /// Slug or UUID of an existing issue in the same project group
-    /// to supersede. Cross-kind targets (a feature) are not
-    /// resolved here in v1; that capability is staged for a later
-    /// slice.
+    /// Slug or UUID of an existing issue in the same project group to supersede.
+    /// Cross-kind targets (a feature) are not resolved here in v1;
+    /// that capability is staged for a later slice.
     pub supersedes: Option<String>,
-    /// FR-38 provenance UUID.
+    /// Provenance UUID.
     pub source: Option<Uuid>,
     pub message: Option<String>,
 }
@@ -647,24 +645,22 @@ pub async fn delete_issue(
 ///
 /// Per Q13, this returns every memory in the group whose
 /// frontmatter carries an `[issue]` block, regardless of the
-/// `kind` discriminator. Hybrid memories appear in both
-/// `list_features` and `list_issues`.
+/// `kind` discriminator.
+/// Hybrid memories appear in both `list_features` and `list_issues`.
 ///
-/// A memory that IS an issue but whose frontmatter fails to parse
-/// is NOT skipped silently: it is excluded from the returned
-/// records (a mis-parsed record cannot be trusted) but reported
-/// back as a [`Finding`] (`frontmatter_parse_failed`) so callers can
-/// surface it through the FR-45 notes channel instead of the
-/// listing quietly lying about the group's true issue count. Mirrors
-/// the identical fix already applied to `list_features`.
+/// A memory that IS an issue but whose frontmatter fails to parse is NOT skipped silently:
+/// it is excluded from the returned records, a mis-parsed record cannot be trusted,
+/// but reported back as a [`Finding`] (`frontmatter_parse_failed`),
+/// so callers can surface it through the notes channel,
+/// instead of the listing quietly lying about the group's true issue count.
+/// `list_features` applies the same rule.
 pub async fn list_issues(
     backend: &NativeBackend,
     entry: &GroupEntry,
     status_filter: Option<IssueStatus>,
     show_all: bool,
 ) -> Result<(Vec<IssueRecord>, Vec<Finding>), IssueError> {
-    // FR-41-aware: walk recursively so nested slug paths surface
-    // alongside flat ones.
+    // Walk recursively so nested slug paths surface alongside flat ones.
     let slug_dirs = crate::memory::list_memory_slug_dirs(backend, &entry.handle, &Rev::head())
         .await
         .map_err(|e| IssueError::Memory(ImportError::Git(e)))?;
@@ -678,13 +674,11 @@ pub async fn list_issues(
                     out.push(record);
                 }
             }
-            // `NotAnIssue` is an *expected* non-match — the slug is
-            // a rule / snapshot / log / reference / scratch / pure
-            // feature memory, not a corruption signal.
+            // `NotAnIssue` is an *expected* non-match:
+            // the slug is a rule/snapshot/log/reference/scratch/pure feature memory, not a corruption signal.
             Err(IssueError::NotAnIssue { .. }) => {}
-            // A genuine parse error does NOT silently drop the
-            // memory from view: it is surfaced as a finding so a
-            // corrupt-on-disk issue is loud instead of invisible.
+            // A genuine parse error does NOT silently drop the memory from view:
+            // it is surfaced as a finding so a corrupt-on-disk issue is loud instead of invisible.
             Err(IssueError::Memory(ImportError::Parse(err))) => {
                 findings.push(crate::tracker::parse_failed_finding(
                     &entry.manifest.group_id.to_string(),
@@ -705,9 +699,8 @@ pub async fn list_issues(
 }
 
 /// Body-free counterpart to [`list_issues`] for listing surfaces.
-/// Also forwards `list_issues`'s per-memory parse-error findings
-/// unchanged, so callers surface them through the FR-45 notes
-/// channel.
+/// Also forwards `list_issues`'s per-memory parse-error findings unchanged,
+/// so callers surface them through the notes channel.
 pub async fn list_issue_summaries(
     backend: &NativeBackend,
     entry: &GroupEntry,
