@@ -36,8 +36,8 @@ use crate::groups::{GroupEntry, GroupIndex};
 use crate::home::ResolvedAuthor;
 use crate::memory::{
     AddressingMode, ImportError, WriteFileOptions, WriteMemoryOptions, delete_file_at_path,
-    resolve_commit_message, resolve_memory, slugify_filename, validate_slug, write_file_at_path,
-    write_memory_by_id,
+    resolve_commit_message, resolve_memory, slugify_filename, validate_memory_slug,
+    write_file_at_path, write_memory_by_id,
 };
 
 /// Errors specific to feature-request operations.
@@ -323,7 +323,7 @@ pub async fn add_feature(
         Some(raw) => raw,
         None => slugify_filename(&spec.title),
     };
-    validate_slug(&slug).map_err(FeatureError::Memory)?;
+    validate_memory_slug(&slug).map_err(FeatureError::Memory)?;
 
     // Resolve the old feature up front (before auto-assigning the new number),
     // so supersede-specific errors surface before touching the numbering state.
@@ -540,7 +540,7 @@ pub async fn read_feature(
     slug: &str,
     rev: Option<&str>,
 ) -> Result<FeatureRecord, FeatureError> {
-    validate_slug(slug).map_err(FeatureError::Memory)?;
+    validate_memory_slug(slug).map_err(FeatureError::Memory)?;
     let resolved = resolve_memory(backend, &entry.handle, Some(slug), None)
         .await
         .map_err(FeatureError::Memory)?;
@@ -764,8 +764,8 @@ pub async fn rename_feature(
         *entry.manifest.group_id.as_uuid(),
     ))
     .await;
-    validate_slug(old_slug).map_err(FeatureError::Memory)?;
-    validate_slug(new_slug).map_err(FeatureError::Memory)?;
+    validate_memory_slug(old_slug).map_err(FeatureError::Memory)?;
+    validate_memory_slug(new_slug).map_err(FeatureError::Memory)?;
     if old_slug == new_slug {
         // Explicit short-circuit so operators don't pay a commit for a no-op.
         // A fresh listing is cheap and matches the semantics callers expect from "rename to the same slug".
@@ -774,9 +774,10 @@ pub async fn rename_feature(
 
     // Plan the moves: one commit, new paths written and old paths removed in the same tree rewrite
     // so `git log` never shows a half-renamed state.
-    // Rejects a source file that is not a feature, keeping the tool aligned with `delete_feature`'s not-a-feature guard.
+    // Rejects a source file that carries no `[feature]` block, keeping the tool aligned with
+    // `delete_feature`'s not-a-feature guard and `record_from_file`'s block-presence gating.
     let planned = crate::tracker::plan_slug_rename(backend, entry, old_slug, new_slug, |file| {
-        if file.frontmatter.kind != MemoryKind::Feature {
+        if file.frontmatter.feature.is_none() {
             Some(FeatureError::NotAFeature {
                 slug: old_slug.to_string(),
                 kind: file.frontmatter.kind.as_str().to_string(),
@@ -1053,20 +1054,21 @@ fn build_memory_file(
 }
 
 /// Convert a parsed on-disk `MemoryFile` into the typed FR shape.
-/// Returns `NotAFeature` when the file exists but is not kind=Fr,
+/// Returns `NotAFeature` when the file carries no `[feature]` block,
 /// so the FR tools never silently operate on unrelated memories.
+/// Gates on block PRESENCE, not `frontmatter.kind`: a hybrid memory (kind=Issue carrying both
+/// `[feature]` and `[issue]` blocks) is a real feature per kind.rs's documented hybrid model,
+/// via [`crate::tracker::require_block`].
 fn record_from_file(
     slug: &str,
     file: MemoryFile,
     commit_id: String,
 ) -> Result<FeatureRecord, FeatureError> {
-    if file.frontmatter.kind != MemoryKind::Feature {
-        return Err(FeatureError::NotAFeature {
-            slug: slug.to_string(),
-            kind: file.frontmatter.kind.as_str().to_string(),
-        });
-    }
-    let metadata = file.frontmatter.feature.unwrap_or_default();
+    let kind = file.frontmatter.kind.as_str().to_string();
+    let metadata =
+        crate::tracker::require_block(slug, &kind, file.frontmatter.feature, |slug, kind| {
+            FeatureError::NotAFeature { slug, kind }
+        })?;
     Ok(FeatureRecord {
         slug: slug.to_string(),
         title: file.frontmatter.name,
@@ -1911,6 +1913,92 @@ mod tests {
         )
         .await
         .expect_err("delete on a non-FR must refuse");
+        assert!(matches!(err, FeatureError::NotAFeature { .. }));
+    }
+
+    /// Regression guard for the block-presence gating fix: `record_from_file` used to gate on
+    /// `frontmatter.kind == MemoryKind::Feature`, which rejected a real hybrid memory (kind=Issue
+    /// carrying both a `[feature]` and an `[issue]` block) even though kind.rs documents hybrids
+    /// as legitimate and `next_ticket_number` already reads both blocks off one file. Gating on
+    /// `[feature]` block presence instead accepts it.
+    #[tokio::test]
+    async fn read_feature_accepts_hybrid_memory_of_issue_kind() {
+        use crate::memory::import_memory;
+        use mmcp_core::memory::IssueMetadata;
+
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        let file = MemoryFile {
+            frontmatter: MemoryFrontmatter::new("Hybrid", "carries both blocks", MemoryKind::Issue)
+                .with_feature(FeatureMetadata {
+                    status: FeatureStatus::Requested,
+                    number: Some(7),
+                    ..FeatureMetadata::default()
+                })
+                .with_issue(IssueMetadata {
+                    number: Some(7),
+                    ..IssueMetadata::default()
+                }),
+            body: "## Need\n\nHybrid feature/issue.\n".to_string(),
+            format: FrontmatterFormat::TomlPlus,
+        };
+        let rendered = file.to_string().expect("render hybrid memory");
+        import_memory(
+            scratch.backend(),
+            &entry.handle,
+            "hybrid-memory",
+            &rendered,
+            None,
+            scratch.author(),
+            false,
+        )
+        .await
+        .expect("seed hybrid memory");
+
+        let record = read_feature(scratch.backend(), &entry, "hybrid-memory", None)
+            .await
+            .expect(
+                "a memory carrying a [feature] block must read as a feature regardless of kind",
+            );
+        assert_eq!(record.number, Some(7));
+        assert_eq!(record.status, FeatureStatus::Requested);
+    }
+
+    /// Regression guard: `record_from_file` used to fall back to `FeatureMetadata::default()`
+    /// via `unwrap_or_default()` when a kind=Feature memory carried no `[feature]` block,
+    /// silently fabricating a `Requested`/no-number record instead of erroring. The block-presence
+    /// gate now refuses it exactly like the non-FR-kind case does.
+    #[tokio::test]
+    async fn read_feature_refuses_feature_kind_without_feature_block() {
+        use crate::memory::{SynthFrontmatter, import_memory};
+
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        import_memory(
+            scratch.backend(),
+            &entry.handle,
+            "empty-feature-block",
+            "no feature block at all",
+            Some(SynthFrontmatter {
+                name: "Feature-kind, no block".into(),
+                description: "kind says feature, block is absent".into(),
+                kind: MemoryKind::Feature,
+            }),
+            scratch.author(),
+            false,
+        )
+        .await
+        .expect("seed kind=feature memory with no [feature] block");
+
+        let err = read_feature(scratch.backend(), &entry, "empty-feature-block", None)
+            .await
+            .expect_err(
+                "a kind=Feature memory with no [feature] block must error, never fabricate",
+            );
         assert!(matches!(err, FeatureError::NotAFeature { .. }));
     }
 
