@@ -26,13 +26,13 @@ async function openSingleton(spec: WindowSpec): Promise<void> {
     try {
       await existing.unminimize();
       await existing.setFocus();
+      return;
     } catch {
       // Window might have been closed between lookup and focus; fall
       // through to spawn a fresh one.
       const retry = await WebviewWindow.getByLabel(spec.label);
       if (retry) return;
     }
-    return;
   }
   new WebviewWindow(spec.label, {
     url: spec.url,
