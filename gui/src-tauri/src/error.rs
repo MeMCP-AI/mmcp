@@ -34,6 +34,53 @@ pub enum GuiStoreError {
     MemoryParse(#[from] mmcp_core::memory::MemoryParseError),
 }
 
+/// Failure modes specific to the archive-command Tauri layer: native
+/// file-dialog plumbing, and the picked-path confinement / size-cap
+/// checks around reading an archive file from disk (see
+/// `commands/archive.rs`).
+#[derive(Debug, Error)]
+pub enum GuiArchiveError {
+    /// No main window to parent a native dialog to.
+    #[error("main window is not available")]
+    NoMainWindow,
+
+    /// The oneshot channel carrying a native dialog's result was
+    /// dropped before the dialog callback fired.
+    #[error("dialog channel closed before a result arrived")]
+    DialogChannelClosed,
+
+    /// The dialog returned a handle Tauri could not convert to a
+    /// filesystem path (e.g. a non-`file://` URI).
+    #[error("dialog returned an unusable path: {0}")]
+    DialogPathUnusable(String),
+
+    /// `value` does not name a recognized memory kind.
+    #[error("unknown memory kind '{0}'")]
+    UnknownKind(String),
+
+    /// Export was requested with no groups selected.
+    #[error("no groups to export")]
+    NoGroupsSelected,
+
+    /// `path` was never returned by the archive file picker, so the
+    /// read is refused rather than trusting an arbitrary IPC-supplied
+    /// filesystem path.
+    #[error("archive path {path} was not selected through the file picker")]
+    PathNotPicked { path: String },
+
+    /// `path` is `size` bytes, exceeding the `max`-byte read cap.
+    #[error("archive {path} is {size} bytes, exceeding the {max} byte limit")]
+    TooLarge { path: String, size: u64, max: u64 },
+
+    /// Reading the archive bytes from disk failed.
+    #[error("reading archive {path}: {source}")]
+    Read {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
 #[derive(Debug, Error)]
 pub enum GuiError {
     /// A store-layer failure: memory/group read or write, import,
@@ -55,9 +102,19 @@ pub enum GuiError {
     #[error("sync-not-configured")]
     SyncNotConfigured,
 
-    /// GUI-local failure with no typed source to chain: dialog
-    /// plumbing, config I/O, or other command-local text that has
-    /// nothing structured to extract.
+    /// An archive-command-layer failure: dialog plumbing or the
+    /// picked-path confinement / size checks. See [`GuiArchiveError`].
+    #[error("archive: {0}")]
+    Archive(#[from] GuiArchiveError),
+
+    /// Invalid UTF-8 encountered decoding process output or file
+    /// contents.
+    #[error("utf-8: {0}")]
+    Utf8(#[from] std::str::Utf8Error),
+
+    /// GUI-local failure with no typed source to chain: config I/O,
+    /// filesystem-watcher setup, or other command-local text that has
+    /// nothing more structured to extract.
     #[error("{0}")]
     Other(String),
 }
@@ -92,12 +149,6 @@ impl From<anyhow::Error> for GuiError {
     }
 }
 
-impl From<std::str::Utf8Error> for GuiError {
-    fn from(e: std::str::Utf8Error) -> Self {
-        GuiError::Other(format!("utf-8: {e}"))
-    }
-}
-
 // Hand-written rather than derived: the frontend's `GuiErrorPayload`
 // TS type is a flat `{ kind, message? }` shape. A derived adjacently
 // tagged `Serialize` would nest the wrapped source error's own
@@ -115,6 +166,8 @@ impl Serialize for GuiError {
             GuiError::Git(e) => ("git", Some(e.to_string())),
             GuiError::Sync(e) => ("sync", Some(e.to_string())),
             GuiError::SyncNotConfigured => ("sync_not_configured", None),
+            GuiError::Archive(e) => ("archive", Some(e.to_string())),
+            GuiError::Utf8(e) => ("utf8", Some(e.to_string())),
             GuiError::Other(msg) => ("other", Some(msg.clone())),
         };
         let mut state = serializer.serialize_struct("GuiError", 2)?;
@@ -192,5 +245,43 @@ mod tests {
         let value = serde_json::to_value(GuiError::SyncNotConfigured).unwrap();
         assert_eq!(value["kind"], "sync_not_configured");
         assert!(value["message"].is_null());
+    }
+
+    #[test]
+    fn archive_error_chains_to_the_real_source() {
+        let source = GuiArchiveError::PathNotPicked {
+            path: "/tmp/archive.tar".into(),
+        };
+        let err: GuiError = source.into();
+
+        assert!(matches!(err, GuiError::Archive(_)));
+        let chained = err
+            .source()
+            .and_then(|s| s.downcast_ref::<GuiArchiveError>())
+            .expect("archive source must be preserved");
+        assert!(matches!(
+            chained,
+            GuiArchiveError::PathNotPicked { path } if path == "/tmp/archive.tar"
+        ));
+
+        let value = serde_json::to_value(&err).unwrap();
+        assert_eq!(value["kind"], "archive");
+        assert_eq!(
+            value["message"],
+            "archive path /tmp/archive.tar was not selected through the file picker"
+        );
+    }
+
+    #[test]
+    fn archive_too_large_reports_size_and_limit_in_its_message() {
+        let err = GuiArchiveError::TooLarge {
+            path: "/tmp/big.tar".into(),
+            size: 200,
+            max: 100,
+        };
+        assert_eq!(
+            err.to_string(),
+            "archive /tmp/big.tar is 200 bytes, exceeding the 100 byte limit"
+        );
     }
 }
