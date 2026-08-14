@@ -1,11 +1,8 @@
 //! Error-branch coverage for `/auth/*` routes.
 //!
-//! `auth_flow.rs` covers the password happy path and the
-//! wrong-password/duplicate-handle 4xx cases. This suite covers the
-//! OAuth branches, the passkey start/finish error paths, and the
-//! unknown-handle login path: each test targets the server-local
-//! error surface without a real WebAuthn client or a live OAuth
-//! provider.
+//! `auth_flow.rs` covers the password happy path and the wrong-password/duplicate-handle 4xx cases.
+//! This suite covers the OAuth branches, the passkey start/finish error paths, and the unknown-handle login path:
+//! each test targets the server-local error surface, without a real WebAuthn client or a live OAuth provider.
 
 use std::net::SocketAddr;
 

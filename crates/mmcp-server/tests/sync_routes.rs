@@ -1,11 +1,9 @@
 //! Integration tests for the `/sync/*` control-plane routes.
 //!
-//! Covers the happy paths of `GET /sync/manifest`,
-//! `GET /sync/refs/{group}`, and `POST /sync/push`. Tests drive a
-//! real axum server with an in-memory database and tempdir-backed
-//! repo root, hit each endpoint via `reqwest`, and assert the
-//! shapes against the wire types shared with the `mmcp-sync` client
-//! crate.
+//! Covers the happy paths of `GET /sync/manifest`, `GET /sync/refs/{group}`, and `POST /sync/push`.
+//! Tests drive a real axum server with an in-memory database and tempdir-backed repo root,
+//! hit each endpoint via `reqwest`,
+//! and assert the shapes against the wire types shared with the `mmcp-sync` client crate.
 
 use std::net::SocketAddr;
 

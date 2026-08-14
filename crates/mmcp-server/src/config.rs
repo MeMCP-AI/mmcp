@@ -114,8 +114,8 @@ fn random_key() -> [u8; 32] {
     // `getrandom(2)` on Linux, `BCryptGenRandom` on Windows, etc.).
     // On a platform that cannot satisfy that, e.g. a sandbox with no
     // entropy source, panic at startup rather than hand out
-    // guessable tokens. Admins set `MMCP_TOKEN_KEY_HEX` explicitly
-    // when they need a stable key across restarts.
+    // guessable tokens.
+    // Admins set `MMCP_TOKEN_KEY_HEX` explicitly when they need a stable key across restarts.
     let mut out = [0u8; 32];
     getrandom::fill(&mut out).expect("OS CSPRNG unavailable; set MMCP_TOKEN_KEY_HEX explicitly");
     out
