@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -28,12 +28,23 @@ use jiff::Timestamp;
 use mmcp_auth::{AuthSession, Credentials, hash_password, validate_password_policy};
 use mmcp_db::repository::{passkey_repo, user_repo};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use webauthn_rs::prelude::*;
 
 use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
+
+/// Maximum accepted body size for every `/auth/*` request, in bytes.
+/// A coarse backstop independent of the (configurable)
+/// password-length bound: even a pathologically large JSON body must
+/// never reach the deserializer, let alone the Argon2 hashing step
+/// the register/login password-policy check guards against.
+/// 16 KiB comfortably covers every field's own maximum
+/// (`MAX_HANDLE_LENGTH` + `MAX_EMAIL_LENGTH` + `MAX_DISPLAY_NAME_LENGTH`
+/// + a generous password ceiling) plus JSON structural overhead.
+const AUTH_REQUEST_BODY_LIMIT_BYTES: usize = 16 * 1024;
 
 pub fn router() -> Router<ServerState> {
     Router::new()
@@ -51,6 +62,7 @@ pub fn router() -> Router<ServerState> {
         )
         .route("/auth/passkey/login/start", post(passkey_login_start))
         .route("/auth/passkey/login/finish", post(passkey_login_finish))
+        .layer(DefaultBodyLimit::max(AUTH_REQUEST_BODY_LIMIT_BYTES))
 }
 
 // ── Password ────────────────────────────────────────────────────
@@ -66,12 +78,12 @@ pub const MAX_HANDLE_LENGTH: usize = 64;
 /// the maximum length an RFC 5321 compliant email address can have
 /// (the `MAIL FROM` reverse-path limit), so it is a real protocol
 /// bound rather than an arbitrary pick.
-const MAX_EMAIL_LENGTH: usize = 254;
+pub const MAX_EMAIL_LENGTH: usize = 254;
 
 /// Maximum accepted length of a display name, in bytes. Display
 /// names are shown in WebUI listings; 128 stays far above any real
 /// name while bounding pathological input.
-const MAX_DISPLAY_NAME_LENGTH: usize = 128;
+pub const MAX_DISPLAY_NAME_LENGTH: usize = 128;
 
 #[derive(Deserialize)]
 pub struct RegisterRequest {
@@ -86,38 +98,52 @@ pub struct RegisterResponse {
     pub user_id: Uuid,
 }
 
-/// Check `value`'s byte length against `max`, returning a 400-class
-/// [`AuthHttpError::Validation`] naming the offending field when it
-/// is exceeded.
+/// Check `value`'s byte length against `max`, returning a
+/// [`AuthHttpError::FieldTooLong`] naming the offending field, its
+/// actual length, and the max when it is exceeded.
 fn validate_max_length(field: &'static str, value: &str, max: usize) -> Result<(), AuthHttpError> {
     let actual = value.len();
     if actual > max {
-        return Err(AuthHttpError::Validation(format!(
-            "field '{field}' is too long: {actual} bytes exceeds the {max}-byte maximum"
-        )));
+        return Err(AuthHttpError::FieldTooLong { field, actual, max });
+    }
+    Ok(())
+}
+
+/// Reject `value` if it is empty or trims to an empty string,
+/// returning [`AuthHttpError::FieldBlank`] naming the offending
+/// field.
+fn validate_non_blank(field: &'static str, value: &str) -> Result<(), AuthHttpError> {
+    if value.trim().is_empty() {
+        return Err(AuthHttpError::FieldBlank { field });
     }
     Ok(())
 }
 
 /// Validate a [`RegisterRequest`]'s fields at the HTTP boundary, so
 /// a rejected request never reaches the password hasher or the
-/// database: an empty/whitespace-only handle or password is
-/// rejected, and every field carries an explicit maximum length.
-fn validate_register_request(req: &RegisterRequest) -> Result<(), AuthHttpError> {
-    if req.handle.trim().is_empty() {
-        return Err(AuthHttpError::Validation(
-            "field 'handle' must not be empty or whitespace-only".to_string(),
-        ));
-    }
+/// database: an empty/whitespace-only handle, email, or display name
+/// is rejected, every field carries an explicit maximum length, and
+/// the password is checked against the server's resolved
+/// [`min_password_length`](crate::config::ServerConfig::min_password_length) /
+/// [`max_password_length`](crate::config::ServerConfig::max_password_length)
+/// bounds.
+fn validate_register_request(
+    req: &RegisterRequest,
+    min_password_length: usize,
+    max_password_length: usize,
+) -> Result<(), AuthHttpError> {
+    validate_non_blank("handle", &req.handle)?;
     validate_max_length("handle", &req.handle, MAX_HANDLE_LENGTH)?;
     if let Some(email) = &req.email {
+        validate_non_blank("email", email)?;
         validate_max_length("email", email, MAX_EMAIL_LENGTH)?;
     }
     if let Some(display_name) = &req.display_name {
+        validate_non_blank("display_name", display_name)?;
         validate_max_length("display_name", display_name, MAX_DISPLAY_NAME_LENGTH)?;
     }
-    validate_password_policy(&req.password)
-        .map_err(|e| AuthHttpError::Validation(e.to_string()))?;
+    validate_password_policy(&req.password, min_password_length, max_password_length)
+        .map_err(AuthHttpError::PasswordPolicy)?;
     Ok(())
 }
 
@@ -125,7 +151,7 @@ async fn register(
     State(state): State<ServerState>,
     Json(req): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<RegisterResponse>), AuthHttpError> {
-    validate_register_request(&req)?;
+    validate_register_request(&req, state.min_password_length, state.max_password_length)?;
     let hash = hash_password(&req.password).map_err(into_generic_response)?;
     let user_id = Uuid::now_v7();
     user_repo::create(
@@ -157,11 +183,26 @@ pub struct LoginResponse {
     pub expires_at: i64,
 }
 
+/// Bound [`LoginRequest::password`] before it ever reaches
+/// [`mmcp_auth::verify_password`]'s Argon2 step. Login shares the
+/// same unauthenticated-router, hashing-amplification threat model
+/// `/auth/register`'s password-length check already guards against
+/// (see [`AUTH_REQUEST_BODY_LIMIT_BYTES`]); only the maximum bound
+/// applies here (there is no minimum to enforce against an unknown
+/// existing account's password).
+fn validate_login_request(
+    req: &LoginRequest,
+    max_password_length: usize,
+) -> Result<(), AuthHttpError> {
+    validate_max_length("password", &req.password, max_password_length)
+}
+
 async fn login(
     mut auth_session: AuthSession,
     State(state): State<ServerState>,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, AuthHttpError> {
+    validate_login_request(&req, state.max_password_length)?;
     let user = auth_session
         .authenticate(Credentials::Password {
             handle: req.handle.clone(),
@@ -301,15 +342,24 @@ async fn oauth_callback(
 
 // ── Passkey ─────────────────────────────────────────────────────
 
-/// In-flight passkey registration state. In production this would
-/// live in the session store or a short-lived cache; for now we
-/// use a global mutex keyed by user id.
-type PasskeyRegState = Arc<Mutex<std::collections::HashMap<Uuid, PasskeyRegistration>>>;
-type PasskeyAuthState = Arc<Mutex<std::collections::HashMap<Uuid, PasskeyAuthentication>>>;
+/// Passkey ceremonies (registration or authentication) must complete
+/// within this window; a real browser round-trip takes seconds, not
+/// minutes. An entry older than this is stale and is purged on the
+/// next insert into the same map, bounding memory growth from
+/// ceremonies an authenticated user started but never finished.
+const PASSKEY_CEREMONY_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
-/// Lazily initialized global registration state. Entries expire
-/// after a few minutes in practice because the ceremony must
-/// complete quickly; we do not garbage-collect here.
+/// In-flight passkey registration state, keyed by user id and
+/// timestamped so [`purge_stale_ceremonies`] can evict entries past
+/// [`PASSKEY_CEREMONY_TTL`]. In production this would live in the
+/// session store or a short-lived cache; for now we use a global
+/// mutex.
+type PasskeyRegState =
+    Arc<Mutex<std::collections::HashMap<Uuid, (std::time::Instant, PasskeyRegistration)>>>;
+type PasskeyAuthState =
+    Arc<Mutex<std::collections::HashMap<Uuid, (std::time::Instant, PasskeyAuthentication)>>>;
+
+/// Lazily initialized global registration state.
 fn reg_state() -> &'static PasskeyRegState {
     static STATE: std::sync::OnceLock<PasskeyRegState> = std::sync::OnceLock::new();
     STATE.get_or_init(|| Arc::new(Mutex::new(std::collections::HashMap::new())))
@@ -318,6 +368,29 @@ fn reg_state() -> &'static PasskeyRegState {
 fn auth_state() -> &'static PasskeyAuthState {
     static STATE: std::sync::OnceLock<PasskeyAuthState> = std::sync::OnceLock::new();
     STATE.get_or_init(|| Arc::new(Mutex::new(std::collections::HashMap::new())))
+}
+
+/// Remove entries older than [`PASSKEY_CEREMONY_TTL`] from `map`.
+/// Called immediately before every insert into
+/// [`reg_state`]/[`auth_state`], so an abandoned ceremony never lives
+/// past its natural completion window instead of accumulating for
+/// the process lifetime.
+fn purge_stale_ceremonies<T>(map: &mut std::collections::HashMap<Uuid, (std::time::Instant, T)>) {
+    map.retain(|_, (inserted_at, _)| inserted_at.elapsed() < PASSKEY_CEREMONY_TTL);
+}
+
+/// Remove and return the ceremony state for `user_id`, but only when
+/// it has not aged past [`PASSKEY_CEREMONY_TTL`]. An entry that is
+/// present but stale (not yet reached by [`purge_stale_ceremonies`]'s
+/// next insert-time sweep) is treated the same as absent: the
+/// ceremony window has already closed, so `finish` must not complete
+/// it.
+fn take_ceremony<T>(
+    map: &mut std::collections::HashMap<Uuid, (std::time::Instant, T)>,
+    user_id: Uuid,
+) -> Option<T> {
+    let (inserted_at, value) = map.remove(&user_id)?;
+    (inserted_at.elapsed() < PASSKEY_CEREMONY_TTL).then_some(value)
 }
 
 /// Start the passkey registration ceremony.
@@ -362,10 +435,14 @@ async fn passkey_register_start(
         .map_err(into_generic_response)?;
 
     // Stash the registration state so `finish` can complete it.
-    reg_state()
-        .lock()
-        .await
-        .insert(session_user.id, reg_state_value);
+    {
+        let mut pending = reg_state().lock().await;
+        purge_stale_ceremonies(&mut pending);
+        pending.insert(
+            session_user.id,
+            (std::time::Instant::now(), reg_state_value),
+        );
+    }
 
     Ok(Json(ccr))
 }
@@ -389,14 +466,9 @@ async fn passkey_register_finish(
         .user
         .ok_or(AuthHttpError::Unauthorized("authentication required"))?;
 
-    let pending =
-        reg_state()
-            .lock()
-            .await
-            .remove(&session_user.id)
-            .ok_or(AuthHttpError::BadRequest(
-                "no pending registration for this user",
-            ))?;
+    let pending = take_ceremony(&mut *reg_state().lock().await, session_user.id).ok_or(
+        AuthHttpError::BadRequest("no pending registration for this user"),
+    )?;
 
     let passkey = state
         .webauthn
@@ -450,7 +522,11 @@ async fn passkey_login_start(
         .start_passkey_authentication(&passkeys)
         .map_err(into_generic_response)?;
 
-    auth_state().lock().await.insert(user.id, auth_state_value);
+    {
+        let mut pending = auth_state().lock().await;
+        purge_stale_ceremonies(&mut pending);
+        pending.insert(user.id, (std::time::Instant::now(), auth_state_value));
+    }
 
     Ok(Json(rcr))
 }
@@ -472,13 +548,9 @@ async fn passkey_login_finish(
         .map_err(into_generic_response)?
         .ok_or(AuthHttpError::NotFound("user not found"))?;
 
-    let pending = auth_state()
-        .lock()
-        .await
-        .remove(&user.id)
-        .ok_or(AuthHttpError::BadRequest(
-            "no pending authentication for this user",
-        ))?;
+    let pending = take_ceremony(&mut *auth_state().lock().await, user.id).ok_or(
+        AuthHttpError::BadRequest("no pending authentication for this user"),
+    )?;
 
     let auth_result = state
         .webauthn
@@ -527,17 +599,47 @@ async fn passkey_login_finish(
 
 // ── Error response ──────────────────────────────────────────────
 
-#[derive(Debug)]
+/// Wire-facing error for every `/auth/*` handler. Each distinct
+/// validation cause is its own variant with structured fields
+/// (never a formatted string carrying the actual/max values as
+/// text), and [`AuthHttpError::PasswordPolicy`] source-chains the
+/// underlying [`mmcp_auth::AuthError`] instead of flattening it to a
+/// string one frame earlier, so a caller matching on the password
+/// error's own typed variants (e.g. distinguishing
+/// [`mmcp_auth::AuthError::PasswordBlank`] from
+/// [`mmcp_auth::AuthError::PasswordTooShort`]) can still do so.
+#[derive(Debug, Error)]
 enum AuthHttpError {
+    #[error("{0}")]
     Unauthorized(&'static str),
+    #[error("{0}")]
     NotFound(&'static str),
+    #[error("{0}")]
     BadRequest(&'static str),
+    #[error("{0}")]
     Conflict(&'static str),
-    /// Request-field validation failed (bad length, empty/blank
-    /// required field). Carries an owned message because the text
-    /// names the offending field and its actual/max values, unlike
-    /// the fixed-literal [`AuthHttpError::BadRequest`] variant.
-    Validation(String),
+    /// A request field exceeded its maximum accepted length.
+    #[error("field '{field}' is too long: {actual} bytes exceeds the {max}-byte maximum")]
+    FieldTooLong {
+        field: &'static str,
+        actual: usize,
+        max: usize,
+    },
+    /// A request field required to be non-blank was empty or
+    /// whitespace-only.
+    #[error("field '{field}' must not be empty or whitespace-only")]
+    FieldBlank { field: &'static str },
+    /// The submitted password failed the password policy (blank, too
+    /// short, or too long). Built with an explicit
+    /// `.map_err(AuthHttpError::PasswordPolicy)` at the one call
+    /// site, never `#[from]`: an automatic `From<AuthError>` impl on
+    /// this enum would leave `?`'s implicit conversion ambiguous
+    /// against the many other `.map_err(into_generic_response)`
+    /// call sites in this module that also resolve to
+    /// `AuthHttpError` through [`FromInternalError`].
+    #[error("{0}")]
+    PasswordPolicy(#[source] mmcp_auth::AuthError),
+    #[error("{0}")]
     Internal(String),
 }
 
@@ -549,22 +651,18 @@ impl FromInternalError for AuthHttpError {
 
 impl IntoResponse for AuthHttpError {
     fn into_response(self) -> Response {
-        match self {
-            AuthHttpError::Unauthorized(msg) => {
-                (StatusCode::UNAUTHORIZED, msg.to_string()).into_response()
-            }
-            AuthHttpError::NotFound(msg) => {
-                (StatusCode::NOT_FOUND, msg.to_string()).into_response()
-            }
-            AuthHttpError::BadRequest(msg) => {
-                (StatusCode::BAD_REQUEST, msg.to_string()).into_response()
-            }
-            AuthHttpError::Conflict(msg) => (StatusCode::CONFLICT, msg.to_string()).into_response(),
-            AuthHttpError::Validation(msg) => (StatusCode::BAD_REQUEST, msg).into_response(),
-            AuthHttpError::Internal(msg) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
-            }
-        }
+        let status = match self {
+            AuthHttpError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            AuthHttpError::NotFound(_) => StatusCode::NOT_FOUND,
+            AuthHttpError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            AuthHttpError::Conflict(_) => StatusCode::CONFLICT,
+            AuthHttpError::FieldTooLong { .. }
+            | AuthHttpError::FieldBlank { .. }
+            | AuthHttpError::PasswordPolicy(_) => StatusCode::BAD_REQUEST,
+            AuthHttpError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        let body = self.to_string();
+        (status, body).into_response()
     }
 }
 
@@ -581,9 +679,20 @@ mod tests {
         }
     }
 
+    /// Run [`validate_register_request`] with the compiled-in
+    /// default password bounds, matching what `ServerState` resolves
+    /// to when no override/env/config tier is set.
+    fn validate(req: &RegisterRequest) -> Result<(), AuthHttpError> {
+        validate_register_request(
+            req,
+            mmcp_auth::MIN_PASSWORD_LENGTH,
+            mmcp_auth::MAX_PASSWORD_LENGTH,
+        )
+    }
+
     #[test]
     fn accepts_a_valid_request() {
-        assert!(validate_register_request(&valid_request()).is_ok());
+        assert!(validate(&valid_request()).is_ok());
     }
 
     #[test]
@@ -592,8 +701,11 @@ mod tests {
             password: String::new(),
             ..valid_request()
         };
-        let err = validate_register_request(&req).unwrap_err();
-        assert!(matches!(err, AuthHttpError::Validation(_)));
+        let err = validate(&req).unwrap_err();
+        assert!(matches!(
+            err,
+            AuthHttpError::PasswordPolicy(mmcp_auth::AuthError::PasswordBlank)
+        ));
     }
 
     #[test]
@@ -603,8 +715,10 @@ mod tests {
             ..valid_request()
         };
         assert!(matches!(
-            validate_register_request(&req),
-            Err(AuthHttpError::Validation(_))
+            validate(&req),
+            Err(AuthHttpError::PasswordPolicy(
+                mmcp_auth::AuthError::PasswordBlank
+            ))
         ));
     }
 
@@ -615,8 +729,10 @@ mod tests {
             ..valid_request()
         };
         assert!(matches!(
-            validate_register_request(&req),
-            Err(AuthHttpError::Validation(_))
+            validate(&req),
+            Err(AuthHttpError::PasswordPolicy(
+                mmcp_auth::AuthError::PasswordTooLong { .. }
+            ))
         ));
     }
 
@@ -627,8 +743,8 @@ mod tests {
             ..valid_request()
         };
         assert!(matches!(
-            validate_register_request(&req),
-            Err(AuthHttpError::Validation(_))
+            validate(&req),
+            Err(AuthHttpError::FieldBlank { field: "handle" })
         ));
     }
 
@@ -639,8 +755,23 @@ mod tests {
             ..valid_request()
         };
         assert!(matches!(
-            validate_register_request(&req),
-            Err(AuthHttpError::Validation(_))
+            validate(&req),
+            Err(AuthHttpError::FieldTooLong {
+                field: "handle",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_empty_email() {
+        let req = RegisterRequest {
+            email: Some("   ".to_string()),
+            ..valid_request()
+        };
+        assert!(matches!(
+            validate(&req),
+            Err(AuthHttpError::FieldBlank { field: "email" })
         ));
     }
 
@@ -651,8 +782,22 @@ mod tests {
             ..valid_request()
         };
         assert!(matches!(
-            validate_register_request(&req),
-            Err(AuthHttpError::Validation(_))
+            validate(&req),
+            Err(AuthHttpError::FieldTooLong { field: "email", .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_empty_display_name() {
+        let req = RegisterRequest {
+            display_name: Some("   ".to_string()),
+            ..valid_request()
+        };
+        assert!(matches!(
+            validate(&req),
+            Err(AuthHttpError::FieldBlank {
+                field: "display_name"
+            })
         ));
     }
 
@@ -663,8 +808,101 @@ mod tests {
             ..valid_request()
         };
         assert!(matches!(
-            validate_register_request(&req),
-            Err(AuthHttpError::Validation(_))
+            validate(&req),
+            Err(AuthHttpError::FieldTooLong {
+                field: "display_name",
+                ..
+            })
         ));
+    }
+
+    #[test]
+    fn a_narrower_caller_supplied_min_password_length_is_actually_enforced() {
+        // Proves `validate_register_request` reads its own
+        // parameters (as `ServerState` resolves them), not the
+        // module-level `mmcp_auth` constants directly: a password
+        // that satisfies the compiled-in default minimum must still
+        // be rejected once the caller narrows the floor above it.
+        let req = RegisterRequest {
+            password: "shortpw1".to_string(),
+            ..valid_request()
+        };
+        assert!(validate_register_request(&req, 4, mmcp_auth::MAX_PASSWORD_LENGTH).is_ok());
+        assert!(matches!(
+            validate_register_request(&req, 20, mmcp_auth::MAX_PASSWORD_LENGTH),
+            Err(AuthHttpError::PasswordPolicy(
+                mmcp_auth::AuthError::PasswordTooShort { min: 20, .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn login_request_within_the_bound_is_accepted() {
+        let req = LoginRequest {
+            handle: "alice".to_string(),
+            password: "any-password".to_string(),
+        };
+        assert!(validate_login_request(&req, mmcp_auth::MAX_PASSWORD_LENGTH).is_ok());
+    }
+
+    #[test]
+    fn login_request_over_the_bound_is_rejected() {
+        let req = LoginRequest {
+            handle: "alice".to_string(),
+            password: "a".repeat(mmcp_auth::MAX_PASSWORD_LENGTH + 1),
+        };
+        assert!(matches!(
+            validate_login_request(&req, mmcp_auth::MAX_PASSWORD_LENGTH),
+            Err(AuthHttpError::FieldTooLong {
+                field: "password",
+                ..
+            })
+        ));
+    }
+
+    /// Build a ceremony-state map with one entry aged past
+    /// [`PASSKEY_CEREMONY_TTL`] and one fresh entry, keyed by the ids
+    /// returned as `(stale_id, fresh_id)`.
+    fn map_with_a_stale_and_a_fresh_entry() -> (
+        std::collections::HashMap<Uuid, (std::time::Instant, ())>,
+        Uuid,
+        Uuid,
+    ) {
+        let stale_id = Uuid::now_v7();
+        let fresh_id = Uuid::now_v7();
+        let mut map = std::collections::HashMap::new();
+        let stale_insert_time = std::time::Instant::now()
+            .checked_sub(PASSKEY_CEREMONY_TTL + std::time::Duration::from_secs(1))
+            .expect("test clock has more than TTL + 1s of headroom behind now");
+        map.insert(stale_id, (stale_insert_time, ()));
+        map.insert(fresh_id, (std::time::Instant::now(), ()));
+        (map, stale_id, fresh_id)
+    }
+
+    #[test]
+    fn purge_stale_ceremonies_evicts_only_entries_past_the_ttl() {
+        let (mut map, stale_id, fresh_id) = map_with_a_stale_and_a_fresh_entry();
+        purge_stale_ceremonies(&mut map);
+        assert!(
+            !map.contains_key(&stale_id),
+            "an entry older than PASSKEY_CEREMONY_TTL must be purged"
+        );
+        assert!(
+            map.contains_key(&fresh_id),
+            "an entry within PASSKEY_CEREMONY_TTL must survive the purge"
+        );
+    }
+
+    #[test]
+    fn take_ceremony_refuses_a_stale_entry_but_returns_a_fresh_one() {
+        let (mut map, stale_id, fresh_id) = map_with_a_stale_and_a_fresh_entry();
+        assert!(
+            take_ceremony(&mut map, stale_id).is_none(),
+            "a stale entry must not be handed back to finish the ceremony"
+        );
+        assert!(
+            take_ceremony(&mut map, fresh_id).is_some(),
+            "a fresh entry must still be usable to finish the ceremony"
+        );
     }
 }
