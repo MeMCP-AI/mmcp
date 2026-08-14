@@ -1,11 +1,11 @@
 //! Typed CRUD over milestone memories.
 //!
-//! A milestone's own frontmatter carries only an editorial
-//! [`MilestoneStatus`]. Its LIVE, computed status — the fold over
-//! the lifecycle states of every feature in the milestone's own
-//! group (see [`super::rollup`]) pointing at it — is never
-//! persisted; every read path in this module computes it fresh via
-//! [`super::rollup`] and attaches it to the returned record.
+//! A milestone's own frontmatter carries only an editorial [`MilestoneStatus`].
+//! Its LIVE, computed status, the fold over the lifecycle states of every feature,
+//! in the milestone's own group pointing at it (see [`super::rollup`]),
+//! is never persisted;
+//! every read path in this module computes it fresh via [`super::rollup`],
+//! and attaches it to the returned record.
 
 use mmcp_core::memory::{
     FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryKind, MilestoneMetadata,
@@ -36,10 +36,8 @@ pub enum MilestoneError {
     #[error(transparent)]
     Cache(#[from] crate::cache::CacheError),
 
-    /// Raised when `read_milestone` / `update_milestone` target a
-    /// memory that exists but is not a `Milestone` kind. Keeps the
-    /// milestone tools from silently operating on unrelated
-    /// memories.
+    /// Raised when `read_milestone`/`update_milestone` target a memory that exists but is not a `Milestone` kind.
+    /// Keeps the milestone tools from silently operating on unrelated memories.
     #[error("memory '{slug}' exists in this group but does not carry a milestone metadata block")]
     NotAMilestone { slug: String, kind: String },
 
@@ -86,15 +84,14 @@ pub struct MilestoneRecord {
     pub commit_id: String,
 }
 
-/// Create a new milestone in the group. Errors with
-/// `MilestoneError::Memory(ImportError::MemoryAlreadyExists)` when
-/// the slug already points at something on disk.
+/// Create a new milestone in the group.
+/// Errors with `MilestoneError::Memory(ImportError::MemoryAlreadyExists)`,
+/// when the slug already points at something on disk.
 ///
-/// The returned record's rollup is always the trivial
-/// zero-features [`RollupStatus::Planning`]: a freshly-minted UUID
-/// cannot yet have any feature pointing at it, so this path skips
-/// the cache query entirely rather than pay for a lookup that can
-/// only ever come back empty.
+/// The returned record's rollup is always the trivial zero-features [`RollupStatus::Planning`]:
+/// a freshly-minted UUID cannot yet have any feature pointing at it,
+/// so this path skips the cache query entirely,
+/// rather than pay for a lookup that can only ever come back empty.
 pub async fn add_milestone(
     backend: &NativeBackend,
     entry: &GroupEntry,
@@ -282,13 +279,12 @@ pub async fn update_milestone(
     })
 }
 
-/// Enumerate milestones in the group, each with a freshly-computed
-/// rollup. Mirrors the tracker convention: default hides
-/// `RollupStatus::Completed` (per rule 4 of the rollup fold) unless
-/// `show_all` is set. Per Q13-style hybrid tolerance, a memory that
-/// IS a milestone but whose frontmatter fails to parse is not
-/// silently dropped: it is excluded from the returned records but
-/// reported back as a [`Finding`] (`frontmatter_parse_failed`).
+/// Enumerate milestones in the group, each with a freshly-computed rollup.
+/// Mirrors the tracker convention: default hides `RollupStatus::Completed`,
+/// (per rule 4 of the rollup fold) unless `show_all` is set.
+/// A memory that IS a milestone but whose frontmatter fails to parse is not silently dropped:
+/// it is excluded from the returned records,
+/// but reported back as a [`Finding`] (`frontmatter_parse_failed`).
 pub async fn list_milestones(
     backend: &NativeBackend,
     entry: &GroupEntry,
@@ -309,8 +305,8 @@ pub async fn list_milestones(
                     out.push(record);
                 }
             }
-            // `NotAMilestone` is an *expected* non-match — the slug
-            // is some other memory kind, not a corruption signal.
+            // `NotAMilestone` is an *expected* non-match:
+            // the slug is some other memory kind, not a corruption signal.
             Err(MilestoneError::NotAMilestone { .. }) => {}
             Err(MilestoneError::Memory(ImportError::Parse(err))) => {
                 findings.push(crate::tracker::parse_failed_finding(
