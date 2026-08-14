@@ -1,35 +1,30 @@
-//! Transactional section-level editing for memory bodies (FR-026).
+//! Transactional section-level editing for memory bodies.
 //!
-//! The body parser in [`mmcp_core::memory::body`] slices a markdown
-//! memory into an ordered sequence of addressable sections, each
-//! with a stable dot-separated path id. This module supplies the
-//! matching mutation surface: an ordered list of
-//! [`MemoryEditOp`]s, applied sequentially to a body string.
+//! The body parser in [`mmcp_core::memory::body`] slices a markdown memory into addressable sections,
+//! each with a stable dot-separated path id.
+//! This module supplies the matching mutation surface:
+//! an ordered list of [`MemoryEditOp`]s, applied sequentially to a body string.
 //!
 //! Semantics:
 //!
-//! - Ops run in order; each op re-parses the body so subsequent
-//!   ops see the prior edits.
-//! - The applier is transactional: the first error aborts the
-//!   whole batch and the input body is returned unchanged at the
-//!   caller's layer.
-//! - Section operations address a whole section — its heading
-//!   line plus every line down to the next peer or shallower
-//!   heading. Nested sections move with their parent.
-//! - Line-level ops (`InsertAtLine`, `ReplaceLines`, `DeleteLines`)
-//!   exist as escape hatches for non-heading content (prose inside
-//!   the preamble, code fences, plain lists). Section ops are the
-//!   preferred surface because they survive rewrites of unrelated
-//!   parts of the body.
+//! - Ops run in order; each op re-parses the body so subsequent ops see the prior edits.
+//! - The applier is transactional:
+//!   the first error aborts the whole batch,
+//!   and the input body is returned unchanged at the caller's layer.
+//! - Section operations address a whole section:
+//!   its heading line plus every line down to the next peer or shallower heading.
+//!   Nested sections move with their parent.
+//! - Line-level ops (`InsertAtLine`, `ReplaceLines`, `DeleteLines`) exist as escape hatches
+//!   for non-heading content, prose inside the preamble, code fences, plain lists.
+//!   Section ops are the preferred surface, because they survive rewrites of unrelated parts of the body.
 //!
-//! Every op resolves to a byte range plus a replacement fragment and
-//! hands both to [`splice`], which owns the seam rules. No op patches
-//! newlines itself: a local patch is what let an insertion merge into
-//! the preceding line or sit flush against the next heading.
+//! Every op resolves to a byte range plus a replacement fragment,
+//! and hands both to [`splice`], which owns the seam rules.
+//! No op patches newlines itself:
+//! a local patch is what lets an insertion merge into the preceding line or sit flush against the next heading.
 //!
-//! The wire shape matches the MCP tool's input schema directly so
-//! a caller can ship the `ops` array verbatim from their tool
-//! request into the applier.
+//! The wire shape matches the MCP tool's input schema directly,
+//! so a caller can ship the `ops` array verbatim from their tool request into the applier.
 
 use std::ops::Range;
 
@@ -38,8 +33,9 @@ use mmcp_core::memory::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Single mutation of a memory body. See the module-level docs for
-/// semantics; the variants are ordered section-first, line-last.
+/// Single mutation of a memory body.
+/// See the module-level docs for semantics;
+/// the variants are ordered section-first, line-last.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum MemoryEditOp {
@@ -193,11 +189,10 @@ pub enum MemoryEditError {
     UpsertSectionNotSelfContained { requested: String },
 }
 
-/// Apply a sequence of ops to `body`, returning the rewritten
-/// markdown. Ops are applied in order; each re-parses the body
-/// so subsequent ops see the prior edits. The function is a pure
-/// transformation — no I/O, no git — so tests drive it with plain
-/// strings.
+/// Apply a sequence of ops to `body`, returning the rewritten markdown.
+/// Ops are applied in order; each re-parses the body so subsequent ops see the prior edits.
+/// The function is a pure transformation, no I/O, no git,
+/// so tests drive it with plain strings.
 pub fn apply_ops(body: &str, ops: &[MemoryEditOp]) -> Result<String, MemoryEditError> {
     let mut current = body.to_string();
     for op in ops {
@@ -386,8 +381,8 @@ fn move_section(
         .ok_or_else(|| MemoryEditError::SectionNotFound {
             path: anchor_path.to_string(),
         })?;
-    // Reject moves where the anchor sits inside the target's
-    // subtree — otherwise the extracted block would loop.
+    // Reject moves where the anchor sits inside the target's subtree:
+    // otherwise the extracted block would loop.
     if anchor_idx > target_idx {
         let target_end_idx = subtree_end_idx(&sections, target_idx);
         if anchor_idx < target_end_idx {

@@ -1,17 +1,15 @@
 //! Shared tracker-layer machinery.
 //!
-//! `features` and `issues` are structurally near-identical CRUD
-//! surfaces over two distinct memory kinds (`Feature` and `Issue`)
-//! that deliberately keep DISTINCT status vocabularies — "two
-//! systems, two purposes" per the operator's ruling. What *is*
-//! shared is the surrounding plumbing: the per-group ticket counter,
-//! cross-reference composition, slug-rename git planning, and the
-//! listing/notes-channel shape that decides which records survive a
-//! filter and how a corrupt-on-disk memory gets reported instead of
-//! silently dropped.
+//! `features` and `issues` are structurally near-identical CRUD surfaces,
+//! over two distinct memory kinds (`Feature` and `Issue`),
+//! that deliberately keep distinct status vocabularies: two systems, two purposes.
 //!
-//! Per the global-coding-rules section 13 the helper lives in its
-//! own concern-named module so neither tracker surface owns it.
+//! What *is* shared is the surrounding plumbing:
+//! the per-group ticket counter, cross-reference composition, slug-rename git planning,
+//! and the listing/notes-channel shape that decides which records survive a filter,
+//! and how a corrupt-on-disk memory gets reported instead of silently dropped.
+//!
+//! The helper lives in its own concern-named module so neither tracker surface owns it.
 
 use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION, memory_path};
 use mmcp_core::memory::{MemoryFile, MemoryRef, Status};
@@ -24,15 +22,14 @@ use crate::memory::{ImportError, list_memory_slug_dirs};
 
 /// Compute the next ticket number for the group.
 ///
-/// Reads the frontmatter of every memory under `memories/`, looks
-/// at `feature.number` and `issue.number`, and returns one more
-/// than the maximum observed value. Returns `1` for an empty
-/// group. FR-41-aware: nested slug paths are walked recursively
-/// via [`list_memory_slug_dirs`].
+/// Reads the frontmatter of every memory under `memories/`,
+/// looks at `feature.number` and `issue.number`,
+/// and returns one more than the maximum observed value.
+/// Returns `1` for an empty group.
+/// Nested slug paths are walked recursively via [`list_memory_slug_dirs`].
 ///
-/// Errors only on a hard list / read failure on the underlying
-/// git tree; per-memory parse errors are ignored so a single
-/// malformed file does not stall the counter.
+/// Errors only on a hard list / read failure on the underlying git tree;
+/// per-memory parse errors are ignored so a single malformed file does not stall the counter.
 pub async fn next_ticket_number(
     backend: &NativeBackend,
     entry: &GroupEntry,
@@ -92,17 +89,14 @@ pub(crate) fn compose_refs(
     out
 }
 
-/// Decide whether a tracker record carrying `status` survives a
-/// listing filter. Shared precedence between `list_features` and
-/// `list_issues`:
+/// Decide whether a tracker record carrying `status` survives a listing filter.
+/// Shared precedence between `list_features` and `list_issues`:
 ///
-/// 1. `status_filter = Some(x)` wins over `show_all` — an explicit
-///    selector always includes a matching record.
-/// 2. `status_filter = None`, `show_all = true` — every record.
-/// 3. `status_filter = None`, `show_all = false` — hide whatever
-///    the status's own [`Status::is_default_hidden`] marks
-///    terminal-ish, so each tracker kind declares its own default
-///    visibility once instead of every call site re-deciding it.
+/// 1. `status_filter = Some(x)` wins over `show_all`: an explicit selector always includes a matching record.
+/// 2. `status_filter = None`, `show_all = true`: every record.
+/// 3. `status_filter = None`, `show_all = false`:
+///    hide whatever the status's own [`Status::is_default_hidden`] marks terminal-ish,
+///    so each tracker kind declares its own default visibility once instead of every call site re-deciding it.
 pub(crate) fn listing_keeps_status<S: Status>(
     status: S,
     status_filter: Option<S>,
@@ -115,16 +109,14 @@ pub(crate) fn listing_keeps_status<S: Status>(
     }
 }
 
-/// Build the `frontmatter_parse_failed` [`Finding`] both
-/// `list_features` and `list_issues` emit for a memory whose
-/// frontmatter failed to parse, so a corrupt-on-disk tracker memory
-/// is reported instead of silently vanishing from the listing.
+/// Build the `frontmatter_parse_failed` [`Finding`] both `list_features` and `list_issues` emit,
+/// for a memory whose frontmatter failed to parse,
+/// so a corrupt-on-disk tracker memory is reported instead of silently vanishing from the listing.
 ///
-/// `pub` (not `pub(crate)`): `mmcp-client`'s generic `list_memories`
-/// / `search_memories` MCP tools reuse this exact shape for the same
-/// parse-failure-fabrication bug outside the tracker kinds, so every
-/// caller across the workspace reports one `frontmatter_parse_failed`
-/// code with one message format instead of drifting per crate.
+/// `pub` (not `pub(crate)`): `mmcp-client`'s generic `list_memories`/`search_memories` tools reuse this shape,
+/// for the same parse-failure-fabrication pattern outside the tracker kinds,
+/// so every caller across the workspace reports one `frontmatter_parse_failed` code,
+/// with one message format instead of drifting per crate.
 pub fn parse_failed_finding(
     group: &str,
     slug: &str,
@@ -139,23 +131,21 @@ pub fn parse_failed_finding(
     }
 }
 
-/// Git move-list produced by [`plan_slug_rename`], ready for
-/// `CommitSpec::mmcp_commit`.
+/// Git move-list produced by [`plan_slug_rename`], ready for `CommitSpec::mmcp_commit`.
 pub(crate) type PlannedRename = Vec<(String, Option<Vec<u8>>)>;
 
 /// Walk every memory file under `old_slug`'s two-level directory,
 /// parse each, and stage a git move to `new_slug` in one batch.
 /// Shared git plumbing between `rename_feature` and `rename_issue`;
-/// only the ownership check differs between the two kinds, so it is
-/// supplied by the caller as `reject_foreign`: given the parsed
-/// file, return `Some(err)` when the memory does not belong to the
-/// caller's tracker kind (mirrors `delete_feature` / `delete_issue`'s
-/// not-a-* guard), or `None` to accept it into the rename.
+/// only the ownership check differs between the two kinds,
+/// so it is supplied by the caller as `reject_foreign`:
+/// given the parsed file, return `Some(err)` when the memory does not belong to the caller's tracker kind,
+/// mirroring `delete_feature`/`delete_issue`'s not-a-* guard,
+/// or `None` to accept it into the rename.
 ///
-/// Errors on a hard git failure, on an empty source directory, or on
-/// the first rejected file — the caller's `E` must be constructible
-/// from [`ImportError`] (`#[from]` on the wrapping variant already
-/// gives every tracker error type this for free).
+/// Errors on a hard git failure, on an empty source directory, or on the first rejected file:
+/// the caller's `E` must be constructible from [`ImportError`],
+/// (`#[from]` on the wrapping variant already gives every tracker error type this for free).
 pub(crate) async fn plan_slug_rename<E>(
     backend: &NativeBackend,
     entry: &GroupEntry,
