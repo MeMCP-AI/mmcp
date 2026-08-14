@@ -28,8 +28,8 @@ use crate::groups::GroupEntry;
 use crate::home::ResolvedAuthor;
 use crate::memory::{
     AddressingMode, ImportError, WriteFileOptions, WriteMemoryOptions, delete_file_at_path,
-    resolve_commit_message, resolve_memory, slugify_filename, validate_slug, write_file_at_path,
-    write_memory_by_id,
+    resolve_commit_message, resolve_memory, slugify_filename, validate_memory_slug,
+    write_file_at_path, write_memory_by_id,
 };
 
 /// Errors specific to issue-tracker operations.
@@ -193,7 +193,7 @@ pub async fn add_issue(
         Some(raw) => raw,
         None => slugify_filename(&spec.title),
     };
-    validate_slug(&slug).map_err(IssueError::Memory)?;
+    validate_memory_slug(&slug).map_err(IssueError::Memory)?;
 
     let supersede_target = match spec.supersedes.as_deref() {
         Some(query) => Some(resolve_supersede_target(backend, entry, query).await?),
@@ -347,7 +347,7 @@ pub async fn read_issue(
     slug: &str,
     rev: Option<&str>,
 ) -> Result<IssueRecord, IssueError> {
-    validate_slug(slug).map_err(IssueError::Memory)?;
+    validate_memory_slug(slug).map_err(IssueError::Memory)?;
     let resolved = resolve_memory(backend, &entry.handle, Some(slug), None)
         .await
         .map_err(IssueError::Memory)?;
@@ -523,8 +523,8 @@ pub async fn rename_issue(
         *entry.manifest.group_id.as_uuid(),
     ))
     .await;
-    validate_slug(old_slug).map_err(IssueError::Memory)?;
-    validate_slug(new_slug).map_err(IssueError::Memory)?;
+    validate_memory_slug(old_slug).map_err(IssueError::Memory)?;
+    validate_memory_slug(new_slug).map_err(IssueError::Memory)?;
     if old_slug == new_slug {
         return list_issues_for_slug(backend, entry, old_slug).await;
     }
@@ -718,20 +718,19 @@ fn build_memory_file(
     }
 }
 
+/// Gates on `[issue]` block PRESENCE, not `frontmatter.kind`, via [`crate::tracker::require_block`]:
+/// a hybrid memory (kind=Feature carrying both `[feature]` and `[issue]` blocks) is a real issue
+/// per kind.rs's documented hybrid model. Mirrors `features::record_from_file`'s gating exactly.
 fn record_from_file(
     slug: &str,
     file: MemoryFile,
     commit_id: String,
 ) -> Result<IssueRecord, IssueError> {
-    let metadata = match file.frontmatter.issue {
-        Some(meta) => meta,
-        None => {
-            return Err(IssueError::NotAnIssue {
-                slug: slug.to_string(),
-                kind: file.frontmatter.kind.as_str().to_string(),
-            });
-        }
-    };
+    let kind = file.frontmatter.kind.as_str().to_string();
+    let metadata =
+        crate::tracker::require_block(slug, &kind, file.frontmatter.issue, |slug, kind| {
+            IssueError::NotAnIssue { slug, kind }
+        })?;
     Ok(IssueRecord {
         slug: slug.to_string(),
         title: file.frontmatter.name,
