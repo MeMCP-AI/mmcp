@@ -24,7 +24,19 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Start the HTTP server (default when no subcommand is given).
-    Serve,
+    Serve {
+        /// Override the minimum accepted account password length, in
+        /// bytes. Highest-precedence tier: beats
+        /// `MMCP_MIN_PASSWORD_LENGTH`, the `~/.mmcp/config.toml`
+        /// `[limits]` tier, and the compiled-in default.
+        #[arg(long)]
+        min_password_length: Option<usize>,
+
+        /// Override the maximum accepted account password length, in
+        /// bytes. Same precedence as `--min-password-length`.
+        #[arg(long)]
+        max_password_length: Option<usize>,
+    },
     /// Probe the running server's `/health` endpoint on loopback.
     ///
     /// Reads `MMCP_BIND` to find the port, connects to
@@ -36,19 +48,38 @@ enum Command {
     Healthcheck,
 }
 
+/// Default `Command::Serve` used when the caller passes no
+/// subcommand at all: no override tier, matching
+/// `ServerConfig::from_env`'s own no-CLI-override default.
+fn default_serve_command() -> Command {
+    Command::Serve {
+        min_password_length: None,
+        max_password_length: None,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    match cli.command.unwrap_or(Command::Serve) {
-        Command::Serve => run_server().await,
+    match cli.command.unwrap_or_else(default_serve_command) {
+        Command::Serve {
+            min_password_length,
+            max_password_length,
+        } => {
+            run_server(config::ServerConfigOverrides {
+                min_password_length,
+                max_password_length,
+            })
+            .await
+        }
         Command::Healthcheck => run_healthcheck().await,
     }
 }
 
-async fn run_server() -> Result<()> {
+async fn run_server(overrides: config::ServerConfigOverrides) -> Result<()> {
     init_tracing();
 
-    let cfg = config::ServerConfig::from_env();
+    let cfg = config::ServerConfig::from_env_with_overrides(overrides);
     tracing::info!(
         address = %cfg.bind,
         database = %cfg.database_url,

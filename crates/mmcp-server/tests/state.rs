@@ -20,6 +20,9 @@ async fn bootstrap_state() -> (ServerState, TempDir) {
         token_key: [0u8; 32],
         oauth_providers: vec![],
         origin: "http://localhost:8787".to_string(),
+        push_token: None,
+        min_password_length: mmcp_auth::MIN_PASSWORD_LENGTH,
+        max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
     };
     let state = ServerState::initialize(&cfg).await.expect("state init");
     (state, tmp)

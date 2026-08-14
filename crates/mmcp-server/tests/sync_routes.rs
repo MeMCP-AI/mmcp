@@ -29,6 +29,9 @@ async fn start_server() -> (SocketAddr, mmcp_server::state::ServerState, TempDir
         token_key: [0u8; 32],
         oauth_providers: vec![],
         origin: "http://localhost:8787".to_string(),
+        push_token: None,
+        min_password_length: mmcp_auth::MIN_PASSWORD_LENGTH,
+        max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
     };
     let state = mmcp_server::state::ServerState::initialize(&cfg)
         .await

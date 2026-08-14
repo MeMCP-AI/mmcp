@@ -29,6 +29,17 @@ pub struct ServerStateInner {
     pub oauth_providers: HashMap<String, OAuthProviderConfig>,
     pub origin: String,
 
+    /// Shared-secret bearer token that authorizes `git-receive-pack`
+    /// (push) requests to every group hosted by this server; see
+    /// [`crate::config::ServerConfig::push_token`].
+    pub push_token: Option<String>,
+    /// Effective minimum accepted account password length, in
+    /// bytes; see [`crate::config::ServerConfig::min_password_length`].
+    pub min_password_length: usize,
+    /// Effective maximum accepted account password length, in
+    /// bytes; see [`crate::config::ServerConfig::max_password_length`].
+    pub max_password_length: usize,
+
     /// Per-group async mutex set used to serialize writes (git
     /// `receive-pack`) against the same bare repository. Reads
     /// (`upload-pack`) stay unserialized. Created lazily on first
@@ -73,6 +84,9 @@ impl ServerState {
             webauthn,
             oauth_providers,
             origin: cfg.origin.clone(),
+            push_token: cfg.push_token.clone(),
+            min_password_length: cfg.min_password_length,
+            max_password_length: cfg.max_password_length,
             repo_locks: StdMutex::new(HashMap::new()),
         })))
     }
@@ -83,7 +97,18 @@ impl ServerState {
     /// repo cannot race and corrupt refs.
     #[must_use]
     pub fn repo_write_lock(&self, group_id: Uuid) -> Arc<AsyncMutex<()>> {
-        let mut locks = self.0.repo_locks.lock().expect("repo_locks mutex poisoned");
+        let mut locks = self.0.repo_locks.lock().expect(
+            "repo_locks mutex poisoned: another thread panicked while holding it, leaving the \
+             write-serialization map in a possibly inconsistent state that must not be \
+             silently continued past",
+        );
+        // Evict locks nobody currently holds (a strong count of 1
+        // means only this map's own entry remains; an active guard
+        // clones the `Arc`, so anything actively serializing a push
+        // stays above 1) before inserting, so the map does not grow
+        // one permanent entry per group ever pushed to for the life
+        // of the process.
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
         locks
             .entry(group_id)
             .or_insert_with(|| Arc::new(AsyncMutex::new(())))
