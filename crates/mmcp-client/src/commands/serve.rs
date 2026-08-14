@@ -368,10 +368,9 @@ struct WriteMemoryArgs {
     /// slugs are allowed; the server distinguishes memories by
     /// `id` inside the shared slug directory.
     pub slug: String,
-    /// Canonical UUID to stamp into frontmatter and the on-disk
-    /// path. Leave absent to mint a fresh UUIDv7; supply an
-    /// explicit id to pin an existing memory or to collide
-    /// deliberately with `override: true`.
+    /// Canonical UUID to stamp into frontmatter and the on-disk path.
+    /// Leave absent to mint a fresh UUIDv7.
+    /// Supply an explicit id to pin an existing memory or to collide deliberately with `override: true`.
     #[serde(default)]
     pub id: Option<String>,
     /// Human-readable title.
@@ -612,8 +611,8 @@ struct EditMemoryBodyArgs {
     /// Optional override for the git commit message.
     #[serde(default)]
     pub message: Option<String>,
-    /// Bypass the filename-vs-frontmatter id mismatch rejection on
-    /// a `ByFilename` write. Defaults to `false`.
+    /// Bypass the filename-vs-frontmatter id mismatch rejection on a `ByFilename` write.
+    /// Defaults to `false`.
     #[serde(default)]
     pub force: bool,
 }
@@ -5867,16 +5866,14 @@ fn shared_output_schema() -> std::sync::Arc<rmcp::model::JsonObject> {
         .clone()
 }
 
-/// Per-argument risk hint. Each entry names a specific arg
-/// (and the value that activates the risk) so harnesses can prompt
-/// even when the tool itself is not flagged destructive at the
-/// tool-annotation level.
+/// Per-argument risk hint.
+///
+/// Each entry names a specific arg (and the value that activates the risk).
+/// Harnesses can prompt even when the tool itself is not flagged destructive at the tool-annotation level.
 /// Serialised into `describe_tools` and the `mmcp tools` CLI.
 ///
-/// Today only boolean-true triggers are modelled: the existing
-/// risky args (`override`, `force`) are all flag-shaped. Enum or
-/// numeric value triggers can extend the `risk_when` field later
-/// without breaking the wire shape.
+/// Today only boolean-true triggers are modelled: the existing risky args (`override`, `force`) are all flag-shaped.
+/// Enum or numeric value triggers can extend the `risk_when` field later without breaking the wire shape.
 #[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct ArgRiskHint {
     /// Name of the argument as it appears in the tool's input
@@ -5893,13 +5890,12 @@ pub(crate) struct ArgRiskHint {
     pub reason: &'static str,
 }
 
-/// Curated hint registry. Tool name maps to risky-arg entries.
+/// Curated hint registry.
+/// Tool name maps to risky-arg entries.
 ///
-/// Entries are hand-maintained: there is no derive macro that
-/// inspects the args struct. The trade-off is honest: most tool
-/// args are not risk-bearing, so the registry stays short, and the
-/// `describe_tools` consumer wants explicit reasons that a
-/// macro could not generate.
+/// Entries are hand-maintained: there is no derive macro that inspects the args struct.
+/// The trade-off is honest: most tool args are not risk-bearing, so the registry stays short.
+/// The `describe_tools` consumer wants explicit reasons that a macro could not generate.
 pub(crate) fn arg_risk_hints_for(tool_name: &str) -> &'static [ArgRiskHint] {
     match tool_name {
         "write_memory" => &[
@@ -7608,9 +7604,9 @@ async fn list_memory_files(
         .map_err(git_error)
 }
 
-/// Path filter for `list_memories`. Returns `true` when
-/// `slug` (the full slash-joined memory slug) belongs in a
-/// listing constrained to `prefix` and the recursion mode.
+/// Path filter for `list_memories`.
+/// Returns `true` when `slug` (the full slash-joined memory slug) belongs in the listing.
+/// The listing is constrained by `prefix` and the recursion mode.
 ///
 /// `depth` is measured from the *anchor*: the prefix when one
 /// is set, or the implicit `memories/` root when not. The anchor
@@ -12832,11 +12828,9 @@ mod tests {
         );
     }
 
-    /// Every `#[tool(...)]` site in this file must carry
-    /// `ToolAnnotations` with the exact hint bits committed for its
-    /// tool. A new tool that lands without `annotations(...)` makes
-    /// the helper see `annotations = None` and fail loudly, catching
-    /// the omission before review.
+    /// Every `#[tool(...)]` site must carry `ToolAnnotations` with the exact hint bits committed for its tool.
+    /// A new tool that lands without `annotations(...)` makes the helper see `annotations = None` and fail loudly.
+    /// This catches the omission before review.
     #[test]
     fn tool_annotations_match_fr029_matrix() {
         use rmcp::model::Tool;
