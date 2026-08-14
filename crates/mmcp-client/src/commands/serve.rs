@@ -6063,7 +6063,7 @@ impl McpServer {
 
     /// Resolve the group entry **and** a specific memory within it
     /// in one call. Every read / edit / delete / body tool runs
-    /// this exact chain post-FR-028: parse the group, look up the
+    /// this exact chain: parse the group, look up the
     /// entry, parse the optional UUID, then call `resolve_memory`.
     /// Centralising it here keeps tool bodies to their actual
     /// per-tool logic.
@@ -6506,11 +6506,11 @@ async fn read_memory_file_for_subscription(
     })
 }
 
-/// FR-025: does `cfg` adopt the given group slug? Checks both the
+/// Does `cfg` adopt the given group slug? Checks both the
 /// explicit `subscriptions.groups` list and the `lang/<name>` mapping
-/// implied by `subscriptions.languages`. Bare string equality for
-/// now — namespace-aware resolution is a follow-up when the
-/// adoption format stabilises.
+/// implied by `subscriptions.languages`.
+/// Bare string equality for now: namespace-aware resolution is a
+/// candidate future refinement once the adoption format stabilises.
 pub(crate) fn is_group_adopted(slug: &str, cfg: &mmcp_core::config::ProjectConfig) -> bool {
     cfg.subscriptions.groups.iter().any(|s| s == slug)
         || cfg
@@ -7114,15 +7114,14 @@ fn map_create_group_error_to_mcp(err: crate::commands::group::CreateGroupError) 
 /// Guard the three MCP mutation paths against accidental writes
 /// into a group that carries `GroupManifest.protected = true`.
 ///
-/// Today the guard hard-errors with a structured
-/// `protected_requires_elicitation` payload — no bool-arg bypass on
-/// purpose, since the point of protection is a user-visible
-/// confirmation, not a flag the AI can flip. Once rmcp exposes
-/// `ElicitationRequest` (FR-011), this helper will instead fire an
-/// elicitation with the group / slug / action in the request shape
-/// and only proceed on a positive answer. The wire contract stays
-/// stable across that migration because callers that can't
-/// elicit will still see the same error `code`.
+/// Hard-errors with a structured `protected_requires_elicitation`
+/// payload; no bool-arg bypass on purpose, since the point of
+/// protection is a user-visible confirmation, not a flag the AI
+/// can flip.
+/// `confirm_protected_write` wraps this as the elicitation-capable
+/// path; this function is also its `CapabilityNotSupported`
+/// fallback, so callers that can't elicit still see the same
+/// error `code`.
 fn ensure_not_protected(entry: &GroupEntry, slug: &str, action: &str) -> Result<(), McpError> {
     if !entry.manifest.protected {
         return Ok(());
@@ -7144,7 +7143,7 @@ fn ensure_not_protected(entry: &GroupEntry, slug: &str, action: &str) -> Result<
     ))
 }
 
-/// FR-011: route protected-group mutations through an elicitation
+/// Route protected-group mutations through an elicitation
 /// prompt when the client supports it; fall back to the
 /// `protected_requires_elicitation` structured error otherwise.
 ///
@@ -7193,9 +7192,9 @@ async fn confirm_protected_write(
             ))
         }
         Err(ElicitationError::CapabilityNotSupported) => {
-            // Pre-elicitation fallback — the existing structured
-            // error shape that CLI operators already know how to
-            // round-trip through `mmcp import`.
+            // Fallback for clients that never attempt elicitation: the
+            // structured error shape CLI operators already know how
+            // to round-trip through `mmcp import`.
             ensure_not_protected(entry, slug, action)
         }
         Err(other) => Err(McpError::internal_error(
@@ -7205,7 +7204,7 @@ async fn confirm_protected_write(
     }
 }
 
-/// FR-011: prompt the operator to choose how to resolve a
+/// Prompt the operator to choose how to resolve a
 /// CLAUDE.md conflict via an elicitation request. Returns the
 /// resolved `ConflictChoice` on success; pre-elicitation clients
 /// fall back to the legacy `conflict_unresolved` structured error
@@ -7411,7 +7410,7 @@ fn map_memory_error_to_mcp(err: ImportError) -> McpError {
     McpError::invalid_params(message, Some(payload))
 }
 
-/// FR-026: map the section-applier's typed errors onto stable
+/// Map the section-applier's typed errors onto stable
 /// MCP wire codes. Keeps the tool body terse and every error
 /// path consistent across the `edit_memory_body` surface.
 fn map_memory_edit_error_to_mcp(err: mmcp_store::MemoryEditError) -> McpError {
@@ -7587,9 +7586,10 @@ const SESSION_INSTRUCTIONS: &str = concat!(
 /// entry per on-disk file. Delegates to the shared
 /// `mmcp_store::list_all_memory_files` walker so this tool
 /// surface, the GUI, and the diagnostics layer all agree on how
-/// the two-level FR-028 layout + legacy flat fallback are
-/// enumerated. Duplicate slugs surface as multiple entries with
-/// distinct UUIDs — perfect for `list_memories` / search, where
+/// the two-level layout + legacy flat fallback are
+/// enumerated.
+/// Duplicate slugs surface as multiple entries with
+/// distinct UUIDs: perfect for `list_memories` / search, where
 /// each memory is its own row.
 async fn list_memory_files(
     backend: &NativeBackend,
@@ -7600,11 +7600,11 @@ async fn list_memory_files(
         .map_err(git_error)
 }
 
-/// FR-41 path filter for `list_memories`. Returns `true` when
+/// Path filter for `list_memories`. Returns `true` when
 /// `slug` (the full slash-joined memory slug) belongs in a
 /// listing constrained to `prefix` and the recursion mode.
 ///
-/// `depth` is measured from the *anchor* — the prefix when one
+/// `depth` is measured from the *anchor*: the prefix when one
 /// is set, or the implicit `memories/` root when not. The anchor
 /// itself sits at depth 0; a top-level slug like `feedback` is
 /// depth 1 from the root, and one level below a prefix is depth
@@ -7659,9 +7659,9 @@ enum MemoryDescriptorOutcome {
 /// Read one memory and return a compact descriptor including the
 /// slug, the parsed frontmatter fields, and a short summary.
 ///
-/// `path` is the resolved on-disk path under the group repo —
-/// post-FR-028 that is `memories/<slug>/<uuid>.md`, but legacy
-/// mirrors still keep `memories/<slug>.md`; callers supply
+/// `path` is the resolved on-disk path under the group repo:
+/// `memories/<slug>/<uuid>.md` in the current on-disk layout, but
+/// legacy mirrors still keep `memories/<slug>.md`; callers supply
 /// whichever the enumeration walker returned.
 ///
 /// Returns `Err` only for a git-level read failure. A frontmatter
@@ -7681,7 +7681,7 @@ async fn read_memory_descriptor(
         Ok(file) => file,
         Err(err) => return Ok(MemoryDescriptorOutcome::ParseFailed(err)),
     };
-    // FR-41: every descriptor carries a segmented `path` so
+    // Every descriptor carries a segmented `path` so
     // structure-aware consumers (GUIs that render trees, callers
     // that filter by path) work with a typed `Vec<String>` instead
     // of re-splitting on `/`. `slug` is the leaf-only identifier
