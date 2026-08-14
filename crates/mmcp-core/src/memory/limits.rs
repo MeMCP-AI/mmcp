@@ -18,7 +18,8 @@
 //! [`validate_frontmatter_lengths`] / [`validate_body_length`] /
 //! [`validate_message_length`] are the checks that enforce them.
 //! Callers apply these at the write boundary, before the checked
-//! value becomes a committed domain value. `mmcp_store::memory`
+//! value becomes a committed domain value.
+//! `mmcp_store::memory`
 //! validates frontmatter and body at `write_file_at_path`, and
 //! resolves every commit message (write, delete, move, and the
 //! feature/issue renames) through its own
