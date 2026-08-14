@@ -1,10 +1,6 @@
 import { runDiagnose } from '$lib/api/diagnose';
 import type { DiagReport } from '$lib/types';
-import {
-  reportTotals,
-  type SeverityCounts,
-  type SeverityFilter
-} from '$lib/utils/diag';
+import type { SeverityFilter } from '$lib/utils/diag';
 
 export type { SeverityFilter } from '$lib/utils/diag';
 
@@ -35,10 +31,6 @@ class DiagnosticsStore {
   toggle(groupSlug: string) {
     this.collapsed[groupSlug] = !this.collapsed[groupSlug];
   }
-}
-
-export function severityTotals(report: DiagReport | null): SeverityCounts {
-  return reportTotals(report);
 }
 
 function formatErr(err: unknown): string {

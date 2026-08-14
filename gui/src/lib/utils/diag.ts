@@ -4,7 +4,7 @@
 // the "inconsistent" UX came from each call site redefining these.
 
 import { AlertTriangle, Info, XCircle } from '@lucide/svelte';
-import type { DiagReport, Finding, GroupReport } from '$lib/types';
+import type { DiagReport, Finding } from '$lib/types';
 
 export type Severity = 'error' | 'warning' | 'info';
 export type SeverityFilter = 'all' | Severity;
@@ -96,8 +96,4 @@ export function accentFor(findings: Finding[]): string {
 export function filterFindings(findings: Finding[], filter: SeverityFilter): Finding[] {
   if (filter === 'all') return findings;
   return findings.filter((f) => matchesFilter(f, filter));
-}
-
-export function groupHasVisibleFindings(group: GroupReport, filter: SeverityFilter): boolean {
-  return filterFindings(group.findings, filter).length > 0;
 }

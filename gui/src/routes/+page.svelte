@@ -1,8 +1,6 @@
 <script lang="ts">
-  // App shell. Renders the shared navbar, the active variant, and
-  // the shared footer. Every bit of variant-specific logic lives
-  // inside the variants themselves — this file just routes on
-  // `settingsStore.values.ui_variant` and wires the background
+  // App shell. Renders the shared navbar, Hub (the only remaining
+  // variant), and the shared footer, and wires the background
   // mirror-refresh cascade that the stores need to stay fresh.
 
   import CommonFooter from '$lib/components/CommonFooter.svelte';
@@ -133,9 +131,8 @@
     </div>
   {/if}
 
-  <!-- Hub is the only live variant; `settingsStore.values.ui_variant`
-       stays in case a future experiment re-introduces the
-       switcher. -->
+  <!-- Hub is the only variant (RepoView / FeedView were removed as
+       dead code — issue #128). -->
   <div class="relative flex min-h-0 flex-1 flex-col overflow-hidden">
     <HubView />
   </div>

@@ -9,34 +9,32 @@ const SETTINGS_CHANGED_EVENT = 'settings:changed';
 
 export type KindDisplay = 'off' | 'icon' | 'text' | 'icon_and_text';
 export type LayoutMode = 'columns' | 'stacked';
-export type DiffViewMode = 'unified' | 'side_by_side' | 'inline_word';
 export type ThemeMode = 'dark' | 'light' | 'system' | 'oled' | 'dim' | 'dim-dark';
-// `hub` is the chosen UI going forward. `repo` and `feed` stay
-// in the codebase as historical variants pending removal — don't
-// resurface them without user direction.
-export type UiVariant = 'hub';
 
 export interface UiSettings {
   kind_display: KindDisplay;
   reference_point: string | null;
   layout_mode: LayoutMode;
-  diff_view: DiffViewMode;
   theme: ThemeMode;
-  ui_variant: UiVariant;
-  /** UUIDs of groups the user has pinned on the repo-variant home
-   * dashboard. GitHub-style "starred repos" — scales with
-   * thousands of groups because the long tail never makes it into
-   * the dashboard unless the user opts in. */
+  /** UUIDs of groups the user has pinned on the home dashboard.
+   * GitHub-style "starred repos" — scales with thousands of groups
+   * because the long tail never makes it into the dashboard unless
+   * the user opts in. */
   pinned_groups: string[];
 }
 
+// `diff_view` / `ui_variant` used to live here (a `repo`/`feed`
+// variant switcher and a diff-view-mode picker, both dead code —
+// see issue #128). Dropping them from `UiSettings` does not drop
+// them from an on-disk blob written by an older build: `mount()`
+// spreads the parsed JSON over `DEFAULT_SETTINGS`, and a plain
+// object spread keeps every key the parsed JSON actually has,
+// typed or not, so `save()` round-trips them unchanged.
 const DEFAULT_SETTINGS: UiSettings = {
   kind_display: 'icon_and_text',
   reference_point: null,
   layout_mode: 'columns',
-  diff_view: 'unified',
   theme: 'dark',
-  ui_variant: 'hub' as UiVariant,
   pinned_groups: []
 };
 
@@ -88,11 +86,6 @@ class SettingsStore {
     this.setLayoutMode(this.values.layout_mode === 'columns' ? 'stacked' : 'columns');
   }
 
-  setDiffView(mode: DiffViewMode) {
-    this.values.diff_view = mode;
-    void this.save();
-  }
-
   setTheme(mode: ThemeMode) {
     this.values.theme = mode;
     void this.save();
@@ -108,11 +101,6 @@ class SettingsStore {
     this.setTheme(next);
   }
 
-  setUiVariant(variant: UiVariant) {
-    this.values.ui_variant = variant;
-    void this.save();
-  }
-
   togglePinnedGroup(groupId: string) {
     const set = new Set(this.values.pinned_groups);
     if (set.has(groupId)) set.delete(groupId);
@@ -123,12 +111,6 @@ class SettingsStore {
 
   isGroupPinned(groupId: string): boolean {
     return this.values.pinned_groups.includes(groupId);
-  }
-
-  cycleUiVariant() {
-    // Only one live variant at the moment; cycling is a no-op.
-    // Kept around so callers don't break while we decide what the
-    // next layout experiment looks like.
   }
 
   reset() {

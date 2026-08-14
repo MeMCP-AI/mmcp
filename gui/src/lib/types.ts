@@ -117,40 +117,6 @@ export interface ReachabilityEvent {
   reason: string | null;
 }
 
-export interface CommitMeta {
-  id: string;
-  short_id: string;
-  subject: string;
-  message: string;
-  author_name: string;
-  author_email: string;
-  /** Seconds since the Unix epoch. */
-  timestamp: number;
-}
-
-export interface DiffSpan {
-  text: string;
-  /**
-   * True for the diverged fragment of an insert/delete line (inline word-level highlight).
-   * False for the equal/context fragments surrounding it.
-   */
-  emphasized: boolean;
-}
-
-export type DiffRow =
-  | { kind: 'equal'; old_lineno: number; new_lineno: number; text: string }
-  | { kind: 'insert'; new_lineno: number; text: string; spans: DiffSpan[] }
-  | { kind: 'delete'; old_lineno: number; text: string; spans: DiffSpan[] };
-
-export interface DiffResult {
-  /** `null` when the memory didn't exist at the base (pure insert). */
-  from: string | null;
-  to: string;
-  rows: DiffRow[];
-  inserted: number;
-  deleted: number;
-}
-
 export interface GuiErrorPayload {
   kind:
     | 'store'

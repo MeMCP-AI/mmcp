@@ -66,7 +66,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v7", "serde"] }
 semver = { version = "1", features = ["serde"] }
 anyhow = "1"
-similar = { version = "2", features = ["inline"] }
 notify-debouncer-mini = "0.4"
 
 # Redirect every gitoxide crate to the GGLinnk/gitoxide fork.

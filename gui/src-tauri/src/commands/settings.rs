@@ -59,3 +59,38 @@ pub async fn save_settings(
     fs::write(&path, json).map_err(|e| GuiError::Other(format!("write settings: {e}")))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Backward-compat guard for issue #128: the frontend's
+    /// `UiSettings` type dropped the dead `diff_view` / `ui_variant`
+    /// fields, but `SettingsBlob` wraps `serde_json::Value` precisely
+    /// so this backend never needs to know the frontend's schema.
+    /// The exact `to_string_pretty` / `from_str` round trip
+    /// `save_settings` / `load_settings` perform must preserve a
+    /// legacy field verbatim rather than silently dropping it.
+    #[test]
+    fn legacy_fields_survive_the_save_load_round_trip() {
+        let on_disk_blob = serde_json::json!({
+            "kind_display": "icon_and_text",
+            "reference_point": null,
+            "layout_mode": "columns",
+            "diff_view": "unified",
+            "theme": "dark",
+            "ui_variant": "hub",
+            "pinned_groups": []
+        });
+        let blob = SettingsBlob(on_disk_blob.clone());
+
+        // Mirrors save_settings's write path.
+        let written = serde_json::to_string_pretty(&blob.0).expect("serialize settings");
+        // Mirrors load_settings's read path.
+        let restored: SettingsBlob = serde_json::from_str(&written).expect("parse settings");
+
+        assert_eq!(restored.0, on_disk_blob, "round trip must be lossless");
+        assert_eq!(restored.0["diff_view"], "unified");
+        assert_eq!(restored.0["ui_variant"], "hub");
+    }
+}
