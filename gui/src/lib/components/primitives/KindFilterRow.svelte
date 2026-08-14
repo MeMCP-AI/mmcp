@@ -1,10 +1,11 @@
 <script lang="ts">
   // Toggleable kind pill-row. Every filter UI has the same bank:
-  // six opacity-faded kind badges that brighten when selected.
-  // Caller owns the `Set<KindStr>`, we just render + call back.
+  // one opacity-faded kind badge per known kind, brightening when
+  // selected. Caller owns the `Set<KindStr>`, we just render + call
+  // back.
 
   import KindBadge from '../KindBadge.svelte';
-  import type { KindStr } from '$lib/types';
+  import { MEMORY_KIND_VALUES, type KindStr } from '$lib/utils/memory_kind';
 
   interface Props {
     selected: Set<KindStr>;
@@ -12,14 +13,7 @@
     onToggle: (kind: KindStr) => void;
   }
 
-  const DEFAULT_KINDS: KindStr[] = [
-    'rule',
-    'snapshot',
-    'log',
-    'reference',
-    'scratch',
-    'feature'
-  ];
+  const DEFAULT_KINDS: KindStr[] = [...MEMORY_KIND_VALUES];
 
   let { selected, kinds = DEFAULT_KINDS, onToggle }: Props = $props();
 </script>

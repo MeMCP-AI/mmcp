@@ -12,6 +12,8 @@
   --color-kind-reference: #5ac8be;
   --color-kind-scratch: #96a0aa;
   --color-kind-feature: #f0965a;
+  --color-kind-issue: #e6608a;
+  --color-kind-milestone: #7ec98f;
 
   --color-surface-0: var(--mmcp-surface-0);
   --color-surface-1: var(--mmcp-surface-1);

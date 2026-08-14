@@ -11,7 +11,8 @@
   import TagChip from './TagChip.svelte';
   import VersionPill from './VersionPill.svelte';
   import { SCOPE_META } from '$lib/utils/scope';
-  import type { GroupEntry, KindStr, MemoryFile } from '$lib/types';
+  import type { KindStr } from '$lib/utils/memory_kind';
+  import type { GroupEntry, MemoryFile } from '$lib/types';
 
   interface Props {
     slug: string;
@@ -30,7 +31,9 @@
     log: 'border-l-kind-log',
     reference: 'border-l-kind-reference',
     scratch: 'border-l-kind-scratch',
-    feature: 'border-l-kind-feature'
+    feature: 'border-l-kind-feature',
+    issue: 'border-l-kind-issue',
+    milestone: 'border-l-kind-milestone'
   };
 </script>
 

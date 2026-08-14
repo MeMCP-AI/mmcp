@@ -2,13 +2,12 @@
 // Not code-generated.
 // On a Rust DTO shape change, update the mirror here and grep for the field name to catch call sites.
 
-export type KindStr =
-  | 'rule'
-  | 'snapshot'
-  | 'log'
-  | 'reference'
-  | 'scratch'
-  | 'feature';
+// KindStr is derived from the single source of truth in
+// $lib/utils/memory_kind (mirrors MemoryKind in
+// crates/mmcp-core/src/memory/kind.rs); re-exported here so existing
+// `import type { KindStr } from '$lib/types'` call sites keep working.
+import type { KindStr } from '$lib/utils/memory_kind';
+export type { KindStr };
 
 export type GroupScope = 'global' | 'shared' | 'project';
 

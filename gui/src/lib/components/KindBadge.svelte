@@ -1,16 +1,21 @@
 <script lang="ts">
-  import type { KindStr } from '$lib/types';
+  import type { KindStr } from '$lib/utils/memory_kind';
   import type { KindDisplay } from '$lib/stores/settings.svelte';
 
   let { kind, mode = 'icon_and_text' }: { kind: KindStr; mode?: KindDisplay } = $props();
 
+  // Record<KindStr, ...> below: adding a 9th kind to MEMORY_KIND_VALUES
+  // now fails this assignment at compile time instead of throwing
+  // "Cannot read properties of undefined" at render time.
   const LABELS: Record<KindStr, { short: string; long: string }> = {
     rule: { short: 'ru', long: 'RULE' },
     snapshot: { short: 'sn', long: 'SNAP' },
     log: { short: 'lg', long: 'LOG' },
     reference: { short: 'rf', long: 'REF' },
     scratch: { short: 'sc', long: 'SCR' },
-    feature: { short: 'ft', long: 'FEAT' }
+    feature: { short: 'ft', long: 'FEAT' },
+    issue: { short: 'is', long: 'ISSUE' },
+    milestone: { short: 'ms', long: 'MILE' }
   };
 
   const COLORS: Record<KindStr, string> = {
@@ -19,7 +24,9 @@
     log: 'bg-kind-log/15 text-kind-log ring-kind-log/30',
     reference: 'bg-kind-reference/15 text-kind-reference ring-kind-reference/30',
     scratch: 'bg-kind-scratch/15 text-kind-scratch ring-kind-scratch/30',
-    feature: 'bg-kind-feature/15 text-kind-feature ring-kind-feature/30'
+    feature: 'bg-kind-feature/15 text-kind-feature ring-kind-feature/30',
+    issue: 'bg-kind-issue/15 text-kind-issue ring-kind-issue/30',
+    milestone: 'bg-kind-milestone/15 text-kind-milestone ring-kind-milestone/30'
   };
 
   const label = $derived(
