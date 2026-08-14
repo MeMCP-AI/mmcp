@@ -1,26 +1,24 @@
 //! Typed CRUD over feature-request memories.
 //!
-//! Wraps the generic memory layer with FR-aware semantics: every
-//! write / read through this module commits a memory whose
-//! [`MemoryKind`](mmcp_core::memory::MemoryKind) is `Fr`, carrying a
-//! structured [`FeatureMetadata`](mmcp_core::memory::FeatureMetadata)
-//! block in frontmatter so the tool surface never has to parse the
-//! body to classify a memory.
+//! Wraps the generic memory layer with FR-aware semantics:
+//! every write/read through this module commits a memory whose
+//! [`MemoryKind`](mmcp_core::memory::MemoryKind) is `Fr`,
+//! carrying a structured [`FeatureMetadata`](mmcp_core::memory::FeatureMetadata) block in frontmatter,
+//! so the tool surface never has to parse the body to classify a memory.
 //!
-//! The module is intentionally thin — it owns:
+//! The module is intentionally thin: it owns:
 //!
-//! - typed `AddSpec` / `UpdateSpec` / `FeatureRecord` shapes so the
+//! - typed `AddSpec`/`UpdateSpec`/`FeatureRecord` shapes so the
 //!   CLI, the MCP tools, and any third-party caller all converge on
-//!   one input / output struct;
+//!   one input/output struct;
 //! - kind enforcement (reads against a non-FR slug return
 //!   `FeatureError::NotAFeature` rather than silently round-tripping
 //!   a regular memory through FR helpers);
 //! - list filtering by [`FeatureStatus`] so listings and diagnostics
 //!   don't duplicate the status-filter predicate.
 //!
-//! Everything else — the git commit, the slug probe, the error
-//! shapes for `GitError` — flows through `crate::memory`, keeping
-//! the CRUD guarantees identical between FR and non-FR memories.
+//! Everything else, the git commit, the slug probe, the error shapes for `GitError`,
+//! flows through `crate::memory`, keeping the CRUD guarantees identical between FR and non-FR memories.
 
 use std::path::{Path, PathBuf};
 
@@ -134,12 +132,9 @@ pub enum FeatureError {
 
 /// Input for [`add_feature`].
 ///
-/// `slug` is auto-minted from the title when omitted; either the
-/// slug or the title must be present. `description` is a one-line
-/// summary shown in listings. `body` is the freeform markdown that
-/// would have lived under `## Need` + `## Resolution` headings in
-/// the old flat `fr.md` file — its structure is not parsed by this
-/// layer.
+/// `slug` is auto-minted from the title when omitted; either the slug or the title must be present.
+/// `description` is a one-line summary shown in listings.
+/// `body` is freeform markdown; its structure is not parsed by this layer.
 #[derive(Debug, Clone, Default)]
 pub struct AddSpec {
     pub slug: Option<String>,
@@ -184,10 +179,10 @@ pub struct AddSpec {
 
 /// Input for [`update_feature`].
 ///
-/// Every field is optional. `Some(v)` means "replace with v";
-/// `None` leaves the field untouched. For `depends_on` / `blocks`,
-/// the semantics is full replacement — use `Some(Vec::new())` to
-/// clear a list, `None` to leave it as-is.
+/// Every field is optional.
+/// `Some(v)` means "replace with v"; `None` leaves the field untouched.
+/// For `depends_on`/`blocks`, the semantics is full replacement:
+/// `Some(Vec::new())` clears the list, `None` leaves it as-is.
 #[derive(Debug, Clone, Default)]
 pub struct UpdateSpec {
     pub title: Option<String>,
@@ -248,23 +243,19 @@ pub struct FeatureRecord {
     pub superseded_by: Option<MemoryRef>,
     /// UUID of the milestone this feature counts toward, if any.
     pub milestone: Option<Uuid>,
-    /// Commit id of the most recent write for this FR, or the head
-    /// commit that produced the record on a read. Empty string on a
-    /// freshly read FR whose history starts before this field was
-    /// introduced — the field is a convenience for telemetry, not a
-    /// correctness primitive.
+    /// Commit id of the most recent write for this FR, or the head commit that produced the record on a read.
+    /// Empty string on a freshly read FR whose history predates this field:
+    /// the field is a convenience for telemetry, not a correctness primitive.
     pub commit_id: String,
 }
 
 /// Body-free projection of a [`FeatureRecord`] for list-style
 /// surfaces.
 ///
-/// Mirrors every frontmatter-derived field of `FeatureRecord` and
-/// drops `body`. Listings (`list_feature_summaries`, the MCP
-/// `list_features` tool, the `mmcp feature list` CLI subcommand)
-/// only need metadata to triage / sort / display — keeping bodies
-/// out of the wire shape stops a 47-FR group from blowing past the
-/// MCP client's response token cap.
+/// Mirrors every frontmatter-derived field of `FeatureRecord` and drops `body`.
+/// Listings (`list_feature_summaries`, the MCP `list_features` tool, the `mmcp feature list` CLI subcommand),
+/// only need metadata to triage/sort/display:
+/// keeping bodies out of the wire shape stops a 47-FR group from blowing past the MCP client's response token cap.
 #[derive(Debug, Clone)]
 pub struct FeatureSummary {
     pub slug: String,
@@ -686,10 +677,8 @@ pub async fn update_feature_unlocked(
         spec.refs_remove.as_deref(),
         spec.refs_add.as_deref(),
     );
-    // `superseded_by`: `Some` replaces, `None` leaves the existing
-    // on-disk back-link untouched. Clearing requires a direct
-    // frontmatter edit — not yet plumbed to avoid overloading this
-    // shape.
+    // `superseded_by`: `Some` replaces, `None` leaves the existing on-disk back-link untouched.
+    // Clearing requires a direct frontmatter edit, not yet plumbed to avoid overloading this shape.
     let superseded_by = spec.superseded_by.or(current.superseded_by);
     // `Some(Some(id))` sets the link, `Some(None)` clears it,
     // `None` (the field itself absent) leaves the on-disk value
@@ -1024,14 +1013,12 @@ pub async fn list_feature_summaries(
 /// `.mmcp.toml`, starting from `cwd` and walking ancestors the same
 /// way the generic `find_project_root` does.
 ///
-/// Errors are structured so every consumer (CLI exit code, MCP
-/// tool payload, GUI banner) can branch on the precise failure mode
-/// without parsing strings: no project discovered at all, config
-/// unreadable, or config fine but the backing group is not in the
-/// local mirror yet. The shape mirrors `bootstrap_context`'s
-/// resolution logic but refuses to silently fall back to a no-op —
-/// FR tools always want an error when the project context is
-/// missing.
+/// Errors are structured so every consumer (CLI exit code, MCP tool payload, GUI banner),
+/// can branch on the precise failure mode without parsing strings:
+/// no project discovered at all, config unreadable,
+/// or config fine but the backing group is not in the local mirror yet.
+/// The shape mirrors `bootstrap_context`'s resolution logic but refuses to silently fall back to a no-op:
+/// FR tools always want an error when the project context is missing.
 pub async fn resolve_project_group(
     groups: &GroupIndex,
     cwd: &Path,
@@ -1276,9 +1263,8 @@ mod tests {
         let scratch = ScratchHome::new().await.expect("scratch home");
         let entry = seed_mixed_status_fixture(&scratch).await;
 
-        // Explicit status selector wins over the default filter —
-        // even with `show_all=false` the caller receives every FR
-        // matching the requested status.
+        // Explicit status selector wins over the default filter:
+        // even with `show_all=false` the caller receives every FR matching the requested status.
         let (requested, requested_findings) = list_feature_summaries(
             scratch.backend(),
             &entry,
@@ -1404,8 +1390,8 @@ mod tests {
 
     #[tokio::test]
     async fn list_show_all_returns_every_status() {
-        // FR-024: `show_all=true` re-includes every FR regardless
-        // of status. Pairs with the hide-by-default test above.
+        // `show_all=true` re-includes every FR regardless of status.
+        // Pairs with the hide-by-default test above.
         let scratch = ScratchHome::new().await.expect("scratch home");
         let entry = seed_mixed_status_fixture(&scratch).await;
 
@@ -1488,12 +1474,9 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_add_feature_assigns_unique_numbers() {
-        // FR-39: two concurrent `add_feature` calls with no
-        // explicit number must not race on
-        // `next_feature_number`. Before the per-group lock
-        // landed, both calls read `max = N` at the same time and
-        // both wrote `N + 1`, producing the duplicate-number
-        // diagnose warning this test exists to prevent.
+        // Two concurrent `add_feature` calls with no explicit number must not race on `next_feature_number`.
+        // The per-group lock prevents both calls from reading the same `max = N` and both writing `N + 1`,
+        // which would silently produce two features sharing one number.
         let scratch = ScratchHome::new().await.expect("scratch home");
         let seeded = scratch.seed_group("fr-group").await.expect("seed");
 
@@ -2068,14 +2051,12 @@ mod tests {
         }
     }
 
-    /// FR-51: superseding a Completed feature captures the redesign-
-    /// replaces-landed-design relationship as a typed
-    /// `superseded_by` chain. The two-commit flow runs and the
-    /// back-link symmetry holds — old feature flips to `Superseded`,
-    /// new feature carries a ref pointing at the old feature's
-    /// pre-supersede commit. Duplicate and Superseded targets stay
-    /// rejected (see
-    /// `add_feature_supersedes_already_superseded_fr_chains_the_link`).
+    /// Superseding a Completed feature captures the redesign-replaces-landed-design relationship,
+    /// as a typed `superseded_by` chain.
+    /// The two-commit flow runs and the back-link symmetry holds:
+    /// old feature flips to `Superseded`, new feature carries a ref pointing at the old feature's pre-supersede commit.
+    /// Duplicate and Superseded targets stay rejected,
+    /// (see `add_feature_supersedes_already_superseded_fr_chains_the_link`).
     #[tokio::test]
     async fn add_feature_can_supersede_completed_target() {
         let scratch = ScratchHome::new().await.expect("scratch home");
