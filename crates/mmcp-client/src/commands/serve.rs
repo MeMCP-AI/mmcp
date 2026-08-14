@@ -7410,6 +7410,14 @@ fn map_memory_error_to_mcp(err: ImportError) -> McpError {
             "kind": kind,
             "retry_hint": format!("use the dedicated add_{kind} tool instead"),
         }),
+        ImportError::NotUtf8 { path, source } => json!({
+            "code": "memory_not_utf8",
+            "path": path,
+            "detail": source.to_string(),
+        }),
+        ImportError::TicketCounterOverflow => json!({
+            "code": "ticket_counter_overflow",
+        }),
     };
     McpError::invalid_params(message, Some(payload))
 }
