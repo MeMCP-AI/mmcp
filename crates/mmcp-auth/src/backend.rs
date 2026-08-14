@@ -24,6 +24,19 @@ use crate::error::AuthError;
 use crate::password;
 use mmcp_db::repository::{oauth_repo, passkey_repo, user_repo};
 
+/// Maximum accepted length of an OAuth-provisioned handle, in bytes.
+/// Mirrors the password-registration path's handle bound
+/// (`mmcp_server::routes::auth::MAX_HANDLE_LENGTH`), kept as its own
+/// constant because the two paths live in different crates and
+/// cannot share one definition directly; a JIT-created account must
+/// never exceed what the register endpoint would ever accept.
+const MAX_OAUTH_HANDLE_LENGTH: usize = 64;
+
+/// Maximum number of numeric-suffix retries when the preferred
+/// OAuth handle is already taken by an unrelated account, before
+/// giving up with [`AuthError::HandleAllocationExhausted`].
+const MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS: u32 = 20;
+
 // ── AuthUser impl ───────────────────────────────────────────────
 
 /// Wrapper around the database user model that carries the session
@@ -179,7 +192,8 @@ impl AuthnBackend for MmcpAuthBackend {
                 // First-time OAuth: auto-create user + link.
                 let now = jiff::Timestamp::now().as_millisecond();
                 let user_id = Uuid::now_v7();
-                let handle = format!("{provider}_{provider_user_id}");
+                let handle =
+                    provision_oauth_handle(&self.conn, &provider, &provider_user_id).await?;
                 let user = user_repo::create(
                     &self.conn,
                     user_repo::NewUser {
@@ -234,5 +248,177 @@ impl AuthnBackend for MmcpAuthBackend {
     }
 }
 
+/// Resolve a free handle for a first-time OAuth login.
+///
+/// Tries the preferred `{provider}_{provider_user_id}` identifier
+/// first (bounded to [`MAX_OAUTH_HANDLE_LENGTH`] bytes), then falls
+/// back to numeric-suffixed candidates when it collides with an
+/// existing user. The collision path exists because
+/// `/auth/register` places no namespace restriction on `handle`: an
+/// attacker who pre-registers the literal string a real OAuth user
+/// would be assigned could otherwise permanently deny that user
+/// their first OAuth login.
+async fn provision_oauth_handle(
+    conn: &DatabaseConnection,
+    provider: &str,
+    provider_user_id: &str,
+) -> Result<String, AuthError> {
+    let base = truncate_to_byte_length(
+        &format!("{provider}_{provider_user_id}"),
+        MAX_OAUTH_HANDLE_LENGTH,
+    );
+    if user_repo::find_by_handle(conn, &base)
+        .await
+        .map_err(|e| AuthError::Claims(e.to_string()))?
+        .is_none()
+    {
+        return Ok(base);
+    }
+    for suffix in 2..=MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS {
+        let candidate =
+            truncate_to_byte_length(&format!("{base}-{suffix}"), MAX_OAUTH_HANDLE_LENGTH);
+        if user_repo::find_by_handle(conn, &candidate)
+            .await
+            .map_err(|e| AuthError::Claims(e.to_string()))?
+            .is_none()
+        {
+            return Ok(candidate);
+        }
+    }
+    Err(AuthError::HandleAllocationExhausted {
+        provider: provider.to_string(),
+        attempts: MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS,
+    })
+}
+
+/// Truncate `value` to at most `max_len` bytes, backing off to the
+/// nearest earlier UTF-8 char boundary so a handle derived from
+/// provider-controlled input can never split a multibyte character
+/// or exceed the register endpoint's own handle length bound.
+fn truncate_to_byte_length(value: &str, max_len: usize) -> String {
+    if value.len() <= max_len {
+        return value.to_string();
+    }
+    let mut end = max_len;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
+}
+
 /// Type alias used across the server for the auth session extractor.
 pub type AuthSession = axum_login::AuthSession<MmcpAuthBackend>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_to_byte_length_keeps_short_values_unchanged() {
+        assert_eq!(truncate_to_byte_length("github_123", 64), "github_123");
+    }
+
+    #[test]
+    fn truncate_to_byte_length_caps_long_values_without_splitting_chars() {
+        let long = "a".repeat(100);
+        let truncated = truncate_to_byte_length(&long, 64);
+        assert_eq!(truncated.len(), 64);
+    }
+
+    #[test]
+    fn truncate_to_byte_length_backs_off_to_a_char_boundary() {
+        // Each 'e' with acute accent is 2 bytes in UTF-8; a hard cut
+        // at byte 5 would land mid-character.
+        let value = "é".repeat(10);
+        let truncated = truncate_to_byte_length(&value, 5);
+        assert!(truncated.len() <= 5);
+        assert!(String::from_utf8(truncated.into_bytes()).is_ok());
+    }
+
+    /// In-memory, migrated database connection for the
+    /// `provision_oauth_handle` collision tests below: real
+    /// `user_repo::find_by_handle` lookups against real rows, not a
+    /// mock.
+    async fn test_db() -> DatabaseConnection {
+        let db = mmcp_db::connect("sqlite::memory:")
+            .await
+            .expect("connect in-memory sqlite");
+        db.migrate().await.expect("run migrations");
+        db.into_connection()
+    }
+
+    async fn create_user(conn: &DatabaseConnection, handle: &str) {
+        user_repo::create(
+            conn,
+            user_repo::NewUser {
+                id: Uuid::now_v7(),
+                handle: handle.to_string(),
+                display_name: None,
+                password_hash: None,
+                email: None,
+                created_at: 0,
+            },
+        )
+        .await
+        .expect("create seed user");
+    }
+
+    #[tokio::test]
+    async fn provision_oauth_handle_returns_the_preferred_handle_when_free() {
+        let conn = test_db().await;
+        let handle = provision_oauth_handle(&conn, "github", "1001")
+            .await
+            .expect("provision handle");
+        assert_eq!(handle, "github_1001");
+    }
+
+    #[tokio::test]
+    async fn provision_oauth_handle_retries_with_a_numeric_suffix_on_collision() {
+        let conn = test_db().await;
+        // Pre-register the exact handle a real OAuth login would be
+        // assigned, exactly as an attacker could do today via
+        // `/auth/register` (no namespace restriction on `handle`).
+        create_user(&conn, "github_1001").await;
+
+        let handle = provision_oauth_handle(&conn, "github", "1001")
+            .await
+            .expect("provision handle");
+        assert_eq!(
+            handle, "github_1001-2",
+            "a squatted base handle must fall through to a numeric-suffix candidate, \
+             not deny the real OAuth user their first login"
+        );
+    }
+
+    #[tokio::test]
+    async fn provision_oauth_handle_skips_every_taken_suffix() {
+        let conn = test_db().await;
+        create_user(&conn, "github_1001").await;
+        create_user(&conn, "github_1001-2").await;
+
+        let handle = provision_oauth_handle(&conn, "github", "1001")
+            .await
+            .expect("provision handle");
+        assert_eq!(handle, "github_1001-3");
+    }
+
+    #[tokio::test]
+    async fn provision_oauth_handle_exhausts_after_every_attempt_collides() {
+        let conn = test_db().await;
+        create_user(&conn, "github_1001").await;
+        for suffix in 2..=MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS {
+            create_user(&conn, &format!("github_1001-{suffix}")).await;
+        }
+
+        let err = provision_oauth_handle(&conn, "github", "1001")
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            AuthError::HandleAllocationExhausted {
+                attempts: MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS,
+                ..
+            }
+        ));
+    }
+}
