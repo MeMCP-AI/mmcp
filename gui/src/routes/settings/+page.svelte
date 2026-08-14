@@ -14,6 +14,7 @@
     type ThemeMode
   } from '$lib/stores/settings.svelte';
   import type { LoadedProjectConfig, ProjectConfig, UserConfig } from '$lib/types';
+  import { formatErr } from '$lib/utils/error';
   import { emit } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
 
@@ -49,12 +50,16 @@
 
   async function pickReferencePoint() {
     lastError = null;
-    const chosen = await pickDirectory(
-      settingsStore.values.reference_point,
-      'Choose reference point'
-    );
-    if (!chosen) return;
-    await applyReferencePoint(chosen);
+    try {
+      const chosen = await pickDirectory(
+        settingsStore.values.reference_point,
+        'Choose reference point'
+      );
+      if (!chosen) return;
+      await applyReferencePoint(chosen);
+    } catch (err) {
+      lastError = formatErr(err);
+    }
   }
 
   async function clearReferencePoint() {
@@ -106,13 +111,6 @@
 
   function close() {
     void getCurrentWindow().close();
-  }
-
-  function formatErr(err: unknown): string {
-    if (err && typeof err === 'object' && 'message' in err) {
-      return String((err as { message: unknown }).message);
-    }
-    return String(err);
   }
 </script>
 
