@@ -16,8 +16,8 @@
 //!
 //! Every operation acquires a chain of locks from the outermost ancestor inward.
 //! The leaf-scope mode is the operation's semantics;
-//! ancestor scopes are always taken `Shared` unless the operation deliberately targets the ancestor,
-//! group-coarsening renames, process-coarsening group creation.
+//! ancestor scopes are always taken `Shared` unless the operation deliberately targets the ancestor.
+//! Examples of ancestor-targeting operations: group-coarsening renames, process-coarsening group creation.
 //!
 //! - **Memory-scoped read or write** (e.g. `mcp:read_memory`,
 //!   `mcp:edit_memory`): `Shared Process` + `Shared Group(g)` +

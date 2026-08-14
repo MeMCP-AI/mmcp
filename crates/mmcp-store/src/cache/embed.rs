@@ -98,9 +98,9 @@ pub fn vector_to_bytes(vector: &[f32]) -> Vec<u8> {
 }
 
 /// Inverse of [`vector_to_bytes`].
-/// Ignores a trailing partial `f32`,
-/// a BLOB whose length is not a multiple of `size_of::<f32>()`,
-/// can only come from external tampering, never from `vector_to_bytes`.
+/// Ignores a trailing partial `f32`.
+/// A BLOB whose length is not a multiple of `size_of::<f32>()` can only come from external tampering.
+/// `vector_to_bytes` always emits a length that is a multiple of `size_of::<f32>()`.
 #[must_use]
 pub fn bytes_to_vector(bytes: &[u8]) -> Vec<f32> {
     bytes
