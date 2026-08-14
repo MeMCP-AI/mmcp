@@ -1,16 +1,14 @@
 //! Unified `StoreError` type for the `mmcp-store` public surface.
 //!
-//! Every consumer-facing function in this crate — groups, memory,
-//! sync, diagnostics — returns `Result<T, StoreError>`. Consumers
-//! map this enum into their own outward shapes: the CLI maps to
-//! `anyhow::Error` via `#[from]`, the MCP tools map to
-//! `McpError::invalid_params` with a structured `code` payload,
+//! Every consumer-facing function in this crate, groups, memory, sync, diagnostics,
+//! returns `Result<T, StoreError>`.
+//! Consumers map this enum into their own outward shapes:
+//! the CLI maps to `anyhow::Error` via `#[from]`,
+//! the MCP tools map to `McpError::invalid_params` with a structured `code` payload,
 //! and third-party callers match on variants directly.
 //!
-//! The enum is additive: new variants land when later modules are
-//! ported into the store and need a code the current set doesn't
-//! cover. Existing `#[from]` conversions keep `?` ergonomic at
-//! call sites without requiring explicit `.map_err` plumbing.
+//! The enum is additive: new variants land when a module needs a code the current set doesn't cover.
+//! Existing `#[from]` conversions keep `?` ergonomic at call sites without requiring explicit `.map_err` plumbing.
 
 use thiserror::Error;
 
