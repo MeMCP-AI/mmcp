@@ -8616,12 +8616,12 @@ mod tests {
 
     #[tokio::test]
     async fn list_memories_reports_mirrored_false_for_unknown_group() {
-        // FR-013: a group whose UUID is not in the local mirror must
+        // A group whose UUID is not in the local mirror must
         // return `mirrored: false` so AI callers distinguish
         // "empty-mirrored" from "never-pulled" without a second tool
-        // call. Regression test for the pre-fix behaviour that
-        // returned `{memories: []}` indistinguishable from an empty
-        // mirrored group, silently masking missed checkpoint reads.
+        // call.
+        // `{memories: []}` alone is indistinguishable from an empty
+        // mirrored group and would silently mask a missed checkpoint read.
         let (state, _tmp) = test_state().await;
         let server = McpServer::new(state, ServeMode::Full);
         let phantom_uuid = Uuid::now_v7().to_string();
@@ -8853,7 +8853,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_groups_returns_every_mirrored_group_with_metadata() {
-        // FR-010: verify the standalone enumeration path returns
+        // Verify the standalone enumeration path returns
         // every seeded group, with manifest + memory counts, in a
         // single cheap call, with no need to drive `bootstrap_context`
         // just to discover what is mirrored.
@@ -9256,7 +9256,7 @@ mod tests {
         );
     }
 
-    /// FR-43: multi-query form. Two overlapping queries hit the
+    /// Multi-query form: two overlapping queries hit the
     /// same memory; assert dedup-by-UUID (one row, not two) and the
     /// `matched_queries` list captures every input that hit it in
     /// caller order.
@@ -9305,7 +9305,7 @@ mod tests {
         assert_eq!(matched, vec!["coding", "rules"]);
     }
 
-    /// FR-43: a non-matching needle does not pollute `matched_queries`
+    /// A non-matching needle does not pollute `matched_queries`
     /// for hits surfaced by other needles.
     #[tokio::test]
     async fn search_memories_multi_query_lists_only_actual_matches() {
@@ -9336,7 +9336,7 @@ mod tests {
         assert_eq!(matched, vec!["coding"]);
     }
 
-    /// FR-43: passing both `query` and `queries` must fail up front
+    /// Passing both `query` and `queries` must fail up front
     /// with a structured `invalid_search_args` code rather than
     /// silently picking one shape.
     #[tokio::test]
@@ -9361,7 +9361,7 @@ mod tests {
         );
     }
 
-    /// FR-43: passing neither errors with the same structured code.
+    /// Passing neither errors with the same structured code.
     #[tokio::test]
     async fn search_memories_requires_at_least_one_query_form() {
         let (state, _tmp) = test_state().await;
@@ -9384,9 +9384,9 @@ mod tests {
         );
     }
 
-    /// FR-43: `limit` caps total deduped hits across all queries,
+    /// `limit` caps total deduped hits across all queries,
     /// not per-query. Three memories, two queries that all match,
-    /// limit 2 → exactly two rows.
+    /// limit 2 gives exactly two rows.
     #[tokio::test]
     async fn search_memories_multi_query_limit_caps_total() {
         let (state, _tmp) = test_state().await;
@@ -9610,10 +9610,9 @@ mod tests {
 
     #[tokio::test]
     async fn unrelated_project_group_stays_out_of_scope() {
-        // FR-025 regression guard. The unrelated project group's
-        // mandatory memories were the historical leak source; under
-        // the instruction-only shape the equivalent guard is that
-        // the group itself never appears in groups_in_scope.
+        // The unrelated project group's mandatory memories must
+        // never leak into scope: the group itself must never
+        // appear in `groups_in_scope`.
         let (state, _tmp) = test_state().await;
         let global = seed_scoped_group_with_memory(
             &state,
@@ -9660,12 +9659,12 @@ mod tests {
 
     #[tokio::test]
     async fn shared_group_enters_scope_only_when_project_subscribes() {
-        // FR-025 + slice 2c: a Shared-scoped group reaches the
+        // A Shared-scoped group reaches the
         // session only when the project's `.mmcp.toml` lists it in
         // `subscriptions.groups` (or via `subscriptions.languages`
-        // for `lang/<x>` groups). Pre-subscribe the group is
-        // absent from `groups_in_scope` AND from `subscribed_reads`;
-        // post-subscribe both fields surface it.
+        // for `lang/<x>` groups).
+        // Pre-subscribe the group is absent from `groups_in_scope`
+        // AND from `subscribed_reads`; post-subscribe both fields surface it.
         let (state, tmp) = test_state().await;
         let shared_group = seed_scoped_group_with_memory(
             &state,
@@ -10657,7 +10656,7 @@ mod tests {
         );
     }
 
-    // ── sync tool helpers (FR-014) ────────────────────────────────────
+    // ── sync tool helpers ──────────────────────────────────────────────
 
     /// Write a deterministic `.mmcp.toml` at `path`.
     fn write_project_config(root: &std::path::Path, body: &str) {
@@ -10817,9 +10816,10 @@ mod tests {
 
     #[tokio::test]
     async fn bootstrap_context_project_selector_resolves_by_uuid() {
-        // FR-44: passing `project: <uuid>` pins the project group
-        // without touching cwd. The bootstrap response lists the
-        // memory(ies) in that group under the project-scope half.
+        // Passing `project: <uuid>` pins the project group
+        // without touching cwd.
+        // The bootstrap response lists the memory(ies) in that
+        // group under the project-scope half.
         let (state, _tmp) = test_state().await;
         let project = seed_scoped_group_with_memory(
             &state,
@@ -11027,7 +11027,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_project_selector_returns_minimal_shape() {
-        // FR-44: `status(project=<uuid>)` returns the filesystem-
+        // `status(project=<uuid>)` returns the filesystem-
         // free minimal response shape; project_root and sync are
         // omitted because an explicit selector carries no local
         // filesystem guarantees.
@@ -11102,7 +11102,7 @@ mod tests {
         assert_eq!(payload.get("status").and_then(|v| v.as_i64()), Some(503));
     }
 
-    // ── status tool (FR-015) ──────────────────────────────────────────
+    // ── status tool ────────────────────────────────────────────────────
 
     #[test]
     fn compose_status_flags_project_missing_when_outside_any_mmcp_directory() {
@@ -11197,7 +11197,7 @@ mod tests {
         );
     }
 
-    // ── init_project tool (FR-003) ────────────────────────────────────
+    // ── init_project tool ──────────────────────────────────────────────
 
     #[test]
     fn map_init_project_error_surfaces_slug_required_with_retry_hint() {
@@ -11431,7 +11431,7 @@ mod tests {
         ));
     }
 
-    // ── write_memory (FR-018 tightening) ──────────────────────────
+    // ── write_memory ──────────────────────────────────────────────
 
     fn write_memory_args(group: &GroupId, slug: &str, override_: bool) -> WriteMemoryArgs {
         WriteMemoryArgs {
@@ -11470,7 +11470,7 @@ mod tests {
         );
     }
 
-    /// FR-38: a write that supplies `source` round-trips through
+    /// A write that supplies `source` round-trips through
     /// the on-disk frontmatter and surfaces on the read response.
     #[tokio::test]
     async fn write_memory_source_round_trips_through_read() {
@@ -11508,7 +11508,7 @@ mod tests {
         );
     }
 
-    /// FR-38: a malformed source string is rejected with the typed
+    /// A malformed source string is rejected with the typed
     /// `invalid_source` code rather than being stamped into the
     /// frontmatter as garbage.
     #[tokio::test]
@@ -11531,7 +11531,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_memory_rejects_existing_id_by_default() {
-        // FR-028 flipped the collision key from slug to id. Two
+        // The collision key is the id, not the slug: two
         // memories may share a slug, but the primary key is the
         // UUID; re-using one without `override` must surface the
         // existing-exists code so callers don't silently overwrite.
@@ -11564,8 +11564,9 @@ mod tests {
 
     #[tokio::test]
     async fn write_memory_accepts_duplicate_slug_with_distinct_minted_ids() {
-        // Post-FR-028: two memories with the same slug but distinct
-        // ids are a valid coexistence. No override needed.
+        // Two memories with the same slug but distinct
+        // ids are a valid coexistence.
+        // No override needed.
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "rules", "seed", SAMPLE_MEMORY).await;
         let server = McpServer::new(state, ServeMode::Full);
