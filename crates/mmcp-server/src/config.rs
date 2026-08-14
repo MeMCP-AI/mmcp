@@ -112,8 +112,8 @@ fn parse_hex_key(input: &str) -> Option<[u8; 32]> {
 fn random_key() -> [u8; 32] {
     // Pull 32 bytes straight from the OS CSPRNG (getrandom defers to
     // `getrandom(2)` on Linux, `BCryptGenRandom` on Windows, etc.).
-    // If the platform cannot satisfy that — sandboxes with no
-    // entropy source — panic at startup rather than hand out
+    // On a platform that cannot satisfy that, e.g. a sandbox with no
+    // entropy source, panic at startup rather than hand out
     // guessable tokens. Admins set `MMCP_TOKEN_KEY_HEX` explicitly
     // when they need a stable key across restarts.
     let mut out = [0u8; 32];
@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn invalid_hex_digit_falls_back_to_random() {
-        // Right length but non-hex chars — parse_hex_key returns None.
+        // Right length but non-hex chars: parse_hex_key returns None.
         let bad = "z".repeat(64);
         let cfg = from_map(&[("MMCP_TOKEN_KEY_HEX", bad.as_str())]);
         assert_eq!(cfg.token_key.len(), 32);

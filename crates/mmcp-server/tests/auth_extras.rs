@@ -1,13 +1,11 @@
 //! Error-branch coverage for `/auth/*` routes.
 //!
-//! The existing `auth_flow.rs` exercises the password happy path
-//! and the wrong-password/duplicate-handle 4xx cases. The baseline
-//! coverage run flagged `routes::auth` at 20% line coverage because
-//! the OAuth branches, the passkey start/finish error paths, and
-//! the unknown-handle login path were never hit. This suite plugs
-//! those gaps without needing a real WebAuthn client or a live
-//! OAuth provider — each test is built around the server-local
-//! error surface.
+//! `auth_flow.rs` covers the password happy path and the
+//! wrong-password/duplicate-handle 4xx cases. This suite covers the
+//! OAuth branches, the passkey start/finish error paths, and the
+//! unknown-handle login path: each test targets the server-local
+//! error surface without a real WebAuthn client or a live OAuth
+//! provider.
 
 use std::net::SocketAddr;
 
@@ -137,9 +135,8 @@ async fn passkey_register_start_with_unknown_user_returns_404() {
 #[tokio::test]
 async fn passkey_register_finish_without_pending_state_returns_400() {
     let (addr, _tmp) = start_server_with_oauth(vec![]).await;
-    // Seed a real user so the lookup does not fail before the
-    // pending-state check — but we *never* call register/start, so
-    // the in-memory pending map has no entry for this user.
+    // Seed a real user so the lookup does not fail before the pending-state check.
+    // This test never calls register/start, so the in-memory pending map has no entry for this user.
     let user_id = register_test_user(addr, "alice", "hunter2").await;
 
     // The `response` field must still be a well-formed JSON object

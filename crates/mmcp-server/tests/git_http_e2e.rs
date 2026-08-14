@@ -4,8 +4,8 @@
 //! group repo on disk with a committed memory, then drives a stock
 //! `git clone` against the `/git/<uuid>.git` route. Passing confirms
 //! the three pack endpoints (`info/refs`, `upload-pack`, plus the
-//! pkt-line framing and content types) behave the way a vanilla git
-//! binary from any OS/version expects — not just mmcp's own client.
+//! pkt-line framing and content types) behave the way any vanilla
+//! git binary expects, not only mmcp's own client.
 
 use std::net::SocketAddr;
 

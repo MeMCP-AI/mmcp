@@ -1,11 +1,10 @@
 //! Integration tests for the `/mcp/tool` HTTP dispatch route.
 //!
-//! `routes::mcp` was at 3% line coverage in the baseline — the
-//! three server-backed tools (`list_memories`, `list_versions`,
-//! `group_info`), the not-implemented gate for client-side tools
-//! (`read_memory` / `write_memory` / `verify_memory` / `diff_memory`
-//! / `search_memories`), and the validation error path for
-//! malformed request envelopes were all unverified.
+//! Covers the three server-backed tools (`list_memories`,
+//! `list_versions`, `group_info`), the not-implemented gate for
+//! client-side tools (`read_memory` / `write_memory` /
+//! `verify_memory` / `diff_memory` / `search_memories`), and the
+//! validation error path for malformed request envelopes.
 
 use std::net::SocketAddr;
 
@@ -199,8 +198,7 @@ async fn mcp_tool_list_versions_returns_recorded_versions() {
     let (addr, state, _tmp) = start_server().await;
     let (_group, memory) = seed_group_with_memory(&state, "team-rust", "rules").await;
 
-    // author_id foreign-keys onto users — seed a user row whose id
-    // we can use as the version author.
+    // author_id foreign-keys onto users: seed a user row whose id serves as the version author.
     let author = Uuid::now_v7();
     user_repo::create(
         state.database.connection(),

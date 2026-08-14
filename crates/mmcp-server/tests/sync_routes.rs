@@ -1,12 +1,11 @@
 //! Integration tests for the `/sync/*` control-plane routes.
 //!
-//! The baseline llvm-cov run flagged `mmcp-server::routes::sync` at
-//! 5% line coverage — the happy paths of `GET /sync/manifest`,
-//! `GET /sync/refs/{group}`, and `POST /sync/push` were effectively
-//! unverified. These tests drive a real axum server with an in-
-//! memory database and tempdir-backed repo root, hit each endpoint
-//! via `reqwest`, and assert the shapes against the wire types
-//! shared with the `mmcp-sync` client crate.
+//! Covers the happy paths of `GET /sync/manifest`,
+//! `GET /sync/refs/{group}`, and `POST /sync/push`. Tests drive a
+//! real axum server with an in-memory database and tempdir-backed
+//! repo root, hit each endpoint via `reqwest`, and assert the
+//! shapes against the wire types shared with the `mmcp-sync` client
+//! crate.
 
 use std::net::SocketAddr;
 
@@ -167,8 +166,7 @@ async fn sync_manifest_lists_seeded_groups_with_head_commits() {
     let entry = &body.groups[0];
     assert_eq!(entry.group_id, group);
     assert_eq!(entry.slug, "team-rust");
-    // The manifest commit from `create_group_repo` gives a real
-    // head commit — it must be a 40-char hex id, not the zero hash.
+    // The manifest commit from `create_group_repo` gives a real head commit: a 40-char hex id, never the zero hash.
     assert_eq!(
         entry.head_commit.len(),
         40,
