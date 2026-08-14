@@ -274,9 +274,9 @@ async fn push_and_fetch_round_trip_through_file_url() {
 async fn remote_operations_fail_fast_without_a_remote() {
     // `NativeBackend::fetch` and `push` shell out to the user's git
     // binary. When the remote URL points at nothing, the subprocess
-    // exits non-zero and the backend returns a `Gix` error carrying
-    // git's stderr. A full content-plane round-trip is covered by
-    // the integration suite in phase 9.
+    // exits non-zero and the backend returns a `GitError::Transport`
+    // error carrying git's stderr. A full content-plane round-trip is
+    // covered by the integration suite in phase 9.
     let (backend, _tmp) = backend_in_tempdir();
     let manifest = sample_manifest();
     let repo = backend.create_group_repo(&manifest).await.unwrap();
