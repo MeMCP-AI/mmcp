@@ -556,10 +556,9 @@ async fn resolve_by_id(
         }
     }
 
-    // Step 3: UUID-named files whose filename stem disagrees with
-    // `expected`. Their frontmatter may still match the queried
-    // id — a drift the resolver honours (frontmatter is source of
-    // truth) while leaving the addressing mode as `ByFrontmatter`
+    // Step 3: UUID-named files whose filename stem disagrees with `expected`.
+    // Their frontmatter may still match the queried id, a drift the resolver honours,
+    // (frontmatter is source of truth) while leaving the addressing mode as `ByFrontmatter`,
     // so writes route through the soft-warning branch.
     for (slug, path) in &step3_candidates {
         let Ok(bytes) = backend.read_file(handle, path, &rev).await else {
@@ -581,11 +580,10 @@ async fn resolve_by_id(
     })
 }
 
-/// Result entry from [`read_frontmatters_in_group`]. Carries the
-/// file reference (slug, id, repo path) alongside the frontmatter
-/// parse outcome so a single corrupt file does not abort the whole
-/// listing — the caller can choose to ignore, log, or propagate
-/// per-entry errors.
+/// Result entry from [`read_frontmatters_in_group`].
+/// Carries the file reference (slug, id, repo path) alongside the frontmatter parse outcome,
+/// so a single corrupt file does not abort the whole listing:
+/// the caller can choose to ignore, log, or propagate per-entry errors.
 #[derive(Debug)]
 pub struct MemoryFrontmatterEntry {
     pub file: MemoryFileRef,
@@ -594,14 +592,13 @@ pub struct MemoryFrontmatterEntry {
 
 /// Read just the frontmatter of a memory by slug and/or id.
 ///
-/// Resolves the memory via [`resolve_memory`] and parses the
-/// on-disk file via [`MemoryFile::parse`], discarding the body
-/// before return. Use this when the caller only needs frontmatter
-/// fields (kind, name, description, tags, mandatory) and has many
-/// memories to scan — e.g. a GUI memory-list panel rendering kind
-/// prefixes for every slug, or a feature summariser collapsing
-/// records onto a metadata-only wire shape. Single reads where
-/// the body is also needed should keep using the full read path.
+/// Resolves the memory via [`resolve_memory`] and parses the on-disk file via [`MemoryFile::parse`],
+/// discarding the body before return.
+/// Use this when the caller only needs frontmatter fields (kind, name, description, tags, mandatory),
+/// and has many memories to scan,
+/// e.g. a GUI memory-list panel rendering kind prefixes for every slug,
+/// or a feature summariser collapsing records onto a metadata-only wire shape.
+/// Single reads where the body is also needed should keep using the full read path.
 ///
 /// Today this still allocates the body internally (parses through
 /// `MemoryFile::parse` and drops the result); a future fence-slice
@@ -819,9 +816,8 @@ pub async fn delete_file_at_path(
     Ok(commit_id)
 }
 
-/// Outcome of a successful [`move_memory_path`] call. The id and
-/// body bytes are unchanged — the move is purely a slug/path
-/// rewrite.
+/// Outcome of a successful [`move_memory_path`] call.
+/// The id and body bytes are unchanged: the move is purely a slug/path rewrite.
 #[derive(Debug, Clone)]
 pub struct MoveMemoryOutcome {
     pub old_slug: String,
@@ -832,22 +828,18 @@ pub struct MoveMemoryOutcome {
     pub commit_id: String,
 }
 
-/// Atomically rename a memory's slug path inside its group. Single
-/// commit: writes the bytes at the new path and removes the file
-/// at the old path in the same tree rewrite, so `git log` never
-/// shows a half-moved state. The frontmatter (id, name, body, …)
-/// is preserved verbatim so cross-refs stay valid.
+/// Atomically rename a memory's slug path inside its group.
+/// Single commit: writes the bytes at the new path and removes the file at the old path in the same tree rewrite,
+/// so `git log` never shows a half-moved state.
+/// The frontmatter (id, name, body, ...) is preserved verbatim so cross-refs stay valid.
 ///
-/// Validation: both slugs must pass [`validate_memory_slug`]. The
-/// source memory is resolved via [`resolve_memory`] so callers may
-/// address it by `slug + id`, slug only, or id only. Refuses to
-/// overwrite an existing memory at `new_slug` with the same id. An
-/// explicit `message` override is bounded via
-/// [`resolve_commit_message`], same as every other commit-producing
-/// entry point in this crate.
+/// Validation: both slugs must pass [`validate_memory_slug`].
+/// The source memory is resolved via [`resolve_memory`] so callers may address it by `slug + id`, slug only, or id only.
+/// Refuses to overwrite an existing memory at `new_slug` with the same id.
+/// An explicit `message` override is bounded via [`resolve_commit_message`],
+/// same as every other commit-producing entry point in this crate.
 ///
-/// Same-slug moves short-circuit and return without committing —
-/// the operation is a no-op.
+/// Same-slug moves short-circuit and return without committing: the operation is a no-op.
 pub async fn move_memory_path(
     backend: &NativeBackend,
     handle: &RepoHandle,
@@ -1120,14 +1112,13 @@ pub fn validate_memory_slug(slug: &str) -> Result<(), ImportError> {
     Ok(())
 }
 
-/// Validate a memory slug. Accepts multi-segment paths joined by
-/// `/`, so callers wanting hierarchical sub-grouping (FR-41) can
-/// use e.g. `feedback/git/commit-phase`. Defers per-segment rules
-/// to [`validate_slug_segment`].
+/// Validate a memory slug.
+/// Accepts multi-segment paths joined by `/`, so callers wanting hierarchical sub-grouping,
+/// can use e.g. `feedback/git/commit-phase`.
+/// Defers per-segment rules to [`validate_slug_segment`].
 ///
-/// Kept as the historical name so existing call sites compile
-/// unchanged; new code may also call [`validate_memory_slug`]
-/// directly when the path semantics are intentional.
+/// Alias kept so existing call sites compile unchanged;
+/// new code may also call [`validate_memory_slug`] directly when the path semantics are intentional.
 pub fn validate_slug(slug: &str) -> Result<(), ImportError> {
     validate_memory_slug(slug)
 }
@@ -1469,7 +1460,7 @@ mod tests {
 
     #[test]
     fn validate_memory_slug_accepts_paths() {
-        // FR-41: multi-segment paths with `/` separators.
+        // Multi-segment paths with `/` separators.
         assert!(validate_memory_slug("feedback/git/commit-phase").is_ok());
         assert!(validate_memory_slug("rules/testing").is_ok());
         assert!(validate_memory_slug("a/b/c/d/e/f/g/h").is_ok()); // 8 segments OK
@@ -1825,8 +1816,8 @@ mod tests {
         .await
         .expect("import");
         assert_eq!(result.slug, "minted");
-        // Resolving the slug finds exactly one entry — the one
-        // we just minted — and its path sits under the slug dir.
+        // Resolving the slug finds exactly one entry, the one just minted,
+        // and its path sits under the slug dir.
         let resolved = resolve_memory(&backend, &handle, Some("minted"), None)
             .await
             .expect("resolve");
@@ -1840,9 +1831,8 @@ mod tests {
 
     #[tokio::test]
     async fn import_memory_repeated_produces_sibling_uuids() {
-        // Duplicate slugs are legal post-FR-028: each import
-        // mints a fresh UUIDv7 and lands as a sibling of the
-        // prior file under the same slug directory.
+        // Duplicate slugs are legal: each import mints a fresh UUIDv7,
+        // and lands as a sibling of the prior file under the same slug directory.
         let (backend, handle, _tmp) = test_backend().await;
         let author = test_author();
         let first = import_memory(
@@ -2057,9 +2047,8 @@ mod tests {
         let (backend, handle, _tmp) = test_backend().await;
         let author = test_author();
         let id = Uuid::now_v7();
-        // Seed a YAML-fenced memory directly so the parser's `---`
-        // branch is exercised end-to-end. FR-006 (universal frontmatter)
-        // means YAML must round-trip through the same primitive.
+        // Seed a YAML-fenced memory directly so the parser's `---` branch is exercised end-to-end.
+        // Universal frontmatter support means YAML must round-trip through the same primitive.
         let yaml_body = format!(
             "---\nid: \"{id}\"\nname: yam\ndescription: yaml fenced\nkind: rule\n---\nBody after yaml fence.\n"
         );
@@ -2196,9 +2185,8 @@ mod tests {
 
     #[tokio::test]
     async fn list_memory_slug_dirs_walks_nested_paths() {
-        // FR-41: a memory at `feedback/git/scope/<uuid>.md` and one
-        // at the flat `legacy/<uuid>.md` should both surface as
-        // separate leaf slug directories.
+        // A memory at `feedback/git/scope/<uuid>.md` and one at the flat `legacy/<uuid>.md`,
+        // should both surface as separate leaf slug directories.
         let (backend, handle, _tmp) = test_backend().await;
         let author = test_author();
         let nested_id = Uuid::now_v7();
