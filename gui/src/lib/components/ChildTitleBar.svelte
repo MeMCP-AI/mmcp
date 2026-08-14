@@ -36,8 +36,7 @@
 
 <header
   data-tauri-drag-region
-  style="--tb-h: 2rem; --tb-ctrl-w: calc(var(--tb-h) * 1.4375); --tb-glyph: calc(var(--tb-h) * 0.375); height: var(--tb-h);"
-  class="relative flex shrink-0 select-none items-stretch border-b border-line bg-surface-1 text-[0.75rem] text-fg-muted"
+  class="tb relative flex shrink-0 select-none items-stretch border-b border-line bg-surface-1 text-[0.75rem] text-fg-muted"
 >
   <div
     data-tauri-drag-region
@@ -49,8 +48,7 @@
   <div class="flex items-stretch">
     <button
       type="button"
-      style="width: var(--tb-ctrl-w);"
-      class="flex items-center justify-center hover:bg-surface-2 hover:text-fg"
+      class="tb-ctrl flex items-center justify-center hover:bg-surface-2 hover:text-fg"
       aria-label="Minimize"
       onclick={() => win.minimize()}
     >
@@ -59,8 +57,7 @@
     </button>
     <button
       type="button"
-      style="width: var(--tb-ctrl-w);"
-      class="flex items-center justify-center hover:bg-surface-2 hover:text-fg"
+      class="tb-ctrl flex items-center justify-center hover:bg-surface-2 hover:text-fg"
       aria-label={maximized ? 'Restore' : 'Maximize'}
       onclick={() => win.toggleMaximize()}
     >
@@ -77,8 +74,7 @@
     </button>
     <button
       type="button"
-      style="width: var(--tb-ctrl-w);"
-      class="flex items-center justify-center hover:bg-red-600 hover:text-white"
+      class="tb-ctrl flex items-center justify-center hover:bg-red-600 hover:text-white"
       aria-label="Close"
       onclick={() => win.close()}
     >
@@ -91,6 +87,22 @@
 </header>
 
 <style>
+  /* Window-chrome sizing lives here rather than as inline `style=`
+     attributes so the CSP's `default-src 'self'` (no `style-src
+     'unsafe-inline'`) can stay untouched: every value below is
+     static, so there is nothing dynamic an inline style bought us.
+     Mirrors TitleBar.svelte's identical .tb/.tb-ctrl rules. */
+  .tb {
+    --tb-h: 2rem;
+    --tb-ctrl-w: calc(var(--tb-h) * 1.4375);
+    --tb-glyph: calc(var(--tb-h) * 0.375);
+    height: var(--tb-h);
+  }
+
+  .tb-ctrl {
+    width: var(--tb-ctrl-w);
+  }
+
   .tb-glyph {
     width: var(--tb-glyph);
     height: var(--tb-glyph);
