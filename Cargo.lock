@@ -958,6 +958,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "cookie_store"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15b2c103cf610ec6cae3da84a766285b42fd16aad564758459e6ecf128c75206"
+dependencies = [
+ "cookie",
+ "document-features",
+ "idna",
+ "log",
+ "publicsuffix",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "time",
+ "url",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3546,7 +3564,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-auth"
-version = "0.1.48"
+version = "0.1.49"
 dependencies = [
  "argon2",
  "axum-login",
@@ -3562,7 +3580,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-client"
-version = "0.1.48"
+version = "0.1.49"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -3592,7 +3610,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-core"
-version = "0.1.48"
+version = "0.1.49"
 dependencies = [
  "gray_matter",
  "jiff",
@@ -3610,7 +3628,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-db"
-version = "0.1.48"
+version = "0.1.49"
 dependencies = [
  "async-trait",
  "libsqlite3-sys",
@@ -3624,7 +3642,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-git"
-version = "0.1.48"
+version = "0.1.49"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3640,7 +3658,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-proto"
-version = "0.1.48"
+version = "0.1.49"
 dependencies = [
  "serde",
  "serde_json",
@@ -3650,7 +3668,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-server"
-version = "0.1.48"
+version = "0.1.49"
 dependencies = [
  "anyhow",
  "axum",
@@ -3685,7 +3703,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-session"
-version = "0.1.48"
+version = "0.1.49"
 dependencies = [
  "serde",
  "sha2 0.11.0",
@@ -3695,7 +3713,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-store"
-version = "0.1.48"
+version = "0.1.49"
 dependencies = [
  "acdc-converters-core",
  "acdc-converters-markdown",
@@ -3727,7 +3745,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-sync"
-version = "0.1.48"
+version = "0.1.49"
 dependencies = [
  "mmcp-core",
  "mmcp-git",
@@ -4237,6 +4255,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "psl-types"
+version = "2.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
+
+[[package]]
 name = "ptr_meta"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4254,6 +4278,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "publicsuffix"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f42ea446cab60335f76979ec15e12619a2165b5ae2c12166bef27d283a9fadf"
+dependencies = [
+ "idna",
+ "psl-types",
 ]
 
 [[package]]
@@ -4526,6 +4560,8 @@ checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "cookie",
+ "cookie_store",
  "encoding_rs",
  "futures-channel",
  "futures-core",

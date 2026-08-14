@@ -10,7 +10,6 @@ use mmcp_server::config::{OAuthProviderConfig, ServerConfig};
 use mmcp_server::state::ServerState;
 use serde_json::json;
 use tempfile::TempDir;
-use uuid::Uuid;
 
 /// Bootstrap the server with the caller's choice of OAuth providers.
 /// The listener is an ephemeral port on loopback; nothing touches
@@ -115,26 +114,74 @@ async fn oauth_authorize_known_provider_redirects_to_provider_authorize_url() {
     assert!(location.contains("scope=user:email"));
 }
 
-// ── Passkey error paths ─────────────────────────────────────────────
+// ── Passkey registration requires an authenticated session ─────────
+//
+// `passkey_register_start`/`finish` used to accept an arbitrary
+// `user_id` straight from the unauthenticated JSON body, which let
+// anyone enroll their own authenticator onto any victim account
+// (full account takeover). Both handlers now source the identity
+// exclusively from the caller's own `AuthSession`, so the request
+// body no longer carries any `user_id` field at all.
 
 #[tokio::test]
-async fn passkey_register_start_with_unknown_user_returns_404() {
+async fn passkey_register_start_unauthenticated_returns_401() {
     let (addr, _tmp) = start_server_with_oauth(vec![]).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/auth/passkey/register/start"))
-        .json(&json!({ "user_id": Uuid::now_v7().to_string() }))
         .send()
         .await
         .expect("passkey register start");
-    assert_eq!(resp.status(), 404);
+    assert_eq!(resp.status(), 401);
+}
+
+#[tokio::test]
+async fn passkey_register_finish_unauthenticated_returns_401() {
+    let (addr, _tmp) = start_server_with_oauth(vec![]).await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/auth/passkey/register/finish"))
+        .json(&json!({
+            "credential_name": "laptop",
+            "response": {
+                "id": "AAAA",
+                "rawId": "AAAA",
+                "type": "public-key",
+                "response": {
+                    "attestationObject": "AAAA",
+                    "clientDataJSON": "AAAA"
+                }
+            }
+        }))
+        .send()
+        .await
+        .expect("passkey register finish");
+    assert_eq!(resp.status(), 401);
+}
+
+#[tokio::test]
+async fn passkey_register_start_authenticated_succeeds_for_own_account() {
+    let (addr, _tmp) = start_server_with_oauth(vec![]).await;
+    let client = register_and_login(addr, "alice", "hunter22").await;
+
+    let resp = client
+        .post(format!("http://{addr}/auth/passkey/register/start"))
+        .send()
+        .await
+        .expect("passkey register start");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert!(
+        body.get("publicKey").is_some(),
+        "expected a publicKey challenge object, got {body}"
+    );
 }
 
 #[tokio::test]
 async fn passkey_register_finish_without_pending_state_returns_400() {
     let (addr, _tmp) = start_server_with_oauth(vec![]).await;
-    // Seed a real user so the lookup does not fail before the pending-state check.
-    // This test never calls register/start, so the in-memory pending map has no entry for this user.
-    let user_id = register_test_user(addr, "alice", "hunter22").await;
+    // An authenticated caller (session identity resolves the pending
+    // registration, not a body field) that never called register/start
+    // has no entry in the in-memory pending map.
+    let client = register_and_login(addr, "alice", "hunter22").await;
 
     // The `response` field must still be a well-formed JSON object
     // because axum's Json extractor runs before the handler body.
@@ -142,10 +189,9 @@ async fn passkey_register_finish_without_pending_state_returns_400() {
     // the missing pending state before it tries to finish the
     // webauthn ceremony. If axum rejects earlier, a 4xx still covers
     // the contract we care about (no 5xx, no panic).
-    let resp = reqwest::Client::new()
+    let resp = client
         .post(format!("http://{addr}/auth/passkey/register/finish"))
         .json(&json!({
-            "user_id": user_id,
             "credential_name": "laptop",
             "response": {
                 "id": "AAAA",
@@ -214,4 +260,34 @@ async fn register_test_user(addr: SocketAddr, handle: &str, password: &str) -> S
         .as_str()
         .expect("user_id string")
         .to_string()
+}
+
+/// Register then log in a fresh user, returning a `reqwest::Client`
+/// with a cookie jar so the `axum-login` session cookie set by
+/// `/auth/login` is carried on every subsequent request made with
+/// the returned client. Used to exercise routes that require an
+/// authenticated `AuthSession`.
+async fn register_and_login(addr: SocketAddr, handle: &str, password: &str) -> reqwest::Client {
+    let client = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .expect("build cookie-enabled client");
+
+    let resp = client
+        .post(format!("http://{addr}/auth/register"))
+        .json(&json!({ "handle": handle, "password": password }))
+        .send()
+        .await
+        .expect("register");
+    assert_eq!(resp.status(), 201, "register should succeed");
+
+    let resp = client
+        .post(format!("http://{addr}/auth/login"))
+        .json(&json!({ "handle": handle, "password": password }))
+        .send()
+        .await
+        .expect("login");
+    assert_eq!(resp.status(), 200, "login should succeed");
+
+    client
 }

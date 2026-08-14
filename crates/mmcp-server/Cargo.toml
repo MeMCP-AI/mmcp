@@ -46,7 +46,7 @@ gix = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["cookies"] }
 tempfile = "3"
 serde_json = "1"
 axum = { workspace = true }

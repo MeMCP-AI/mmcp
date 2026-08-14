@@ -7,7 +7,9 @@
 //!   the provider, `GET /auth/oauth/:provider/callback` exchanges
 //!   the code for a token and logs the user in.
 //! - **Passkey**: `POST /auth/passkey/register/start` +
-//!   `POST /auth/passkey/register/finish` for enrollment, and
+//!   `POST /auth/passkey/register/finish` for enrollment (the
+//!   caller must already hold an authenticated session; a passkey
+//!   is always enrolled onto the caller's own account), and
 //!   `POST /auth/passkey/login/start` +
 //!   `POST /auth/passkey/login/finish` for authentication.
 //!
@@ -318,28 +320,25 @@ fn auth_state() -> &'static PasskeyAuthState {
     STATE.get_or_init(|| Arc::new(Mutex::new(std::collections::HashMap::new())))
 }
 
-#[derive(Deserialize)]
-struct PasskeyRegStartRequest {
-    user_id: Uuid,
-}
-
 /// Start the passkey registration ceremony.
 ///
-/// The caller must already be authenticated (knows their user_id).
+/// The identity being enrolled is the CALLER's own authenticated
+/// session user, never a value from the request body: a passkey
+/// registration ceremony must not be startable for an arbitrary
+/// target account by an unauthenticated caller.
 /// Returns the `CreationChallengeResponse` the browser passes to
 /// `navigator.credentials.create()`.
 async fn passkey_register_start(
+    auth_session: AuthSession,
     State(state): State<ServerState>,
-    Json(req): Json<PasskeyRegStartRequest>,
 ) -> Result<Json<CreationChallengeResponse>, AuthHttpError> {
+    let session_user = auth_session
+        .user
+        .ok_or(AuthHttpError::Unauthorized("authentication required"))?;
     let conn = state.database.connection();
-    let user = user_repo::find_by_id(conn, req.user_id)
-        .await
-        .map_err(into_generic_response)?
-        .ok_or(AuthHttpError::NotFound("user not found"))?;
 
     // Load existing credentials so the server can exclude them.
-    let existing_creds = passkey_repo::find_by_user(conn, user.id)
+    let existing_creds = passkey_repo::find_by_user(conn, session_user.id)
         .await
         .map_err(into_generic_response)?;
     let existing: Vec<Passkey> = existing_creds
@@ -351,9 +350,9 @@ async fn passkey_register_start(
     let (ccr, reg_state_value) = state
         .webauthn
         .start_passkey_registration(
-            user.id,
-            &user.handle,
-            &user.handle,
+            session_user.id,
+            &session_user.handle,
+            &session_user.handle,
             if exclude_creds.is_empty() {
                 None
             } else {
@@ -363,27 +362,38 @@ async fn passkey_register_start(
         .map_err(into_generic_response)?;
 
     // Stash the registration state so `finish` can complete it.
-    reg_state().lock().await.insert(user.id, reg_state_value);
+    reg_state()
+        .lock()
+        .await
+        .insert(session_user.id, reg_state_value);
 
     Ok(Json(ccr))
 }
 
 #[derive(Deserialize)]
 struct PasskeyRegFinishRequest {
-    user_id: Uuid,
     credential_name: String,
     response: RegisterPublicKeyCredential,
 }
 
+/// Finish the passkey registration ceremony and attach the new
+/// credential to the CALLER's own authenticated session user; the
+/// identity is never taken from the request body (see
+/// [`passkey_register_start`]).
 async fn passkey_register_finish(
+    auth_session: AuthSession,
     State(state): State<ServerState>,
     Json(req): Json<PasskeyRegFinishRequest>,
 ) -> Result<Json<serde_json::Value>, AuthHttpError> {
+    let session_user = auth_session
+        .user
+        .ok_or(AuthHttpError::Unauthorized("authentication required"))?;
+
     let pending =
         reg_state()
             .lock()
             .await
-            .remove(&req.user_id)
+            .remove(&session_user.id)
             .ok_or(AuthHttpError::BadRequest(
                 "no pending registration for this user",
             ))?;
@@ -398,7 +408,7 @@ async fn passkey_register_finish(
     passkey_repo::create(
         state.database.connection(),
         Uuid::now_v7(),
-        req.user_id,
+        session_user.id,
         req.credential_name,
         cred_json,
         now,
