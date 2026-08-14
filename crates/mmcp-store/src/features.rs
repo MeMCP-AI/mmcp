@@ -783,18 +783,14 @@ async fn read_memory_refs(
 /// Commit a deletion. Propagates `MemoryNotFound` verbatim so CLI
 /// and MCP callers can distinguish "slug never existed" from "slug
 /// is an unrelated memory kind" (`FeatureError::NotAFeature`).
-/// Rename every feature under `old_slug` to `new_slug`, committing
-/// the moves in a single atomic batch. UUIDs are stable across
-/// the rename so cross-refs in other features keep resolving
-/// without any further rewrite — the slug is a directory-level
-/// label, not a primary key.
+/// Rename every feature under `old_slug` to `new_slug`, committing the moves in a single atomic batch.
+/// UUIDs are stable across the rename so cross-refs in other features keep resolving without any further rewrite:
+/// the slug is a directory-level label, not a primary key.
 ///
-/// When multiple memories share `old_slug` (post-FR-028
-/// duplicate-slug support), every entry moves in the same commit.
-/// When no memory lives at `old_slug`, returns
-/// [`ImportError::MemoryNotFound`] so callers don't silently
-/// succeed on a non-existent rename. An explicit `message` override
-/// is bounded via [`resolve_commit_message`].
+/// When multiple memories share `old_slug` (duplicate slugs are legal), every entry moves in the same commit.
+/// When no memory lives at `old_slug`, returns [`ImportError::MemoryNotFound`],
+/// so callers don't silently succeed on a non-existent rename.
+/// An explicit `message` override is bounded via [`resolve_commit_message`].
 pub async fn rename_feature(
     backend: &NativeBackend,
     entry: &GroupEntry,
@@ -803,10 +799,9 @@ pub async fn rename_feature(
     author: &ResolvedAuthor,
     message: Option<&str>,
 ) -> Result<Vec<FeatureRecord>, FeatureError> {
-    // FR-39 v2: rename always uses `concept:group_coarsening` —
-    // Exclusive Group(g) blocks every narrower Shared-Group
-    // holder via the ancestor-prefix rule, so no concurrent
-    // memory edit can race with a slug-wide move.
+    // Rename always uses `concept:group_coarsening`:
+    // Exclusive Group(g) blocks every narrower Shared-Group holder via the ancestor-prefix rule,
+    // so no concurrent memory edit can race with a slug-wide move.
     let _guards = crate::lock::acquire_chain(&crate::lock::coarsen_group_chain(
         *entry.manifest.group_id.as_uuid(),
     ))
@@ -878,8 +873,7 @@ pub async fn delete_feature(
     author: &ResolvedAuthor,
     message: Option<&str>,
 ) -> Result<String, FeatureError> {
-    // FR-39 v2: same modify chain as `update_feature` — Shared on
-    // the ancestor chain, Exclusive on the per-memory leaf.
+    // Same modify chain as `update_feature`: Shared on the ancestor chain, Exclusive on the per-memory leaf.
     let group = *entry.manifest.group_id.as_uuid();
     let _ancestors = crate::lock::acquire_chain(&[
         (
@@ -932,39 +926,33 @@ pub async fn delete_feature(
 
 /// Enumerate FRs in the group, optionally filtered by status.
 ///
-/// Filter precedence (FR-024 + supersede follow-up):
-/// 1. `status_filter = Some(x)` → include every FR whose status
-///    matches, regardless of `show_all`. Explicit selector wins so
-///    a caller asking for `completed` or `superseded` FRs always
-///    sees them.
-/// 2. `status_filter = None` + `show_all = true` → include every
-///    FR. The "show me literally everything" escape hatch.
-/// 3. `status_filter = None` + `show_all = false` → hide every
-///    status marked [`FeatureStatus::is_default_hidden`]
-///    (`Completed`, `Duplicate`, `Superseded`). Default listing
-///    matches the "what still needs work?" mental model operators
-///    reach for; the closed-ish statuses only come back via the
-///    `show_all` escape hatch or an explicit `status` selector.
+/// Filter precedence:
+/// 1. `status_filter = Some(x)`: include every FR whose status matches, regardless of `show_all`.
+///    Explicit selector wins so a caller asking for `completed` or `superseded` FRs always sees them.
+/// 2. `status_filter = None` + `show_all = true`: include every FR.
+///    The "show me literally everything" escape hatch.
+/// 3. `status_filter = None` + `show_all = false`:
+///    hide every status marked [`FeatureStatus::is_default_hidden`] (`Completed`, `Duplicate`, `Superseded`).
+///    Default listing matches the "what still needs work?" mental model operators reach for;
+///    the closed-ish statuses only come back via the `show_all` escape hatch or an explicit `status` selector.
 ///
-/// Non-FR memories in the same group are skipped silently — FRs
-/// share the group with rules / snapshots / logs / references /
-/// scratch notes, and listing would otherwise return a confused
-/// shape. A memory that IS a feature but whose frontmatter fails to
-/// parse is NOT skipped silently: it is excluded from the returned
-/// records (a mis-parsed record cannot be trusted) but reported back
-/// as a [`Finding`] (`frontmatter_parse_failed`, matching the code
-/// `check_health` already uses for the identical failure) so callers
-/// can surface it through the FR-45 notes channel instead of the
-/// listing quietly lying about the group's true FR count.
+/// Non-FR memories in the same group are skipped silently:
+/// FRs share the group with rules/snapshots/logs/references/scratch notes,
+/// and listing would otherwise return a confused shape.
+/// A memory that IS a feature but whose frontmatter fails to parse is NOT skipped silently:
+/// it is excluded from the returned records, a mis-parsed record cannot be trusted,
+/// but reported back as a [`Finding`] (`frontmatter_parse_failed`,
+/// matching the code `check_health` already uses for the identical failure),
+/// so callers can surface it through the notes channel,
+/// instead of the listing quietly lying about the group's true FR count.
 pub async fn list_features(
     backend: &NativeBackend,
     entry: &GroupEntry,
     status_filter: Option<FeatureStatus>,
     show_all: bool,
 ) -> Result<(Vec<FeatureRecord>, Vec<Finding>), FeatureError> {
-    // Every memory lives at `memories/<slug>/<uuid>.md`, so slug
-    // leaf directories are the enumeration surface. FR-41-aware:
-    // nested slug paths surface alongside flat ones.
+    // Every memory lives at `memories/<slug>/<uuid>.md`, so slug leaf directories are the enumeration surface.
+    // Nested slug paths surface alongside flat ones.
     let slug_dirs = crate::memory::list_memory_slug_dirs(backend, &entry.handle, &Rev::head())
         .await
         .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?;
@@ -978,16 +966,13 @@ pub async fn list_features(
                     out.push(record);
                 }
             }
-            // `NotAFeature` is an *expected* non-match — the slug is
-            // a rule / snapshot / log / reference / scratch memory,
-            // not a corruption signal — so the loop continues past
-            // it without a finding.
+            // `NotAFeature` is an *expected* non-match:
+            // the slug is a rule/snapshot/log/reference/scratch memory, not a corruption signal,
+            // so the loop continues past it without a finding.
             Err(FeatureError::NotAFeature { .. }) => {}
-            // A genuine parse error does NOT silently drop the
-            // memory from view: it is surfaced as a finding so a
-            // corrupt-on-disk FR is loud instead of invisible, while
-            // one bad memory still does not take the whole group's
-            // listing down.
+            // A genuine parse error does NOT silently drop the memory from view:
+            // it is surfaced as a finding so a corrupt-on-disk FR is loud instead of invisible,
+            // while one bad memory still does not take the whole group's listing down.
             Err(FeatureError::Memory(ImportError::Parse(err))) => {
                 findings.push(crate::tracker::parse_failed_finding(
                     &entry.manifest.group_id.to_string(),
@@ -1010,21 +995,17 @@ pub async fn list_features(
     Ok((out, findings))
 }
 
-/// Body-free counterpart to [`list_features`] for listing surfaces
-/// (MCP `list_features` tool, `mmcp feature list` CLI). Returns
-/// per-FR metadata only; callers that need a body fetch the
-/// individual record via [`read_feature`]. Also forwards
-/// [`list_features`]'s per-memory parse-error findings unchanged, so
-/// callers surface them through the FR-45 notes channel.
+/// Body-free counterpart to [`list_features`] for listing surfaces,
+/// (MCP `list_features` tool, `mmcp feature list` CLI).
+/// Returns per-FR metadata only; callers that need a body fetch the individual record via [`read_feature`].
+/// Also forwards [`list_features`]'s per-memory parse-error findings unchanged,
+/// so callers surface them through the notes channel.
 ///
-/// Filter precedence and sort order match [`list_features`]
-/// exactly — this is a wire-shape change, not a semantics change.
+/// Filter precedence and sort order match [`list_features`] exactly:
+/// this is a wire-shape change, not a semantics change.
 ///
-/// Interim implementation reads full records and projects them
-/// onto [`FeatureSummary`], discarding bodies. When the
-/// frontmatter-only read primitive (`feature:frontmatter-only-read-
-/// primitive-in-mmcp-store`) lands, this function swaps to it
-/// without changing its signature.
+/// Interim implementation reads full records and projects them onto [`FeatureSummary`], discarding bodies.
+/// A future frontmatter-only read primitive will let this function swap to it without changing its signature.
 pub async fn list_feature_summaries(
     backend: &NativeBackend,
     entry: &GroupEntry,
@@ -1069,21 +1050,19 @@ pub async fn resolve_project_group(
     Ok((entry, root))
 }
 
-/// FR-44 entry point: resolve the project group using the explicit
-/// selector when provided, falling back to the cwd walk otherwise.
+/// Entry point: resolve the project group using the explicit selector when provided,
+/// falling back to the cwd walk otherwise.
 ///
-/// `project` accepts a UUID or a slug and resolves against the
-/// local mirror via [`crate::memory::resolve_group`]. Unknown
-/// identifier surfaces [`FeatureError::UnknownProject`]. When
-/// `project` is `None`, this is a bare `resolve_project_group`
-/// call — the historical cwd walk stays the default so every
-/// existing caller keeps working.
+/// `project` accepts a UUID or a slug and resolves against the local mirror via [`crate::memory::resolve_group`].
+/// Unknown identifier surfaces [`FeatureError::UnknownProject`].
+/// When `project` is `None`, this is a bare `resolve_project_group` call:
+/// the cwd walk stays the default so every existing caller keeps working.
 ///
-/// Returns `(entry, project_root_or_cwd)`. The second slot is
-/// only meaningful for the cwd-walk branch (callers use it to
-/// locate `.mmcp.toml`-adjacent files like `CLAUDE.md`); for the
-/// explicit-selector branch we return `cwd` unchanged because the
-/// selected project may not have a local filesystem root at all.
+/// Returns `(entry, project_root_or_cwd)`.
+/// The second slot is only meaningful for the cwd-walk branch,
+/// (callers use it to locate `.mmcp.toml`-adjacent files like `CLAUDE.md`);
+/// the explicit-selector branch returns `cwd` unchanged,
+/// because the selected project may not have a local filesystem root at all.
 pub async fn resolve_project_group_with_selector(
     groups: &GroupIndex,
     project: Option<&str>,
