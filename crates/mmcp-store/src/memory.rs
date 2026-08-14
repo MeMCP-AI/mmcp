@@ -486,13 +486,11 @@ async fn resolve_by_id(
     handle: &RepoHandle,
     expected: Uuid,
 ) -> Result<ResolvedMemory, ImportError> {
-    // Walk every slug directory once, splitting files into the
-    // three buckets the fallback chain works through (D6):
+    // Walk every slug directory once, splitting files into the three buckets the fallback chain works through:
     //   1. UUID-named files whose stem == `expected`        (step 1 candidates)
     //   2. non-UUID-named files (hand-crafted slugs)         (step 2 candidates)
     //   3. UUID-named files whose stem != `expected`         (step 3 candidates)
-    // Every file read goes through `parse_frontmatter_id` so the
-    // frontmatter id is the source of truth (FR-28 / D4).
+    // Every file read goes through `parse_frontmatter_id` so the frontmatter id is the source of truth.
     let rev = Rev::head();
     let slug_dirs = list_memory_slug_dirs(backend, handle, &rev).await?;
 
@@ -683,11 +681,10 @@ fn parse_frontmatter_id(bytes: &[u8]) -> Option<Uuid> {
 /// positional; this bundles the addressing/override knobs most
 /// callers thread straight through from a resolver or CLI args.
 ///
-/// `addressing_mode` and `force` drive the FR-28 / D4 id-mismatch
-/// check; `message` overrides the auto-generated commit message.
-/// Construct with field-init shorthand plus `..Default::default()`
-/// so adding a field later is non-breaking for callers taking the
-/// default.
+/// `addressing_mode` and `force` drive the id-mismatch check;
+/// `message` overrides the auto-generated commit message.
+/// Construct with field-init shorthand plus `..Default::default()`,
+/// so adding a field later is non-breaking for callers taking the default.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WriteFileOptions<'a> {
     pub addressing_mode: AddressingMode,
@@ -701,18 +698,14 @@ pub struct WriteFileOptions<'a> {
 /// frontmatter (`name`, `description`, `tags`) and body against
 /// `mmcp_core::memory`'s named maxima.
 ///
-/// This is the single choke point every memory write with rendered
-/// content — create, update, `edit_memory_body`, feature/issue
-/// create and update, and archive import — commits through (see
-/// [`write_file_at_path`] and [`write_memory_by_id`]), so the check
-/// runs exactly once per write regardless of which higher-level
-/// entry point triggered it, per the SSOT/DRY rule and the
-/// "validation runs at the boundary" clause of
-/// `global-security-rules`. Commit-message validation is a separate
-/// concern handled uniformly by [`resolve_commit_message`], which
-/// every commit-producing entry point in this crate (including the
-/// ones with no rendered content, like delete and move) calls
-/// instead of building its message inline.
+/// This is the single choke point every memory write with rendered content,
+/// create, update, `edit_memory_body`, feature/issue create and update, and archive import,
+/// commits through (see [`write_file_at_path`] and [`write_memory_by_id`]),
+/// so the check runs exactly once per write regardless of which higher-level entry point triggered it,
+/// per the SSOT/DRY rule and the "validation runs at the boundary" clause of `global-security-rules`.
+/// Commit-message validation is a separate concern handled uniformly by [`resolve_commit_message`],
+/// which every commit-producing entry point in this crate (including the ones with no rendered content,
+/// like delete and move) calls instead of building its message inline.
 fn validate_write_content_lengths(rendered: &str) -> Result<(), ImportError> {
     let file = MemoryFile::parse(rendered)?;
     mmcp_core::memory::validate_frontmatter_lengths(&file.frontmatter)?;
@@ -746,16 +739,14 @@ pub fn resolve_commit_message(
     }
 }
 
-/// Commit a write of `rendered` at an explicit repo-relative
-/// `path` after running the FR-28 / D4 id-mismatch check. The
-/// validation compares the filename UUID encoded in `path` to the
-/// frontmatter `id` in `rendered` and applies the rules from
-/// [`validate_id_mismatch`]. Callers thread the
-/// `addressing_mode` from their resolver and `force` from their
-/// tool args via [`WriteFileOptions`].
+/// Commit a write of `rendered` at an explicit repo-relative `path` after running the id-mismatch check.
+/// The validation compares the filename UUID encoded in `path` to the frontmatter `id` in `rendered`,
+/// and applies the rules from [`validate_id_mismatch`].
+/// Callers thread the `addressing_mode` from their resolver and `force` from their tool args,
+/// via [`WriteFileOptions`].
 ///
-/// On success returns the commit id and the [`IdValidation`]
-/// outcome so the caller can surface `id_mismatch_*` FR-45 notes.
+/// On success returns the commit id and the [`IdValidation`] outcome,
+/// so the caller can surface `id_mismatch_*` notes.
 /// `IdMismatchOnFilenameWrite` short-circuits before writing.
 pub async fn write_file_at_path(
     backend: &NativeBackend,
@@ -943,11 +934,9 @@ pub struct WriteMemoryOptions<'a> {
     pub message: Option<&'a str>,
 }
 
-/// Write a memory at the two-level `memories/<slug>/<id>.md` path
-/// with create-or-override semantics. Delegates the FR-28 / D4
-/// id-mismatch check to [`write_file_at_path`] so callers thread
-/// `addressing_mode` and `force` through both primitives via
-/// [`WriteMemoryOptions`].
+/// Write a memory at the two-level `memories/<slug>/<id>.md` path with create-or-override semantics.
+/// Delegates the id-mismatch check to [`write_file_at_path`],
+/// so callers thread `addressing_mode` and `force` through both primitives via [`WriteMemoryOptions`].
 ///
 /// Returns [`ImportError::MemoryAlreadyExists`] on collision when
 /// `override_existing` is `false`; otherwise overwrites in place.
@@ -1004,16 +993,14 @@ pub async fn write_memory_by_id(
 /// Import a memory into a group repo.
 ///
 /// Parses `content` as a full memory file (frontmatter + body);
-/// when the content lacks a `+++` block, `synth_frontmatter` must
-/// supply name / description / kind and the rest of the body is
-/// treated as the payload. The memory lands at
-/// `memories/<slug>/<uuid>.md` — the id is taken from frontmatter
-/// when present, otherwise a fresh UUIDv7 is minted.
+/// when the content lacks a `+++` block, `synth_frontmatter` must supply name/description/kind,
+/// and the rest of the body is treated as the payload.
+/// The memory lands at `memories/<slug>/<uuid>.md`:
+/// the id is taken from frontmatter when present, otherwise a fresh UUIDv7 is minted.
 ///
-/// `override_existing` only matters when an explicit id from
-/// frontmatter collides with an existing file. With a freshly
-/// minted id, the write always creates a new sibling under the
-/// slug directory (duplicate slugs are legal post-FR-028).
+/// `override_existing` only matters when an explicit id from frontmatter collides with an existing file.
+/// With a freshly minted id, the write always creates a new sibling under the slug directory,
+/// (duplicate slugs are legal).
 pub async fn import_memory(
     backend: &NativeBackend,
     handle: &RepoHandle,
@@ -1043,21 +1030,17 @@ pub async fn import_memory(
         .to_string()
         .map_err(|e| ImportError::Render(e.to_string()))?;
 
-    // FR-39 v2: import_memory creates (or replaces under
-    // override) one memory under `memories/<slug>/<id>.md`. Take
-    // the create chain (Process-Shared + Group-Exclusive) so
-    // concurrent imports against the same group serialise on UUID
-    // minting and file creation regardless of kind. The shared
-    // ticket counter and slug-uniqueness invariant both rely on
-    // the group-wide exclusive view.
+    // `import_memory` creates (or replaces under override) one memory under `memories/<slug>/<id>.md`.
+    // Takes the create chain (Process-Shared + Group-Exclusive),
+    // so concurrent imports against the same group serialise on UUID minting and file creation regardless of kind.
+    // The shared ticket counter and slug-uniqueness invariant both rely on the group-wide exclusive view.
     let _guards = crate::lock::acquire_chain(&crate::lock::create_chain(handle.group_id)).await;
 
     let message = format!("import memory {slug}/{id}");
-    // FR-28 / D4: import_memory mints `id` and stamps it into
-    // frontmatter on the line above, so filename and frontmatter
-    // agree by construction. Use `BySlugOnly` (the import flow has
-    // no caller-supplied addressing) and `force=false`; the
-    // mismatch check is a no-op here.
+    // `import_memory` mints `id` and stamps it into frontmatter on the line above,
+    // so filename and frontmatter agree by construction.
+    // Uses `BySlugOnly` (the import flow has no caller-supplied addressing) and `force=false`;
+    // the mismatch check is a no-op here.
     let (commit_id, _validation) = write_memory_by_id(
         backend,
         handle,
