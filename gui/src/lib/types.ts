@@ -117,12 +117,20 @@ export interface ReachabilityEvent {
   reason: string | null;
 }
 
+// Mirrors the `kind` values gui/src-tauri/src/error.rs's
+// `Serialize for GuiError` impl actually emits — every `GuiError`
+// variant, one string each. Keep this union exhaustive: a Rust-side
+// variant this list misses is invisible to any `kind`-based branch
+// on the frontend (issue #153).
 export interface GuiErrorPayload {
   kind:
     | 'store'
     | 'git'
     | 'sync'
     | 'sync_not_configured'
+    | 'archive'
+    | 'dialog'
+    | 'utf8'
     | 'other';
   message?: string;
 }

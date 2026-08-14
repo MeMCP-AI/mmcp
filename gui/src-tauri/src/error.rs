@@ -34,12 +34,16 @@ pub enum GuiStoreError {
     MemoryParse(#[from] mmcp_core::memory::MemoryParseError),
 }
 
-/// Failure modes specific to the archive-command Tauri layer: native
-/// file-dialog plumbing, and the picked-path confinement / size-cap
-/// checks around reading an archive file from disk (see
-/// `commands/archive.rs`).
+/// Failure modes around driving a native Tauri dialog: no window to
+/// parent it to, the result channel dropped before the callback
+/// fired, or the callback returned a handle that doesn't convert to
+/// a filesystem path. Shared by every command that opens a dialog
+/// (`commands/archive.rs`'s export/import pickers,
+/// `commands/workspace.rs`'s directory picker) so the same failure
+/// mode carries the same typed variant everywhere instead of each
+/// command module re-stating it as its own catch-all string.
 #[derive(Debug, Error)]
-pub enum GuiArchiveError {
+pub enum GuiDialogError {
     /// No main window to parent a native dialog to.
     #[error("main window is not available")]
     NoMainWindow,
@@ -47,13 +51,20 @@ pub enum GuiArchiveError {
     /// The oneshot channel carrying a native dialog's result was
     /// dropped before the dialog callback fired.
     #[error("dialog channel closed before a result arrived")]
-    DialogChannelClosed,
+    ChannelClosed,
 
     /// The dialog returned a handle Tauri could not convert to a
     /// filesystem path (e.g. a non-`file://` URI).
     #[error("dialog returned an unusable path: {0}")]
-    DialogPathUnusable(String),
+    PathUnusable(String),
+}
 
+/// Failure modes specific to the archive-command Tauri layer: the
+/// picked-path confinement / size-cap checks around reading an
+/// archive file from disk (see `commands/archive.rs`). Dialog
+/// plumbing itself is [`GuiDialogError`], not duplicated here.
+#[derive(Debug, Error)]
+pub enum GuiArchiveError {
     /// `value` does not name a recognized memory kind.
     #[error("unknown memory kind '{0}'")]
     UnknownKind(String),
@@ -102,10 +113,15 @@ pub enum GuiError {
     #[error("sync-not-configured")]
     SyncNotConfigured,
 
-    /// An archive-command-layer failure: dialog plumbing or the
-    /// picked-path confinement / size checks. See [`GuiArchiveError`].
+    /// An archive-command-layer failure: the picked-path confinement
+    /// or size checks. See [`GuiArchiveError`].
     #[error("archive: {0}")]
     Archive(#[from] GuiArchiveError),
+
+    /// A native dialog failure, shared by every command that opens
+    /// one. See [`GuiDialogError`].
+    #[error("dialog: {0}")]
+    Dialog(#[from] GuiDialogError),
 
     /// Invalid UTF-8 encountered decoding process output or file
     /// contents.
@@ -167,6 +183,7 @@ impl Serialize for GuiError {
             GuiError::Sync(e) => ("sync", Some(e.to_string())),
             GuiError::SyncNotConfigured => ("sync_not_configured", None),
             GuiError::Archive(e) => ("archive", Some(e.to_string())),
+            GuiError::Dialog(e) => ("dialog", Some(e.to_string())),
             GuiError::Utf8(e) => ("utf8", Some(e.to_string())),
             GuiError::Other(msg) => ("other", Some(msg.clone())),
         };

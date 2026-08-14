@@ -19,7 +19,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 use crate::commands::sync::MIRROR_CHANGED_EVENT;
-use crate::error::{GuiArchiveError, GuiResult};
+use crate::error::{GuiArchiveError, GuiDialogError, GuiResult};
 use crate::state::AppState;
 
 /// Maximum size, in bytes, `inspect_archive` / `import_archive` will
@@ -198,7 +198,7 @@ pub async fn export_archive(
 pub async fn pick_import_path(app: AppHandle) -> GuiResult<Option<String>> {
     let main = app
         .get_webview_window("main")
-        .ok_or(GuiArchiveError::NoMainWindow)?;
+        .ok_or(GuiDialogError::NoMainWindow)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -207,13 +207,13 @@ pub async fn pick_import_path(app: AppHandle) -> GuiResult<Option<String>> {
         .pick_file(move |picked| {
             let _ = tx.send(picked);
         });
-    let picked = rx.await.map_err(|_| GuiArchiveError::DialogChannelClosed)?;
+    let picked = rx.await.map_err(|_| GuiDialogError::ChannelClosed)?;
     let Some(picked) = picked else {
         return Ok(None);
     };
     let path = picked
         .into_path()
-        .map_err(|e| GuiArchiveError::DialogPathUnusable(e.to_string()))?;
+        .map_err(|e| GuiDialogError::PathUnusable(e.to_string()))?;
     let canonical = path
         .canonicalize()
         .map_err(|source| GuiArchiveError::Read {
@@ -336,7 +336,7 @@ pub async fn import_archive(
 async fn pick_save_path(app: &AppHandle, suggested_name: &str) -> GuiResult<Option<PathBuf>> {
     let main = app
         .get_webview_window("main")
-        .ok_or(GuiArchiveError::NoMainWindow)?;
+        .ok_or(GuiDialogError::NoMainWindow)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -346,11 +346,11 @@ async fn pick_save_path(app: &AppHandle, suggested_name: &str) -> GuiResult<Opti
         .save_file(move |picked| {
             let _ = tx.send(picked);
         });
-    let picked = rx.await.map_err(|_| GuiArchiveError::DialogChannelClosed)?;
+    let picked = rx.await.map_err(|_| GuiDialogError::ChannelClosed)?;
     match picked {
         Some(target) => {
             Ok(Some(target.into_path().map_err(|e| {
-                GuiArchiveError::DialogPathUnusable(e.to_string())
+                GuiDialogError::PathUnusable(e.to_string())
             })?))
         }
         None => Ok(None),
@@ -401,8 +401,7 @@ async fn confirm_protected(
         .show(move |confirmed| {
             let _ = tx.send(confirmed);
         });
-    rx.await
-        .map_err(|_| GuiArchiveError::DialogChannelClosed.into())
+    rx.await.map_err(|_| GuiDialogError::ChannelClosed.into())
 }
 
 /// Read `input` after confirming it is the path most recently

@@ -14,7 +14,7 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::commands::sync::SyncStatusDto;
-use crate::error::{GuiError, GuiResult};
+use crate::error::{GuiDialogError, GuiResult};
 use crate::probe_loop;
 use crate::state::AppState;
 
@@ -41,7 +41,7 @@ pub async fn pick_directory(
 ) -> GuiResult<Option<String>> {
     let main = app
         .get_webview_window("main")
-        .ok_or_else(|| GuiError::Other("main window is not available".into()))?;
+        .ok_or(GuiDialogError::NoMainWindow)?;
 
     let mut builder = app.dialog().file();
     if let Some(t) = title {
@@ -59,9 +59,7 @@ pub async fn pick_directory(
     builder.pick_folder(move |picked| {
         let _ = tx.send(picked);
     });
-    let picked = rx
-        .await
-        .map_err(|e| GuiError::Other(format!("dialog channel: {e}")))?;
+    let picked = rx.await.map_err(|_| GuiDialogError::ChannelClosed)?;
 
     Ok(picked.and_then(|p| {
         p.into_path()
