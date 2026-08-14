@@ -1,8 +1,8 @@
 //! Portable group archives.
 //!
-//! An mmcp archive is a single `tar` stream (optionally gzip-
-//! compressed) whose internal layout mirrors the on-disk repo layout
-//! minus git internals, plus a root table of contents:
+//! An mmcp archive is a single `tar` stream (optionally gzip-compressed),
+//! whose internal layout mirrors the on-disk repo layout minus git internals,
+//! plus a root table of contents:
 //!
 //! ```text
 //! archive.toml                                   table of contents
@@ -10,12 +10,11 @@
 //! groups/<group-uuid>/memories/<slug>/<id>.md    verbatim memory file
 //! ```
 //!
-//! Export copies HEAD bytes verbatim. Import replays each memory
-//! through the same `import_memory` primitive the loose-file import
-//! path uses, which preserves the modeled frontmatter (id, slug,
-//! kind, tags, feature/issue numbers, refs, source) and the body but
-//! re-renders in canonical form — so identities round trip, while
-//! exact byte formatting and any unmodeled frontmatter keys do not.
+//! Export copies HEAD bytes verbatim.
+//! Import replays each memory through the same `import_memory` primitive the loose-file import path uses,
+//! which preserves the modeled frontmatter (id, slug, kind, tags, feature/issue numbers, refs, source) and the body,
+//! but re-renders in canonical form:
+//! identities round trip, while exact byte formatting and any unmodeled frontmatter keys do not.
 //! Feature and issue memories ride along as ordinary memory files.
 
 pub mod error;

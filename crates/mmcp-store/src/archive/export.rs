@@ -89,7 +89,7 @@ pub async fn export_archive<W: Write>(
                 for (rel, bytes) in pack_git_dir(&backend.repo_path(group_id)).await? {
                     entries.push((format!("{git_base}/{rel}"), bytes));
                 }
-                // Informational only — the HEAD memory count for listing.
+                // Informational only: the HEAD memory count for listing.
                 let files = list_all_memory_files(backend, &group.handle, &Rev::Head).await?;
                 u32::try_from(files.len()).unwrap_or(u32::MAX)
             }

@@ -422,9 +422,9 @@ fn install_bare_repo(repo_path: &Path, files: &[(String, Vec<u8>)]) -> Result<()
     Ok(())
 }
 
-/// Whether `rel` is a safe relative path to extract — every component
-/// must be a plain name (no `..`, no root, no drive prefix) so a crafted
-/// archive cannot escape the staging directory.
+/// Whether `rel` is a safe relative path to extract:
+/// every component must be a plain name (no `..`, no root, no drive prefix),
+/// so a crafted archive cannot escape the staging directory.
 fn is_safe_relpath(rel: &str) -> bool {
     !rel.is_empty()
         && Path::new(rel)
@@ -483,7 +483,7 @@ async fn import_one_group(
             }
         }
         // The archive filename is `<uuid>.md`; the uuid is the memory's
-        // identity for id-less frontmatter (pre-FR-028 / hand-crafted).
+        // identity for id-less frontmatter (hand-crafted memories).
         let filename_id = filename
             .strip_suffix(MEMORY_EXTENSION)
             .and_then(|stem| Uuid::parse_str(stem).ok());
@@ -768,10 +768,10 @@ fn content_without_id(content: &str) -> Result<String, ArchiveError> {
     Ok(rendered)
 }
 
-/// Resolve a memory's effective id (frontmatter id, else the archive
-/// filename uuid) and return the content guaranteed to carry it. Yields
-/// `None` only when the memory has no id in either place — an archive
-/// whose identity cannot be preserved.
+/// Resolve a memory's effective id (frontmatter id, else the archive filename uuid),
+/// and return the content guaranteed to carry it.
+/// Yields `None` only when the memory has no id in either place:
+/// an archive whose identity cannot be preserved.
 fn ensure_id(
     content: &str,
     fallback: Option<Uuid>,
@@ -825,9 +825,8 @@ mod tests {
         buf
     }
 
-    /// Hand-build an archive carrying one memory whose frontmatter body
-    /// is supplied verbatim — used to construct id-less inputs the
-    /// store's own export path never produces.
+    /// Hand-build an archive carrying one memory whose frontmatter body is supplied verbatim,
+    /// used to construct id-less inputs the store's own export path never produces.
     fn build_archive(
         group_id: Uuid,
         group_manifest: &GroupManifest,
@@ -906,8 +905,8 @@ mod tests {
         assert!(ensure_id(no_id, None).expect("ensure").is_none());
     }
 
-    /// History export of a group, restored into a clean home, brings
-    /// the whole bare repo back — the memory is readable at HEAD.
+    /// History export of a group, restored into a clean home, brings the whole bare repo back:
+    /// the memory is readable at HEAD.
     #[tokio::test]
     async fn history_round_trip_restores_group_with_full_repo() {
         let id = Uuid::now_v7();
