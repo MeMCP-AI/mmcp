@@ -11,6 +11,20 @@
 
 import type { KindStr } from '$lib/types';
 
+/// Clone `set`, toggling `value`'s membership, and return the clone.
+/// Svelte 5's `$state<Set<T>>` needs a reassigned instance to notify
+/// subscribers, so every toggle site clones rather than mutating in
+/// place.
+function toggleInSet<T>(set: Set<T>, value: T): Set<T> {
+  const next = new Set(set);
+  if (next.has(value)) {
+    next.delete(value);
+  } else {
+    next.add(value);
+  }
+  return next;
+}
+
 class SelectionStore {
   groupId = $state<string | null>(null);
   slug = $state<string | null>(null);
@@ -24,11 +38,9 @@ class SelectionStore {
     if (this.groupId !== groupId) {
       this.groupId = groupId;
       this.slug = null;
-      this.filter = '';
       this.multi = new Set();
       this.anchor = null;
-      this.kindFilter = new Set();
-      this.mandatoryOnly = false;
+      this.clearAllFilters();
     }
   }
 
@@ -46,13 +58,7 @@ class SelectionStore {
   }
 
   toggleMulti(slug: string) {
-    const next = new Set(this.multi);
-    if (next.has(slug)) {
-      next.delete(slug);
-    } else {
-      next.add(slug);
-    }
-    this.multi = next;
+    this.multi = toggleInSet(this.multi, slug);
     this.anchor = slug;
   }
 
@@ -85,10 +91,7 @@ class SelectionStore {
   }
 
   toggleKindFilter(kind: KindStr) {
-    const next = new Set(this.kindFilter);
-    if (next.has(kind)) next.delete(kind);
-    else next.add(kind);
-    this.kindFilter = next;
+    this.kindFilter = toggleInSet(this.kindFilter, kind);
   }
 
   clearKindFilter() {
