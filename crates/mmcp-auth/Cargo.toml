@@ -18,5 +18,8 @@ jiff = { workspace = true }
 axum-login = { workspace = true }
 sea-orm = { workspace = true }
 
+[dev-dependencies]
+tokio = { workspace = true }
+
 [lints]
 workspace = true

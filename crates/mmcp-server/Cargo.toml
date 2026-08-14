@@ -17,6 +17,11 @@ mmcp-db = { workspace = true }
 mmcp-auth = { workspace = true }
 mmcp-proto = { workspace = true }
 mmcp-sync = { workspace = true }
+# Only for `MmcpHome::discover`/`load_user_config`, so the
+# password-length config-file tier reads `~/.mmcp/config.toml`
+# through the same mechanism every other mmcp consumer uses instead
+# of re-deriving the home-directory layout locally.
+mmcp-store = { workspace = true }
 
 anyhow = { workspace = true }
 tokio = { workspace = true }
@@ -25,6 +30,7 @@ futures-util = { workspace = true }
 getrandom = { workspace = true }
 hex = { workspace = true }
 clap = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 axum = { workspace = true }
