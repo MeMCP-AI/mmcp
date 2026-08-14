@@ -24,13 +24,15 @@ use crate::error::AuthError;
 use crate::password;
 use mmcp_db::repository::{oauth_repo, passkey_repo, user_repo};
 
-/// Maximum accepted length of an OAuth-provisioned handle, in bytes.
-/// Mirrors the password-registration path's handle bound
-/// (`mmcp_server::routes::auth::MAX_HANDLE_LENGTH`), kept as its own
-/// constant because the two paths live in different crates and
-/// cannot share one definition directly; a JIT-created account must
+/// Maximum accepted length of a user handle, in bytes. The sole
+/// owner of this bound: `mmcp-server` depends on `mmcp-auth`
+/// (`crates/mmcp-server/Cargo.toml`), so its
+/// `routes::auth::MAX_HANDLE_LENGTH` re-exports this constant
+/// instead of declaring an independent 64. Shared between the
+/// password-registration path (`/auth/register`) and the
+/// OAuth JIT-provisioning path below; a JIT-created account must
 /// never exceed what the register endpoint would ever accept.
-const MAX_OAUTH_HANDLE_LENGTH: usize = 64;
+pub const MAX_HANDLE_LENGTH: usize = 64;
 
 /// Maximum number of numeric-suffix retries when the preferred
 /// OAuth handle is already taken by an unrelated account, before
@@ -251,22 +253,20 @@ impl AuthnBackend for MmcpAuthBackend {
 /// Resolve a free handle for a first-time OAuth login.
 ///
 /// Tries the preferred `{provider}_{provider_user_id}` identifier
-/// first (bounded to [`MAX_OAUTH_HANDLE_LENGTH`] bytes), then falls
-/// back to numeric-suffixed candidates when it collides with an
-/// existing user. The collision path exists because
-/// `/auth/register` places no namespace restriction on `handle`: an
-/// attacker who pre-registers the literal string a real OAuth user
-/// would be assigned could otherwise permanently deny that user
-/// their first OAuth login.
+/// first (bounded to [`MAX_HANDLE_LENGTH`] bytes), then falls back
+/// to numeric-suffixed candidates when it collides with an existing
+/// user. The collision path exists because `/auth/register` places
+/// no namespace restriction on `handle`: an attacker who
+/// pre-registers the literal string a real OAuth user would be
+/// assigned could otherwise permanently deny that user their first
+/// OAuth login.
 async fn provision_oauth_handle(
     conn: &DatabaseConnection,
     provider: &str,
     provider_user_id: &str,
 ) -> Result<String, AuthError> {
-    let base = truncate_to_byte_length(
-        &format!("{provider}_{provider_user_id}"),
-        MAX_OAUTH_HANDLE_LENGTH,
-    );
+    let base =
+        truncate_to_byte_length(&format!("{provider}_{provider_user_id}"), MAX_HANDLE_LENGTH);
     if user_repo::find_by_handle(conn, &base)
         .await
         .map_err(|e| AuthError::Claims(e.to_string()))?
@@ -275,8 +275,7 @@ async fn provision_oauth_handle(
         return Ok(base);
     }
     for suffix in 2..=MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS {
-        let candidate =
-            truncate_to_byte_length(&format!("{base}-{suffix}"), MAX_OAUTH_HANDLE_LENGTH);
+        let candidate = truncate_to_byte_length(&format!("{base}-{suffix}"), MAX_HANDLE_LENGTH);
         if user_repo::find_by_handle(conn, &candidate)
             .await
             .map_err(|e| AuthError::Claims(e.to_string()))?

@@ -67,12 +67,15 @@ pub fn router() -> Router<ServerState> {
 
 // ── Password ────────────────────────────────────────────────────
 
-/// Maximum accepted length of a user handle, in bytes. Handles are
-/// short login identifiers, not free text; 64 stays well above any
-/// realistic handle while bounding pathological input, matching the
-/// maxima this project already uses for other external string
-/// fields (`mmcp_core::memory::limits`).
-pub const MAX_HANDLE_LENGTH: usize = 64;
+/// Maximum accepted length of a user handle, in bytes. Re-exports
+/// `mmcp-auth`'s bound (`mmcp_auth::backend::MAX_HANDLE_LENGTH`) so
+/// the password-registration path here and the OAuth
+/// JIT-provisioning path in `mmcp-auth` share exactly one
+/// definition instead of two independently maintained 64s;
+/// `mmcp-server` already depends on `mmcp-auth`
+/// (`crates/mmcp-server/Cargo.toml`), so referencing its constant
+/// directly costs nothing.
+pub use mmcp_auth::MAX_HANDLE_LENGTH;
 
 /// Maximum accepted length of an email address, in bytes. 254 is
 /// the maximum length an RFC 5321 compliant email address can have

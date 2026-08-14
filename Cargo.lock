@@ -3564,7 +3564,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-auth"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "argon2",
  "axum-login",
@@ -3581,7 +3581,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-client"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -3611,7 +3611,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-core"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "gray_matter",
  "jiff",
@@ -3629,7 +3629,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-db"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "async-trait",
  "libsqlite3-sys",
@@ -3643,7 +3643,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-git"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3659,7 +3659,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-proto"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "serde",
  "serde_json",
@@ -3669,7 +3669,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-server"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "anyhow",
  "axum",
@@ -3706,7 +3706,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-session"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "serde",
  "sha2 0.11.0",
@@ -3716,7 +3716,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-store"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "acdc-converters-core",
  "acdc-converters-markdown",
@@ -3748,7 +3748,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-sync"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "mmcp-core",
  "mmcp-git",
