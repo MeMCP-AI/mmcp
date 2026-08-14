@@ -101,10 +101,10 @@ pub struct ReadMemoryResponse {
     pub descriptor: MemoryDescriptor,
     pub version: String,
     pub body: String,
-    /// Notes channel. Entries surface session-state signals
-    /// (`first_read_this_session`, `stale_by_kind`, …) and any
-    /// frontmatter-parse warnings observed while rendering this
-    /// response. Absent / empty in the common case.
+    /// Notes channel.
+    /// Entries surface session-state signals (`first_read_this_session`, `stale_by_kind`,
+    /// …) and any frontmatter-parse warnings observed while rendering this response.
+    /// Absent / empty in the common case.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
 }
