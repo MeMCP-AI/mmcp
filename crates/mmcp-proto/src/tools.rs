@@ -16,6 +16,19 @@ use crate::notes::Note;
 /// middleware can branch on the tool being invoked without parsing
 /// strings. New tools must be added here and to the server and
 /// client dispatchers.
+///
+/// Six of these eight wire names (every one except `verify_memory`
+/// and `diff_memory`) also appear as [`McpToolId`] variants: those
+/// two tools are dispatched only through `mmcp-server`'s HTTP
+/// `/mcp/tool` route, never registered on the full `#[tool_router]`
+/// surface `McpToolId` models, so no `McpToolId` counterpart exists
+/// for them and a total `From<ToolName> for McpToolId` conversion is
+/// not possible. Nothing here ties the two enums together
+/// structurally, so a renamed wire string in one would silently
+/// diverge from the other; `tool_name_and_mcp_tool_id_agree_on_shared_wire_names`
+/// below is a parity test over the six names both enums restate,
+/// smaller and safer than inventing two `McpToolId` variants for
+/// tools that do not belong on that surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolName {
@@ -515,6 +528,33 @@ mod tests {
             McpToolId::parse("future_tool_that_does_not_exist_yet"),
             None
         );
+    }
+
+    /// Regression guard against wire-name drift between the two
+    /// independently declared tool enums. `ToolName` backs
+    /// `mmcp-server`'s HTTP `/mcp/tool` dispatch; `McpToolId` backs
+    /// the full MCP tool registry. Six of `ToolName`'s eight wire
+    /// names also exist as `McpToolId` variants (see `ToolName`'s
+    /// doc comment for the two that do not); this pins those six to
+    /// stay byte-identical so a rename in one enum cannot silently
+    /// diverge from the other while both builds stay green.
+    #[test]
+    fn tool_name_and_mcp_tool_id_agree_on_shared_wire_names() {
+        let shared_pairs = [
+            (ToolName::ListMemories, McpToolId::ListMemories),
+            (ToolName::ReadMemory, McpToolId::ReadMemory),
+            (ToolName::WriteMemory, McpToolId::WriteMemory),
+            (ToolName::ListVersions, McpToolId::ListVersions),
+            (ToolName::SearchMemories, McpToolId::SearchMemories),
+            (ToolName::GroupInfo, McpToolId::GroupInfo),
+        ];
+        for (tool_name, mcp_tool_id) in shared_pairs {
+            assert_eq!(
+                tool_name.as_str(),
+                mcp_tool_id.as_str(),
+                "ToolName and McpToolId must agree on the wire name they share",
+            );
+        }
     }
 
     #[test]
