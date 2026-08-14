@@ -126,9 +126,8 @@ pub enum FeatureError {
     )]
     SupersedesCrossGroupUnsupported { query: String },
 
-    /// An explicit `project` selector did not resolve against the
-    /// local mirror. Covers FR-44's `unknown_project` code: the
-    /// caller passed a UUID or slug that is not a mirrored group.
+    /// An explicit `project` selector did not resolve against the local mirror.
+    /// Covers the `unknown_project` code: the caller passed a UUID or slug that is not a mirrored group.
     #[error("project selector '{query}' does not resolve to a mirrored group")]
     UnknownProject { query: String },
 }
@@ -148,10 +147,10 @@ pub struct AddSpec {
     pub description: String,
     pub body: String,
     pub status: FeatureStatus,
-    /// Explicit sequential number. Leave absent to let
-    /// [`add_feature`] auto-assign `max(existing) + 1`; pin
-    /// explicitly only for the FR-027 slug-migration binary that
-    /// carries numbers forward from the old `fr-NNN-*` slug form.
+    /// Explicit sequential number.
+    /// Leave absent to let [`add_feature`] auto-assign `max(existing) + 1`;
+    /// pin explicitly only for the slug-migration binary that carries numbers forward,
+    /// from the old `fr-NNN-*` slug form.
     pub number: Option<u32>,
     pub depends_on: Vec<Uuid>,
     pub blocks: Vec<Uuid>,
@@ -169,15 +168,13 @@ pub struct AddSpec {
     /// `status = Superseded` and `superseded_by` pointing at the
     /// new FR's commit A.
     pub supersedes: Option<String>,
-    /// FR-38 provenance. When set, this FR was filed by an agent
-    /// acting on behalf of the named owner — group UUID for
-    /// federated workflows, memory UUID when promoted from an
-    /// existing reference memory. Stamped into the frontmatter at
-    /// commit time and never re-resolved.
+    /// Provenance.
+    /// When set, this feature was filed by an agent acting on behalf of the named owner,
+    /// group UUID for federated workflows, memory UUID when promoted from an existing reference memory.
+    /// Stamped into the frontmatter at commit time and never re-resolved.
     pub source: Option<Uuid>,
     /// UUID of the milestone this feature counts toward, if any.
-    /// Cross-group by design (D3): the milestone does not have to
-    /// live in this feature's own project group.
+    /// The milestone does not have to live in this feature's own project group.
     pub milestone: Option<Uuid>,
     /// Optional override for the git commit message; when absent,
     /// defaults to `create feature <slug>` so history stays
@@ -284,9 +281,8 @@ pub struct FeatureSummary {
 
 impl FeatureSummary {
     /// Project a full record onto its body-free summary view.
-    /// Used by the interim `list_feature_summaries` impl that still
-    /// reads bodies; the FR-049 frontmatter-only primitive will
-    /// build summaries directly without ever materialising a body.
+    /// Used by the interim `list_feature_summaries` impl that still reads bodies;
+    /// a future frontmatter-only primitive will build summaries directly without ever materialising a body.
     fn from_record(record: FeatureRecord) -> Self {
         let FeatureRecord {
             slug,
@@ -344,13 +340,10 @@ pub async fn add_feature(
     spec: AddSpec,
     author: &ResolvedAuthor,
 ) -> Result<FeatureRecord, FeatureError> {
-    // FR-39 v2: group-level create — Exclusive on Group(g)
-    // serialises `next_feature_number` against every concurrent
-    // create in the same group regardless of kind. The supersede
-    // flow's `update_feature_unlocked` call below stays inside
-    // this guard; the group-exclusive ancestor blocks every
-    // nested Memory-leaf write under the same group until we
-    // release.
+    // Group-level create: Exclusive on Group(g) serialises `next_feature_number`,
+    // against every concurrent create in the same group regardless of kind.
+    // The supersede flow's `update_feature_unlocked` call below stays inside this guard;
+    // the group-exclusive ancestor blocks every nested Memory-leaf write under the same group until release.
     let group = *entry.manifest.group_id.as_uuid();
     let _guards = crate::lock::acquire_chain(&crate::lock::create_chain(group)).await;
 
@@ -363,18 +356,17 @@ pub async fn add_feature(
     };
     validate_slug(&slug).map_err(FeatureError::Memory)?;
 
-    // Resolve the old FR up front (before we auto-assign the new
-    // number) so supersede-specific errors surface before we touch
-    // the numbering state.
+    // Resolve the old feature up front (before auto-assigning the new number),
+    // so supersede-specific errors surface before touching the numbering state.
     let supersede_target = match spec.supersedes.as_deref() {
         Some(query) => Some(resolve_supersede_target(backend, entry, query).await?),
         None => None,
     };
 
-    // Auto-assign the sequential number when the caller did not
-    // pin one. The FR-027 migration binary pins explicitly so
-    // historic `fr-NNN-*` numbers are preserved; ordinary creates
-    // pick `max(existing) + 1`. Gaps from deletes stay gaps.
+    // Auto-assign the sequential number when the caller did not pin one.
+    // The slug-migration binary pins explicitly so historic `fr-NNN-*` numbers are preserved;
+    // ordinary creates pick `max(existing) + 1`.
+    // Gaps from deletes stay gaps.
     let number = match spec.number {
         Some(n) => Some(n),
         None => Some(next_feature_number(backend, entry).await?),
@@ -425,8 +417,8 @@ pub async fn add_feature(
             Some(t) => format!("create feature {slug} (supersedes {})", t.slug),
             None => format!("create feature {slug}"),
         });
-    // FR-28 / D4: feature creation mints `id` and stamps it into
-    // frontmatter; filename and frontmatter agree by construction.
+    // Feature creation mints `id` and stamps it into frontmatter;
+    // filename and frontmatter agree by construction.
     let (commit_id, _validation) = write_memory_by_id(
         backend,
         &entry.handle,
@@ -501,10 +493,9 @@ async fn resolve_supersede_target(
     entry: &GroupEntry,
     query: &str,
 ) -> Result<SupersedeTarget, FeatureError> {
-    // Simplification for v1: resolve by slug. UUID-by-slug
-    // disambiguation lands alongside FR-028's full UUID surface;
-    // today the feature tools keep the slug-centric lookup the
-    // rest of the FR CRUD uses.
+    // Simplification for v1: resolve by slug.
+    // UUID-by-slug disambiguation is a future addition;
+    // today the feature tools keep the slug-centric lookup the rest of the feature CRUD uses.
     let record = match read_feature(backend, entry, query, None).await {
         Ok(r) => r,
         Err(FeatureError::Memory(ImportError::MemoryNotFound { .. })) => {
@@ -515,11 +506,11 @@ async fn resolve_supersede_target(
         Err(other) => return Err(other),
     };
 
-    // FR-51: Completed targets are now allowed so a redesign that
-    // replaces a landed feature can capture the relationship as a
-    // typed `superseded_by` chain instead of prose-only references.
-    // Duplicate keeps its own redirect semantics; Superseded already
-    // carries a back-link the caller should chase to the tip.
+    // Completed targets are allowed,
+    // so a redesign that replaces a landed feature can capture the relationship,
+    // as a typed `superseded_by` chain instead of prose-only references.
+    // Duplicate keeps its own redirect semantics;
+    // Superseded already carries a back-link the caller should chase to the tip.
     match record.status {
         FeatureStatus::Requested
         | FeatureStatus::Approved
@@ -543,11 +534,10 @@ async fn resolve_supersede_target(
         }
     }
 
-    // The FR's UUID is minted into the frontmatter on create (FR-028);
-    // every present-era FR has one. Legacy memories that predate FR-028
-    // are read via `write_memory_by_id` migrations; if we ever hit one
-    // without an id, surface it as an unknown target rather than
-    // committing a supersede back-link against an empty UUID.
+    // The feature's UUID is minted into the frontmatter on create; every present-era feature has one.
+    // Legacy memories without a minted id are read via `write_memory_by_id` migrations;
+    // hitting one without an id surfaces it as an unknown target,
+    // rather than committing a supersede back-link against an empty UUID.
     let resolved = resolve_memory(backend, &entry.handle, Some(&record.slug), None)
         .await
         .map_err(FeatureError::Memory)?;
@@ -617,16 +607,14 @@ pub async fn read_feature(
     record_from_file(slug, file, String::new())
 }
 
-/// Apply partial mutations and commit a new revision. At least one
-/// field must be `Some`, but this module does not enforce that —
-/// callers that pass an all-`None` `UpdateSpec` pay for a no-op
-/// commit, which is harmless and arguably useful for retagging.
+/// Apply partial mutations and commit a new revision.
+/// At least one field must be `Some`, but this module does not enforce that:
+/// callers that pass an all-`None` `UpdateSpec` pay for a no-op commit,
+/// which is harmless and arguably useful for retagging.
 ///
-/// Public wrapper: acquires the per-group write lock (FR-39) and
-/// delegates to [`update_feature_unlocked`]. Callers that already
-/// hold the lock (for instance `add_feature`'s supersede flow)
-/// must call `update_feature_unlocked` directly to avoid
-/// deadlocking on the non-reentrant mutex.
+/// Public wrapper: acquires the per-group write lock and delegates to [`update_feature_unlocked`].
+/// Callers that already hold the lock (for instance `add_feature`'s supersede flow),
+/// must call `update_feature_unlocked` directly to avoid deadlocking on the non-reentrant mutex.
 pub async fn update_feature(
     backend: &NativeBackend,
     entry: &GroupEntry,
@@ -634,11 +622,10 @@ pub async fn update_feature(
     spec: UpdateSpec,
     author: &ResolvedAuthor,
 ) -> Result<FeatureRecord, FeatureError> {
-    // FR-39 v2: take ancestor chain Shared, resolve the memory's
-    // canonical UUID under that view, then upgrade to Exclusive
-    // Memory leaf. Concurrent edits to *different* feature
-    // memories in the same group proceed in parallel; only edits
-    // to the *same* memory contend.
+    // Take ancestor chain Shared, resolve the memory's canonical UUID under that view,
+    // then upgrade to Exclusive Memory leaf.
+    // Concurrent edits to *different* feature memories in the same group proceed in parallel;
+    // only edits to the *same* memory contend.
     let group = *entry.manifest.group_id.as_uuid();
     let _ancestors = crate::lock::acquire_chain(&[
         (
@@ -686,10 +673,8 @@ pub async fn update_feature_unlocked(
     let description = spec.description.unwrap_or(current.description);
     let body = spec.body.unwrap_or(current.body);
     let status = spec.status.unwrap_or(current.status);
-    // FR-37: numbers are immutable after create. Preserve whatever
-    // the on-disk memory already carries; no UpdateSpec surface for
-    // changing it. The one-shot migrations that needed this path
-    // were retired with the `migrate_fr_slugs` example.
+    // Numbers are immutable after create.
+    // Preserve whatever the on-disk memory already carries; no UpdateSpec surface for changing it.
     let number = current.number;
     let depends_on = spec.depends_on.unwrap_or(current.depends_on);
     let blocks = spec.blocks.unwrap_or(current.blocks);
@@ -739,13 +724,11 @@ pub async fn update_feature_unlocked(
         .message
         .clone()
         .unwrap_or_else(|| format!("update feature {slug}"));
-    // FR-28 / D4: update_feature_unlocked operates on the
-    // pre-resolved feature memory; the rendered fm.id is the
-    // existing memory's id (preserved through the in-memory edit),
-    // so filename and frontmatter agree by construction. Use the
-    // resolver's `addressing_mode` and `force=false` so any future
-    // drift surfaces through the validation channel rather than
-    // bypassing it.
+    // `update_feature_unlocked` operates on the pre-resolved feature memory;
+    // the rendered fm.id is the existing memory's id (preserved through the in-memory edit),
+    // so filename and frontmatter agree by construction.
+    // Uses the resolver's `addressing_mode` and `force=false`,
+    // so any future drift surfaces through the validation channel rather than bypassing it.
     let (commit_id, _validation) = write_file_at_path(
         backend,
         &entry.handle,
