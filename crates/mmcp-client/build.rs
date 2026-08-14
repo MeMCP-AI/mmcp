@@ -122,8 +122,47 @@ mod win {
         };
         let _ = fs::remove_file(&stash);
 
-        if let Err(e) = fs::rename(&target, &stash) {
-            println!("cargo:warning=cannot stash locked exe: {e}");
+        relocate(&target, &stash);
+    }
+
+    /// Windows `ERROR_NOT_SAME_DEVICE`: `MoveFileW` (what `fs::rename`
+    /// calls into) refuses to relocate a file across two different
+    /// volumes. This fires whenever `CARGO_TARGET_DIR` resolves to a
+    /// drive other than the one holding `env::temp_dir()` (e.g. project
+    /// checkout on `P:`, target dir on `G:`): the rename is structurally
+    /// impossible, not blocked by the file lock the stash exists to work
+    /// around, so it always needs the copy-then-delete fallback below.
+    const ERROR_NOT_SAME_DEVICE: i32 = 17;
+
+    /// Move `target` to `stash`, falling back to copy-then-delete when
+    /// the two paths sit on different drives (see
+    /// `ERROR_NOT_SAME_DEVICE`). A copy still succeeds against a
+    /// currently-executing `.exe` because execution only requires
+    /// `FILE_SHARE_READ`/`FILE_SHARE_DELETE`, the same sharing mode a
+    /// same-drive rename already relies on; deleting the original
+    /// afterward relies on the same NTFS POSIX-delete semantics a
+    /// same-drive rename depends on, so a still-running image can, in
+    /// principle, reject the delete, which surfaces as its own
+    /// "cleanup failed" warning rather than silently leaving a stale
+    /// copy. Any other rename failure keeps surfacing as the
+    /// pre-existing warning, unchanged.
+    fn relocate(target: &std::path::Path, stash: &std::path::Path) {
+        if let Err(e) = fs::rename(target, stash) {
+            if e.raw_os_error() != Some(ERROR_NOT_SAME_DEVICE) {
+                println!("cargo:warning=cannot stash locked exe: {e}");
+                return;
+            }
+            if let Err(copy_err) = fs::copy(target, stash) {
+                println!(
+                    "cargo:warning=cannot stash locked exe across drives (copy failed): {copy_err}"
+                );
+                return;
+            }
+            if let Err(rm_err) = fs::remove_file(target) {
+                println!(
+                    "cargo:warning=cannot stash locked exe across drives (cleanup failed): {rm_err}"
+                );
+            }
         }
     }
 
