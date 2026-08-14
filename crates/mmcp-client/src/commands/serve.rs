@@ -3362,7 +3362,7 @@ impl McpServer {
         } else {
             health_check_all(&self.state.backend, &self.state.groups).await
         };
-        // FR-45: every finding becomes a note; wire response keeps
+        // Every finding becomes a note; wire response keeps
         // only the per-group structural summary.
         let mut notes: Vec<mmcp_proto::Note> = Vec::new();
         let mut groups_body: Vec<serde_json::Value> = Vec::with_capacity(reports.len());
@@ -3413,9 +3413,9 @@ impl McpServer {
         } else {
             diagnose_all(&self.state.backend, &self.state.groups).await
         };
-        // FR-45: collapse project_findings and every group's findings
-        // onto the notes channel. Wire body keeps only the
-        // per-group structural summary.
+        // Collapse project_findings and every group's findings
+        // onto the notes channel.
+        // Wire body keeps only the per-group structural summary.
         let mut notes: Vec<mmcp_proto::Note> = findings_to_notes(&diag.project_findings);
         let mut groups_body: Vec<serde_json::Value> = Vec::with_capacity(diag.groups.len());
         for report in &diag.groups {
@@ -3427,11 +3427,11 @@ impl McpServer {
                 "memory_count": report.memory_count,
             }));
         }
-        // FR-34: surface any registered tool whose `annotations` slot
-        // is `None`. The FR-29 conformance test catches this in CI
-        // but operators running a stale build still want a runtime
-        // hint — `mmcp diagnose` (CLI) / `diagnose` (MCP) is the
-        // single place every install can probe.
+        // Surface any registered tool whose `annotations` slot is `None`.
+        // tool_annotations_match_fr029_matrix catches this in CI, but
+        // operators running a stale build still want a runtime hint:
+        // `mmcp diagnose` (CLI) / `diagnose` (MCP) is the single
+        // place every install can probe.
         notes.extend(collect_missing_annotation_notes(&registered_tool_attrs()));
         let healthy = !notes
             .iter()
@@ -3673,10 +3673,10 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<BootstrapContextArgs>,
     ) -> Result<CallToolResult, McpError> {
-        // FR-44: explicit selector wins; `path` walks an explicit
-        // root for `.mmcp.toml`; otherwise walk cwd. The selector
-        // branch leaves `project_cfg` as `None` because a UUID
-        // carries no filesystem guarantees — Shared-group adoption
+        // Explicit selector wins; `path` walks an explicit
+        // root for `.mmcp.toml`; otherwise walk cwd.
+        // The selector branch leaves `project_cfg` as `None` because a UUID
+        // carries no filesystem guarantees: Shared-group adoption
         // and subscriptions resolution therefore only fire on the
         // path / cwd branches.
         let (project_uuid, project_cfg, project_root) = match args.project.as_deref() {
@@ -3710,7 +3710,7 @@ impl McpServer {
             }
         };
 
-        // FR-025: which Shared-scoped groups does this project pull
+        // Which Shared-scoped groups does this project pull
         // into scope? The same adoption test that gates mandatory
         // memory visibility is also the predicate for "fully
         // subscribed" groups under the new subscriptions engine.
@@ -3785,7 +3785,7 @@ impl McpServer {
             }),
         };
 
-        // FR-45: advisory CLAUDE.md signals flow through the
+        // Advisory CLAUDE.md signals flow through the
         // standard notes channel; no bespoke `diagnostics` field.
         // `init_claude` is still the only remediation, and the note
         // context points callers at it. The subscribed-reads
@@ -3825,7 +3825,7 @@ impl McpServer {
         Parameters(args): Parameters<InitClaudeArgs>,
         peer: Peer<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        // FR-011: when the caller did not pre-supply `on_conflict`
+        // When the caller did not pre-supply `on_conflict`
         // and the file is in a conflict state, prompt via MCP
         // elicitation. Resolved choice is stamped back onto `args`
         // before the unguarded body runs, so the rest of the logic
@@ -4139,7 +4139,7 @@ impl McpServer {
             .push(filter, &resolver, &resolver)
             .await
             .map_err(map_sync_error_to_mcp)?;
-        // FR-45 `sync_partial_failure` populator: per-group
+        // The `sync_partial_failure` populator: per-group
         // content_transferred=false means the control plane
         // accepted the push but the git content plane did not
         // actually ship bytes (transport error, server rejected,
@@ -4236,9 +4236,8 @@ impl McpServer {
             }));
         }
 
-        // FR-44: explicit selector returns the minimal
-        // filesystem-free shape. Cwd walk keeps the full shape
-        // with project_root + sync fields.
+        // Explicit selector returns the minimal filesystem-free shape.
+        // Cwd walk keeps the full shape with project_root + sync fields.
         if let Some(query) = args.project.as_deref() {
             let entry = mmcp_store::memory::resolve_group(&self.state.groups, query)
                 .await
@@ -4314,7 +4313,7 @@ impl McpServer {
             .into_iter()
             .map(|tool| {
                 let ann = tool.annotations.as_ref();
-                // FR-32: surface per-arg risk hints alongside the
+                // Surface per-arg risk hints alongside the
                 // tool-level annotations so a harness that trusts
                 // `destructive_hint = false` for write_memory still
                 // sees that `override: true` carries its own risk.
@@ -4444,7 +4443,7 @@ impl McpServer {
         })))
     }
 
-    // ── Feature-request tools (FR-007) ───────────────────────────
+    // ── Feature-request tools ─────────────────────────────────────
     //
     // All five auto-resolve the project group from the server's
     // cwd via `mmcp_store::features::resolve_project_group`. FR
@@ -4499,7 +4498,7 @@ impl McpServer {
             source,
             milestone,
             message: args.message,
-            // FR-37: `number` is server-assigned only, never
+            // `number` is server-assigned only, never
             // accepted from the wire. Leaving default None lets
             // `add_feature` auto-assign `max + 1` under lock.
             ..mmcp_store::features::AddSpec::default()
@@ -4544,7 +4543,7 @@ impl McpServer {
         )
         .await
         .map_err(map_feature_error_to_mcp)?;
-        // FR-45 `dangling_ref` populator: walk this feature's
+        // The `dangling_ref` populator: walk this feature's
         // depends_on / blocks / superseded_by targets against the
         // group's memory index and flag any UUID that does not
         // resolve locally.
@@ -4774,7 +4773,7 @@ impl McpServer {
         .map_err(map_feature_error_to_mcp)?;
         let status = parse_status_arg(args.status.as_deref())?;
         let show_all = args.all.unwrap_or(false);
-        // FR-048: list-style surfaces return body-free summaries.
+        // List-style surfaces return body-free summaries.
         // Bodies fly back through `read_feature` only, keeping the
         // response well under the MCP client token cap on populated
         // FR groups.
@@ -4786,7 +4785,7 @@ impl McpServer {
         )
         .await
         .map_err(map_feature_error_to_mcp)?;
-        // FR-45 `dangling_ref`: aggregate dangling-ref notes
+        // The `dangling_ref` populator: aggregate dangling-ref notes
         // across every record in the listing so callers see a
         // single pane of reference-integrity warnings alongside
         // the listing itself. Per-memory parse-error findings
@@ -4890,7 +4889,7 @@ impl McpServer {
             source,
             message: args.message,
             // Number is server-assigned only, never accepted from
-            // the wire, mirroring FR-37 for the feature tracker.
+            // the wire, mirroring `add_feature` for the feature tracker.
             ..mmcp_store::issues::AddSpec::default()
         };
         let record =
@@ -5514,9 +5513,10 @@ impl McpServer {
     /// Canonical list of every registered MCP tool's static
     /// `Tool` descriptor.
     ///
-    /// Single source of truth for `describe_tools` (FR-31), the
-    /// `mmcp tools` CLI (FR-33), and the `diagnose` annotation-
-    /// coverage check (FR-34). `serve_mode_full_registers_every_tool`
+    /// Single source of truth for `describe_tools`, the
+    /// `mmcp tools` CLI, and the `diagnose` annotation-
+    /// coverage check.
+    /// `serve_mode_full_registers_every_tool`
     /// and `describe_tools_lists_every_registered_tool` compare the
     /// live `tool_router` and `describe_tools` counts against
     /// `registered_tool_attrs().len()`, catching a `#[tool]` site
@@ -5592,7 +5592,7 @@ impl McpServer {
 /// function is the form `commands::tools` reaches for since the
 /// CLI subcommand never instantiates an `McpServer`.
 ///
-/// FR-49: every entry is decorated with category-derived icons so
+/// Every entry is decorated with category-derived icons so
 /// `describe_tools`, the `mmcp tools` CLI, and (via the live
 /// `tool_router` in `McpServer::new`) `tools/list` all surface the
 /// same per-tool glyph without 46 separate `icons = ...` macro
@@ -5601,34 +5601,34 @@ pub(crate) fn registered_tool_attrs() -> Vec<rmcp::model::Tool> {
     let mut tools = McpServer::registered_tool_attrs();
     for tool in &mut tools {
         tool.icons = Some(icons_for_category(tool_icon_category(tool.name.as_ref())));
-        // FR-50: meta lands on the same patching seam as icons so
+        // Meta lands on the same patching seam as icons so
         // describe_tools and the CLI surface match the live router.
         tool.meta = meta_for_tool(tool.name.as_ref());
-        // FR-45: every tool gets a permissive object output schema
-        // so clients can validate. Per-tool typed schemas defer to
-        // a follow-up FR.
+        // Every tool gets a permissive object output schema
+        // so clients can validate.
+        // Per-tool typed schemas are a candidate future refinement.
         tool.output_schema = Some(shared_output_schema());
     }
     tools
 }
 
-/// FR-49: per-tool category that drives icon selection. Hand-
-/// curated by tool name; an unmapped tool falls through to
-/// `Mutate` so the FR-29 conformance test surfaces the omission
+/// Per-tool category that drives icon selection.
+/// Hand-curated by tool name; an unmapped tool falls through to
+/// `Mutate` so tool_annotations_match_fr029_matrix surfaces the omission
 /// rather than shipping a generic glyph that misleads operators.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ToolIconCategory {
     /// Read-only tools that walk the local mirror without writing.
     Read,
-    /// Local mutators — additive or destructive writes against the
+    /// Local mutators: additive or destructive writes against the
     /// mirror, the sessions store, or `.mmcp.toml`.
     Mutate,
-    /// FR-007 feature-request tools (`*_feature`).
+    /// Feature-request tools (`*_feature`).
     Feature,
     /// Issue-tracker tools (`*_issue`), sister to `Feature`.
     Issue,
     /// Milestone tracker tools (`*_milestone`), sister to `Feature`
-    /// / `Issue` but a reduced surface (M5 design).
+    /// / `Issue` but a reduced surface.
     Milestone,
     /// `debug_*` raw-git escape hatches.
     Debug,
@@ -8315,7 +8315,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_features_response_omits_body() {
-        // FR-048: list-style surfaces return body-free summaries.
+        // List-style surfaces return body-free summaries.
         // Seed two FRs with bodies large enough that any accidental
         // inlining would balloon the response, then assert the
         // wire response carries metadata-only entries and stays
