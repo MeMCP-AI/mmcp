@@ -5686,7 +5686,7 @@ fn icons_for_category(cat: ToolIconCategory) -> Vec<rmcp::model::Icon> {
     vec![rmcp::model::Icon::new(src).with_mime_type("image/svg+xml")]
 }
 
-// FR-49: tiny inline-SVG data URIs so the icon ships with the
+// Tiny inline-SVG data URIs so the icon ships with the
 // binary instead of relying on an external CDN. Each glyph is a
 // single emoji rendered as text inside a 16x16 viewBox; clients
 // with icon-capable UIs render the emoji at any size.
@@ -5698,25 +5698,25 @@ const MILESTONE_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www
 const DEBUG_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F41B}</text></svg>";
 const SYNC_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F504}</text></svg>";
 
-/// FR-50: build the per-tool `_meta` map carrying mmcp-specific
-/// advisory hints that complement the FR-29 `ToolAnnotations` bits.
+/// Build the per-tool `_meta` map carrying mmcp-specific
+/// advisory hints that complement the `ToolAnnotations` bits.
 /// Returns `None` for tools that need none of the bits so the wire
 /// shape stays absent rather than `{}` for unrelated tools.
 ///
-/// Every key is namespaced under `mmcp.` per the FR spec. Today's
-/// vocabulary:
+/// Every key is namespaced under `mmcp.`.
+/// Today's vocabulary:
 ///
-/// - `mmcp.requires_project` — tool errors without a discovered
+/// - `mmcp.requires_project`: tool errors without a discovered
 ///   `.mmcp.toml` (every FR tool plus `subscribe` / `unsubscribe`).
-/// - `mmcp.requires_sync` — tool errors without a configured
+/// - `mmcp.requires_sync`: tool errors without a configured
 ///   `[sync]` block in `.mmcp.toml` (every `sync_*` tool).
-/// - `mmcp.debug_gated` — tool refuses unless `debug_toggle(true)`
+/// - `mmcp.debug_gated`: tool refuses unless `debug_toggle(true)`
 ///   has been called this session (every `debug_*` tool).
-/// - `mmcp.protected_group_gated` - tool fires the FR-019
+/// - `mmcp.protected_group_gated`: tool fires the
 ///   `confirm_protected_write` elicitation when targeting a
 ///   protected group (write / edit / delete / debug_write_file /
 ///   the feature-tracker mutators / the issue-tracker mutators).
-/// - `mmcp.network` — tool reaches outside the local mirror.
+/// - `mmcp.network`: tool reaches outside the local mirror.
 ///   Today only the `sync_*` tools set this, mirroring
 ///   `open_world_hint` but kept distinct so future open-world
 ///   tools that don't sync (e.g. a future fetch-from-URL)
@@ -5804,14 +5804,13 @@ fn meta_for_tool(name: &str) -> Option<rmcp::model::MetaObject> {
     Some(meta)
 }
 
-/// FR-45: every registered tool receives a permissive object
+/// Every registered tool receives a permissive object
 /// `output_schema` so MCP clients can validate that responses are
 /// JSON objects (with optional `notes` channel) and surface the
-/// shape in autocomplete UIs. Per-tool typed schemas, the FR's
-/// stretch goal, are deferred to a follow-up: replacing the
-/// `json!({...})` payloads with typed structs deriving `JsonSchema`
-/// is a 46-tool refactor of its own that doesn't compose cleanly
-/// inside this metadata-sweep streak.
+/// shape in autocomplete UIs.
+/// Per-tool typed schemas are a candidate future refinement:
+/// replacing the `json!({...})` payloads with typed structs
+/// deriving `JsonSchema` is a 46-tool refactor of its own.
 ///
 /// Cached behind a `OnceLock` so the same `Arc<JsonObject>` reaches
 /// every tool. Cheap to clone; cheaper than rebuilding the map per
@@ -5831,8 +5830,8 @@ fn shared_output_schema() -> std::sync::Arc<rmcp::model::JsonObject> {
                 serde_json::Value::Bool(true),
             );
             // Surface the shared `notes` field shape so harnesses
-            // know to look there for FR-45 dangling-ref / parse-
-            // warning notes; absent on tools that never emit any.
+            // know to look there for dangling-ref / parse-warning
+            // notes; absent on tools that never emit any.
             let mut props = serde_json::Map::new();
             let mut notes_schema = serde_json::Map::new();
             notes_schema.insert(
@@ -5842,7 +5841,7 @@ fn shared_output_schema() -> std::sync::Arc<rmcp::model::JsonObject> {
             notes_schema.insert(
                 "description".to_string(),
                 serde_json::Value::String(
-                    "FR-45 notes channel. Optional warnings emitted alongside the \
+                    "Standard notes channel. Optional warnings emitted alongside the \
                      tool's primary payload."
                         .to_string(),
                 ),
@@ -5852,8 +5851,8 @@ fn shared_output_schema() -> std::sync::Arc<rmcp::model::JsonObject> {
             obj.insert(
                 "description".to_string(),
                 serde_json::Value::String(
-                    "Tool response. Permissive object shape — per-tool typed schemas \
-                     land in a follow-up FR."
+                    "Tool response. Permissive object shape; per-tool typed schemas \
+                     are a candidate future refinement."
                         .to_string(),
                 ),
             );
@@ -5862,13 +5861,13 @@ fn shared_output_schema() -> std::sync::Arc<rmcp::model::JsonObject> {
         .clone()
 }
 
-/// FR-32 per-argument risk hint. Each entry names a specific arg
+/// Per-argument risk hint. Each entry names a specific arg
 /// (and the value that activates the risk) so harnesses can prompt
 /// even when the tool itself is not flagged destructive at the
-/// FR-29 level. Serialised into `describe_tools` and the
-/// `mmcp tools` CLI.
+/// tool-annotation level.
+/// Serialised into `describe_tools` and the `mmcp tools` CLI.
 ///
-/// Today only boolean-true triggers are modelled — the existing
+/// Today only boolean-true triggers are modelled: the existing
 /// risky args (`override`, `force`) are all flag-shaped. Enum or
 /// numeric value triggers can extend the `risk_when` field later
 /// without breaking the wire shape.
@@ -5888,12 +5887,12 @@ pub(crate) struct ArgRiskHint {
     pub reason: &'static str,
 }
 
-/// FR-32 curated hint registry. Tool name → risky-arg entries.
+/// Curated hint registry. Tool name maps to risky-arg entries.
 ///
-/// Entries are hand-maintained — there is no derive macro that
+/// Entries are hand-maintained: there is no derive macro that
 /// inspects the args struct. The trade-off is honest: most tool
 /// args are not risk-bearing, so the registry stays short, and the
-/// FR-31 `describe_tools` consumer wants explicit reasons that a
+/// `describe_tools` consumer wants explicit reasons that a
 /// macro could not generate.
 pub(crate) fn arg_risk_hints_for(tool_name: &str) -> &'static [ArgRiskHint] {
     match tool_name {
@@ -5908,7 +5907,7 @@ pub(crate) fn arg_risk_hints_for(tool_name: &str) -> &'static [ArgRiskHint] {
                 arg: "force",
                 risk_when: "true",
                 kind: "destructive",
-                reason: "force: true bypasses the FR-28 filename/frontmatter id-mismatch guard",
+                reason: "force: true bypasses the filename/frontmatter id-mismatch guard",
             },
         ],
         "import_memory" => &[ArgRiskHint {
@@ -5921,13 +5920,13 @@ pub(crate) fn arg_risk_hints_for(tool_name: &str) -> &'static [ArgRiskHint] {
             arg: "force",
             risk_when: "true",
             kind: "destructive",
-            reason: "force: true bypasses the FR-28 filename/frontmatter id-mismatch guard on a ByFilename write",
+            reason: "force: true bypasses the filename/frontmatter id-mismatch guard on a ByFilename write",
         }],
         "edit_memory_body" => &[ArgRiskHint {
             arg: "force",
             risk_when: "true",
             kind: "destructive",
-            reason: "force: true bypasses the FR-28 filename/frontmatter id-mismatch guard",
+            reason: "force: true bypasses the filename/frontmatter id-mismatch guard",
         }],
         "import_archive" => &[ArgRiskHint {
             arg: "overwrite",
@@ -5939,7 +5938,7 @@ pub(crate) fn arg_risk_hints_for(tool_name: &str) -> &'static [ArgRiskHint] {
     }
 }
 
-/// FR-34 helper: emit one `missing_tool_annotations` warn note per
+/// Helper: emit one `missing_tool_annotations` warn note per
 /// tool whose `annotations` slot is `None`. Extracted so the
 /// diagnose body stays a single fan-out and so unit tests can
 /// exercise the loop against synthetic tools without standing up a
