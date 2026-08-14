@@ -247,11 +247,10 @@ async fn bootstrap_project(
         });
     }
 
-    // Fresh repo. Owner is a v7 UUID; ownership semantics remain
-    // deferred to the auth track. `create_group_repo` records the
-    // owner once and never overwrites it, so regeneration on
-    // subsequent calls is harmless (they hit the `repo_exists`
-    // short-circuit above).
+    // Fresh repo.
+    // Owner is a v7 UUID; ownership semantics remain deferred to the auth track.
+    // `create_group_repo` records the owner once and never overwrites it,
+    // so regeneration on subsequent calls is harmless (they hit the `repo_exists` short-circuit above).
     let owner = Uuid::now_v7();
     let manifest = GroupManifest::new_user_owned(group_id, slug.clone(), owner);
     backend

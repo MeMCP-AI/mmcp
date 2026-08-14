@@ -10,9 +10,8 @@
 //! shared `mmcp_store::resolve_group` / `resolve_memory`
 //! primitives (see also: `mmcp_server::routes::mcp::list_memories`
 //! for the MCP-side counterpart).
-//! The read path also feeds the notes channel via
-//! `malformed_frontmatter_notes`; the section reader uses
-//! `mmcp_core::memory::body::parse_sections` directly.
+//! The read path also feeds the notes channel via `malformed_frontmatter_notes`;
+//! the section reader uses `mmcp_core::memory::body::parse_sections` directly.
 
 use std::io::Read;
 
