@@ -1,4 +1,5 @@
 import { listMemoryDescriptors, listMemorySlugs, loadMemory } from '$lib/api/memory';
+import { formatErr } from '$lib/utils/error';
 import type { MemoryDescriptor, MemoryFile } from '$lib/types';
 
 // Per-group slug lists + parsed MemoryFile cache. Background
@@ -193,13 +194,6 @@ function memoriesEqual(a: MemoryFile, b: MemoryFile): boolean {
   // stringification is fast and field order is stable enough for
   // equality. Cheaper than walking the frontmatter manually.
   return JSON.stringify(a) === JSON.stringify(b);
-}
-
-function formatErr(err: unknown): string {
-  if (err && typeof err === 'object' && 'message' in err) {
-    return String((err as { message: unknown }).message);
-  }
-  return String(err);
 }
 
 export const memoriesStore = new MemoriesStore();

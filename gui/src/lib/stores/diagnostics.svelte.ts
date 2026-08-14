@@ -1,5 +1,6 @@
 import { runDiagnose } from '$lib/api/diagnose';
 import type { DiagReport } from '$lib/types';
+import { formatErr } from '$lib/utils/error';
 import type { SeverityFilter } from '$lib/utils/diag';
 
 export type { SeverityFilter } from '$lib/utils/diag';
@@ -31,13 +32,6 @@ class DiagnosticsStore {
   toggle(groupSlug: string) {
     this.collapsed[groupSlug] = !this.collapsed[groupSlug];
   }
-}
-
-function formatErr(err: unknown): string {
-  if (err && typeof err === 'object' && 'message' in err) {
-    return String((err as { message: unknown }).message);
-  }
-  return String(err);
 }
 
 export const diagnosticsStore = new DiagnosticsStore();
