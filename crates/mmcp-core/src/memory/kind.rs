@@ -151,11 +151,7 @@ mod tests {
 
     #[test]
     fn feature_kind_rejects_legacy_fr_alias() {
-        // The `fr` serde alias was retired: `migrate_fr_slugs` ran
-        // months ago and rewrote every on-disk memory to the
-        // canonical `feature` spelling, so legacy code is code to
-        // delete. A `kind = "fr"` memory must now fail to parse
-        // rather than silently round-tripping through a dead alias.
+        // "fr" is not a recognized kind value; only "feature" parses.
         let result: Result<MemoryKind, _> = serde_json::from_str("\"fr\"");
         assert!(result.is_err());
     }

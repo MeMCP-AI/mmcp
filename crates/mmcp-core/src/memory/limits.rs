@@ -3,13 +3,12 @@
 //!
 //! `global-security-rules` (mandatory mmcp memory) requires every
 //! string field on an external input to carry an explicit maximum
-//! length. Before this module existed, only the memory slug was
-//! bounded (`MAX_SLUG_LENGTH` / `MAX_SLUG_SEGMENTS` in
-//! `mmcp-store`); `body`, `name`, `description`, `tags`, and the
-//! optional commit-message override taken by `write_memory` /
-//! `edit_memory` / `import_memory` / `add_feature` were all
-//! unbounded `String`s, so an unbounded body was buffered in
-//! memory and then committed as a permanent, non-reclaimable git
+//! length: `body`, `name`, `description`, `tags`, and the optional
+//! commit-message override taken by `write_memory` / `edit_memory`
+//! / `import_memory` / `add_feature`, alongside the memory slug
+//! bound separately (`MAX_SLUG_LENGTH` / `MAX_SLUG_SEGMENTS` in
+//! `mmcp-store`). An unbounded field would buffer arbitrary input
+//! in memory and commit it as a permanent, non-reclaimable git
 //! blob.
 //!
 //! This module is the single owner of those bounds: the named
