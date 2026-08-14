@@ -7764,9 +7764,9 @@ fn parse_optional_uuid(value: Option<&str>) -> Result<Option<Uuid>, McpError> {
     }
 }
 
-/// FR-38: parse the `source` arg into a UUID. Disambiguation
-/// between group UUID and memory UUID is the caller's concern at
-/// lookup time — the wire shape is opaque.
+/// Parse the `source` arg into a UUID.
+/// Disambiguation between group UUID and memory UUID is the
+/// caller's concern at lookup time: the wire shape is opaque.
 fn parse_optional_source(value: Option<&str>) -> Result<Option<Uuid>, McpError> {
     match value {
         None => Ok(None),
@@ -7781,7 +7781,7 @@ fn parse_optional_source(value: Option<&str>) -> Result<Option<Uuid>, McpError> 
 
 /// Parse the `milestone` wire argument shared by `add_feature` /
 /// `update_feature`: a bare UUID, never a slug (milestone
-/// cross-references are UUID-only per the D3/M5 design).
+/// cross-references are UUID-only by design).
 fn parse_optional_milestone(value: Option<&str>) -> Result<Option<Uuid>, McpError> {
     match value {
         None => Ok(None),
@@ -7867,7 +7867,7 @@ fn action_wire(action: InitClaudeAction) -> &'static str {
 /// project carries an older fence.
 const CLAUDE_MD_BLOCK_VERSION: &str = "v1";
 
-/// Compute notes about the project's CLAUDE.md state (FR-45).
+/// Compute notes about the project's CLAUDE.md state.
 ///
 /// Read-only: the function inspects the file on disk but never writes
 /// anything. `bootstrap_context` emits these through the standard
@@ -7910,7 +7910,7 @@ fn claude_md_notes(project_root: Option<&std::path::Path>) -> Vec<mmcp_proto::No
             "suggested_args": { "action": "append" },
         }))];
     }
-    // No fence at all — file is unmanaged.
+    // No fence at all: file is unmanaged.
     vec![mmcp_proto::Note::warn(
         "claude_md_unmanaged",
         "CLAUDE.md has no mmcp-managed block. Run `init_claude` (action=append) to insert the session-start protocol without touching user-authored content, or (action=convert) to split existing rule content into typed memories and replace the file with a stub.",
@@ -7946,7 +7946,7 @@ fn frontmatter_to_json(fm: &MemoryFrontmatter) -> serde_json::Value {
         "tags": fm.tags,
         "bump_intent": fm.bump_intent,
         "refs": fm.refs.iter().map(memory_ref_to_json).collect::<Vec<_>>(),
-        // FR-38: surface the provenance UUID on read so callers can
+        // Surface the provenance UUID on read so callers can
         // see who filed a memory without parsing the body.
         "source": fm.source,
     })
@@ -7980,7 +7980,7 @@ fn normalize_vergen_output(raw: Option<&'static str>) -> Option<&'static str> {
     raw.filter(|value| *value != VERGEN_IDEMPOTENT_SENTINEL)
 }
 
-/// FR-45 notes channel: wrap a JSON response payload and attach a
+/// Wrap a JSON response payload and attach a
 /// `notes` array when non-empty. `ok_json` stays for call sites that
 /// never emit notes; tools that can emit them use this helper and
 /// omit the field entirely when the queue is empty (via
@@ -8004,7 +8004,7 @@ fn ok_json_with_notes(
 }
 
 // `id_validation_to_notes` was hoisted to `crate::notes` so
-// the CLI memory subcommands can reuse the same FR-45 codes.
+// the CLI memory subcommands can reuse the same note codes.
 // See `notes::id_validation_to_notes`.
 
 #[cfg(test)]
@@ -8048,7 +8048,7 @@ mod tests {
 
     /// Same as [`seed_group_with_memory`] but marks the group's
     /// manifest as `protected`, so tests can exercise the
-    /// FR-019 guard.
+    /// protected-group elicitation guard.
     async fn seed_protected_group_with_memory(
         state: &ClientState,
         slug: &str,
@@ -8068,7 +8068,7 @@ mod tests {
 
     /// Seed a group whose manifest carries an explicit
     /// [`GroupScope`](mmcp_core::manifest::GroupScope) so tests can
-    /// exercise the FR-025 mandatory-memory filter without hand-
+    /// exercise the mandatory-memory scope filter without hand-
     /// rolling the manifest mutation.
     async fn seed_scoped_group_with_memory(
         state: &ClientState,
