@@ -63,7 +63,7 @@ pub use diagnostics::{
     DiagReport, Finding, GroupReport, diagnose_all, diagnose_group, health_check_all,
     health_check_group,
 };
-pub use error::StoreError;
+pub use error::{FileOperation, StoreError};
 pub use features::{
     AddSpec as FeatureAddSpec, FeatureError, FeatureRecord, FeatureSummary,
     UpdateSpec as FeatureUpdateSpec, add_feature, delete_feature, list_feature_summaries,
