@@ -1,7 +1,12 @@
 //! Server configuration loaded from environment variables.
 
+mod defaults;
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
+
+use defaults::{DEFAULT_BIND, DEFAULT_DATABASE_URL, DEFAULT_REPO_ROOT};
+pub use defaults::{MAX_PASSWORD_LENGTH_ENV, MIN_PASSWORD_LENGTH_ENV};
 
 /// Server configuration.
 ///
@@ -78,22 +83,6 @@ pub struct OAuthProviderConfig {
     pub userinfo_url: String,
 }
 
-/// Fallback bind address, used both when `MMCP_BIND` is unset and
-/// when it is present but fails to parse. A hardcoded, always-valid
-/// `SocketAddr` literal, so the `.expect()` in [`ServerConfig::from_source_with_overrides`]
-/// that re-parses it can never actually observe a failure.
-const DEFAULT_BIND: &str = "127.0.0.1:8787";
-
-/// Environment variable overriding the minimum accepted password
-/// length. Second in precedence behind an explicit `--min-password-length`
-/// CLI override, ahead of the `~/.mmcp/config.toml` `[limits]` tier
-/// and the compiled-in default.
-pub const MIN_PASSWORD_LENGTH_ENV: &str = "MMCP_MIN_PASSWORD_LENGTH";
-
-/// Environment variable overriding the maximum accepted password
-/// length. Same precedence position as [`MIN_PASSWORD_LENGTH_ENV`].
-pub const MAX_PASSWORD_LENGTH_ENV: &str = "MMCP_MAX_PASSWORD_LENGTH";
-
 impl ServerConfig {
     /// Build a config from the process environment using sensible
     /// defaults, with no CLI override tier. Thin wrapper over
@@ -138,10 +127,10 @@ impl ServerConfig {
                     .expect("DEFAULT_BIND is a hardcoded, always-valid SocketAddr literal")
             });
         let database_url =
-            get("MMCP_DATABASE_URL").unwrap_or_else(|| "sqlite::memory:".to_string());
+            get("MMCP_DATABASE_URL").unwrap_or_else(|| DEFAULT_DATABASE_URL.to_string());
         let repo_root = get("MMCP_REPO_ROOT")
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("data/repos"));
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_REPO_ROOT));
         let token_key = get("MMCP_TOKEN_KEY_HEX")
             .as_deref()
             .and_then(parse_hex_key)
