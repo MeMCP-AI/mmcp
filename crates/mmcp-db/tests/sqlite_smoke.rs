@@ -221,6 +221,50 @@ async fn session_turn_counter_increments() {
 }
 
 #[tokio::test]
+async fn session_turn_counter_overflow_is_reported_not_wrapped() {
+    let db = fresh_database().await;
+    let conn = db.connection();
+
+    session_repo::upsert(
+        conn,
+        session_repo::NewSession {
+            session_id: "sess-max".into(),
+            user_id: None,
+            project_uuid: None,
+            transcript_path: None,
+            started_at: 1,
+        },
+    )
+    .await
+    .unwrap();
+
+    // Force the row to the boundary directly: no realistic sequence of
+    // single-step bump_turn calls reaches i32::MAX in a test.
+    use mmcp_db::entities::session::{ActiveModel, Entity};
+    use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+    let existing = Entity::find_by_id("sess-max".to_string())
+        .one(conn)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut active: ActiveModel = existing.into();
+    active.turn_counter = Set(i32::MAX);
+    active.update(conn).await.unwrap();
+
+    let err = session_repo::bump_turn(conn, "sess-max", 2)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        mmcp_db::DbError::TurnCounterOverflow { current, .. } if current == i32::MAX
+    ));
+
+    // The failed attempt must not have mutated the row.
+    let row = session_repo::find(conn, "sess-max").await.unwrap().unwrap();
+    assert_eq!(row.turn_counter, i32::MAX);
+}
+
+#[tokio::test]
 async fn memory_read_tracking_and_post_compaction() {
     let db = fresh_database().await;
     let conn = db.connection();

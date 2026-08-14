@@ -54,7 +54,14 @@ pub async fn bump_turn(
     now: i64,
 ) -> Result<i32, DbError> {
     let existing = find(conn, session_id).await?.ok_or(DbError::NotFound)?;
-    let next = existing.turn_counter + 1;
+    let next =
+        existing
+            .turn_counter
+            .checked_add(1)
+            .ok_or_else(|| DbError::TurnCounterOverflow {
+                session_id: session_id.to_string(),
+                current: existing.turn_counter,
+            })?;
     let mut active: ActiveModel = existing.into();
     active.turn_counter = Set(next);
     active.last_seen_at = Set(now);
