@@ -1,5 +1,6 @@
 import { listGroups, refreshGroups } from '$lib/api/groups';
 import type { GroupEntry } from '$lib/types';
+import { formatErr } from '$lib/utils/error';
 
 class GroupsStore {
   groups = $state<GroupEntry[]>([]);
@@ -41,13 +42,6 @@ class GroupsStore {
       this.error = formatErr(err);
     }
   }
-}
-
-function formatErr(err: unknown): string {
-  if (err && typeof err === 'object' && 'message' in err) {
-    return String((err as { message: unknown }).message);
-  }
-  return String(err);
 }
 
 export const groupsStore = new GroupsStore();

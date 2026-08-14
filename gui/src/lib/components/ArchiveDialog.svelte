@@ -28,6 +28,7 @@
     type ArchiveGroupListing
   } from '$lib/api/archive';
   import type { GroupEntry } from '$lib/types';
+  import { formatErr } from '$lib/utils/error';
 
   let { mode, onClose }: { mode: 'export' | 'import'; onClose: () => void } = $props();
 
@@ -100,19 +101,6 @@
     void init();
   });
 
-  // Tauri rejects with the serialized `GuiError` (`{ kind, message }`),
-  // so `String(e)` would render `[object Object]`. Pull out the
-  // human-readable message (then kind), matching the store helpers.
-  function errorMessage(e: unknown): string {
-    if (typeof e === 'string') return e;
-    if (e && typeof e === 'object') {
-      const o = e as { message?: unknown; kind?: unknown };
-      if (o.message != null) return String(o.message);
-      if (o.kind != null) return String(o.kind);
-    }
-    return String(e);
-  }
-
   async function init() {
     busy = true;
     error = null;
@@ -140,7 +128,7 @@
       // so it loads lazily in the background when the filter opens
       // (see ensureExportTags) rather than blocking the form.
     } catch (e) {
-      error = errorMessage(e);
+      error = formatErr(e);
     } finally {
       busy = false;
     }
@@ -210,7 +198,7 @@
       try {
         memoriesByGroup = { ...memoriesByGroup, [id]: await listMemorySlugs(id) };
       } catch (e) {
-        error = errorMessage(e);
+        error = formatErr(e);
       }
     }
   }
@@ -271,7 +259,7 @@
         result = `Imported ${groups.length} group(s): ${sum((g) => g.created)} created, ${sum((g) => g.overwritten)} overwritten, ${sum((g) => g.skipped)} skipped, ${sum((g) => g.conflicts)} conflicts`;
       }
     } catch (e) {
-      error = errorMessage(e);
+      error = formatErr(e);
     } finally {
       busy = false;
     }
