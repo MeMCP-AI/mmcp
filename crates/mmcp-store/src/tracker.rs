@@ -63,7 +63,11 @@ pub async fn next_ticket_number(
             }
         }
     }
-    Ok(max + 1)
+    // `max` is accumulated from frontmatter `meta.number`, a value any client can write into a
+    // memory file without an upper bound enforced at write time. A plain `max + 1` would wrap to
+    // `0` in a release build (overflow-checks off) or panic in debug, either way reissuing an
+    // already-allocated ticket number instead of surfacing the exhausted counter.
+    max.checked_add(1).ok_or(ImportError::TicketCounterOverflow)
 }
 
 /// Compose the merged cross-reference list for an update.
@@ -105,6 +109,28 @@ pub(crate) fn listing_keeps_status<S: Status>(
         None if show_all => true,
         None => !status.is_default_hidden(),
     }
+}
+
+/// Extract a tracker's metadata block from a parsed memory's frontmatter, erroring when it is absent.
+///
+/// Shared block-presence gating between `features::record_from_file`, `issues::record_from_file`,
+/// and `milestones::crud::record_from_file` (and the matching `reject_foreign` predicates their
+/// `rename_*` siblings pass to [`plan_slug_rename`]): a memory belongs to a tracker surface exactly
+/// when it carries that tracker's own frontmatter block, never by `frontmatter.kind` alone.
+/// `kind.rs` documents the hybrid model: a memory may carry both a `[feature]` and an `[issue]`
+/// block at once, and [`next_ticket_number`] above already reads both blocks off one [`MemoryFile`]
+/// to compute the shared counter, so kind-only gating would reject a real hybrid a block-presence
+/// check accepts correctly.
+///
+/// `not_found` builds the caller's own typed "missing block" error from `(slug, kind)`,
+/// so each tracker keeps its distinct `NotAFeature` / `NotAnIssue` / `NotAMilestone` variant.
+pub(crate) fn require_block<T, E>(
+    slug: &str,
+    kind: &str,
+    block: Option<T>,
+    not_found: impl FnOnce(String, String) -> E,
+) -> Result<T, E> {
+    block.ok_or_else(|| not_found(slug.to_string(), kind.to_string()))
 }
 
 /// Build the `frontmatter_parse_failed` [`Finding`] both `list_features` and `list_issues` emit,
@@ -222,4 +248,89 @@ pub(crate) async fn count_slug_entries(
                 .is_some_and(|stem| Uuid::parse_str(stem).is_ok())
         })
         .count())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::import_memory;
+    use crate::testing::ScratchHome;
+    use mmcp_core::memory::{
+        FeatureMetadata, FeatureStatus, FrontmatterFormat, MemoryFrontmatter, MemoryKind,
+    };
+
+    /// Regression guard for the `checked_add` fix: a frontmatter `feature.number` sitting at
+    /// `u32::MAX` (externally writable, no upper bound enforced at write time) must surface a
+    /// typed [`ImportError::TicketCounterOverflow`] instead of wrapping to `0` (release) or
+    /// panicking (debug) and reissuing an already-allocated ticket number.
+    #[tokio::test]
+    async fn next_ticket_number_errors_on_counter_overflow() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("overflow-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        let file = MemoryFile {
+            frontmatter: MemoryFrontmatter::new("Maxed out", "at the ceiling", MemoryKind::Feature)
+                .with_feature(FeatureMetadata {
+                    status: FeatureStatus::Requested,
+                    number: Some(u32::MAX),
+                    ..FeatureMetadata::default()
+                }),
+            body: "## Need\n\nAt the ceiling.\n".to_string(),
+            format: FrontmatterFormat::TomlPlus,
+        };
+        let rendered = file.to_string().expect("render maxed-out feature");
+        import_memory(
+            scratch.backend(),
+            &entry.handle,
+            "maxed-out",
+            &rendered,
+            None,
+            scratch.author(),
+            false,
+        )
+        .await
+        .expect("seed maxed-out feature");
+
+        let err = next_ticket_number(scratch.backend(), &entry)
+            .await
+            .expect_err("counter at u32::MAX must error instead of wrapping");
+        assert!(matches!(err, ImportError::TicketCounterOverflow));
+    }
+
+    /// Below the ceiling, the counter still mints the next number normally.
+    #[tokio::test]
+    async fn next_ticket_number_increments_normally_below_ceiling() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("normal-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        let file = MemoryFile {
+            frontmatter: MemoryFrontmatter::new("Feature 5", "regular ticket", MemoryKind::Feature)
+                .with_feature(FeatureMetadata {
+                    status: FeatureStatus::Requested,
+                    number: Some(5),
+                    ..FeatureMetadata::default()
+                }),
+            body: "## Need\n\nRegular ticket.\n".to_string(),
+            format: FrontmatterFormat::TomlPlus,
+        };
+        let rendered = file.to_string().expect("render feature 5");
+        import_memory(
+            scratch.backend(),
+            &entry.handle,
+            "feature-5",
+            &rendered,
+            None,
+            scratch.author(),
+            false,
+        )
+        .await
+        .expect("seed feature 5");
+
+        let next = next_ticket_number(scratch.backend(), &entry)
+            .await
+            .expect("next ticket number");
+        assert_eq!(next, 6);
+    }
 }
