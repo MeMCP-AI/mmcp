@@ -894,10 +894,17 @@ pub async fn delete_feature(
 ///    Default listing matches the "what still needs work?" mental model operators reach for;
 ///    the closed-ish statuses only come back via the `show_all` escape hatch or an explicit `status` selector.
 ///
-/// Non-FR memories in the same group are skipped silently:
+/// A memory whose kind genuinely is NOT `feature` is skipped silently:
 /// FRs share the group with rules/snapshots/logs/references/scratch notes,
 /// and listing would otherwise return a confused shape.
-/// A memory that IS a feature but whose frontmatter fails to parse is NOT skipped silently:
+/// A memory that self-declares kind `feature` but carries no `[feature]` block is NOT skipped
+/// silently: `require_block` gates on block presence, not on `frontmatter.kind`, so this is the
+/// same corruption signal a hybrid memory missing its block would be, per `record_from_file`'s
+/// own doc comment. It is excluded from the returned records, a record with no block cannot be
+/// trusted, but reported back as a [`Finding`] (`feature_block_missing`), so callers can surface
+/// it through the notes channel instead of the listing quietly lying about the group's true FR
+/// count.
+/// A memory that IS a feature but whose frontmatter fails to parse is likewise NOT skipped silently:
 /// it is excluded from the returned records, a mis-parsed record cannot be trusted,
 /// but reported back as a [`Finding`] (`frontmatter_parse_failed`,
 /// matching the code `check_health` already uses for the identical failure),
@@ -924,7 +931,28 @@ pub async fn list_features(
                     out.push(record);
                 }
             }
-            // `NotAFeature` is an *expected* non-match:
+            // `NotAFeature` covers two different situations that
+            // `require_block` cannot tell apart by variant alone:
+            // a genuinely unrelated kind (expected non-match, no
+            // finding) versus a self-declared kind = feature memory
+            // missing its [feature] block (a corruption signal the
+            // module's contract says must never be silently hidden).
+            // `kind` carries the memory's real frontmatter kind
+            // string, so branch on it here.
+            Err(FeatureError::NotAFeature { slug, kind })
+                if kind == MemoryKind::Feature.as_str() =>
+            {
+                findings.push(Finding {
+                    group: entry.manifest.group_id.to_string(),
+                    message: format!(
+                        "memory '{slug}' declares kind 'feature' but carries no [feature] block"
+                    ),
+                    slug: Some(slug),
+                    severity: "error",
+                    code: "feature_block_missing",
+                });
+            }
+            // A genuinely unrelated kind is an *expected* non-match:
             // the slug is a rule/snapshot/log/reference/scratch memory, not a corruption signal,
             // so the loop continues past it without a finding.
             Err(FeatureError::NotAFeature { .. }) => {}
@@ -1436,6 +1464,88 @@ mod tests {
         );
         assert_eq!(findings[0].code, "frontmatter_parse_failed");
         assert_eq!(findings[0].slug.as_deref(), Some("corrupt"));
+    }
+
+    #[tokio::test]
+    async fn list_features_surfaces_missing_feature_block_as_finding_not_silent_drop() {
+        // Regression test: a memory that self-declares kind = feature
+        // but carries no [feature] block used to be swallowed by the
+        // same silent-skip arm as a genuinely unrelated kind (rule,
+        // snapshot, log). That is the exact corruption signal
+        // `require_block` exists to catch, so it must surface as a
+        // `feature_block_missing` finding instead of vanishing.
+        use crate::memory::{SynthFrontmatter, import_memory};
+
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("good".into()),
+                title: "Good".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed good FR");
+
+        // A genuinely unrelated kind must still be skipped silently.
+        import_memory(
+            scratch.backend(),
+            &entry.handle,
+            "unrelated-rule",
+            "an unrelated rule memory",
+            Some(SynthFrontmatter {
+                name: "Unrelated rule".into(),
+                description: "not a feature at all".into(),
+                kind: MemoryKind::Rule,
+            }),
+            scratch.author(),
+            false,
+        )
+        .await
+        .expect("seed unrelated rule memory");
+
+        // kind = feature but no [feature] block: the corruption case.
+        import_memory(
+            scratch.backend(),
+            &entry.handle,
+            "empty-feature-block",
+            "no feature block at all",
+            Some(SynthFrontmatter {
+                name: "Feature-kind, no block".into(),
+                description: "kind says feature, block is absent".into(),
+                kind: MemoryKind::Feature,
+            }),
+            scratch.author(),
+            false,
+        )
+        .await
+        .expect("seed kind=feature memory with no [feature] block");
+
+        let (records, findings) = list_features(scratch.backend(), &entry, None, true)
+            .await
+            .expect("list must not fail the whole group over one corrupt memory");
+
+        let slugs: Vec<_> = records.iter().map(|r| r.slug.as_str()).collect();
+        assert_eq!(
+            slugs,
+            vec!["good"],
+            "neither the unrelated rule nor the blockless feature must appear as a record",
+        );
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "only the self-declared feature with a missing block is reported; \
+             the unrelated rule stays a silent, expected non-match",
+        );
+        assert_eq!(findings[0].code, "feature_block_missing");
+        assert_eq!(findings[0].slug.as_deref(), Some("empty-feature-block"));
     }
 
     #[tokio::test]
