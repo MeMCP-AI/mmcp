@@ -10,12 +10,12 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
 use mmcp_core::manifest::GroupScope;
 use mmcp_git::{NativeBackend, RepoHandle};
 use mmcp_sync::{GroupHandleResolver, ScopeIndex, SyncClient, SyncEngine};
 use uuid::Uuid;
 
+use crate::error::StoreError;
 use crate::groups::GroupIndex;
 
 /// Build a fresh [`SyncEngine`] and [`IndexResolver`] pointed at
@@ -29,9 +29,11 @@ pub fn build_engine(
     backend: Arc<NativeBackend>,
     groups: GroupIndex,
     server_url: &str,
-) -> Result<(SyncEngine, IndexResolver)> {
-    let client = SyncClient::new(server_url.to_owned())
-        .with_context(|| format!("configuring sync client for {server_url}"))?;
+) -> Result<(SyncEngine, IndexResolver), StoreError> {
+    let client = SyncClient::new(server_url.to_owned()).map_err(|source| StoreError::Sync {
+        server_url: server_url.to_owned(),
+        source,
+    })?;
     let engine = SyncEngine::new(backend, client);
     let resolver = IndexResolver { index: groups };
     Ok((engine, resolver))

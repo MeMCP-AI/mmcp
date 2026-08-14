@@ -13,9 +13,9 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
-
 use mmcp_core::config::UserConfig;
+
+use crate::error::{FileOperation, StoreError};
 
 /// Subdirectory names within the mmcp home.
 const DEFAULT_MMCP_DIR: &str = ".mmcp";
@@ -49,7 +49,7 @@ impl MmcpHome {
     /// 1. `MMCP_HOME` env var (explicit override)
     /// 2. `$HOME/.mmcp` (Unix / Git Bash on Windows)
     /// 3. `$USERPROFILE/.mmcp` (native Windows)
-    pub fn discover() -> Result<Self> {
+    pub fn discover() -> Result<Self, StoreError> {
         if let Ok(explicit) = std::env::var("MMCP_HOME") {
             return Ok(Self {
                 root: PathBuf::from(explicit),
@@ -94,30 +94,40 @@ impl MmcpHome {
 
     /// Load the user-level config.
     /// Returns `UserConfig::default()` if the file does not exist.
-    pub fn load_user_config(&self) -> Result<UserConfig> {
+    pub fn load_user_config(&self) -> Result<UserConfig, StoreError> {
         let path = self.user_config_path();
         if !path.exists() {
             return Ok(UserConfig::default());
         }
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
-        UserConfig::from_toml(&text).map_err(|e| anyhow::anyhow!("parsing {}: {e}", path.display()))
+        let text = std::fs::read_to_string(&path).map_err(|source| StoreError::Io {
+            path: path.clone(),
+            operation: FileOperation::Read,
+            source,
+        })?;
+        UserConfig::from_toml(&text).map_err(|source| StoreError::TomlParse { path, source })
     }
 
     /// Persist the user-level config.
     /// Creates the home directory if it does not yet exist,
     /// so callers can write the first config without a separate `init` step.
-    pub fn save_user_config(&self, cfg: &UserConfig) -> Result<()> {
+    pub fn save_user_config(&self, cfg: &UserConfig) -> Result<(), StoreError> {
         let path = self.user_config_path();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| anyhow::anyhow!("creating {}: {e}", parent.display()))?;
+            std::fs::create_dir_all(parent).map_err(|source| StoreError::Io {
+                path: parent.to_path_buf(),
+                operation: FileOperation::CreateDir,
+                source,
+            })?;
         }
-        let text = cfg
-            .to_toml()
-            .map_err(|e| anyhow::anyhow!("serialising user config: {e}"))?;
-        std::fs::write(&path, text)
-            .map_err(|e| anyhow::anyhow!("writing {}: {e}", path.display()))?;
+        let text = cfg.to_toml().map_err(|source| StoreError::TomlSerialize {
+            path: path.clone(),
+            source,
+        })?;
+        std::fs::write(&path, text).map_err(|source| StoreError::Io {
+            path,
+            operation: FileOperation::Write,
+            source,
+        })?;
         Ok(())
     }
 
@@ -128,19 +138,16 @@ impl MmcpHome {
     /// this once at startup.
     pub async fn init_backend(
         &self,
-    ) -> anyhow::Result<(
-        std::sync::Arc<mmcp_git::NativeBackend>,
-        crate::groups::GroupIndex,
-    )> {
-        use anyhow::Context;
+    ) -> Result<
+        (
+            std::sync::Arc<mmcp_git::NativeBackend>,
+            crate::groups::GroupIndex,
+        ),
+        StoreError,
+    > {
         let repos_root = self.repos_root();
-        let backend = std::sync::Arc::new(
-            mmcp_git::NativeBackend::new(&repos_root)
-                .with_context(|| format!("initializing repo root {}", repos_root.display()))?,
-        );
-        let groups = crate::groups::GroupIndex::build(repos_root, backend.clone())
-            .await
-            .with_context(|| format!("building group index at {}", self.repos_root().display()))?;
+        let backend = std::sync::Arc::new(mmcp_git::NativeBackend::new(&repos_root)?);
+        let groups = crate::groups::GroupIndex::build(repos_root, backend.clone()).await?;
         Ok((backend, groups))
     }
 
@@ -190,14 +197,14 @@ pub fn read_git_global(key: &str) -> Option<String> {
 }
 
 /// Resolve the user's home directory from environment variables.
-fn resolve_user_home() -> Result<PathBuf> {
+fn resolve_user_home() -> Result<PathBuf, StoreError> {
     if let Ok(home) = std::env::var("HOME") {
         return Ok(PathBuf::from(home));
     }
     if let Ok(profile) = std::env::var("USERPROFILE") {
         return Ok(PathBuf::from(profile));
     }
-    bail!("cannot determine home directory: set MMCP_HOME, HOME, or USERPROFILE")
+    Err(StoreError::HomeDirUnresolved)
 }
 
 #[cfg(test)]
@@ -213,5 +220,45 @@ mod tests {
             home.sessions_root(),
             PathBuf::from("/tmp/test-mmcp/sessions")
         );
+    }
+
+    /// Falsification target: `load_user_config` must surface a
+    /// genuinely unreadable config path as `StoreError::Io` carrying
+    /// the real path and the real `std::io::Error`, not a stringified
+    /// `anyhow` message. A directory is stood in for the config file
+    /// so the read fails at the OS level instead of short-circuiting
+    /// on the `!path.exists()` default-config fast path.
+    #[test]
+    fn load_user_config_unreadable_path_returns_typed_io_error() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let home = MmcpHome::from_root(tmp.path());
+        let config_path = home.user_config_path();
+        std::fs::create_dir_all(&config_path)
+            .expect("create dir standing in place of the config file");
+
+        // Capture what the real syscall actually returns, so the
+        // assertion below proves the source chain preserves the same
+        // `ErrorKind` instead of collapsing it into a stand-in value.
+        let expected_kind = std::fs::read_to_string(&config_path)
+            .expect_err("reading a directory as a file must fail")
+            .kind();
+
+        let err = home
+            .load_user_config()
+            .expect_err("a directory standing in for the config file must not parse as one");
+
+        match &err {
+            StoreError::Io {
+                path, operation, ..
+            } => {
+                assert_eq!(path, &config_path);
+                assert_eq!(*operation, FileOperation::Read);
+            }
+            other => panic!("expected StoreError::Io, got {other:?}"),
+        }
+        let chained = std::error::Error::source(&err)
+            .and_then(|s| s.downcast_ref::<std::io::Error>())
+            .expect("source must be the real std::io::Error, not a stringified copy");
+        assert_eq!(chained.kind(), expected_kind);
     }
 }

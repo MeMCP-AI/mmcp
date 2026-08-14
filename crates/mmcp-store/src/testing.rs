@@ -26,7 +26,7 @@ use mmcp_git::{GitBackend, NativeBackend};
 use tempfile::TempDir;
 use uuid::Uuid;
 
-use crate::error::StoreError;
+use crate::error::{FileOperation, StoreError};
 use crate::groups::GroupIndex;
 use crate::home::{MmcpHome, ResolvedAuthor};
 use crate::sessions::SessionStore;
@@ -52,10 +52,18 @@ impl ScratchHome {
     /// Propagated backend/index failures only happen in genuinely pathological test setups (e.g. a poisoned tempdir),
     /// so most call sites `.expect("scratch home")` and move on.
     pub async fn new() -> Result<Self, StoreError> {
-        let tmp = TempDir::new()?;
+        let tmp = TempDir::new().map_err(|source| StoreError::Io {
+            path: std::env::temp_dir(),
+            operation: FileOperation::CreateDir,
+            source,
+        })?;
         let home = MmcpHome::from_root(tmp.path().join("mmcp-home"));
-        std::fs::create_dir_all(home.repos_root())?;
-        let (backend, groups) = home.init_backend().await.map_err(std::io::Error::other)?;
+        std::fs::create_dir_all(home.repos_root()).map_err(|source| StoreError::Io {
+            path: home.repos_root(),
+            operation: FileOperation::CreateDir,
+            source,
+        })?;
+        let (backend, groups) = home.init_backend().await?;
         let sessions = SessionStore::open(home.sessions_root())?;
         let author = ephemeral_author();
         Ok(Self {

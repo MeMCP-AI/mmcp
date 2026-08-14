@@ -21,7 +21,7 @@ use mmcp_session::{TranscriptSignature, compute_signature, detect_compaction};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::error::StoreError;
+use crate::error::{FileOperation, StoreError};
 
 /// Full session state serialised to TOML.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,7 +105,11 @@ impl SessionStore {
     /// not already exist.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, StoreError> {
         let root = root.into();
-        std::fs::create_dir_all(&root)?;
+        std::fs::create_dir_all(&root).map_err(|source| StoreError::Io {
+            path: root.clone(),
+            operation: FileOperation::CreateDir,
+            source,
+        })?;
         Ok(Self { root })
     }
 
@@ -127,11 +131,16 @@ impl SessionStore {
         let path = self.path_for(session_id);
         match std::fs::read_to_string(&path) {
             Ok(text) => {
-                let state: SessionState = toml::from_str(&text)?;
+                let state: SessionState = toml::from_str(&text)
+                    .map_err(|source| StoreError::TomlParse { path, source })?;
                 Ok(Some(state))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e.into()),
+            Err(source) => Err(StoreError::Io {
+                path,
+                operation: FileOperation::Read,
+                source,
+            }),
         }
     }
 
@@ -140,12 +149,25 @@ impl SessionStore {
     /// so concurrent readers never observe a partial file.
     pub fn save(&self, state: &SessionState) -> Result<(), StoreError> {
         let path = self.path_for(&state.session_id);
-        let text = toml::to_string_pretty(state)?;
-        let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, text.as_bytes())?;
-        std::fs::rename(&tmp, &path).inspect_err(|_e| {
-            let _ = std::fs::remove_file(&tmp);
+        let text = toml::to_string_pretty(state).map_err(|source| StoreError::TomlSerialize {
+            path: path.clone(),
+            source,
         })?;
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, text.as_bytes()).map_err(|source| StoreError::Io {
+            path: tmp.clone(),
+            operation: FileOperation::Write,
+            source,
+        })?;
+        std::fs::rename(&tmp, &path)
+            .inspect_err(|_e| {
+                let _ = std::fs::remove_file(&tmp);
+            })
+            .map_err(|source| StoreError::Io {
+                path,
+                operation: FileOperation::Rename,
+                source,
+            })?;
         Ok(())
     }
 

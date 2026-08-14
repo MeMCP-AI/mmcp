@@ -9,8 +9,9 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
 use mmcp_core::config::ProjectConfig;
+
+use crate::error::{FileOperation, StoreError};
 
 /// Project-level manifest file name.
 /// Same as the group repo manifest, a single `.mmcp.toml` convention everywhere.
@@ -36,20 +37,25 @@ pub fn config_path_for(root: &Path) -> PathBuf {
 }
 
 /// Load the `ProjectConfig` from `root/.mmcp.toml`.
-pub fn load(root: &Path) -> Result<ProjectConfig> {
+pub fn load(root: &Path) -> Result<ProjectConfig, StoreError> {
     let path = config_path_for(root);
-    let text =
-        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    ProjectConfig::from_toml(&text).with_context(|| format!("parsing {}", path.display()))
+    let text = std::fs::read_to_string(&path).map_err(|source| StoreError::Io {
+        path,
+        operation: FileOperation::Read,
+        source,
+    })?;
+    Ok(ProjectConfig::from_toml(&text)?)
 }
 
 /// Render `config` into the project's `.mmcp.toml`.
 /// Overwrites any existing file.
-pub fn save(root: &Path, config: &ProjectConfig) -> Result<()> {
+pub fn save(root: &Path, config: &ProjectConfig) -> Result<(), StoreError> {
     let path = config_path_for(root);
-    let text = config
-        .to_toml()
-        .with_context(|| format!("rendering {}", path.display()))?;
-    std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
+    let text = config.to_toml()?;
+    std::fs::write(&path, text).map_err(|source| StoreError::Io {
+        path,
+        operation: FileOperation::Write,
+        source,
+    })?;
     Ok(())
 }

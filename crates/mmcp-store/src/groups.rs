@@ -20,7 +20,7 @@ use mmcp_git::{GitBackend, NativeBackend, RepoHandle};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::error::StoreError;
+use crate::error::{FileOperation, StoreError};
 
 /// One entry in the [`GroupIndex`].
 #[derive(Debug, Clone)]
@@ -55,7 +55,11 @@ impl GroupIndex {
         repos_root: PathBuf,
         backend: Arc<NativeBackend>,
     ) -> Result<Self, StoreError> {
-        std::fs::create_dir_all(&repos_root)?;
+        std::fs::create_dir_all(&repos_root).map_err(|source| StoreError::Io {
+            path: repos_root.clone(),
+            operation: FileOperation::CreateDir,
+            source,
+        })?;
         let index = Self {
             repos_root,
             backend,
@@ -147,7 +151,13 @@ async fn scan_repos_root(
     let read_dir = match std::fs::read_dir(repos_root) {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e.into()),
+        Err(source) => {
+            return Err(StoreError::Io {
+                path: repos_root.to_path_buf(),
+                operation: FileOperation::ReadDir,
+                source,
+            });
+        }
     };
 
     let mut entries = Vec::new();
