@@ -362,7 +362,7 @@ async fn oauth_account_create_find_and_update_tokens_round_trip() {
     .await
     .expect("insert github link");
 
-    // Lookup by (provider, provider_user_id) — the login flow's path.
+    // Lookup by (provider, provider_user_id): the login flow's path.
     let by_provider = oauth_repo::find_by_provider(conn, "github", "octocat")
         .await
         .expect("query")
@@ -371,8 +371,7 @@ async fn oauth_account_create_find_and_update_tokens_round_trip() {
     assert_eq!(by_provider.user_id, alice);
     assert_eq!(by_provider.access_token.as_deref(), Some("access-1"));
 
-    // Unknown (provider, provider_user_id) returns None — the first-
-    // time-signup path.
+    // Unknown (provider, provider_user_id) returns None: the first-time-signup path.
     let missing = oauth_repo::find_by_provider(conn, "github", "nobody")
         .await
         .unwrap();
@@ -512,9 +511,8 @@ async fn user_lookup_by_id_and_require_and_update_profile() {
     assert_eq!(updated.display_name.as_deref(), Some("Carol Q."));
     assert_eq!(updated.password_hash.as_deref(), Some("hash-v2"));
 
-    // Passing `None` for password_hash preserves the existing hash
-    // while still updating display_name — the "edit profile but not
-    // password" path.
+    // Passing `None` for password_hash preserves the existing hash while still updating display_name:
+    // the "edit profile but not password" path.
     let preserved = user_repo::update_profile(conn, carol, Some("Carol Third".into()), None)
         .await
         .expect("update profile without password");
