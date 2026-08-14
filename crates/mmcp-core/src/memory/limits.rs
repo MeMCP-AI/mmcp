@@ -7,7 +7,8 @@
 //! commit-message override taken by `write_memory` / `edit_memory`
 //! / `import_memory` / `add_feature`, alongside the memory slug
 //! bound separately (`MAX_SLUG_LENGTH` / `MAX_SLUG_SEGMENTS` in
-//! `mmcp-store`). An unbounded field would buffer arbitrary input
+//! `mmcp-store`).
+//! An unbounded field would buffer arbitrary input
 //! in memory and commit it as a permanent, non-reclaimable git
 //! blob.
 //!
@@ -29,7 +30,8 @@
 //! `019d9567-748a-73c3-afc4-546e976ea1e0` and project group
 //! `019d955d-4cce-77f2-a0b3-0b79ed394612`) rather than picked from
 //! assumption: a bound must never reject data that legitimately
-//! already exists in the mirror. See each constant's doc comment
+//! already exists in the mirror.
+//! See each constant's doc comment
 //! for the observed maximum and the margin chosen above it.
 
 use crate::memory::MemoryFrontmatter;

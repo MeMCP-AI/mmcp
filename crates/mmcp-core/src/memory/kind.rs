@@ -34,8 +34,7 @@ pub enum MemoryKind {
     Scratch,
 
     /// Feature request.
-    /// Carries a structured
-    /// [`FeatureMetadata`](crate::memory::FeatureMetadata)
+    /// Carries a structured [`FeatureMetadata`](crate::memory::FeatureMetadata)
     /// block in frontmatter (status, depends_on, blocks)
     /// so the feature lifecycle tools can filter and cross-reference without parsing the body.
     Feature,
