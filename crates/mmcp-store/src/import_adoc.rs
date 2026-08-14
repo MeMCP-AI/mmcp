@@ -1,38 +1,32 @@
 //! AsciiDoc -> Markdown conversion used by the import pipeline.
 //!
-//! The project stores every memory as `.md` with a TOML / YAML
-//! frontmatter fence. Supporting AsciiDoc on the input side is a
-//! one-way bridge: an `.adoc` / `.asciidoc` file is parsed with
-//! `acdc-parser` and rendered to CommonMark via
-//! `acdc-converters-markdown`, then handed verbatim to
-//! [`crate::memory::import_memory`] as if the operator had dropped
-//! a `.md` file. Nothing else in the store layer needs to know the
-//! source format: on-disk storage, diagnostics, and the MCP read
-//! surface all stay markdown-native.
+//! The project stores every memory as `.md` with a TOML/YAML frontmatter fence.
+//! Supporting AsciiDoc on the input side is a one-way bridge:
+//! an `.adoc`/`.asciidoc` file is parsed with `acdc-parser` and rendered to CommonMark,
+//! via `acdc-converters-markdown`, then handed verbatim to [`crate::memory::import_memory`],
+//! as if the operator had dropped a `.md` file.
+//! Nothing else in the store layer needs to know the source format:
+//! on-disk storage, diagnostics, and the MCP read surface all stay markdown-native.
 //!
-//! `acdc-converters-markdown` has two known weak spots that real-
-//! world Git docs trigger constantly: it drops description-list
-//! bodies (`label::\n\tbody`) on the floor with only a warning
-//! comment, and it doesn't render `linkgit:foo[N]` macros cleanly
+//! `acdc-converters-markdown` has two known weak spots that real-world Git docs trigger constantly:
+//! it drops description-list bodies (`label::\n\tbody`) on the floor with only a warning comment,
+//! and it doesn't render `linkgit:foo[N]` macros cleanly,
 //! (escaping the brackets and leaving a literal `linkgit:` prefix).
-//! It also leaves a sprinkling of `<!-- Warning: ... -->` HTML
-//! comments behind. The `setext` parser feature also has to be
-//! enabled by hand for the `~~~~~` / `^^^^^` underline styles to
-//! parse as headings — the upstream default is off.
+//! It also leaves a sprinkling of `<!-- Warning: ... -->` HTML comments behind.
+//! The `setext` parser feature also has to be enabled by hand,
+//! for the `~~~~~`/`^^^^^` underline styles to parse as headings:
+//! the upstream default is off.
 //!
-//! Rather than fork the converter, we wrap it: a small pre-processor
-//! rewrites the constructs acdc can't faithfully render into ones it
-//! can ([`preprocess_adoc`]), the converter does the AST → markdown
-//! translation, and [`postprocess_markdown`] strips warning comments
-//! and the `linkgit:` macro residue. Each step is independently
-//! testable.
+//! Rather than forking the converter, this module wraps it:
+//! a small pre-processor rewrites the constructs acdc can't faithfully render into ones it can,
+//! (see [`preprocess_adoc`]), the converter does the AST -> markdown translation,
+//! and [`postprocess_markdown`] strips warning comments and the `linkgit:` macro residue.
+//! Each step is independently testable.
 //!
-//! `DocumentAttributes` on the parsed AsciiDoc side are NOT currently
-//! promoted into the memory's TOML frontmatter. Operators who want
-//! structured frontmatter must either pre-embed it in the source
-//! (AsciiDoc supports front-matter-style preambles that `gray_matter`
-//! will pick up after conversion) or supply
-//! [`crate::memory::SynthFrontmatter`] via the import CLI flags.
+//! `DocumentAttributes` on the parsed AsciiDoc side are NOT currently promoted into the memory's TOML frontmatter.
+//! Operators who want structured frontmatter must either pre-embed it in the source,
+//! (AsciiDoc supports front-matter-style preambles that `gray_matter` will pick up after conversion),
+//! or supply [`crate::memory::SynthFrontmatter`] via the import CLI flags.
 
 use acdc_converters_core::{Converter, Diagnostics, Options as ConverterOptions};
 use acdc_converters_markdown::{MarkdownVariant, Processor};
@@ -121,29 +115,23 @@ pub fn convert_adoc_to_markdown(source: &str) -> Result<String, AdocConvertError
 /// faithfully render into ones it can.
 ///
 /// Currently handles:
-/// - **Description lists** (`label::\n\tbody`): rewritten as a bold
-///   label paragraph followed by the indented body. The upstream
-///   visitor drops `DescriptionList` content unconditionally
-///   (visit_description_list is a TODO); rewriting on the input side
-///   is the only way to preserve the body without forking the
-///   converter. The rewrite is line-oriented and skips lines inside
-///   listing/literal/comment delimiters (`----`, `....`, `////`) so
-///   we don't molest content the user explicitly fenced.
+/// - **Description lists** (`label::\n\tbody`): rewritten as a bold label paragraph followed by the indented body.
+///   The upstream visitor drops `DescriptionList` content unconditionally (`visit_description_list` is a TODO);
+///   rewriting on the input side is the only way to preserve the body without forking the converter.
+///   The rewrite is line-oriented and skips lines inside listing/literal/comment delimiters (`----`, `....`, `////`),
+///   so it doesn't touch content the user explicitly fenced.
 fn preprocess_adoc(source: &str) -> String {
     let mut out = String::with_capacity(source.len() + 64);
-    // The active listing-block delimiter character, if we're
-    // currently inside one. AsciiDoc accepts variable-length
-    // delimiters (`----`, `--------`, `------------`) so we
-    // track only the character; the close just needs ≥4 of
-    // the same character on a line by itself.
+    // The active listing-block delimiter character, if currently inside one.
+    // AsciiDoc accepts variable-length delimiters (`----`, `--------`, `------------`),
+    // so only the character is tracked; the close just needs >=4 of the same character on a line by itself.
     let mut listing_char: Option<u8> = None;
     let lines: Vec<&str> = source.lines().collect();
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
         let trimmed = line.trim_end();
-        // Are we already inside a listing block? Check for the
-        // closing delimiter (any-length run of the same char).
+        // Already inside a listing block? Check for the closing delimiter (any-length run of the same char).
         if let Some(ch) = listing_char {
             if is_delimiter_line(trimmed, ch) {
                 listing_char = None;
@@ -153,15 +141,13 @@ fn preprocess_adoc(source: &str) -> String {
             i += 1;
             continue;
         }
-        // Not in a listing block. Decide whether this line OPENS
-        // one. AsciiDoc only treats a `----` (or `....` / `////`
-        // / `++++`) line as a listing-block opener when it stands
-        // ALONE — i.e. the previous line is blank, a block
-        // attribute, or the start of the file. When the previous
-        // line is non-blank content, the `----` is a setext-style
-        // section-heading underline and must NOT trigger listing
-        // mode. (acdc's `setext` feature handles the underline
-        // itself; we just need to stay out of the way.)
+        // Not in a listing block.
+        // Decide whether this line OPENS one.
+        // AsciiDoc only treats a `----` (or `....`/`////`/`++++`) line as a listing-block opener,
+        // when it stands ALONE, i.e. the previous line is blank, a block attribute, or the start of the file.
+        // When the previous line is non-blank content, the `----` is a setext-style section-heading underline,
+        // and must NOT trigger listing mode.
+        // (acdc's `setext` feature handles the underline itself; this check simply avoids interfering.)
         if let Some(ch) = detect_listing_opener(&lines, i) {
             listing_char = Some(ch);
             out.push_str(line);
@@ -169,12 +155,11 @@ fn preprocess_adoc(source: &str) -> String {
             i += 1;
             continue;
         }
-        // Description-list detection. The label MUST NOT contain
-        // `::` itself (outside backticks), must be non-empty, and
-        // must not look like a code attribute (e.g. `[source,rust]`).
-        // We greedily consume every continuation line that belongs
-        // to the same item — single-line form, two-line form, and
-        // multi-paragraph bodies separated by `+`.
+        // Description-list detection.
+        // The label MUST NOT contain `::` itself (outside backticks), must be non-empty,
+        // and must not look like a code attribute (e.g. `[source,rust]`).
+        // Greedily consumes every continuation line that belongs to the same item:
+        // single-line form, two-line form, and multi-paragraph bodies separated by `+`.
         if let Some(rewrite) = description_list_rewrite(&lines, i) {
             out.push_str(&rewrite.rewritten);
             i += rewrite.consumed;
@@ -187,18 +172,16 @@ fn preprocess_adoc(source: &str) -> String {
     out
 }
 
-/// True when `line` is a delimiter run: ≥4 copies of `ch`, with
-/// no other characters. Used both to recognise listing-block
-/// openers (`----`, `--------`, …) and their closers, regardless
-/// of whether the lengths match exactly.
+/// True when `line` is a delimiter run: >=4 copies of `ch`, with no other characters.
+/// Used both to recognise listing-block openers (`----`, `--------`, ...) and their closers,
+/// regardless of whether the lengths match exactly.
 fn is_delimiter_line(line: &str, ch: u8) -> bool {
     let bytes = line.as_bytes();
     bytes.len() >= 4 && bytes.iter().all(|b| *b == ch)
 }
 
-/// Return the delimiter character if `lines[i]` opens a listing /
-/// literal / comment / passthrough block. Returns `None` when the
-/// line is a setext heading underline (previous line has content).
+/// Return the delimiter character if `lines[i]` opens a listing/literal/comment/passthrough block.
+/// Returns `None` when the line is a setext heading underline (previous line has content).
 fn detect_listing_opener(lines: &[&str], i: usize) -> Option<u8> {
     const OPENERS: &[u8] = b"-./+";
     let trimmed = lines[i].trim_end();
@@ -211,11 +194,10 @@ fn detect_listing_opener(lines: &[&str], i: usize) -> Option<u8> {
         return None;
     }
     // Setext underlines: the previous line is non-blank content.
-    // Treat the delimiter as a heading underline, not a block
-    // opener. We also defer to acdc when the previous line is
-    // a block attribute on its own (`[verse]`) — that pattern is
-    // legal but rare enough that we conservatively let acdc handle
-    // it, since [...] attributes always introduce blocks anyway.
+    // Treat the delimiter as a heading underline, not a block opener.
+    // Also defers to acdc when the previous line is a block attribute on its own (`[verse]`):
+    // legal but rare enough to conservatively let acdc handle it,
+    // since [...] attributes always introduce blocks anyway.
     let prev = if i == 0 { "" } else { lines[i - 1].trim_end() };
     if !(prev.is_empty() || prev.starts_with('[') && prev.ends_with(']')) {
         return None;
@@ -243,16 +225,15 @@ fn description_list_rewrite(lines: &[&str], start: usize) -> Option<DescriptionL
     if !inline_body.is_empty() {
         body_lines.push(inline_body.to_string());
     }
-    // Walk forward absorbing the full continuation block. AsciiDoc
-    // description-list items extend across:
+    // Walk forward absorbing the full continuation block.
+    // AsciiDoc description-list items extend across:
     //  - indented continuation lines (leading tab / 2+ spaces),
     //  - `+` lines that bridge paragraphs within the item,
     //  - blocks attached after a `+` continuation, regardless of
     //    indent (`. ordered lists`, `* bullet lists`, free
-    //    paragraphs — the `+` makes them part of the item),
+    //    paragraphs, the `+` makes them part of the item),
     //  - single blank lines between content.
-    // The block terminates when we see one of these unambiguous
-    // boundaries:
+    // The block terminates at one of these unambiguous boundaries:
     //  - a `LABEL::` line at column 0 (next item),
     //  - an AsciiDoc section heading (`=`, `==`, `===`, `====`,
     //    `=====`) at column 0,
@@ -268,9 +249,8 @@ fn description_list_rewrite(lines: &[&str], start: usize) -> Option<DescriptionL
         if trimmed_c.is_empty() {
             consecutive_blanks += 1;
             if consecutive_blanks >= 2 {
-                // Two blanks in a row signal the end of the list
-                // item even after a `+` — AsciiDoc only attaches
-                // ONE block to a `+` continuation.
+                // Two blanks in a row signal the end of the list item even after a `+`:
+                // AsciiDoc only attaches ONE block to a `+` continuation.
                 break;
             }
             // A blank line ends the after-plus protection: any
@@ -306,8 +286,7 @@ fn description_list_rewrite(lines: &[&str], start: usize) -> Option<DescriptionL
             continue;
         }
         if !starts_indented && !after_plus {
-            // Plain top-level content with no `+` priming — end
-            // of this list item.
+            // Plain top-level content with no `+` priming: end of this list item.
             break;
         }
         // Strip the leading indentation; keep the rest verbatim.
@@ -318,22 +297,20 @@ fn description_list_rewrite(lines: &[&str], start: usize) -> Option<DescriptionL
             .or_else(|| candidate.strip_prefix("  "))
             .unwrap_or(candidate);
         body_lines.push(stripped.trim_end().to_string());
-        // After-plus only protects ONE following block; once we've
-        // started consuming non-indented content, subsequent
-        // non-indented content needs another `+` to qualify.
-        // We treat the `+`-attached block as "consumed" once we
-        // hit an empty-line boundary inside it.
+        // After-plus only protects ONE following block;
+        // once non-indented content starts being consumed,
+        // subsequent non-indented content needs another `+` to qualify.
+        // The `+`-attached block counts as "consumed" once an empty-line boundary is hit inside it.
         // (The empty-line branch resets `after_plus = false`.)
         j += 1;
     }
     let consumed = j - start;
-    // Trim trailing blank lines from the body — they belong to
-    // the boundary between items, not to this item.
+    // Trim trailing blank lines from the body: they belong to the boundary between items, not to this item.
     while body_lines.last().is_some_and(String::is_empty) {
         body_lines.pop();
     }
     if body_lines.is_empty() {
-        // Bare `label::` with no body — keep just the label.
+        // Bare `label::` with no body: keep just the label.
         return Some(DescriptionListRewrite {
             rewritten: format!("**{label_t}**\n"),
             consumed,
@@ -391,32 +368,28 @@ fn is_attribute_line(label: &str) -> bool {
 }
 
 /// Strip residue acdc leaves behind:
-/// - `<!-- Warning: ... -->` markers it emits whenever it falls back
-///   on a fallback rendering path (description lists, audio, callout
-///   lists, etc.). These are pure noise to a downstream markdown
-///   reader.
-/// - `linkgit:foo[N]` macros emitted as `linkgit:foo\[N\]` — the
-///   surrounding bracket escapes are wrong markdown and the macro
-///   text isn't a real link target. We render them as plain
-///   `\`foo(N)\`` (manpage convention) and drop the prefix so the
-///   reading experience matches the AsciiDoc HTML output.
+/// - `<!-- Warning: ... -->` markers it emits whenever it falls back on a fallback rendering path,
+///   (description lists, audio, callout lists, etc.).
+///   These are pure noise to a downstream markdown reader.
+/// - `linkgit:foo[N]` macros emitted as `linkgit:foo\[N\]`:
+///   the surrounding bracket escapes are wrong markdown and the macro text isn't a real link target.
+///   Rendered as plain `\`foo(N)\`` (manpage convention), dropping the prefix,
+///   so the reading experience matches the AsciiDoc HTML output.
 fn postprocess_markdown(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for line in raw.lines() {
         if line.trim_start().starts_with("<!-- Warning:") && line.trim_end().ends_with("-->") {
-            // Drop standalone warning-comment lines outright; if a
-            // line ever combines a warning comment with content
-            // we'd need a finer strip, but acdc only emits them on
-            // their own line.
+            // Drop standalone warning-comment lines outright;
+            // a line combining a warning comment with content would need a finer strip,
+            // but acdc only emits them on their own line.
             continue;
         }
         out.push_str(&strip_linkgit_macros(line));
         out.push('\n');
     }
-    // Collapse the runs of blank lines that fall out when warning
-    // lines get dropped — keeps output tidy and reduces diff noise
-    // when the markdown ends up rendered side-by-side with the
-    // original adoc.
+    // Collapse the runs of blank lines that fall out when warning lines get dropped:
+    // keeps output tidy and reduces diff noise,
+    // when the markdown ends up rendered side-by-side with the original adoc.
     collapse_blank_lines(&out)
 }
 
@@ -708,9 +681,8 @@ mod tests {
 
     #[test]
     fn debug_preprocess_handles_real_gitrepository_layout_excerpt() {
-        // Reproduces the exact upstream pattern that produced the
-        // 10 % body retention in production. After preprocess+convert
-        // the body MUST contain text from the `objects::`,
+        // Regression test: guards against the description-list body-loss pattern in real gitrepository-layout docs.
+        // After preprocess+convert, the body MUST contain text from the `objects::`,
         // `objects/info::`, and `HEAD::` items.
         let source = "\
 These things may exist in a Git repository.
@@ -804,12 +776,9 @@ HEAD::
     #[test]
     fn convert_keeps_full_multi_line_description_list_body() {
         // `gitrepository-layout.adoc` is the worst offender for this:
-        // every entry in the repo-layout enumeration has 3-10
-        // continuation lines plus `+`-bridged paragraphs. Before this
-        // fix only the first body line survived and 90 % of the file
-        // was lost. The rewrite must absorb every continuation line
-        // (tab- or space-indented) plus `+` paragraph breaks so the
-        // body lands as a single multi-paragraph block.
+        // every entry in the repo-layout enumeration has 3-10 continuation lines plus `+`-bridged paragraphs.
+        // The rewrite must absorb every continuation line (tab- or space-indented) plus `+` paragraph breaks,
+        // so the body lands as a single multi-paragraph block.
         let source = "= Title\n\nobjects::\n\
             \tFirst paragraph line one.\n\
             \tFirst paragraph line two.\n\
@@ -830,8 +799,7 @@ HEAD::
             );
         }
         // The `+` continuation must NOT leak into the body verbatim.
-        // A bare `+` on its own line in the output would re-render as
-        // a list item or paragraph divider; we want it gone.
+        // A bare `+` on its own line in the output would re-render as a list item or paragraph divider.
         assert!(
             !markdown.contains("\n+\n"),
             "raw `+` continuation marker must be eaten: {markdown}"
@@ -840,8 +808,8 @@ HEAD::
 
     #[test]
     fn convert_renders_inline_description_list() {
-        // Inline form: `label:: body` on the same line. Common in
-        // git's CLI option docs.
+        // Inline form: `label:: body` on the same line.
+        // Common in git's CLI option docs.
         let source = "= Title\n\n--depth::\n\tOnly clone N most recent commits.\n";
         let markdown = convert_adoc_to_markdown(source).expect("convert");
         assert!(markdown.contains("--depth"), "label survives: {markdown}");
@@ -853,10 +821,8 @@ HEAD::
 
     #[test]
     fn convert_renders_setext_tilde_underline_as_heading() {
-        // `~~~~~` underlines parse as setext level-2 headings only
-        // when the parser's `setext` feature is enabled. With it off
-        // the underline becomes either a paragraph fragment or a
-        // free-floating `---` after acdc gives up.
+        // `~~~~~` underlines parse as setext level-2 headings only when the parser's `setext` feature is enabled.
+        // With it off, the underline becomes either a paragraph fragment or a free-floating `---` after acdc gives up.
         let source = "= Title\n\nSection\n~~~~~~~\n\nBody.\n";
         let markdown = convert_adoc_to_markdown(source).expect("convert");
         assert!(
@@ -907,11 +873,10 @@ HEAD::
 
     #[test]
     fn convert_strips_warning_comments() {
-        // The preprocess fix already prevents the description-list
-        // warning, but other warning kinds (audio, callout list)
-        // still surface from acdc. We blanket-drop standalone
-        // warning-comment lines so the reading experience stays
-        // clean even when new ones appear upstream.
+        // Preprocessing prevents the description-list warning,
+        // but other warning kinds (audio, callout list) still surface from acdc.
+        // Standalone warning-comment lines are blanket-dropped,
+        // so the reading experience stays clean even when new ones appear upstream.
         let source = "= Title\n\nNote: see audio::audio.mp3[]\n";
         let markdown = convert_adoc_to_markdown(source).expect("convert");
         assert!(
@@ -922,8 +887,8 @@ HEAD::
 
     #[test]
     fn preprocess_skips_dlist_rewrite_inside_listing_block() {
-        // Inside `----` listing blocks the literal `::` is content,
-        // not a list marker. The rewriter must keep its hands off.
+        // Inside `----` listing blocks the literal `::` is content, not a list marker.
+        // The rewriter must keep its hands off.
         let source = "= Title\n\n----\nlabel::\n\tbody\n----\n";
         let normalized = preprocess_adoc(source);
         assert!(
