@@ -35,7 +35,7 @@ fuzz_target!(|data: &[u8]| {
 
     // Property 2: rendering a parsed file and re-parsing must succeed
     // and preserve the frontmatter + format. Body equality is
-    // intentionally omitted — gray_matter normalizes a single
+    // intentionally omitted: gray_matter normalizes a single
     // leading newline out of the body, which is documented behavior
     // (covered by the unit suite).
     let Ok(rendered) = parsed.to_string() else {

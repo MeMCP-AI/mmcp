@@ -1,8 +1,8 @@
-//! Section-aware parser and renderer for memory bodies (FR-026).
+//! Section-aware parser and renderer for memory bodies.
 //!
 //! A memory body is freeform CommonMark. This module slices it
 //! into an ordered, flat sequence of addressable [`Section`]
-//! entries — one per markdown heading — plus a leading "preamble"
+//! entries, one per markdown heading, plus a leading "preamble"
 //! span for any content before the first heading. The parser is a
 //! thin layer over `pulldown-cmark` so edge cases (fenced code
 //! containing `#` on a line, setext headings, nested lists that
@@ -15,9 +15,9 @@
 //! segment, matching how markdown anchor id generators handle
 //! collisions. Path examples:
 //!
-//! - `resolution` — H2 `## Resolution`.
-//! - `resolution.non-goals` — H3 `### Non-goals` nested under it.
-//! - `notes.notes-2` — second `### Notes` under the same parent.
+//! - `resolution`: H2 `## Resolution`.
+//! - `resolution.non-goals`: H3 `### Non-goals` nested under it.
+//! - `notes.notes-2`: second `### Notes` under the same parent.
 //!
 //! The companion renderer reconstructs the body verbatim for
 //! untouched spans and splices mutated sections back in. Byte
@@ -26,7 +26,7 @@
 //! surface is designed to stay stable enough that diff-based
 //! commit inspection remains readable.
 //!
-//! Frontmatter is never touched by this module — it belongs to
+//! Frontmatter is never touched by this module: it belongs to
 //! `edit_memory`'s frontmatter-args path.
 
 use std::collections::HashMap;
@@ -36,7 +36,7 @@ use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 /// One addressable span of a memory body.
 ///
 /// The span covers the heading line (if any) plus every line of
-/// body content down to — but not including — the next heading
+/// body content down to, but not including, the next heading
 /// at the same or shallower level. A memory body that opens with
 /// prose before any heading exposes that prose as a synthetic
 /// `preamble` section at index 0 with `level = 0`; callers can
@@ -92,7 +92,7 @@ impl Section {
     pub const PREAMBLE_PATH: &'static str = "preamble";
 }
 
-/// Parse errors are intentionally narrow — the parser never
+/// Parse errors are intentionally narrow: the parser never
 /// rejects well-formed markdown. The only failure mode today is
 /// an internal inconsistency between `pulldown-cmark`'s event
 /// offsets and the raw line table; it exists as a distinct type
@@ -223,17 +223,16 @@ pub fn parse_sections(body: &str) -> Result<Vec<Section>, BodyParseError> {
     let mut sibling_counts: HashMap<(Vec<String>, String), u32> = HashMap::new();
 
     for (idx, heading) in heading_lines.iter().enumerate() {
-        // A heading inside a block quote or a list item is part of its
-        // container's content, not a node of the document outline, so
-        // it neither closes the section it sits in nor parents the
-        // headings that follow. Letting it onto the stack renamed
-        // every deeper heading after it, which silently invalidated
-        // stored paths whenever an unrelated quote was added.
+        // A heading inside a block quote or a list item is container
+        // content, not a node of the document outline: it neither
+        // closes the section it sits in nor parents the headings that
+        // follow, keeping outline path ids stable regardless of nearby
+        // container edits.
         let outlines = heading.container_depth == 0;
 
         if outlines {
-            // Pop stack entries whose level is >= the current heading
-            // — we've left their subtree.
+            // Pop stack entries whose level is >= the current heading:
+            // their subtree has ended.
             while let Some(&(top_level, _)) = stack.last() {
                 if top_level >= heading.level {
                     stack.pop();
@@ -347,7 +346,7 @@ fn split_lines(body: &str) -> Vec<&str> {
     }
     let mut out: Vec<&str> = body.split('\n').collect();
     // `split` on a string ending with `\n` appends a trailing
-    // empty element — drop it so line counts match human
+    // empty element: drop it so line counts match human
     // expectation.
     if body.ends_with('\n') {
         out.pop();

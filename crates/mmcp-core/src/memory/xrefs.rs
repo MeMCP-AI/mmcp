@@ -8,11 +8,9 @@
 //! `MemoryRef` types they validate, and stops consumer crates from
 //! reaching across at peer modules.
 //!
-//! Per the global-coding-rules section 13 on commonization, the
-//! parsers belong in their own concern-named module rather than
-//! `pub use`d from one consumer to another. This module was
-//! extracted in the run-up to the Issue tracker so feature and
-//! issue surfaces can share one validator without coupling.
+//! The parsers belong in their own concern-named module rather than
+//! `pub use`d from one consumer to another, so feature and issue
+//! surfaces share one validator without coupling.
 
 use uuid::Uuid;
 
@@ -24,7 +22,7 @@ use crate::memory::MemoryRef;
 /// Plain strings on the wire so MCP, CLI, and any other surface
 /// can pass raw user input through [`parse_memory_refs`] without
 /// pre-validating UUIDs or commit shapes themselves. Both fields
-/// are mandatory — there is no shape of this type that omits the
+/// are mandatory: there is no shape of this type that omits the
 /// commit pin (per the supersede-convention rule that every ref
 /// carries a sha).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,7 +57,7 @@ pub enum XrefError {
         /// self-describing.
         value: String,
     },
-    /// A typed `refs` entry was malformed — either the `target`
+    /// A typed `refs` entry was malformed: either the `target`
     /// did not parse as a UUID or the `commit` failed the
     /// 40-char lowercase hex check.
     #[error("memory reference on field `{field}`: {detail}")]

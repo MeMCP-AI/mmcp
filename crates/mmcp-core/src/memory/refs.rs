@@ -7,10 +7,10 @@
 //! later supersession on the target side never silently change
 //! what a reader sees when they follow the link.
 //!
-//! The type is deliberately narrow for v1 - just `target` and
+//! The type is deliberately narrow: just `target` and
 //! `commit`. Richer shapes (a `kind` tag distinguishing memory /
-//! feature / commit / log, or a `note` slot for human hints) are
-//! tracked by FR-40 as an extension; the two-field form here is
+//! feature / commit / log, or a `note` slot for human hints) remain
+//! a possible extension; the two-field form here is
 //! forward compatible because serde will parse future optional
 //! fields into the same struct once they are added.
 
@@ -28,9 +28,8 @@ use uuid::Uuid;
 /// target side.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MemoryRef {
-    /// UUID of the referenced memory (or feature, since features
-    /// are memories of kind `fr`). FR-028 makes this the primary
-    /// key so refs survive slug renames.
+    /// UUID of the referenced memory (or feature, since features are memories of kind `fr`).
+    /// This UUID is the primary key, so refs survive slug renames.
     pub target: Uuid,
 
     /// 40-character lowercase hex commit sha pinning the target to

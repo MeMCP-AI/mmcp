@@ -5,11 +5,11 @@
 //! manifest passes through:
 //!
 //! - [`ProjectConfig::from_toml`] reads `.mmcp.toml` at the project
-//!   root — every CLI invocation hits it.
-//! - [`UserConfig::from_toml`] reads `~/.mmcp/config.toml` — every
+//!   root: every CLI invocation hits it.
+//! - [`UserConfig::from_toml`] reads `~/.mmcp/config.toml`: every
 //!   MCP session hits it during author resolution.
 //! - [`GroupManifest::from_toml`] reads the `.mmcp.toml` committed
-//!   inside each group repo — every `group_info`/`list_memories`
+//!   inside each group repo: every `group_info`/`list_memories`
 //!   tool call hits it.
 //!
 //! A panic on any of these means a malformed file can take the
@@ -28,8 +28,8 @@ fn arbitrary_utf8_strategy() -> impl Strategy<Value = String> {
     prop::string::string_regex(".{0,256}").unwrap()
 }
 
-/// Strategy producing strings that resemble TOML — headers, keys,
-/// values, arrays — but without being constrained to valid syntax.
+/// Strategy producing strings that resemble TOML (headers, keys,
+/// values, arrays) but without being constrained to valid syntax.
 /// Catches the "plausible-looking but subtly broken" inputs that
 /// pure byte-level fuzzing tends to miss.
 fn tomlish_strategy() -> impl Strategy<Value = String> {

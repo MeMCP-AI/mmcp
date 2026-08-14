@@ -2,19 +2,19 @@
 //!
 //! Sister surface to [`feature`](super::feature) and
 //! [`issue`](super::issue), but deliberately a REDUCED-surface
-//! tracked kind (M5 design): a milestone carries no supersede flow,
+//! tracked kind: a milestone carries no supersede flow,
 //! no `depends_on` / `blocks` cross-refs, and no shared ticket-number
-//! counter. A milestone does not need any of that machinery — it is
+//! counter. A milestone does not need any of that machinery: it is
 //! a grouping container, not an individually-worked ticket.
 //!
 //! Unlike [`FeatureStatus`](super::FeatureStatus) /
 //! [`IssueStatus`](super::IssueStatus), [`MilestoneStatus`] is an
 //! EDITORIAL field the operator sets directly (`add_milestone` /
 //! `update_milestone`), not a fold over anything. The milestone's
-//! LIVE, computed status — the fold over the lifecycle states of
+//! LIVE, computed status (the fold over the lifecycle states of
 //! every feature pointing at it via
-//! [`FeatureMetadata::milestone`](super::FeatureMetadata::milestone)
-//! — is a distinct, separately-named concept computed by
+//! [`FeatureMetadata::milestone`](super::FeatureMetadata::milestone))
+//! is a distinct, separately-named concept computed by
 //! `mmcp_store::rollup` at read time and never persisted in
 //! frontmatter. Keeping the two separate lets `diagnose` flag the
 //! case where they disagree (the operator marked a milestone
@@ -36,7 +36,7 @@ use crate::memory::Status;
 /// Four states, intentionally coarser than [`FeatureStatus`](super::FeatureStatus):
 /// a milestone is a grouping container, not a unit of work, so it
 /// has no `Blocked` / `Deferred` / `Duplicate` / `Superseded`
-/// equivalent of its own — those nuances live on the individual
+/// equivalent of its own: those nuances live on the individual
 /// features that make it up and surface through the computed
 /// rollup instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]

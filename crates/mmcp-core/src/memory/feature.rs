@@ -19,7 +19,7 @@ use crate::memory::{MemoryRef, Status};
 ///
 /// Four-state lifecycle (`Requested -> Approved -> Pending ->
 /// Completed`) alongside the side-states below, so a feature that is
-/// blocked or deferred stays visible — it is closed in the sense
+/// blocked or deferred stays visible: it is closed in the sense
 /// that no immediate work is expected, but a future sweep may revive
 /// it.
 ///
@@ -165,7 +165,7 @@ impl Status for FeatureStatus {
 
 /// Structured block describing a feature request, carried inside
 /// [`MemoryFrontmatter::feature`](crate::memory::MemoryFrontmatter)
-/// when — and only when — the memory's `kind` is `Fr`.
+/// when, and only when, the memory's `kind` is `Fr`.
 ///
 /// Absent block (serialized as no `[feature]` subtable) is equivalent
 /// to `FeatureMetadata::default()` for kind=Fr memories written by
@@ -178,16 +178,16 @@ pub struct FeatureMetadata {
 
     /// Sequential number per group, auto-assigned by `add_feature`
     /// as `max(existing_numbers) + 1`. Gaps from deletions are not
-    /// reused so the lineage stays monotonic. Absent on pre-FR-027
-    /// memories until the slug-migration binary backfills them.
+    /// reused so the lineage stays monotonic. Absent on memories
+    /// written before this field existed, until the slug-migration
+    /// binary backfills them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub number: Option<u32>,
 
     /// UUIDs of FRs this one depends on; usually the prerequisite
-    /// surface must land first. Post-FR-028 cross-refs hold memory
-    /// UUIDs (not slugs) so a rename on either side never breaks
-    /// the graph. Rendered as a list in diagnostics so cycles
-    /// surface visibly.
+    /// surface must land first. Cross-refs hold memory UUIDs, not
+    /// slugs, so a rename on either side never breaks the graph.
+    /// Rendered as a list in diagnostics so cycles surface visibly.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<Uuid>,
 
@@ -219,10 +219,9 @@ pub struct FeatureMetadata {
     /// from this feature's *current* status, so pinning it to a
     /// stale commit would defeat the point.
     ///
-    /// Cross-group by design (D3, the operator's explicit ruling
-    /// overruling the more cautious mono-group default): the
-    /// milestone this points at does not have to live in the same
-    /// project group as this feature. Rollup computation resolves
+    /// Cross-group by design: the milestone this points at does
+    /// not have to live in the same project group as this feature.
+    /// Rollup computation resolves
     /// it via the local-content-cache across every locally-mirrored
     /// group rather than a same-group lookup.
     #[serde(default, skip_serializing_if = "Option::is_none")]

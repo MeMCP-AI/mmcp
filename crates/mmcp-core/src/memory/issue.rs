@@ -1,6 +1,6 @@
 //! Typed metadata for issue-tracker memories.
 //!
-//! Sister surface to [`feature`](super::feature) — issues record
+//! Sister surface to [`feature`](super::feature): issues record
 //! bugs, questions, chores, and operational concerns alongside
 //! feature requests in the same group, with a deliberately
 //! different status set: issues "close" rather than "resolve",
@@ -9,9 +9,9 @@
 //!
 //! Cross-references (`depends_on` / `blocks`) are kind-agnostic
 //! UUID lists, so an issue can depend on a feature or vice versa.
-//! The hybrid model from the design discussion permits a memory
-//! to carry both a `[feature]` and an `[issue]` block; the listing
-//! surfaces filter by block presence rather than `kind` value.
+//! The hybrid model permits a memory to carry both a `[feature]`
+//! and an `[issue]` block; the listing surfaces filter by block
+//! presence rather than `kind` value.
 //!
 //! `IssueStatus` and `IssueMetadata` live in the same file because
 //! the struct exists solely to group the status, the typed

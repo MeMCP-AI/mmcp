@@ -250,7 +250,7 @@ mod tests {
         assert_eq!(reparsed.format, FrontmatterFormat::TomlPlus);
     }
 
-    /// FR-38: a memory carrying `source = "<uuid>"` round-trips
+    /// A memory carrying `source = "<uuid>"` round-trips
     /// through parse + render without losing or coercing the field.
     /// Unset stays unset (the serializer skips); set survives.
     #[test]
@@ -271,7 +271,7 @@ mod tests {
         let parsed = MemoryFile::parse(without_source).expect("parse plain");
         assert_eq!(parsed.frontmatter.source, None);
         let rendered = parsed.to_string().expect("render plain");
-        // The serializer skips the field when None — checking for
+        // The serializer skips the field when None: checking for
         // the literal `source =` key is the precise assertion (a
         // bare "source" substring would false-match prose in
         // `description`).

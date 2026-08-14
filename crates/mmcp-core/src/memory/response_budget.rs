@@ -78,11 +78,10 @@ pub const DEFAULT_LIST_MEMORIES_LIMIT: usize =
     DEFAULT_RESPONSE_BUDGET_BYTES / COMPACT_RECORD_ESTIMATED_BYTES;
 
 /// Hard upper clamp on a caller-supplied `limit`, independent of
-/// [`DEFAULT_LIST_MEMORIES_LIMIT`]. Re-audited 2026-08-12: the
-/// largest real group measured on this project's own mmcp mirror
-/// carries 471 memories (the `hubedia`
-/// architecture-cleanup-sweep group). 512 keeps roughly 1.1x
-/// headroom above that observed maximum while still bounding a
+/// [`DEFAULT_LIST_MEMORIES_LIMIT`]. The largest real group measured
+/// on this project's own mmcp mirror carries 471 memories (the
+/// `hubedia` architecture-cleanup-sweep group). 512 keeps roughly
+/// 1.1x headroom above that observed maximum while still bounding a
 /// pathological caller-supplied limit.
 pub const MAX_LIST_MEMORIES_LIMIT: usize = 512;
 

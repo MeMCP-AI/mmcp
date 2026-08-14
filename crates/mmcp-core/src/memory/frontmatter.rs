@@ -24,7 +24,8 @@ use crate::memory::{
 pub struct MemoryFrontmatter {
     /// Canonical primary key. Assigned once (UUIDv7) at create time
     /// and never changes across renames. Absent on memories written
-    /// before FR-028; the migration binary backfills every repo.
+    /// before this field existed; the migration binary backfills
+    /// every repo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<Uuid>,
 
@@ -88,7 +89,7 @@ pub struct MemoryFrontmatter {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refs: Vec<MemoryRef>,
 
-    /// FR-38 provenance. When set, this memory was filed by an
+    /// External provenance. When set, this memory was filed by an
     /// agent acting on behalf of an external owner. The UUID
     /// disambiguates by namespace at lookup time: a group UUID
     /// names the source project, a memory UUID names a specific
@@ -137,7 +138,7 @@ impl MemoryFrontmatter {
         self
     }
 
-    /// Set the FR-38 provenance UUID. Use a group UUID to mark
+    /// Set the external provenance UUID. Use a group UUID to mark
     /// "filed by an agent acting on behalf of group X"; use a
     /// memory UUID to chain a promoted copy back to its source.
     #[must_use]
@@ -146,7 +147,7 @@ impl MemoryFrontmatter {
         self
     }
 
-    /// Pin the canonical UUIDv7 primary key (FR-028).
+    /// Pin the canonical UUIDv7 primary key.
     #[must_use]
     pub fn with_id(mut self, id: uuid::Uuid) -> Self {
         self.id = Some(id);

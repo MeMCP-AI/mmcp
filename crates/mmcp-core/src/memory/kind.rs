@@ -49,10 +49,10 @@ pub enum MemoryKind {
     Issue,
 
     /// Milestone: a grouping container over features, possibly
-    /// spanning multiple project groups (D3). Carries a structured
+    /// spanning multiple project groups. Carries a structured
     /// [`MilestoneMetadata`](crate::memory::MilestoneMetadata)
     /// block in frontmatter. Deliberately a reduced-surface tracked
-    /// kind (M5 design): no supersede flow, no `depends_on` /
+    /// kind: no supersede flow, no `depends_on` /
     /// `blocks`, no shared ticket-number counter. Individual
     /// features opt into a milestone via
     /// [`FeatureMetadata::milestone`](crate::memory::FeatureMetadata::milestone);
@@ -62,11 +62,8 @@ pub enum MemoryKind {
 }
 
 impl MemoryKind {
-    /// The canonical string representation of this kind, matching
-    /// the serde `snake_case` serialization. FR-027 renamed the
-    /// former `Fr` variant to `Feature`; the `migrate_fr_slugs`
-    /// one-time migration rewrote every on-disk memory to the new
-    /// spelling, so `feature` is the only wire form accepted now.
+    /// The canonical string representation of this kind, matching the serde `snake_case` serialization.
+    /// `feature` is the only wire form accepted for this variant.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {

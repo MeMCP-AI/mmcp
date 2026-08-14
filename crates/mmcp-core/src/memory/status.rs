@@ -6,12 +6,11 @@
 //! terminal-ish variants without each kind reinventing the
 //! predicate), and a `parse` round-trip from the wire form.
 //!
-//! Per the global-coding-rules section 13 on commonization, this
-//! trait lives in its own concern-named module rather than under
-//! either kind's submodule. Generic helpers that need to filter or
-//! display tracker-status values consume `T: Status` instead of
-//! pattern-matching per kind. Each enum redeclares its own
-//! variants — Rust enums cannot be extended — but the behaviour
+//! This trait lives in its own concern-named module rather than
+//! under either kind's submodule. Generic helpers that need to
+//! filter or display tracker-status values consume `T: Status`
+//! instead of pattern-matching per kind. Each enum redeclares its
+//! own variants: Rust enums cannot be extended, but the behaviour
 //! contract is one place.
 
 /// Behaviour contract every tracker-flavored status enum implements.

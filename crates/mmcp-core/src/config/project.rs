@@ -20,7 +20,7 @@ pub struct ProjectConfig {
 
     /// Human-readable group slug mirrored into the project's bare
     /// repo manifest. Stored here so a checked-in `.mmcp.toml`
-    /// carries the canonical project name forward — teammates
+    /// carries the canonical project name forward: teammates
     /// cloning the working tree see the slug without reading back
     /// to `~/.mmcp/repos`. Absent on configs written by pre-slug
     /// versions of `mmcp init`; `mmcp init project` backfills it
@@ -33,8 +33,7 @@ pub struct ProjectConfig {
     pub sync: Option<SyncConfig>,
 
     /// Single subscription engine: which extra groups, languages,
-    /// memories, and tags this project pulls into scope. Replaces
-    /// the older `[groups]` + `[languages]` sections.
+    /// memories, and tags this project pulls into scope.
     #[serde(default)]
     pub subscriptions: SubscriptionsConfig,
 }
@@ -63,7 +62,7 @@ pub struct SyncConfig {
 /// pulls into scope.
 ///
 /// `languages` and `groups` answer "fully subscribe to this
-/// group" — every memory in the named group surfaces (mandatory or
+/// group": every memory in the named group surfaces (mandatory or
 /// not). `memories` and `tags` are finer-grained: pull a specific
 /// memory by `<group_uuid>:<slug>`, or pull every non-mandatory
 /// memory whose tags overlap the listed set from any in-scope group.
@@ -134,7 +133,7 @@ mod tests {
     #[test]
     fn pre_slug_config_parses_without_project_slug_field() {
         // Configs written before `project_slug` landed must keep
-        // parsing — the field is backward-compatible via serde-default.
+        // parsing: the field is backward-compatible via serde-default.
         let source = r#"
 project_uuid = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
 
@@ -191,7 +190,7 @@ tags = ["git", "testing"]
     #[test]
     fn absent_project_slug_is_skipped_on_serialize() {
         // `skip_serializing_if = Option::is_none` keeps rendered
-        // `.mmcp.toml` files minimal — no empty-string field noise
+        // `.mmcp.toml` files minimal: no empty-string field noise
         // on configs that haven't been init-project'd yet.
         let cfg = ProjectConfig {
             project_uuid: ProjectUuid::from_uuid(

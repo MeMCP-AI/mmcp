@@ -7,7 +7,7 @@
 //!
 //! 1. `parse` never panics on arbitrary `&str`.
 //! 2. Any `MemoryFile` that round-trips via `to_string()` → `parse`
-//!    reconstructs an equivalent value — stable under the serde
+//!    reconstructs an equivalent value: stable under the serde
 //!    formats we support.
 //! 3. `to_toml_string` always produces TOML-fenced output that
 //!    re-parses to a TOML-formatted `MemoryFile`.
@@ -81,7 +81,7 @@ fn frontmatter_strategy() -> impl Strategy<Value = MemoryFrontmatter> {
 }
 
 /// Markdown-ish body that does not contain `+++` or `---` fence
-/// lines — otherwise `gray_matter` could re-interpret the body as a
+/// lines: otherwise `gray_matter` could re-interpret the body as a
 /// second frontmatter block and the round trip no longer holds.
 ///
 /// The body is forced to start with a non-whitespace character so
