@@ -16,5 +16,8 @@ pub mod token;
 pub use backend::{AuthSession, Credentials, MmcpAuthBackend, MmcpUser};
 pub use claims::SessionClaims;
 pub use error::AuthError;
-pub use password::{hash_password, verify_password};
+pub use password::{
+    MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, hash_password, validate_password_policy,
+    verify_password,
+};
 pub use token::{TokenIssuer, TokenVerifier};
