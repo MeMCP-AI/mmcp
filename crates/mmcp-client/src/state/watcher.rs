@@ -10,11 +10,31 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use mmcp_store::StoreError;
 use mmcp_store::groups::GroupIndex;
+
+/// Failures spawning the filesystem watcher.
+///
+/// Module-local rather than folded into `StoreError`: the `notify`
+/// dependency belongs to this client-side watcher, not to
+/// `mmcp-store`'s consumer-agnostic surface.
+#[derive(Debug, Error)]
+pub enum WatcherError {
+    /// Constructing the underlying `notify` watcher failed.
+    #[error("failed to create filesystem watcher: {0}")]
+    Create(#[source] notify::Error),
+
+    /// Registering a watch on `path` failed.
+    #[error("failed to watch {}: {source}", path.display())]
+    Watch {
+        path: PathBuf,
+        #[source]
+        source: notify::Error,
+    },
+}
 
 /// Handle returned to the caller so the watcher task can be shut
 /// down (or simply dropped when the client exits).
@@ -34,7 +54,7 @@ pub fn spawn_watcher(
     repos_root: PathBuf,
     project_config_path: Option<PathBuf>,
     index: GroupIndex,
-) -> Result<WatcherHandle, StoreError> {
+) -> Result<WatcherHandle, WatcherError> {
     let (tx, mut rx) = mpsc::unbounded_channel::<WatcherMessage>();
 
     let forward_tx = tx.clone();
@@ -47,17 +67,23 @@ pub fn spawn_watcher(
                 let _ = forward_tx.send(WatcherMessage::Error(err.to_string()));
             }
         })
-        .map_err(std::io::Error::other)?;
+        .map_err(WatcherError::Create)?;
 
     watcher
         .watch(&repos_root, RecursiveMode::NonRecursive)
-        .map_err(std::io::Error::other)?;
+        .map_err(|source| WatcherError::Watch {
+            path: repos_root.clone(),
+            source,
+        })?;
     if let Some(path) = project_config_path.as_ref()
         && path.exists()
     {
         watcher
             .watch(path, RecursiveMode::NonRecursive)
-            .map_err(std::io::Error::other)?;
+            .map_err(|source| WatcherError::Watch {
+                path: path.clone(),
+                source,
+            })?;
     }
 
     let index_for_task = index.clone();
