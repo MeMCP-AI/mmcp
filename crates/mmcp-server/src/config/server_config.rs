@@ -164,14 +164,7 @@ impl ServerConfig {
             get("MMCP_OAUTH_GITHUB_CLIENT_ID"),
             get("MMCP_OAUTH_GITHUB_CLIENT_SECRET"),
         ) {
-            oauth_providers.push(OAuthProviderConfig {
-                slug: "github".to_string(),
-                client_id: id,
-                client_secret: secret,
-                auth_url: "https://github.com/login/oauth/authorize".to_string(),
-                token_url: "https://github.com/login/oauth/access_token".to_string(),
-                userinfo_url: "https://api.github.com/user".to_string(),
-            });
+            oauth_providers.push(OAuthProviderConfig::github(id, secret));
         }
 
         let min_password_length = resolve_min_password_length(&get, overrides.min_password_length);

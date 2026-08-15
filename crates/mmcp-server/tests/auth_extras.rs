@@ -37,14 +37,7 @@ async fn start_server_with_oauth(providers: Vec<OAuthProviderConfig>) -> (Socket
 }
 
 fn github_provider() -> OAuthProviderConfig {
-    OAuthProviderConfig {
-        slug: "github".into(),
-        client_id: "client-abc".into(),
-        client_secret: "secret-xyz".into(),
-        auth_url: "https://github.com/login/oauth/authorize".into(),
-        token_url: "https://github.com/login/oauth/access_token".into(),
-        userinfo_url: "https://api.github.com/user".into(),
-    }
+    OAuthProviderConfig::github("client-abc", "secret-xyz")
 }
 
 // ── Password: unknown handle ────────────────────────────────────────
