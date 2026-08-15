@@ -6,6 +6,9 @@
 //! group list, and expose the tip commit of each group's `main`
 //! branch so a client can decide whether a fetch is needed.
 //!
+//! Every handler here requires a valid per-user bearer token, verified
+//! by [`AuthenticatedUser`](crate::routes::bearer_auth::AuthenticatedUser).
+//!
 //! The request and response shapes live in `mmcp_sync::client`,
 //! so this module and the sync engine cannot drift.
 
@@ -32,6 +35,7 @@ use sea_orm::EntityTrait;
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::routes::bearer_auth::AuthenticatedUser;
 use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
 
@@ -88,14 +92,15 @@ fn invalid_request(msg: impl Into<String>) -> SyncErrorResponse {
 
 /// Return the caller's effective group manifest.
 ///
-/// Today this is every group the server knows about. When the
-/// OAuth and passkey flows land in a later phase, this handler
-/// filters by the authenticated caller's effective role using
+/// Today this is every group the server knows about, once the caller
+/// is authenticated. A later phase filters this list by the
+/// authenticated caller's effective role using
 /// `mmcp_core::acl::resolve_effective_role`. The request/response
 /// shape stays the same, so the upgrade is a behavior-only
 /// change.
 async fn get_manifest(
     State(state): State<ServerState>,
+    _caller: AuthenticatedUser,
 ) -> Result<Json<ManifestResponse>, SyncErrorResponse> {
     let conn = state.database.connection();
     let rows = mmcp_db::entities::group::Entity::find()
@@ -183,6 +188,7 @@ async fn manifest_row_to_remote_group(
 /// Return the advertised refs for a single group.
 async fn get_refs(
     State(state): State<ServerState>,
+    _caller: AuthenticatedUser,
     Path(group_id): Path<String>,
 ) -> Result<Json<RefsResponse>, SyncErrorResponse> {
     let group_uuid =
@@ -239,6 +245,7 @@ async fn get_refs(
 /// 4. Returns the assigned version string and the tag name.
 async fn post_push(
     State(state): State<ServerState>,
+    caller: AuthenticatedUser,
     Json(req): Json<PushRequest>,
 ) -> Result<Json<PushResponse>, SyncErrorResponse> {
     let conn = state.database.connection();
@@ -285,9 +292,8 @@ async fn post_push(
         memory_id: memory.id,
         version: version_str.clone(),
         commit: req.commit.clone(),
-        // Author is the memory's own id for now; when auth lands
-        // the authenticated user id drops in here.
-        author_id: memory.id,
+        // Author is the bearer token's verified user id.
+        author_id: caller.user_id,
         published_at: now,
         summary: req.message.clone(),
     };

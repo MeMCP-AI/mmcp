@@ -7,15 +7,25 @@
 
 use std::net::SocketAddr;
 
+use mmcp_auth::SessionClaims;
 use mmcp_core::id::{GroupId, MemoryId, UserId};
 use mmcp_core::manifest::GroupManifest;
 use mmcp_core::memory::BumpIntent;
 use mmcp_db::entities::group::OwnerKind;
-use mmcp_db::repository::{group_repo, user_repo};
+use mmcp_db::repository::{group_repo, memory_repo, user_repo};
 use mmcp_git::{CommitSpec, GitBackend};
 use mmcp_sync::{ManifestResponse, PushRequest, PushResponse, RefsResponse};
 use tempfile::TempDir;
 use uuid::Uuid;
+
+/// Lifetime, in seconds, given to a token minted for the happy-path
+/// tests below; long enough that no test run can plausibly cross it.
+const TEST_TOKEN_LIFETIME_SECS: i64 = 3600;
+
+/// Seconds by which the expired-token test backdates a claim's `exp`
+/// (and `iat`, further still) so verification sees it as already
+/// expired without needing to sleep past a real deadline.
+const EXPIRED_TOKEN_BACKDATE_SECS: i64 = 100;
 
 mod common;
 
@@ -93,6 +103,36 @@ async fn seed_group_without_repo(state: &mmcp_server::state::ServerState, slug: 
     uuid
 }
 
+/// Seed a real user row and mint a valid bearer token for it, the way
+/// `routes::auth::login` does for a real client. Every `/sync/*`
+/// handler now requires this header; returns the user id (so a test
+/// can assert against it) alongside the token string.
+async fn seed_authenticated_user(
+    state: &mmcp_server::state::ServerState,
+    handle: &str,
+) -> (Uuid, String) {
+    let user_id = Uuid::now_v7();
+    user_repo::create(
+        state.database.connection(),
+        user_repo::NewUser {
+            id: user_id,
+            handle: handle.to_string(),
+            display_name: None,
+            password_hash: None,
+            email: None,
+            created_at: jiff::Timestamp::now().as_millisecond(),
+        },
+    )
+    .await
+    .expect("seed authenticated user");
+
+    let now = jiff::Timestamp::now().as_second();
+    let claims =
+        SessionClaims::new_with_lifetime(user_id, Uuid::now_v7(), now, TEST_TOKEN_LIFETIME_SECS);
+    let token = state.token_issuer.issue(&claims).expect("issue token");
+    (user_id, token)
+}
+
 /// `global-security-rules` forbids HTTP error responses from
 /// carrying internal exception text. Seed a group row with no
 /// backing bare repo so `GET /sync/refs/{group}` hits a real
@@ -103,8 +143,12 @@ async fn seed_group_without_repo(state: &mmcp_server::state::ServerState, slug: 
 async fn sync_refs_500_body_omits_internal_error_detail() {
     let (addr, state, tmp) = start_server().await;
     let group = seed_group_without_repo(&state, "team-rust").await;
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
 
-    let resp = reqwest::get(format!("http://{addr}/sync/refs/{group}"))
+    let resp = reqwest::Client::new()
+        .get(format!("http://{addr}/sync/refs/{group}"))
+        .bearer_auth(&token)
+        .send()
         .await
         .expect("GET refs");
     assert_eq!(resp.status(), 500);
@@ -130,8 +174,12 @@ async fn sync_refs_500_body_omits_internal_error_detail() {
 
 #[tokio::test]
 async fn sync_manifest_returns_empty_list_when_no_groups_exist() {
-    let (addr, _state, _tmp) = start_server().await;
-    let body: ManifestResponse = reqwest::get(format!("http://{addr}/sync/manifest"))
+    let (addr, state, _tmp) = start_server().await;
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
+    let body: ManifestResponse = reqwest::Client::new()
+        .get(format!("http://{addr}/sync/manifest"))
+        .bearer_auth(&token)
+        .send()
         .await
         .expect("GET manifest")
         .json()
@@ -148,8 +196,12 @@ async fn sync_manifest_returns_empty_list_when_no_groups_exist() {
 async fn sync_manifest_lists_seeded_groups_with_head_commits() {
     let (addr, state, _tmp) = start_server().await;
     let group = seed_group(&state, "team-rust").await;
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
 
-    let body: ManifestResponse = reqwest::get(format!("http://{addr}/sync/manifest"))
+    let body: ManifestResponse = reqwest::Client::new()
+        .get(format!("http://{addr}/sync/manifest"))
+        .bearer_auth(&token)
+        .send()
         .await
         .expect("GET manifest")
         .json()
@@ -181,6 +233,7 @@ async fn sync_manifest_lists_seeded_groups_with_head_commits() {
 #[tokio::test]
 async fn sync_manifest_lists_every_seeded_group_under_concurrent_lookups() {
     let (addr, state, _tmp) = start_server().await;
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
     let mut seeded = Vec::new();
     for i in 0..10 {
         let slug = format!("team-{i:02}");
@@ -188,7 +241,10 @@ async fn sync_manifest_lists_every_seeded_group_under_concurrent_lookups() {
         seeded.push((group_id, slug));
     }
 
-    let body: ManifestResponse = reqwest::get(format!("http://{addr}/sync/manifest"))
+    let body: ManifestResponse = reqwest::Client::new()
+        .get(format!("http://{addr}/sync/manifest"))
+        .bearer_auth(&token)
+        .send()
         .await
         .expect("GET manifest")
         .json()
@@ -212,8 +268,12 @@ async fn sync_manifest_lists_every_seeded_group_under_concurrent_lookups() {
 async fn sync_refs_returns_main_tip_for_known_group() {
     let (addr, state, _tmp) = start_server().await;
     let group = seed_group(&state, "team-rust").await;
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
 
-    let resp: RefsResponse = reqwest::get(format!("http://{addr}/sync/refs/{group}"))
+    let resp: RefsResponse = reqwest::Client::new()
+        .get(format!("http://{addr}/sync/refs/{group}"))
+        .bearer_auth(&token)
+        .send()
         .await
         .expect("GET refs")
         .json()
@@ -227,9 +287,13 @@ async fn sync_refs_returns_main_tip_for_known_group() {
 
 #[tokio::test]
 async fn sync_refs_returns_404_for_unknown_group() {
-    let (addr, _state, _tmp) = start_server().await;
+    let (addr, state, _tmp) = start_server().await;
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
     let unknown = Uuid::now_v7();
-    let resp = reqwest::get(format!("http://{addr}/sync/refs/{unknown}"))
+    let resp = reqwest::Client::new()
+        .get(format!("http://{addr}/sync/refs/{unknown}"))
+        .bearer_auth(&token)
+        .send()
         .await
         .expect("GET refs");
     assert_eq!(resp.status(), 404);
@@ -237,8 +301,12 @@ async fn sync_refs_returns_404_for_unknown_group() {
 
 #[tokio::test]
 async fn sync_refs_returns_400_for_invalid_uuid() {
-    let (addr, _state, _tmp) = start_server().await;
-    let resp = reqwest::get(format!("http://{addr}/sync/refs/not-a-uuid"))
+    let (addr, state, _tmp) = start_server().await;
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
+    let resp = reqwest::Client::new()
+        .get(format!("http://{addr}/sync/refs/not-a-uuid"))
+        .bearer_auth(&token)
+        .send()
         .await
         .expect("GET refs");
     assert_eq!(resp.status(), 400);
@@ -272,27 +340,12 @@ async fn sync_push_first_publish_assigns_0_1_0_and_records_tag() {
         .await
         .expect("write commit");
 
-    // post_push currently records the memory_version with
-    // `author_id = memory.id`. That column is a FK onto `users`, so
-    // without a matching user row the insert fails with a FK
-    // constraint error. The production code has a TODO about wiring
-    // this to the authenticated user id once auth lands; until then
-    // we seed a user row whose UUID we reuse as the memory id so
-    // the FK resolves and the happy path is actually exercised.
+    // `author_id` on the inserted `memory_versions` row is a FK onto
+    // `users` (RESTRICT), so the authenticated caller must be a real
+    // seeded user row; `post_push` now takes that id from the bearer
+    // token rather than from the memory being published.
+    let (user_id, token) = seed_authenticated_user(&state, "alice").await;
     let memory = Uuid::now_v7();
-    user_repo::create(
-        state.database.connection(),
-        user_repo::NewUser {
-            id: memory,
-            handle: format!("placeholder-{}", memory.simple()),
-            display_name: None,
-            password_hash: None,
-            email: None,
-            created_at: jiff::Timestamp::now().as_millisecond(),
-        },
-    )
-    .await
-    .expect("seed placeholder user for FK");
 
     let req = PushRequest {
         group_id: group,
@@ -304,6 +357,7 @@ async fn sync_push_first_publish_assigns_0_1_0_and_records_tag() {
 
     let raw = reqwest::Client::new()
         .post(format!("http://{addr}/sync/push"))
+        .bearer_auth(&token)
         .json(&req)
         .send()
         .await
@@ -320,10 +374,45 @@ async fn sync_push_first_publish_assigns_0_1_0_and_records_tag() {
         "first publish is always 0.1.0"
     );
     assert_eq!(resp.tag, "v0.1.0");
+
+    // The FK-authority claim itself: the inserted row's `author_id`
+    // is the authenticated caller, read back from the database, not
+    // inferred from the HTTP 2xx alone.
+    let versions = memory_repo::list_versions(state.database.connection(), memory)
+        .await
+        .expect("list versions");
+    assert_eq!(versions.len(), 1);
+    assert_eq!(
+        versions[0].author_id, user_id,
+        "author_id must be the bearer-authenticated caller, not the memory's own id"
+    );
 }
 
 #[tokio::test]
 async fn sync_push_returns_404_for_unknown_group() {
+    let (addr, state, _tmp) = start_server().await;
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
+    let req = PushRequest {
+        group_id: Uuid::now_v7(),
+        memory_id: Uuid::now_v7(),
+        commit: "0".repeat(40),
+        bump: BumpIntent::Patch,
+        message: None,
+    };
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/sync/push"))
+        .bearer_auth(&token)
+        .json(&req)
+        .send()
+        .await
+        .expect("POST push");
+    assert_eq!(resp.status(), 404);
+}
+
+/// Falsification: an unauthenticated `POST /sync/push` must be
+/// rejected before it ever reaches the handler body, never a 2xx.
+#[tokio::test]
+async fn sync_push_without_bearer_token_returns_401() {
     let (addr, _state, _tmp) = start_server().await;
     let req = PushRequest {
         group_id: Uuid::now_v7(),
@@ -338,5 +427,82 @@ async fn sync_push_returns_404_for_unknown_group() {
         .send()
         .await
         .expect("POST push");
-    assert_eq!(resp.status(), 404);
+    assert_eq!(resp.status(), 401);
+    assert_eq!(
+        resp.headers()
+            .get("www-authenticate")
+            .map(|v| v.to_str().unwrap()),
+        Some(r#"Bearer realm="mmcp""#),
+        "401 must challenge with the Bearer scheme the extractor actually accepts"
+    );
+}
+
+/// Falsification: an unauthenticated `GET /sync/manifest` must not
+/// return every group in the server to an anonymous caller.
+#[tokio::test]
+async fn sync_manifest_without_bearer_token_returns_401() {
+    let (addr, state, _tmp) = start_server().await;
+    seed_group(&state, "team-rust").await;
+
+    let resp = reqwest::get(format!("http://{addr}/sync/manifest"))
+        .await
+        .expect("GET manifest");
+    assert_eq!(resp.status(), 401);
+}
+
+/// Falsification: an unauthenticated `GET /sync/refs/{group_id}` must
+/// not disclose a group's refs to an anonymous caller.
+#[tokio::test]
+async fn sync_refs_without_bearer_token_returns_401() {
+    let (addr, state, _tmp) = start_server().await;
+    let group = seed_group(&state, "team-rust").await;
+
+    let resp = reqwest::get(format!("http://{addr}/sync/refs/{group}"))
+        .await
+        .expect("GET refs");
+    assert_eq!(resp.status(), 401);
+}
+
+/// A structurally malformed bearer token (never issued by this
+/// server's `TokenIssuer`) must fail verification cleanly: 401, never
+/// a panic or a 500.
+#[tokio::test]
+async fn sync_manifest_with_malformed_token_returns_401_not_panic() {
+    let (addr, _state, _tmp) = start_server().await;
+
+    let resp = reqwest::Client::new()
+        .get(format!("http://{addr}/sync/manifest"))
+        .bearer_auth("not-a-real-paseto-token")
+        .send()
+        .await
+        .expect("GET manifest");
+    assert_eq!(resp.status(), 401);
+}
+
+/// A structurally valid token whose `exp` claim is already in the
+/// past must be rejected: 401, never treated as authenticated.
+#[tokio::test]
+async fn sync_manifest_with_expired_token_returns_401() {
+    let (addr, state, _tmp) = start_server().await;
+    let (user_id, _valid_token) = seed_authenticated_user(&state, "alice").await;
+
+    let now = jiff::Timestamp::now().as_second();
+    let expired_claims = SessionClaims {
+        sub: user_id,
+        jti: Uuid::now_v7(),
+        iat: now - (2 * EXPIRED_TOKEN_BACKDATE_SECS),
+        exp: now - EXPIRED_TOKEN_BACKDATE_SECS,
+    };
+    let expired_token = state
+        .token_issuer
+        .issue(&expired_claims)
+        .expect("issue expired token");
+
+    let resp = reqwest::Client::new()
+        .get(format!("http://{addr}/sync/manifest"))
+        .bearer_auth(&expired_token)
+        .send()
+        .await
+        .expect("GET manifest");
+    assert_eq!(resp.status(), 401);
 }
