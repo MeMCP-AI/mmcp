@@ -238,11 +238,16 @@
     groupKindFilter = next;
   }
 
+  // Sourced from the descriptor cache (frontmatter only), never `bodyFor`:
+  // `MemoryRow` and `matchesMemoryFilter` below read `frontmatter` alone,
+  // so listing this group never needs its memories' full markdown bodies.
   const groupEntries = $derived.by(() => {
     if (route.t !== 'group') return [] as { slug: string; body: MemoryFile | undefined }[];
     const gid = route.groupId;
-    const slugs = memoriesStore.slugs[gid] ?? [];
-    return slugs.map((slug) => ({ slug, body: memoriesStore.bodyFor(gid, slug) }));
+    return memoriesStore.descriptorsFor(gid).map((d) => ({
+      slug: d.slug,
+      body: { frontmatter: d.frontmatter, body: '' }
+    }));
   });
 
   const filteredGroupEntries = $derived.by(() =>
@@ -607,7 +612,7 @@
             <span>
               {activeGroupSkipped.length} memory(ies) in this group could not be read or parsed and
               are not shown below: {activeGroupSkipped
-                .map((s) => `${s.slug} (${s.reason})`)
+                .map((s) => `${s.slug} (${s.message})`)
                 .join('; ')}
             </span>
           </div>
