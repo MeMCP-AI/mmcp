@@ -17,7 +17,7 @@ use mmcp_store::home::MmcpHome;
 use mmcp_store::memory::resolve_group;
 use uuid::Uuid;
 
-use crate::commands::serve::resolve_subscribed_reads;
+use crate::commands::subscription::resolve_subscribed_reads;
 use crate::notes::render_notes_tail;
 
 #[derive(Debug, Args)]

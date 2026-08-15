@@ -17,6 +17,7 @@ pub mod milestone;
 pub mod serve;
 pub mod status;
 pub mod subscribe;
+pub mod subscription;
 pub mod sync;
 pub mod tools;
 pub mod tracker_cli;
