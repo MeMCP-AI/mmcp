@@ -4,7 +4,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use super::cascade::{
-    resolve_max_handle_length, resolve_max_password_length, resolve_min_password_length,
+    load_user_limits, resolve_max_handle_length, resolve_max_password_length,
+    resolve_min_password_length,
 };
 use super::defaults::{DEFAULT_BIND, DEFAULT_DATABASE_URL, DEFAULT_REPO_ROOT};
 use super::error::ConfigError;
@@ -167,9 +168,13 @@ impl ServerConfig {
             oauth_providers.push(OAuthProviderConfig::github(id, secret));
         }
 
-        let min_password_length = resolve_min_password_length(&get, overrides.min_password_length);
-        let max_password_length = resolve_max_password_length(&get, overrides.max_password_length);
-        let max_handle_length = resolve_max_handle_length(&get, overrides.max_handle_length);
+        let user_limits = load_user_limits();
+        let min_password_length =
+            resolve_min_password_length(&get, overrides.min_password_length, user_limits.as_ref());
+        let max_password_length =
+            resolve_max_password_length(&get, overrides.max_password_length, user_limits.as_ref());
+        let max_handle_length =
+            resolve_max_handle_length(&get, overrides.max_handle_length, user_limits.as_ref());
 
         Ok(Self {
             bind,
@@ -200,8 +205,8 @@ fn parse_hex_key(input: &str) -> Option<[u8; 32]> {
 /// rather than panicking: admins set `MMCP_TOKEN_KEY_HEX` explicitly
 /// when they need a stable key across restarts, and are the ones who
 /// must be told, not crashed on, when that is not an option either.
-fn random_key() -> Result<[u8; 32], ConfigError> {
-    let mut out = [0u8; 32];
+fn random_key() -> Result<[u8; mmcp_auth::token::V4_LOCAL_KEY_BYTES], ConfigError> {
+    let mut out = [0u8; mmcp_auth::token::V4_LOCAL_KEY_BYTES];
     getrandom::fill(&mut out).map_err(ConfigError::RandomKeyUnavailable)?;
     Ok(out)
 }

@@ -26,10 +26,14 @@ use super::defaults::{
 /// Highest-precedence source wins:
 /// 1. `override_len`, the `--min-password-length` CLI flag.
 /// 2. [`MIN_PASSWORD_LENGTH_ENV`] environment variable.
-/// 3. `~/.mmcp/config.toml` `[limits] min_password_length`
-///    ([`mmcp_core::config::UserConfig`]).
+/// 3. `limits`'s `min_password_length`, from `~/.mmcp/config.toml`
+///    `[limits]` ([`load_user_limits`]).
 /// 4. [`mmcp_auth::MIN_PASSWORD_LENGTH`], the compiled-in fallback.
-pub(crate) fn resolve_min_password_length<F>(get: &F, override_len: Option<usize>) -> usize
+pub(crate) fn resolve_min_password_length<F>(
+    get: &F,
+    override_len: Option<usize>,
+    limits: Option<&mmcp_core::config::LimitsConfig>,
+) -> usize
 where
     F: Fn(&str) -> Option<String>,
 {
@@ -39,7 +43,7 @@ where
         MIN_PASSWORD_LENGTH_ENV,
         get(MIN_PASSWORD_LENGTH_ENV).as_deref(),
     );
-    let config_len = user_config_length_limit(|limits| limits.min_password_length);
+    let config_len = limits.and_then(|l| l.min_password_length);
     resolve_usize_from_tiers(
         FIELD,
         override_len,
@@ -52,8 +56,12 @@ where
 
 /// Resolve the effective maximum password length. Same cascade as
 /// [`resolve_min_password_length`], over [`MAX_PASSWORD_LENGTH_ENV`],
-/// `[limits] max_password_length`, and [`mmcp_auth::MAX_PASSWORD_LENGTH`].
-pub(crate) fn resolve_max_password_length<F>(get: &F, override_len: Option<usize>) -> usize
+/// `limits`'s `max_password_length`, and [`mmcp_auth::MAX_PASSWORD_LENGTH`].
+pub(crate) fn resolve_max_password_length<F>(
+    get: &F,
+    override_len: Option<usize>,
+    limits: Option<&mmcp_core::config::LimitsConfig>,
+) -> usize
 where
     F: Fn(&str) -> Option<String>,
 {
@@ -63,7 +71,7 @@ where
         MAX_PASSWORD_LENGTH_ENV,
         get(MAX_PASSWORD_LENGTH_ENV).as_deref(),
     );
-    let config_len = user_config_length_limit(|limits| limits.max_password_length);
+    let config_len = limits.and_then(|l| l.max_password_length);
     resolve_usize_from_tiers(
         FIELD,
         override_len,
@@ -76,8 +84,12 @@ where
 
 /// Resolve the effective maximum account handle length. Same cascade
 /// as [`resolve_min_password_length`], over [`MAX_HANDLE_LENGTH_ENV`],
-/// `[limits] max_handle_length`, and [`mmcp_auth::MAX_HANDLE_LENGTH`].
-pub(crate) fn resolve_max_handle_length<F>(get: &F, override_len: Option<usize>) -> usize
+/// `limits`'s `max_handle_length`, and [`mmcp_auth::MAX_HANDLE_LENGTH`].
+pub(crate) fn resolve_max_handle_length<F>(
+    get: &F,
+    override_len: Option<usize>,
+    limits: Option<&mmcp_core::config::LimitsConfig>,
+) -> usize
 where
     F: Fn(&str) -> Option<String>,
 {
@@ -87,7 +99,7 @@ where
         MAX_HANDLE_LENGTH_ENV,
         get(MAX_HANDLE_LENGTH_ENV).as_deref(),
     );
-    let config_len = user_config_length_limit(|limits| limits.max_handle_length);
+    let config_len = limits.and_then(|l| l.max_handle_length);
     resolve_usize_from_tiers(
         FIELD,
         override_len,
@@ -170,26 +182,23 @@ fn resolve_usize_from_tiers(
     default_len
 }
 
-/// Read a `usize` length-limit field out of `~/.mmcp/config.toml`
-/// `[limits]`, if present. `select` picks which field (
-/// `min_password_length` / `max_password_length` / `max_handle_length`)
-/// this call resolves, so every cascade shares one read-and-log path
-/// instead of duplicating it. Mirrors the read-only,
+/// Read `~/.mmcp/config.toml` `[limits]` once, shared by every
+/// length-limit cascade above so `ServerConfig::from_source_with_overrides`
+/// discovers `MmcpHome` and parses the user config file a single time
+/// instead of once per tunable. Mirrors the read-only,
 /// missing-file-or-section-means-`None` style
 /// `mmcp_store::memory::user_config_max_auto_slug_length` already
 /// uses for the same config file; never errors, since a broken or
 /// absent user config must never fail server startup. A discovery or
 /// parse failure is logged before falling through, rather than
 /// discarded with no signal.
-fn user_config_length_limit(
-    select: impl Fn(&mmcp_core::config::LimitsConfig) -> Option<usize>,
-) -> Option<usize> {
+pub(crate) fn load_user_limits() -> Option<mmcp_core::config::LimitsConfig> {
     let home = match mmcp_store::MmcpHome::discover() {
         Ok(home) => home,
         Err(err) => {
             tracing::warn!(
                 error = %err,
-                "failed to discover MmcpHome while resolving a length-limit config tier; falling through to the next tier"
+                "failed to discover MmcpHome while resolving length-limit config tiers; falling through to the next tier"
             );
             return None;
         }
@@ -199,12 +208,12 @@ fn user_config_length_limit(
         Err(err) => {
             tracing::warn!(
                 error = %err,
-                "user config failed to parse while resolving a length-limit config tier; falling through to the next tier"
+                "user config failed to parse while resolving length-limit config tiers; falling through to the next tier"
             );
             return None;
         }
     };
-    cfg.limits.as_ref().and_then(select)
+    cfg.limits
 }
 
 #[cfg(test)]
