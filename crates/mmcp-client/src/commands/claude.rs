@@ -736,7 +736,7 @@ fn slugify(text: &str) -> String {
     // collapsing, and edge trimming. It returns an empty string for
     // input that contains no slug-safe characters (e.g. `"!!!"`), so
     // fall back to the placeholder `section` to keep `imported-`
-    // slugs well-formed under validate_slug.
+    // slugs well-formed under validate_slug_segment.
     let base = slug::slugify(text);
     let base = if base.is_empty() {
         "section"

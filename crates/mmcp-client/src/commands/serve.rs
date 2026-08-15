@@ -1803,7 +1803,7 @@ const MAX_MILESTONE_VERSION_LENGTH: usize = 512;
 /// the value becomes a domain value. `title` / `description` / `body`
 /// are already bounded downstream by `write_file_at_path`'s
 /// content-length choke point, and `slug` downstream by
-/// `validate_slug`, but neither runs until deep inside `mmcp-store`
+/// `validate_slug_segment`, but neither runs until deep inside `mmcp-store`
 /// (well past the MCP boundary this rule targets), and `version` has
 /// no downstream bound at all. This helper reuses the SAME named
 /// maxima the rest of the project already validates against
