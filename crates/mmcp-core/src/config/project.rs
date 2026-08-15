@@ -50,6 +50,21 @@ impl ProjectConfig {
     }
 }
 
+/// Does `cfg` adopt the given group slug? Checks both the explicit
+/// `subscriptions.groups` list and the `lang/<name>` mapping implied
+/// by `subscriptions.languages`.
+/// Bare string equality for now: namespace-aware resolution is a
+/// candidate future refinement once the adoption format stabilises.
+#[must_use]
+pub fn is_group_adopted(slug: &str, cfg: &ProjectConfig) -> bool {
+    cfg.subscriptions.groups.iter().any(|s| s == slug)
+        || cfg
+            .subscriptions
+            .languages
+            .iter()
+            .any(|lang| slug == format!("lang/{lang}"))
+}
+
 /// Remote sync configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -228,5 +243,40 @@ project_uuid = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
 no_default = false
 "#;
         assert!(ProjectConfig::from_toml(source).is_err());
+    }
+
+    #[test]
+    fn is_group_adopted_matches_explicit_group_slug() {
+        let cfg = ProjectConfig {
+            project_uuid: ProjectUuid::from_uuid(
+                uuid::Uuid::parse_str("018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91").unwrap(),
+            ),
+            project_slug: None,
+            sync: None,
+            subscriptions: SubscriptionsConfig {
+                groups: vec!["team-acme/shared".to_string()],
+                ..Default::default()
+            },
+        };
+        assert!(is_group_adopted("team-acme/shared", &cfg));
+        assert!(!is_group_adopted("team-acme/other", &cfg));
+    }
+
+    #[test]
+    fn is_group_adopted_matches_language_mapped_slug() {
+        let cfg = ProjectConfig {
+            project_uuid: ProjectUuid::from_uuid(
+                uuid::Uuid::parse_str("018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91").unwrap(),
+            ),
+            project_slug: None,
+            sync: None,
+            subscriptions: SubscriptionsConfig {
+                languages: vec!["rust".to_string()],
+                ..Default::default()
+            },
+        };
+        assert!(is_group_adopted("lang/rust", &cfg));
+        assert!(!is_group_adopted("lang/python", &cfg));
+        assert!(!is_group_adopted("rust", &cfg));
     }
 }
