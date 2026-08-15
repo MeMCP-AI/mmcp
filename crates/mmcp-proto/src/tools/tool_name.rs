@@ -3,6 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::McpToolId;
+
 /// Enumeration of every MCP tool mmcp exposes.
 ///
 /// Kept as a small enum so logging, metrics, and authorization
@@ -16,12 +18,11 @@ use serde::{Deserialize, Serialize};
 /// `/mcp/tool` route, never registered on the full `#[tool_router]`
 /// surface `McpToolId` models, so no `McpToolId` counterpart exists
 /// for them and a total `From<ToolName> for McpToolId` conversion is
-/// not possible. Nothing here ties the two enums together
-/// structurally, so a renamed wire string in one would silently
-/// diverge from the other; `tool_name_and_mcp_tool_id_agree_on_shared_wire_names`
-/// in `tools/mod.rs` is a parity test over the six names both enums
-/// restate, smaller and safer than inventing two `McpToolId` variants
-/// for tools that do not belong on that surface.
+/// not possible. [`Self::as_str`] delegates each of the six shared
+/// names to [`McpToolId::as_str`] instead of restating its own
+/// literal, so the two enums cannot drift on the names they share;
+/// only `verify_memory` and `diff_memory` carry their own literal,
+/// since no `McpToolId` counterpart exists to delegate to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolName {
@@ -40,14 +41,14 @@ impl ToolName {
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
-            ToolName::ListMemories => "list_memories",
-            ToolName::ReadMemory => "read_memory",
-            ToolName::WriteMemory => "write_memory",
+            ToolName::ListMemories => McpToolId::ListMemories.as_str(),
+            ToolName::ReadMemory => McpToolId::ReadMemory.as_str(),
+            ToolName::WriteMemory => McpToolId::WriteMemory.as_str(),
             ToolName::VerifyMemory => "verify_memory",
-            ToolName::ListVersions => "list_versions",
+            ToolName::ListVersions => McpToolId::ListVersions.as_str(),
             ToolName::DiffMemory => "diff_memory",
-            ToolName::SearchMemories => "search_memories",
-            ToolName::GroupInfo => "group_info",
+            ToolName::SearchMemories => McpToolId::SearchMemories.as_str(),
+            ToolName::GroupInfo => McpToolId::GroupInfo.as_str(),
         }
     }
 }
