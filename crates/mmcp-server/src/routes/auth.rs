@@ -33,21 +33,12 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 use webauthn_rs::prelude::*;
 
+use crate::routes::defaults::{
+    AUTH_REQUEST_BODY_LIMIT_BYTES, OAUTH_STATE_HEX_LENGTH, OAUTH_STATE_SESSION_KEY_PREFIX,
+    OAUTH_STATE_TOKEN_BYTES,
+};
 use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
-
-/// Maximum accepted body size for every `/auth/*` request, in bytes.
-/// A coarse defense-in-depth backstop against oversized bodies, not a
-/// proven bound: 16 KiB comfortably covers every field's fixed
-/// maximum (email, display name, password) plus JSON overhead at the
-/// compiled-in `max_handle_length` default, but the cascade in
-/// [`crate::config::ServerConfig::max_handle_length`] has no upper
-/// bound of its own, so an operator-configured value large enough can
-/// still make this limit reject a request before
-/// `validate_max_length` gets a chance to return its field-specific
-/// error. That failure mode is a coarser 413 instead of a 400, never
-/// a validation bypass.
-const AUTH_REQUEST_BODY_LIMIT_BYTES: usize = 16 * 1024;
 
 pub fn router() -> Router<ServerState> {
     Router::new()
@@ -241,12 +232,6 @@ async fn login(
 
 // ── OAuth ───────────────────────────────────────────────────────
 
-/// Byte length of the OS-CSPRNG-derived OAuth CSRF `state` token before hex encoding.
-const OAUTH_STATE_TOKEN_BYTES: usize = 32;
-
-/// Per-provider session key for [`oauth_authorize`]/[`oauth_callback`]'s CSRF `state` token.
-const OAUTH_STATE_SESSION_KEY_PREFIX: &str = "oauth_csrf_state:";
-
 /// Builds the per-provider session key from [`OAUTH_STATE_SESSION_KEY_PREFIX`].
 /// Concurrent flows against different providers get distinct keys,
 /// so they cannot clobber each other's pending state.
@@ -298,6 +283,59 @@ async fn oauth_authorize(
     Ok(Redirect::temporary(&authorize_url))
 }
 
+/// Why an OAuth callback's `state` failed validation against the
+/// stored CSRF token.
+///
+/// Every variant maps to the same uniform external
+/// [`AuthHttpError::InvalidOAuthState`] 400 response; [`oauth_callback`]
+/// turns each into its own log line before returning that response.
+#[derive(Debug, Error, PartialEq, Eq)]
+enum OAuthStateRejection {
+    /// The callback query carried no `state` parameter at all.
+    #[error("no state parameter present in the callback query")]
+    MissingFromQuery,
+    /// The query carried a `state`, but the session had none stored
+    /// (expired, already consumed, or the session cookie was
+    /// withheld).
+    #[error("no stored csrf state found in the session")]
+    NoStoredState,
+    /// The received `state` is not exactly [`OAUTH_STATE_HEX_LENGTH`]
+    /// characters, rejected before the equality comparison below.
+    #[error("state length {received_len} does not match the expected {expected_len}")]
+    LengthMismatch {
+        received_len: usize,
+        expected_len: usize,
+    },
+    /// The received `state` has the right length but does not equal
+    /// the value stored at authorize time.
+    #[error("state does not match the value issued at authorize time")]
+    ValueMismatch,
+}
+
+/// Validate an OAuth callback's `state` against the session's stored
+/// value.
+///
+/// Pure and side-effect-free, unlike [`oauth_callback`] itself, so
+/// each rejection cause is independently unit testable without a
+/// running server.
+fn validate_oauth_state(
+    received: Option<&str>,
+    expected: Option<&str>,
+) -> Result<(), OAuthStateRejection> {
+    let received = received.ok_or(OAuthStateRejection::MissingFromQuery)?;
+    let expected = expected.ok_or(OAuthStateRejection::NoStoredState)?;
+    if received.len() != OAUTH_STATE_HEX_LENGTH {
+        return Err(OAuthStateRejection::LengthMismatch {
+            received_len: received.len(),
+            expected_len: OAUTH_STATE_HEX_LENGTH,
+        });
+    }
+    if received != expected {
+        return Err(OAuthStateRejection::ValueMismatch);
+    }
+    Ok(())
+}
+
 /// GitHub user info response (partial).
 #[derive(Deserialize)]
 struct GitHubUser {
@@ -324,11 +362,27 @@ async fn oauth_callback(
         .remove(&oauth_state_session_key(&provider))
         .await
         .map_err(into_generic_response)?;
-    let state_matches = matches!(
-        (&query.state, &expected_state),
-        (Some(received), Some(expected)) if received == expected
-    );
-    if !state_matches {
+
+    // Every cause collapses to the same uniform 400 body
+    // (`AuthHttpError::InvalidOAuthState`), per `global-coding-rules-errors`'s
+    // security-mandated-uniform-response exception, but each still
+    // gets its own log line so a deployment failure like "the session
+    // cookie never round-trips" is diagnosable from logs alone
+    // instead of surfacing only as a blanket rejection.
+    if let Err(rejection) = validate_oauth_state(query.state.as_deref(), expected_state.as_deref())
+    {
+        match &rejection {
+            // The caller-controlled query is simply missing the
+            // parameter; not evidence of a server-side problem.
+            OAuthStateRejection::MissingFromQuery => {
+                tracing::debug!(provider = %provider, error = %rejection, "oauth callback rejected");
+            }
+            OAuthStateRejection::NoStoredState
+            | OAuthStateRejection::LengthMismatch { .. }
+            | OAuthStateRejection::ValueMismatch => {
+                tracing::warn!(provider = %provider, error = %rejection, "oauth callback rejected");
+            }
+        }
         return Err(AuthHttpError::InvalidOAuthState);
     }
 
@@ -733,6 +787,59 @@ impl IntoResponse for AuthHttpError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── validate_oauth_state: each rejection cause is its own path ──
+
+    #[test]
+    fn validate_oauth_state_rejects_a_missing_query_parameter() {
+        assert_eq!(
+            validate_oauth_state(None, Some("expected")),
+            Err(OAuthStateRejection::MissingFromQuery)
+        );
+    }
+
+    #[test]
+    fn validate_oauth_state_rejects_when_nothing_was_stored() {
+        let received = "a".repeat(OAUTH_STATE_HEX_LENGTH);
+        assert_eq!(
+            validate_oauth_state(Some(&received), None),
+            Err(OAuthStateRejection::NoStoredState)
+        );
+    }
+
+    #[test]
+    fn validate_oauth_state_rejects_a_length_mismatch_before_any_equality_comparison() {
+        let received = "a".repeat(OAUTH_STATE_HEX_LENGTH - 1);
+        // `expected` deliberately differs too, so a value-equality
+        // check would ALSO reject this input: asserting the exact
+        // `LengthMismatch` variant (not just "some error") proves the
+        // length guard is what actually fires, not equality doing
+        // double duty.
+        let expected = "b".repeat(OAUTH_STATE_HEX_LENGTH);
+        assert_eq!(
+            validate_oauth_state(Some(&received), Some(&expected)),
+            Err(OAuthStateRejection::LengthMismatch {
+                received_len: OAUTH_STATE_HEX_LENGTH - 1,
+                expected_len: OAUTH_STATE_HEX_LENGTH,
+            })
+        );
+    }
+
+    #[test]
+    fn validate_oauth_state_rejects_a_same_length_value_mismatch() {
+        let received = "a".repeat(OAUTH_STATE_HEX_LENGTH);
+        let expected = "b".repeat(OAUTH_STATE_HEX_LENGTH);
+        assert_eq!(
+            validate_oauth_state(Some(&received), Some(&expected)),
+            Err(OAuthStateRejection::ValueMismatch)
+        );
+    }
+
+    #[test]
+    fn validate_oauth_state_accepts_a_matching_value() {
+        let value = "a".repeat(OAUTH_STATE_HEX_LENGTH);
+        assert_eq!(validate_oauth_state(Some(&value), Some(&value)), Ok(()));
+    }
 
     fn valid_request() -> RegisterRequest {
         RegisterRequest {

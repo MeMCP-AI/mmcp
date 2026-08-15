@@ -1,5 +1,31 @@
 //! Default values and constants shared across `routes/` handlers.
 
+/// Maximum accepted body size for every `/auth/*` request, in bytes.
+/// A coarse defense-in-depth backstop against oversized bodies, not a
+/// proven bound: 16 KiB comfortably covers every field's fixed
+/// maximum (email, display name, password) plus JSON overhead at the
+/// compiled-in `max_handle_length` default, but the cascade in
+/// [`crate::config::ServerConfig::max_handle_length`] has no upper
+/// bound of its own, so an operator-configured value large enough can
+/// still make this limit reject a request before
+/// `validate_max_length` gets a chance to return its field-specific
+/// error. That failure mode is a coarser 413 instead of a 400, never
+/// a validation bypass.
+pub(crate) const AUTH_REQUEST_BODY_LIMIT_BYTES: usize = 16 * 1024;
+
+/// Byte length of the OS-CSPRNG-derived OAuth CSRF `state` token before hex encoding.
+pub(crate) const OAUTH_STATE_TOKEN_BYTES: usize = 32;
+
+/// Hex-encoded length of the OAuth CSRF `state` token.
+/// Each byte of [`OAUTH_STATE_TOKEN_BYTES`] renders as exactly two hex digits.
+/// The callback handler rejects a mismatched length before comparing values.
+pub(crate) const OAUTH_STATE_HEX_LENGTH: usize = OAUTH_STATE_TOKEN_BYTES * 2;
+
+/// Per-provider session key prefix for the OAuth CSRF `state` token
+/// [`crate::routes::auth`]'s authorize and callback handlers exchange
+/// through the session store.
+pub(crate) const OAUTH_STATE_SESSION_KEY_PREFIX: &str = "oauth_csrf_state:";
+
 /// Challenge header value advertised on every bearer-auth rejection,
 /// matching the scheme `crate::routes::bearer_auth`'s extractor
 /// actually accepts.
