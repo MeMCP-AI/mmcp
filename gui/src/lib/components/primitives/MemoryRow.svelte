@@ -11,16 +11,17 @@
 
   interface Props {
     slug: string;
-    body: { frontmatter: MemoryFrontmatter } | undefined;
+    /** Frontmatter-only descriptor: carries no memory body text (see `MemoryDescriptor`/`MemoryFile`). */
+    descriptor: { frontmatter: MemoryFrontmatter } | undefined;
     /** Sub-label under the slug, typically `scope · group`. */
     subtitle?: string | null;
     active?: boolean;
     onSelect: () => void;
   }
 
-  let { slug, body, subtitle = null, active = false, onSelect }: Props = $props();
+  let { slug, descriptor, subtitle = null, active = false, onSelect }: Props = $props();
 
-  const fm = $derived(body?.frontmatter);
+  const fm = $derived(descriptor?.frontmatter);
 </script>
 
 <button

@@ -82,7 +82,7 @@
   // ---------------------------------------------------------------
 
   // One `list_memory_descriptors` call per group.
-  // Also seeds `memoriesStore.slugs`.
+  // `memoriesStore.slugs` is derived from the resulting `descriptors`, not set separately.
   $effect(() => {
     for (const g of groupsStore.groups) {
       if (
@@ -469,7 +469,7 @@
                 <li>
                   <MemoryRow
                     slug={hit.slug}
-                    body={{ frontmatter: hit.frontmatter }}
+                    descriptor={{ frontmatter: hit.frontmatter }}
                     subtitle={`${SCOPE_META[hit.group.scope].label} · ${hit.group.slug}`}
                     onSelect={() => gotoMemory(hit.groupId, hit.slug)}
                   />
@@ -493,7 +493,7 @@
                 <li>
                   <MemoryRow
                     slug={hit.slug}
-                    body={{ frontmatter: hit.frontmatter }}
+                    descriptor={{ frontmatter: hit.frontmatter }}
                     subtitle={`${SCOPE_META[hit.group.scope].label} · ${hit.group.slug}`}
                     onSelect={() => gotoMemory(hit.groupId, hit.slug)}
                   />
@@ -640,7 +640,7 @@
               <li>
                 <MemoryRow
                   slug={entry.slug}
-                  body={entry.body}
+                  descriptor={entry.body}
                   onSelect={() =>
                     (route = {
                       t: 'memory',
