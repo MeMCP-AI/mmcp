@@ -1,0 +1,48 @@
+//! Sync engine orchestrating the git control and content planes.
+//!
+//! The engine draws a clean line between two concerns:
+//!
+//! - The **control plane**, which lives in `SyncClient` and talks
+//!   JSON over HTTPS to `mmcp-server`. Advertises which
+//!   groups exist and at what head commit (`/sync/manifest`,
+//!   `/sync/refs/<uuid>`); the bump intent travels on the commit
+//!   stream itself.
+//! - The **content plane**, which lives in `GitBackend` and moves
+//!   actual blobs. `fetch` / `pull` / `push` all delegate their
+//!   on-wire work to `backend.fetch` and `backend.push`.
+//!
+//! The three verbs are intentionally git-symmetric:
+//!
+//! - `fetch` writes each in-scope group's remote head into
+//!   `refs/remotes/origin/main` without advancing local `main`.
+//! - `pull` fast-forwards local `main` to the remote head.
+//! - `push` ships local `main` to the remote. No per-edit queue;
+//!   each memory mutation already commits to the local repo, and
+//!   push is just `git push origin main` per group.
+//!
+//! Tests under `tests/engine_smoke.rs` exercise the engine against
+//! a `wiremock` HTTP server plus an in-process native git backend
+//! so every path except real network transport is covered without
+//! a running `mmcp-server`.
+//!
+//! Module layout: [`defaults`] holds the shared concurrency cap,
+//! [`concurrency`] holds the `run_bounded` helper the three verbs
+//! all call instead of duplicating their own bounded-fan-out
+//! skeleton, [`scope`] holds scope-filter matching, [`resolver`]
+//! holds the local-handle-lookup trait, [`sync_engine`] holds
+//! [`SyncEngine`] itself and its push/pull/fetch orchestration, and
+//! [`reports`] holds the outcome types every verb returns.
+
+mod concurrency;
+mod defaults;
+mod reports;
+mod resolver;
+mod scope;
+mod sync_engine;
+
+pub use reports::{
+    FetchReport, FetchedGroup, GroupSyncFailure, PullReport, PushReport, PushedGroup, SyncReport,
+};
+pub use resolver::GroupHandleResolver;
+pub use scope::NoScopeIndex;
+pub use sync_engine::SyncEngine;
