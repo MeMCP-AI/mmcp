@@ -335,7 +335,7 @@ fn parse_bump(value: &BumpIntent) -> BumpIntent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ServerConfig;
+    use crate::config::test_support::{WarnCounter, minimal_server_config};
     use mmcp_db::entities::group::OwnerKind;
     use tempfile::TempDir;
 
@@ -345,42 +345,9 @@ mod tests {
     /// unreachable from this in-crate unit test).
     async fn test_state() -> (ServerState, TempDir) {
         let tmp = TempDir::new().expect("tempdir");
-        let cfg = ServerConfig {
-            bind: "127.0.0.1:0".parse().expect("valid loopback addr"),
-            database_url: "sqlite::memory:".to_string(),
-            repo_root: tmp.path().to_path_buf(),
-            token_key: [0u8; 32],
-            oauth_providers: vec![],
-            origin: "http://localhost:8787".to_string(),
-            push_token: None,
-            min_password_length: mmcp_auth::MIN_PASSWORD_LENGTH,
-            max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
-            max_handle_length: mmcp_auth::MAX_HANDLE_LENGTH,
-        };
+        let cfg = minimal_server_config(tmp.path().to_path_buf());
         let state = ServerState::initialize(&cfg).await.expect("state init");
         (state, tmp)
-    }
-
-    /// Minimal `tracing::Subscriber` counting `WARN`-level events,
-    /// mirroring `config::mod::tests::WarnCounter`.
-    struct WarnCounter(std::sync::Arc<std::sync::atomic::AtomicUsize>);
-
-    impl tracing::Subscriber for WarnCounter {
-        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-            *metadata.level() == tracing::Level::WARN
-        }
-        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            if *event.metadata().level() == tracing::Level::WARN {
-                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            }
-        }
-        fn enter(&self, _span: &tracing::span::Id) {}
-        fn exit(&self, _span: &tracing::span::Id) {}
     }
 
     /// A group row with no backing bare repo must still be advertised
