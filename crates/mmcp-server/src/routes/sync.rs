@@ -7,7 +7,7 @@
 //! branch so a client can decide whether a fetch is needed.
 //!
 //! Every handler here requires a valid per-user bearer token, verified
-//! by [`AuthenticatedUser`](crate::routes::bearer_auth::AuthenticatedUser).
+//! by [`AuthenticatedUser`].
 //!
 //! The request and response shapes live in `mmcp_sync::client`,
 //! so this module and the sync engine cannot drift.
