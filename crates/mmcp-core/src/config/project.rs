@@ -259,8 +259,7 @@ tags = ["git", "testing"]
     /// `SyncConfig` carries no credential field: a `.mmcp.toml`
     /// round trip must never emit a `token` key, regardless of what
     /// environment variables are set on the process running the
-    /// test. Closes the credential-in-tracked-file regression this
-    /// struct used to carry.
+    /// test.
     #[test]
     fn sync_config_round_trip_never_serializes_a_token_key() {
         let cfg = ProjectConfig {

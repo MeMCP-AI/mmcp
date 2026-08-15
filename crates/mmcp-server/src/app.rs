@@ -30,13 +30,9 @@ pub fn build_router(state: ServerState) -> Router {
     let session_store = MemoryStore::default();
 
     // tower-sessions defaults `same_site` to `Strict`.
-    // Browsers withhold a `Strict` cookie on the cross-site top-level
-    // GET the OAuth provider's redirect performs back to this
-    // server's callback route, so the CSRF state stored at authorize
-    // time was never observed at callback and every real OAuth login
-    // failed. `Lax` is the least permissive tier that still survives
-    // that navigation while still blocking cross-site POST/fetch/XHR
-    // CSRF.
+    // A `Strict` cookie is withheld on the cross-site GET the OAuth redirect performs to this callback route,
+    // so it never carries the CSRF state through to the callback handler.
+    // `Lax` is the least permissive tier that survives the redirect while blocking cross-site POST/fetch/XHR CSRF.
     //
     // tower-sessions also defaults `secure` to `true` unconditionally;
     // see `origin_uses_https`'s doc comment for why that is tied to

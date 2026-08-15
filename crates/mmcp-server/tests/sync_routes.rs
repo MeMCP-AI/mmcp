@@ -342,8 +342,8 @@ async fn sync_push_first_publish_assigns_0_1_0_and_records_tag() {
 
     // `author_id` on the inserted `memory_versions` row is a FK onto
     // `users` (RESTRICT), so the authenticated caller must be a real
-    // seeded user row; `post_push` now takes that id from the bearer
-    // token rather than from the memory being published.
+    // seeded user row. `post_push` takes that id from the bearer
+    // token, never from the memory being published.
     let (user_id, token) = seed_authenticated_user(&state, "alice").await;
     let memory = Uuid::now_v7();
 

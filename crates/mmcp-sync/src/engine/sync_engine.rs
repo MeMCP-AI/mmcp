@@ -157,9 +157,9 @@ impl SyncEngine {
                 // A credential mismatch, a network blip, or a
                 // rejecting remote all land here indistinguishably.
                 // Reported as content_transferred: false rather than
-                // raised (see this method's doc comment), so this
-                // line is the only signal a caller gets that bytes
-                // did not ship.
+                // raised (see `SyncEngine::push`'s doc comment), so
+                // this line is the only signal a caller gets that
+                // bytes did not ship.
                 tracing::warn!(
                     group = %group_id,
                     op,

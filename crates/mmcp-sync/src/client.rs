@@ -331,7 +331,6 @@ mod tests {
     /// must never leak into `git_credentials`: the two planes carry
     /// mutually incompatible credential types, and the server
     /// rejects a PASETO token presented as the git push secret.
-    /// This is the exact regression the plane split fixes.
     #[test]
     fn with_bearer_alone_never_leaks_into_git_credentials() {
         let client = SyncClient::new("http://localhost:0")

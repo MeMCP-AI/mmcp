@@ -109,7 +109,7 @@ async fn oauth_authorize_known_provider_redirects_to_provider_authorize_url() {
     assert!(location.contains("scope=user:email"));
 }
 
-// ── OAuth CSRF state (mmcp issue #198) ──────────────────────────────
+// ── OAuth CSRF state ────────────────────────────────────────────────
 
 /// Extracts the raw value of a `state` query parameter from an `oauth_authorize`
 /// redirect `Location` header.

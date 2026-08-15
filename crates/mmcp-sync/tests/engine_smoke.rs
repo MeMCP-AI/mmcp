@@ -187,15 +187,12 @@ async fn push_reports_each_in_scope_group_with_transport_status() {
     assert!(!report.pushed[0].content_transferred);
 }
 
-/// Regression coverage for the sync_engine.rs push-transport swallow:
-/// before this fix, a `GitError::Transport` collapsed into
-/// `content_transferred: false` with no signal at all. The same
-/// wiremock-fronted server used above (it cannot serve git smart
-/// HTTP) drives the native backend into the exact `Transport` arm;
-/// this test additionally asserts the warn-level log line fires and
-/// names the affected group. Installs a scoped `tracing_subscriber`
-/// writing into an in-memory buffer rather than relying on a global
-/// subscriber, so this test never races other tests' log output.
+/// A `GitError::Transport` collapses into `content_transferred: false`.
+/// It also emits a warn-level log line naming the affected group instead of failing silently.
+/// The same wiremock-fronted server used above cannot serve git smart HTTP,
+/// so it drives the native backend into the exact `Transport` arm.
+/// Installs a scoped `tracing_subscriber` writing into an in-memory buffer rather than relying on a global subscriber.
+/// This test never races other tests' log output as a result.
 #[tokio::test]
 async fn push_transport_failure_logs_a_warning_instead_of_staying_silent() {
     let captured = CapturedLog::default();

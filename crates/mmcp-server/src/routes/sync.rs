@@ -286,7 +286,6 @@ async fn post_push(
         memory_id: memory.id,
         version: version_str.clone(),
         commit: req.commit.clone(),
-        // Author is the bearer token's verified user id.
         author_id: caller.user_id,
         published_at: now,
         summary: req.message.clone(),
