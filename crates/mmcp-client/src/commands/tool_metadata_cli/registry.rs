@@ -21,6 +21,45 @@ pub(super) struct ToolMetadata {
     pub(super) risk_hints: &'static [ArgRiskHint],
 }
 
+/// Builder for [`ToolMetadata`].
+///
+/// Defaults `meta_keys` and `risk_hints` to empty, so a
+/// `tool_metadata` arm with no advisory bits and no risk hints
+/// names only its category.
+struct ToolMetadataBuilder {
+    category: ToolIconCategory,
+    meta_keys: &'static [&'static str],
+    risk_hints: &'static [ArgRiskHint],
+}
+
+impl ToolMetadataBuilder {
+    fn new(category: ToolIconCategory) -> Self {
+        Self {
+            category,
+            meta_keys: &[],
+            risk_hints: &[],
+        }
+    }
+
+    fn meta_keys(mut self, meta_keys: &'static [&'static str]) -> Self {
+        self.meta_keys = meta_keys;
+        self
+    }
+
+    fn risk_hints(mut self, risk_hints: &'static [ArgRiskHint]) -> Self {
+        self.risk_hints = risk_hints;
+        self
+    }
+
+    fn build(self) -> ToolMetadata {
+        ToolMetadata {
+            category: self.category,
+            meta_keys: self.meta_keys,
+            risk_hints: self.risk_hints,
+        }
+    }
+}
+
 /// One exhaustive match over [`McpToolId`], with no wildcard arm:
 /// every registered `#[tool]` method needs a variant here (added in
 /// the same change as the method itself) and a match arm declaring
@@ -60,107 +99,86 @@ fn tool_metadata(id: McpToolId) -> ToolMetadata {
         | McpToolId::Version
         | McpToolId::DescribeTools
         // Archive export reads the store to produce an artifact.
-        | McpToolId::ExportArchive => ToolMetadata {
-            category: ToolIconCategory::Read,
-            meta_keys: &[],
-            risk_hints: &[],
-        },
+        | McpToolId::ExportArchive => ToolMetadataBuilder::new(ToolIconCategory::Read).build(),
         // Feature-tracker tools.
-        McpToolId::ReadFeature | McpToolId::ListFeatures => ToolMetadata {
-            category: ToolIconCategory::Feature,
-            meta_keys: &[META_REQUIRES_PROJECT],
-            risk_hints: &[],
-        },
+        McpToolId::ReadFeature | McpToolId::ListFeatures => {
+            ToolMetadataBuilder::new(ToolIconCategory::Feature)
+                .meta_keys(&[META_REQUIRES_PROJECT])
+                .build()
+        }
         McpToolId::AddFeature
         | McpToolId::UpdateFeature
         | McpToolId::DeleteFeature
-        | McpToolId::RenameFeature => ToolMetadata {
-            category: ToolIconCategory::Feature,
-            meta_keys: &[META_REQUIRES_PROJECT, META_PROTECTED_GROUP_GATED],
-            risk_hints: &[],
-        },
+        | McpToolId::RenameFeature => ToolMetadataBuilder::new(ToolIconCategory::Feature)
+            .meta_keys(&[META_REQUIRES_PROJECT, META_PROTECTED_GROUP_GATED])
+            .build(),
         // Issue-tracker tools, sister to Feature.
-        McpToolId::ReadIssue | McpToolId::ListIssues => ToolMetadata {
-            category: ToolIconCategory::Issue,
-            meta_keys: &[META_REQUIRES_PROJECT],
-            risk_hints: &[],
-        },
+        McpToolId::ReadIssue | McpToolId::ListIssues => {
+            ToolMetadataBuilder::new(ToolIconCategory::Issue)
+                .meta_keys(&[META_REQUIRES_PROJECT])
+                .build()
+        }
         McpToolId::AddIssue
         | McpToolId::UpdateIssue
         | McpToolId::DeleteIssue
-        | McpToolId::RenameIssue => ToolMetadata {
-            category: ToolIconCategory::Issue,
-            meta_keys: &[META_REQUIRES_PROJECT, META_PROTECTED_GROUP_GATED],
-            risk_hints: &[],
-        },
+        | McpToolId::RenameIssue => ToolMetadataBuilder::new(ToolIconCategory::Issue)
+            .meta_keys(&[META_REQUIRES_PROJECT, META_PROTECTED_GROUP_GATED])
+            .build(),
         // Milestone-tracker tools, sister to Feature / Issue but a
         // reduced surface (no rename/delete tool exists yet).
-        McpToolId::ReadMilestone | McpToolId::ListMilestones => ToolMetadata {
-            category: ToolIconCategory::Milestone,
-            meta_keys: &[META_REQUIRES_PROJECT],
-            risk_hints: &[],
-        },
-        McpToolId::AddMilestone | McpToolId::UpdateMilestone => ToolMetadata {
-            category: ToolIconCategory::Milestone,
-            meta_keys: &[META_REQUIRES_PROJECT, META_PROTECTED_GROUP_GATED],
-            risk_hints: &[],
-        },
+        McpToolId::ReadMilestone | McpToolId::ListMilestones => {
+            ToolMetadataBuilder::new(ToolIconCategory::Milestone)
+                .meta_keys(&[META_REQUIRES_PROJECT])
+                .build()
+        }
+        McpToolId::AddMilestone | McpToolId::UpdateMilestone => {
+            ToolMetadataBuilder::new(ToolIconCategory::Milestone)
+                .meta_keys(&[META_REQUIRES_PROJECT, META_PROTECTED_GROUP_GATED])
+                .build()
+        }
         // `debug_*` raw-git escape hatches.
         McpToolId::DebugReadFile | McpToolId::DebugListTree | McpToolId::DebugGitLog => {
-            ToolMetadata {
-                category: ToolIconCategory::Debug,
-                meta_keys: &[META_DEBUG_GATED],
-                risk_hints: &[],
-            }
+            ToolMetadataBuilder::new(ToolIconCategory::Debug)
+                .meta_keys(&[META_DEBUG_GATED])
+                .build()
         }
-        McpToolId::DebugToggle => ToolMetadata {
-            category: ToolIconCategory::Debug,
-            meta_keys: &[META_DEBUG_GATED],
-            risk_hints: &[],
-        },
-        McpToolId::DebugWriteFile => ToolMetadata {
-            category: ToolIconCategory::Debug,
-            meta_keys: &[META_DEBUG_GATED, META_PROTECTED_GROUP_GATED],
-            risk_hints: &[],
-        },
+        McpToolId::DebugToggle => ToolMetadataBuilder::new(ToolIconCategory::Debug)
+            .meta_keys(&[META_DEBUG_GATED])
+            .build(),
+        McpToolId::DebugWriteFile => ToolMetadataBuilder::new(ToolIconCategory::Debug)
+            .meta_keys(&[META_DEBUG_GATED, META_PROTECTED_GROUP_GATED])
+            .build(),
         // `sync_*` tools that contact the remote server.
         McpToolId::SyncFetch | McpToolId::SyncPush | McpToolId::SyncPull | McpToolId::Sync => {
-            ToolMetadata {
-                category: ToolIconCategory::Sync,
-                meta_keys: &[META_REQUIRES_SYNC, META_NETWORK],
-                risk_hints: &[],
-            }
+            ToolMetadataBuilder::new(ToolIconCategory::Sync)
+                .meta_keys(&[META_REQUIRES_SYNC, META_NETWORK])
+                .build()
         }
         // Local mutators with no advisory bits or risk hints.
-        McpToolId::ImportMemory => ToolMetadata {
-            category: ToolIconCategory::Mutate,
-            meta_keys: &[],
-            risk_hints: &[ArgRiskHint {
+        McpToolId::ImportMemory => ToolMetadataBuilder::new(ToolIconCategory::Mutate)
+            .risk_hints(&[ArgRiskHint {
                 arg: "override",
                 risk_when: "true",
                 kind: "destructive",
                 reason: "override: true replaces the colliding-id memory in place",
-            }],
-        },
-        McpToolId::MoveMemory | McpToolId::DeleteMemory => ToolMetadata {
-            category: ToolIconCategory::Mutate,
-            meta_keys: &[META_PROTECTED_GROUP_GATED],
-            risk_hints: &[],
-        },
-        McpToolId::InitClaude | McpToolId::InitProject | McpToolId::CreateGroup => ToolMetadata {
-            category: ToolIconCategory::Mutate,
-            meta_keys: &[],
-            risk_hints: &[],
-        },
-        McpToolId::Subscribe | McpToolId::Unsubscribe => ToolMetadata {
-            category: ToolIconCategory::Mutate,
-            meta_keys: &[META_REQUIRES_PROJECT],
-            risk_hints: &[],
-        },
-        McpToolId::WriteMemory => ToolMetadata {
-            category: ToolIconCategory::Mutate,
-            meta_keys: &[META_PROTECTED_GROUP_GATED],
-            risk_hints: &[
+            }])
+            .build(),
+        McpToolId::MoveMemory | McpToolId::DeleteMemory => {
+            ToolMetadataBuilder::new(ToolIconCategory::Mutate)
+                .meta_keys(&[META_PROTECTED_GROUP_GATED])
+                .build()
+        }
+        McpToolId::InitClaude | McpToolId::InitProject | McpToolId::CreateGroup => {
+            ToolMetadataBuilder::new(ToolIconCategory::Mutate).build()
+        }
+        McpToolId::Subscribe | McpToolId::Unsubscribe => {
+            ToolMetadataBuilder::new(ToolIconCategory::Mutate)
+                .meta_keys(&[META_REQUIRES_PROJECT])
+                .build()
+        }
+        McpToolId::WriteMemory => ToolMetadataBuilder::new(ToolIconCategory::Mutate)
+            .meta_keys(&[META_PROTECTED_GROUP_GATED])
+            .risk_hints(&[
                 ArgRiskHint {
                     arg: "override",
                     risk_when: "true",
@@ -173,38 +191,35 @@ fn tool_metadata(id: McpToolId) -> ToolMetadata {
                     kind: "destructive",
                     reason: "force: true bypasses the filename/frontmatter id-mismatch guard",
                 },
-            ],
-        },
-        McpToolId::EditMemory => ToolMetadata {
-            category: ToolIconCategory::Mutate,
-            meta_keys: &[META_PROTECTED_GROUP_GATED],
-            risk_hints: &[ArgRiskHint {
+            ])
+            .build(),
+        McpToolId::EditMemory => ToolMetadataBuilder::new(ToolIconCategory::Mutate)
+            .meta_keys(&[META_PROTECTED_GROUP_GATED])
+            .risk_hints(&[ArgRiskHint {
                 arg: "force",
                 risk_when: "true",
                 kind: "destructive",
                 reason: "force: true bypasses the filename/frontmatter id-mismatch guard on a ByFilename write",
-            }],
-        },
-        McpToolId::EditMemoryBody => ToolMetadata {
-            category: ToolIconCategory::Mutate,
-            meta_keys: &[META_PROTECTED_GROUP_GATED],
-            risk_hints: &[ArgRiskHint {
+            }])
+            .build(),
+        McpToolId::EditMemoryBody => ToolMetadataBuilder::new(ToolIconCategory::Mutate)
+            .meta_keys(&[META_PROTECTED_GROUP_GATED])
+            .risk_hints(&[ArgRiskHint {
                 arg: "force",
                 risk_when: "true",
                 kind: "destructive",
                 reason: "force: true bypasses the filename/frontmatter id-mismatch guard",
-            }],
-        },
-        McpToolId::ImportArchive => ToolMetadata {
-            category: ToolIconCategory::Mutate,
-            meta_keys: &[META_PROTECTED_GROUP_GATED],
-            risk_hints: &[ArgRiskHint {
+            }])
+            .build(),
+        McpToolId::ImportArchive => ToolMetadataBuilder::new(ToolIconCategory::Mutate)
+            .meta_keys(&[META_PROTECTED_GROUP_GATED])
+            .risk_hints(&[ArgRiskHint {
                 arg: "overwrite",
                 risk_when: "true",
                 kind: "destructive",
                 reason: "overwrite: true replaces colliding memories in place instead of reporting a conflict",
-            }],
-        },
+            }])
+            .build(),
     }
 }
 
