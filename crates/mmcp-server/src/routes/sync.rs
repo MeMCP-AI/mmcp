@@ -150,10 +150,28 @@ async fn manifest_row_to_remote_group(
                     .next()
                     .map(|c| c.id)
                     .unwrap_or_else(|| mmcp_core::conventions::ZERO_COMMIT.to_string()),
-                Err(_) => mmcp_core::conventions::ZERO_COMMIT.to_string(),
+                Err(err) => {
+                    tracing::warn!(
+                        group_id = %row.id,
+                        group_slug = %row.slug,
+                        error = %err,
+                        "walk_history failed while resolving the manifest tip commit; \
+                         advertising the group at the zero commit"
+                    );
+                    mmcp_core::conventions::ZERO_COMMIT.to_string()
+                }
             }
         }
-        Err(_) => mmcp_core::conventions::ZERO_COMMIT.to_string(),
+        Err(err) => {
+            tracing::warn!(
+                group_id = %row.id,
+                group_slug = %row.slug,
+                error = %err,
+                "read_manifest failed while building the sync manifest; advertising the \
+                 group at the zero commit"
+            );
+            mmcp_core::conventions::ZERO_COMMIT.to_string()
+        }
     };
     RemoteGroup {
         group_id: row.id,
@@ -312,4 +330,106 @@ async fn post_push(
 
 fn parse_bump(value: &BumpIntent) -> BumpIntent {
     *value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ServerConfig;
+    use mmcp_db::entities::group::OwnerKind;
+    use tempfile::TempDir;
+
+    /// Minimal `ServerState` for exercising
+    /// `manifest_row_to_remote_group` directly, without the
+    /// `tests/common` integration-test builder (a separate crate,
+    /// unreachable from this in-crate unit test).
+    async fn test_state() -> (ServerState, TempDir) {
+        let tmp = TempDir::new().expect("tempdir");
+        let cfg = ServerConfig {
+            bind: "127.0.0.1:0".parse().expect("valid loopback addr"),
+            database_url: "sqlite::memory:".to_string(),
+            repo_root: tmp.path().to_path_buf(),
+            token_key: [0u8; 32],
+            oauth_providers: vec![],
+            origin: "http://localhost:8787".to_string(),
+            push_token: None,
+            min_password_length: mmcp_auth::MIN_PASSWORD_LENGTH,
+            max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
+            max_handle_length: mmcp_auth::MAX_HANDLE_LENGTH,
+        };
+        let state = ServerState::initialize(&cfg).await.expect("state init");
+        (state, tmp)
+    }
+
+    /// Minimal `tracing::Subscriber` counting `WARN`-level events,
+    /// mirroring `config::mod::tests::WarnCounter`.
+    struct WarnCounter(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl tracing::Subscriber for WarnCounter {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            *metadata.level() == tracing::Level::WARN
+        }
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            if *event.metadata().level() == tracing::Level::WARN {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    /// A group row with no backing bare repo must still be advertised
+    /// at the conventional zero commit (unchanged behavior), but the
+    /// `read_manifest` failure that led there must now log a warning
+    /// naming the group instead of vanishing silently.
+    #[tokio::test]
+    async fn manifest_row_to_remote_group_warns_when_read_manifest_fails() {
+        let (state, _tmp) = test_state().await;
+        let group_id = Uuid::now_v7();
+        let owner = Uuid::now_v7();
+        group_repo::create(
+            state.database.connection(),
+            group_repo::NewGroup {
+                id: group_id,
+                slug: "no-repo".to_string(),
+                owner_kind: OwnerKind::User,
+                owner_id: owner,
+                display_name: None,
+                created_at: 0,
+            },
+        )
+        .await
+        .expect("insert group row");
+        let row = group_repo::find_by_id(state.database.connection(), group_id)
+            .await
+            .expect("query group row")
+            .expect("row was just inserted");
+
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let subscriber = WarnCounter(count.clone());
+        // `set_default` (rather than `with_default`, which only
+        // accepts a synchronous closure) so the guard stays active
+        // across the `.await` below; the default `#[tokio::test]`
+        // current-thread runtime keeps this task on the one thread
+        // the guard's thread-local applies to.
+        let guard = tracing::subscriber::set_default(subscriber);
+        let group = manifest_row_to_remote_group(&state, row).await;
+        drop(guard);
+
+        assert_eq!(
+            group.head_commit,
+            mmcp_core::conventions::ZERO_COMMIT,
+            "a group with no backing repo must still advertise at the zero commit"
+        );
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the read_manifest failure must log exactly one warning instead of vanishing silently"
+        );
+    }
 }
