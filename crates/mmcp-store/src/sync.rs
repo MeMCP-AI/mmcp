@@ -25,15 +25,24 @@ use crate::groups::GroupIndex;
 /// because the MCP server holds them in its state and re-initializing
 /// would open a duplicate backend; the CLI builds them once via
 /// `MmcpHome::init_backend` and then threads the pair through.
+///
+/// `token` authorizes every request against the `/sync/*` control
+/// plane, typically `SyncConfig::resolve_token`'s result. An absent
+/// or empty token leaves the client untokened, matching
+/// `SyncClient::git_credentials`'s existing empty-token handling.
 pub fn build_engine(
     backend: Arc<NativeBackend>,
     groups: GroupIndex,
     server_url: &str,
+    token: Option<&str>,
 ) -> Result<(SyncEngine, IndexResolver), StoreError> {
-    let client = SyncClient::new(server_url.to_owned()).map_err(|source| StoreError::Sync {
+    let mut client = SyncClient::new(server_url.to_owned()).map_err(|source| StoreError::Sync {
         server_url: server_url.to_owned(),
         source,
     })?;
+    if let Some(token) = token.filter(|token| !token.is_empty()) {
+        client = client.with_bearer(token);
+    }
     let engine = SyncEngine::new(backend, client);
     let resolver = IndexResolver { index: groups };
     Ok((engine, resolver))
