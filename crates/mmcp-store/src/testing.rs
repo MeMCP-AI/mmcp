@@ -52,8 +52,14 @@ impl ScratchHome {
     /// Propagated backend/index failures only happen in genuinely pathological test setups (e.g. a poisoned tempdir),
     /// so most call sites `.expect("scratch home")` and move on.
     pub async fn new() -> Result<Self, StoreError> {
-        let tmp = TempDir::new().map_err(|source| {
-            StoreError::io(std::env::temp_dir(), FileOperation::CreateDir, source)
+        // `TempDir::new` retries several randomly named candidates
+        // internally and does not expose which one failed, so this
+        // names the OS temp root the attempt happened under rather
+        // than misreporting it as the exact path that failed
+        // (`StoreError::TempDirUnavailable`'s doc comment).
+        let tmp = TempDir::new().map_err(|source| StoreError::TempDirUnavailable {
+            root: std::env::temp_dir(),
+            source,
         })?;
         let home = MmcpHome::from_root(tmp.path().join("mmcp-home"));
         std::fs::create_dir_all(home.repos_root()).map_err(|source| {

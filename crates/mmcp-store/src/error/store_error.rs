@@ -90,6 +90,23 @@ pub enum StoreError {
     /// mmcp home directory could not be resolved.
     #[error("cannot determine home directory: set MMCP_HOME, HOME, or USERPROFILE")]
     HomeDirUnresolved,
+
+    /// A test fixture could not create its scratch directory under
+    /// the OS temp root.
+    ///
+    /// `tempfile::TempDir::new` tries several randomly named
+    /// candidates internally and does not expose which specific one
+    /// failed, so `root` names the OS temp root the attempt happened
+    /// under, not the candidate path itself; do not read `root` as
+    /// the exact path that failed.
+    #[error("failed to create a temporary directory under {root}: {source}", root = root.display())]
+    TempDirUnavailable {
+        /// The OS temp root (`std::env::temp_dir()`) the failed attempt happened under.
+        root: PathBuf,
+        /// The underlying OS error from the last failed attempt `tempfile` made.
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 impl StoreError {
@@ -206,6 +223,31 @@ mod tests {
         match &err {
             StoreError::TomlSerialize { path: p, .. } => assert_eq!(p, &path),
             other => panic!("expected TomlSerialize, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn temp_dir_unavailable_names_the_root_not_a_specific_candidate_path() {
+        let root = PathBuf::from("/tmp");
+        let source = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let err = StoreError::TempDirUnavailable {
+            root: root.clone(),
+            source,
+        };
+
+        assert!(
+            err.source()
+                .and_then(|s| s.downcast_ref::<std::io::Error>())
+                .is_some(),
+            "source must be the real std::io::Error, not a stringified copy"
+        );
+        // The message must talk about the root as "under", never as
+        // "the" failed path, so it does not claim knowledge tempfile
+        // never gave us.
+        assert!(err.to_string().contains("under /tmp"));
+        match &err {
+            StoreError::TempDirUnavailable { root: r, .. } => assert_eq!(r, &root),
+            other => panic!("expected TempDirUnavailable, got {other:?}"),
         }
     }
 }
