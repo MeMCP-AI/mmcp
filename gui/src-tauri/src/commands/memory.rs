@@ -228,7 +228,7 @@ impl SkippedMemoryDto {
 }
 
 /// Response shape for [`list_memory_descriptors`]: the descriptors that resolved
-/// cleanly, plus every slug that was skipped and why. Never `descriptors` alone —
+/// cleanly, plus every slug that was skipped and why. Never `descriptors` alone:
 /// a caller that only reads `descriptors` still gets a complete list on the happy
 /// path, but `skipped` makes a partial listing observable instead of silent.
 #[derive(Debug, Serialize)]
