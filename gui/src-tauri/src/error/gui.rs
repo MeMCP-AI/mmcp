@@ -61,9 +61,60 @@ pub enum GuiError {
     #[error("utf-8: {0}")]
     Utf8(#[from] std::str::Utf8Error),
 
-    /// GUI-local failure with no typed source to chain: config I/O,
-    /// filesystem-watcher setup, or other command-local text that has
-    /// nothing more structured to extract.
+    /// A `kind` string did not match any known [`mmcp_core::memory::MemoryKind`].
+    #[error("invalid memory kind: {0}")]
+    InvalidMemoryKind(#[from] mmcp_core::memory::MemoryKindParseError),
+
+    /// A `group_id` string was not a valid UUID.
+    #[error("invalid group id '{value}': {source}")]
+    InvalidGroupId {
+        value: String,
+        #[source]
+        source: uuid::Error,
+    },
+
+    /// A `version` string was not valid semver.
+    #[error("invalid version: {0}")]
+    InvalidVersion(#[from] semver::Error),
+
+    /// A feature `status` string did not match any known [`mmcp_core::memory::FeatureStatus`].
+    #[error("invalid feature status: {0}")]
+    InvalidFeatureStatus(#[from] mmcp_core::memory::FeatureStatusParseError),
+
+    /// An issue `status` string did not match any known [`mmcp_core::memory::IssueStatus`].
+    #[error("invalid issue status: {0}")]
+    InvalidIssueStatus(#[from] mmcp_core::memory::IssueStatusParseError),
+
+    /// A filesystem read, write, or directory-create failed at a known path.
+    #[error("filesystem operation failed at {path}: {source}")]
+    Io {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The process's current working directory could not be determined.
+    #[error("current directory unavailable: {0}")]
+    CurrentDirUnavailable(#[source] std::io::Error),
+
+    /// `path` was expected to be a directory but is not (missing, or a regular file).
+    #[error("not a directory: {}", path.display())]
+    NotADirectory { path: std::path::PathBuf },
+
+    /// A Tauri platform API failed to resolve a filesystem path (e.g. the app config directory).
+    #[error("platform path resolution failed: {0}")]
+    TauriPath(#[from] tauri::Error),
+
+    /// A settings blob failed to serialize or deserialize as JSON.
+    #[error("settings json: {0}")]
+    SettingsJson(#[from] serde_json::Error),
+
+    /// The mirror-root filesystem watcher failed to start or register a path.
+    #[error("filesystem watcher: {0}")]
+    Watcher(#[from] notify_debouncer_mini::notify::Error),
+
+    /// GUI-local failure with no typed source to chain: command-local
+    /// text that has nothing more structured to extract.
     #[error("{0}")]
     Other(String),
 }
@@ -119,6 +170,17 @@ impl Serialize for GuiError {
             GuiError::Archive(e) => ("archive", Some(e.to_string())),
             GuiError::Dialog(e) => ("dialog", Some(e.to_string())),
             GuiError::Utf8(e) => ("utf8", Some(e.to_string())),
+            GuiError::InvalidMemoryKind(e) => ("invalid_memory_kind", Some(e.to_string())),
+            GuiError::InvalidGroupId { .. } => ("invalid_group_id", Some(self.to_string())),
+            GuiError::InvalidVersion(e) => ("invalid_version", Some(e.to_string())),
+            GuiError::InvalidFeatureStatus(e) => ("invalid_feature_status", Some(e.to_string())),
+            GuiError::InvalidIssueStatus(e) => ("invalid_issue_status", Some(e.to_string())),
+            GuiError::Io { .. } => ("io", Some(self.to_string())),
+            GuiError::CurrentDirUnavailable(e) => ("current_dir_unavailable", Some(e.to_string())),
+            GuiError::NotADirectory { .. } => ("not_a_directory", Some(self.to_string())),
+            GuiError::TauriPath(e) => ("tauri_path", Some(e.to_string())),
+            GuiError::SettingsJson(e) => ("settings_json", Some(e.to_string())),
+            GuiError::Watcher(e) => ("watcher", Some(e.to_string())),
             GuiError::Other(msg) => ("other", Some(msg.clone())),
         };
         let mut state = serializer.serialize_struct("GuiError", 2)?;
@@ -209,6 +271,49 @@ mod tests {
         assert_eq!(
             value["message"],
             "group 019d955d-4cce-77f2-a0b3-0b79ed394612 is not in the local mirror"
+        );
+    }
+
+    /// Before the typed variants below existed, every classifiable
+    /// parse/IO failure serialized as the `other` catch-all with no
+    /// stable code to branch on. Each of these must now report its
+    /// own distinct `kind`, and must chain to the real source error.
+    #[test]
+    fn classifiable_causes_no_longer_serialize_as_the_other_catch_all() {
+        let invalid_kind: GuiError = "not-a-kind"
+            .parse::<mmcp_core::memory::MemoryKind>()
+            .unwrap_err()
+            .into();
+        assert_eq!(
+            serde_json::to_value(&invalid_kind).unwrap()["kind"],
+            "invalid_memory_kind"
+        );
+
+        let invalid_group_id = GuiError::InvalidGroupId {
+            value: "not-a-uuid".to_string(),
+            source: uuid::Uuid::parse_str("not-a-uuid").unwrap_err(),
+        };
+        assert_eq!(
+            serde_json::to_value(&invalid_group_id).unwrap()["kind"],
+            "invalid_group_id"
+        );
+        let chained = invalid_group_id
+            .source()
+            .and_then(|s| s.downcast_ref::<uuid::Error>());
+        assert!(chained.is_some(), "uuid source must be preserved");
+
+        let invalid_version: GuiError = semver::Version::parse("not-a-version").unwrap_err().into();
+        assert_eq!(
+            serde_json::to_value(&invalid_version).unwrap()["kind"],
+            "invalid_version"
+        );
+
+        let not_a_directory = GuiError::NotADirectory {
+            path: std::path::PathBuf::from("/no/such/dir"),
+        };
+        assert_eq!(
+            serde_json::to_value(&not_a_directory).unwrap()["kind"],
+            "not_a_directory"
         );
     }
 }

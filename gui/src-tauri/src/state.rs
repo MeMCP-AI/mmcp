@@ -150,12 +150,12 @@ fn spawn_mirror_watcher(
     // can briefly be absent — create it eagerly here so the watcher
     // always has something to observe.
     if !repos_root.exists()
-        && let Err(err) = std::fs::create_dir_all(repos_root)
+        && let Err(source) = std::fs::create_dir_all(repos_root)
     {
-        return Err(GuiError::Other(format!(
-            "create repos_root {}: {err}",
-            repos_root.display()
-        )));
+        return Err(GuiError::Io {
+            path: repos_root.to_path_buf(),
+            source,
+        });
     }
 
     let (tx, mut rx) =
@@ -171,12 +171,12 @@ fn spawn_mirror_watcher(
             }
         },
     )
-    .map_err(|e| GuiError::Other(format!("debouncer: {e}")))?;
+    .map_err(GuiError::from)?;
 
     debouncer
         .watcher()
         .watch(repos_root, RecursiveMode::Recursive)
-        .map_err(|e| GuiError::Other(format!("watch: {e}")))?;
+        .map_err(GuiError::from)?;
 
     let handle = app.clone();
     let root = repos_root.to_path_buf();

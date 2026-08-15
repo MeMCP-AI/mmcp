@@ -94,7 +94,7 @@ pub async fn load_project_config(path: Option<String>) -> GuiResult<LoadedProjec
         Some(p) => p,
         None => match std::env::current_dir() {
             Ok(cwd) => cwd,
-            Err(e) => return Err(GuiError::Other(format!("cwd: {e}"))),
+            Err(e) => return Err(GuiError::CurrentDirUnavailable(e)),
         },
     };
     let Some(root) = project_config::find_project_root(&start) else {
@@ -114,10 +114,9 @@ pub async fn load_project_config(path: Option<String>) -> GuiResult<LoadedProjec
 pub async fn save_project_config(args: SaveProjectConfigArgs) -> GuiResult<()> {
     let root = Path::new(&args.root);
     if !root.is_dir() {
-        return Err(GuiError::Other(format!(
-            "not a directory: {}",
-            root.display()
-        )));
+        return Err(GuiError::NotADirectory {
+            path: root.to_path_buf(),
+        });
     }
     project_config::save(root, &args.config).map_err(GuiError::from)?;
     Ok(())

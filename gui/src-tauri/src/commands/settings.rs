@@ -21,11 +21,11 @@ pub struct SettingsBlob(pub serde_json::Value);
 pub struct SettingsLock(pub Mutex<()>);
 
 fn settings_path(app: &AppHandle) -> GuiResult<PathBuf> {
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| GuiError::Other(format!("app_config_dir: {e}")))?;
-    fs::create_dir_all(&dir).map_err(|e| GuiError::Other(format!("create config dir: {e}")))?;
+    let dir = app.path().app_config_dir().map_err(GuiError::from)?;
+    fs::create_dir_all(&dir).map_err(|source| GuiError::Io {
+        path: dir.clone(),
+        source,
+    })?;
     Ok(dir.join("settings.json"))
 }
 
@@ -39,10 +39,11 @@ pub async fn load_settings(
     if !path.exists() {
         return Ok(SettingsBlob::default());
     }
-    let text =
-        fs::read_to_string(&path).map_err(|e| GuiError::Other(format!("read settings: {e}")))?;
-    let value: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| GuiError::Other(format!("parse settings: {e}")))?;
+    let text = fs::read_to_string(&path).map_err(|source| GuiError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(GuiError::from)?;
     Ok(SettingsBlob(value))
 }
 
@@ -54,9 +55,11 @@ pub async fn save_settings(
 ) -> GuiResult<()> {
     let _guard = lock.0.lock().unwrap_or_else(|e| e.into_inner());
     let path = settings_path(&app)?;
-    let json = serde_json::to_string_pretty(&settings.0)
-        .map_err(|e| GuiError::Other(format!("serialize settings: {e}")))?;
-    fs::write(&path, json).map_err(|e| GuiError::Other(format!("write settings: {e}")))?;
+    let json = serde_json::to_string_pretty(&settings.0).map_err(GuiError::from)?;
+    fs::write(&path, json).map_err(|source| GuiError::Io {
+        path: path.clone(),
+        source,
+    })?;
     Ok(())
 }
 
