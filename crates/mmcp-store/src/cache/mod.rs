@@ -81,6 +81,14 @@ pub enum CacheError {
         #[source]
         source: FeatureStatusParseError,
     },
+
+    /// [`init_from_home`] was called a second time against a home
+    /// other than the one the process already activated. One
+    /// process holds exactly one active cache pool; a second,
+    /// different home almost always means two homes are being
+    /// mixed together in the same process, not a legitimate re-init.
+    #[error("cache already initialized for {active}, cannot switch to {requested}")]
+    MismatchedHome { active: PathBuf, requested: PathBuf },
 }
 
 /// One row of the local content cache:
@@ -169,7 +177,8 @@ pub async fn open_pool(path: &Path) -> Result<SqlitePool, CacheError> {
     Ok(pool)
 }
 
-/// Process-global active cache pool, set once via [`init_from_home`].
+/// Process-global active cache pool, set once via [`init_from_home`], paired with the db path
+/// it was opened against so a later call can detect a mismatched home (see [`init_from_home`]).
 /// Both the CLI's `main` and the MCP server's `ClientState::initialize_from` call it before dispatching.
 /// [`notify_write`] reads it back to decide whether the write-trigger hook has anything to do.
 ///
@@ -181,20 +190,30 @@ pub async fn open_pool(path: &Path) -> Result<SqlitePool, CacheError> {
 /// a dedicated `tests/*.rs` integration file that cargo compiles as its own process,
 /// rather than inside this crate's shared unit-test binary,
 /// so they cannot race another test's `init_from_home` call for the same slot.
-static ACTIVE_POOL: OnceLock<SqlitePool> = OnceLock::new();
+static ACTIVE_POOL: OnceLock<(PathBuf, SqlitePool)> = OnceLock::new();
 
 /// Initialise the process-global active pool from `home`'s default cache path (see [`default_db_path`]).
-/// Idempotent: a second call in the same process is a no-op that keeps the pool the first call installed,
-/// matching the "one home per process" invariant.
+/// Idempotent for the SAME home: a repeat call in the same process is a no-op that keeps the pool
+/// the first call installed, matching the "one home per process" invariant. A repeat call naming a
+/// DIFFERENT home is not silently accepted: it errors with [`CacheError::MismatchedHome`], naming
+/// both the already-active and the newly-requested path, since accepting it would leave every
+/// caller silently sharing the first home's pool while believing it holds the second.
 pub async fn init_from_home(home: &MmcpHome) -> Result<(), CacheError> {
-    if ACTIVE_POOL.get().is_some() {
+    let requested = default_db_path(home);
+    if let Some((active, _pool)) = ACTIVE_POOL.get() {
+        if *active != requested {
+            return Err(CacheError::MismatchedHome {
+                active: active.clone(),
+                requested,
+            });
+        }
         return Ok(());
     }
-    let pool = open_pool(&default_db_path(home)).await?;
+    let pool = open_pool(&requested).await?;
     // Benign race: if another task won between the `get()` check above and this `set`,
     // our freshly-opened pool is simply dropped (closes cleanly),
     // and every caller ends up sharing the winner's pool either way.
-    let _ = ACTIVE_POOL.set(pool);
+    let _ = ACTIVE_POOL.set((requested, pool));
     Ok(())
 }
 
@@ -206,7 +225,7 @@ pub async fn init_from_home(home: &MmcpHome) -> Result<(), CacheError> {
 /// so its absence is never a reason to fail an unrelated operation.
 #[must_use]
 pub fn active_pool() -> Option<SqlitePool> {
-    ACTIVE_POOL.get().cloned()
+    ACTIVE_POOL.get().map(|(_path, pool)| pool.clone())
 }
 
 /// Write-trigger hook: called by [`crate::memory::write_file_at_path`] right after a memory write commits.

@@ -6493,6 +6493,17 @@ fn map_milestone_error_to_mcp(err: mmcp_store::milestones::MilestoneError) -> Mc
                     Some(json!({ "code": "cache_unparseable_feature_status" })),
                 )
             }
+            mmcp_store::cache::CacheError::MismatchedHome { active, requested } => {
+                tracing::error!(
+                    active = %active.display(),
+                    requested = %requested.display(),
+                    "milestone rollup: cache pool requested against a different home than active"
+                );
+                McpError::internal_error(
+                    "local content cache is bound to a different home; milestone rollups cannot be computed",
+                    Some(json!({ "code": "cache_mismatched_home" })),
+                )
+            }
         },
     }
 }
