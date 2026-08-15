@@ -14,6 +14,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
+use mmcp_core::config::is_group_adopted;
+use mmcp_core::conventions::slug_matches_filter;
 use mmcp_core::id::GroupId;
 use mmcp_core::memory::{MemoryFile, MemoryFrontmatter};
 use mmcp_git::{GitBackend, NativeBackend, Rev};
@@ -6521,20 +6523,6 @@ async fn read_memory_file_for_subscription(
     })
 }
 
-/// Does `cfg` adopt the given group slug? Checks both the
-/// explicit `subscriptions.groups` list and the `lang/<name>` mapping
-/// implied by `subscriptions.languages`.
-/// Bare string equality for now: namespace-aware resolution is a
-/// candidate future refinement once the adoption format stabilises.
-pub(crate) fn is_group_adopted(slug: &str, cfg: &mmcp_core::config::ProjectConfig) -> bool {
-    cfg.subscriptions.groups.iter().any(|s| s == slug)
-        || cfg
-            .subscriptions
-            .languages
-            .iter()
-            .any(|lang| slug == format!("lang/{lang}"))
-}
-
 fn current_dir_for_mcp() -> Result<std::path::PathBuf, McpError> {
     std::env::current_dir()
         .map_err(|e| McpError::internal_error(format!("cannot read working directory: {e}"), None))
@@ -7641,43 +7629,6 @@ async fn list_memory_files(
     mmcp_store::list_all_memory_files(backend, &entry.handle, &Rev::head())
         .await
         .map_err(git_error)
-}
-
-/// Path filter for `list_memories`.
-/// Returns `true` when `slug` (the full slash-joined memory slug) belongs in the listing.
-/// The listing is constrained by `prefix` and the recursion mode.
-///
-/// `depth` is measured from the *anchor*: the prefix when one
-/// is set, or the implicit `memories/` root when not. The anchor
-/// itself sits at depth 0; a top-level slug like `feedback` is
-/// depth 1 from the root, and one level below a prefix is depth
-/// 1 from the prefix.
-///
-/// - `prefix = None, recursive = true` (default): every slug
-///   matches.
-/// - `prefix = None, recursive = false`: only top-level slugs
-///   (no `/` separator) match.
-/// - `prefix = Some("a/b"), recursive = true`: slugs that equal
-///   `"a/b"` or live underneath it match.
-/// - `prefix = Some("a/b"), recursive = false`: only the
-///   immediate children of the prefix and the prefix itself
-///   match (so `a/b`, `a/b/c` ok; `a/b/c/d` filtered out).
-fn slug_matches_filter(slug: &str, prefix: Option<&str>, recursive: bool) -> bool {
-    let depth = match prefix {
-        None | Some("") | Some("/") => slug.split('/').count(),
-        Some(p) => {
-            if slug == p {
-                0
-            } else if let Some(rest) = slug.strip_prefix(p)
-                && let Some(suffix) = rest.strip_prefix('/')
-            {
-                suffix.split('/').count()
-            } else {
-                return false;
-            }
-        }
-    };
-    if recursive { true } else { depth <= 1 }
 }
 
 /// Outcome of building one memory's descriptor.
@@ -12319,27 +12270,6 @@ mod tests {
             })
             .expect("path array");
         assert_eq!(path, vec!["flat"]);
-    }
-
-    #[tokio::test]
-    async fn slug_matches_filter_truth_table() {
-        // No prefix, recursive=true: every slug matches.
-        assert!(slug_matches_filter("a", None, true));
-        assert!(slug_matches_filter("a/b/c", None, true));
-        // No prefix, recursive=false: only top-level slugs.
-        assert!(slug_matches_filter("a", None, false));
-        assert!(!slug_matches_filter("a/b", None, false));
-        // Prefix match, recursive=true.
-        assert!(slug_matches_filter("a/b", Some("a"), true));
-        assert!(slug_matches_filter("a/b/c/d", Some("a/b"), true));
-        // Prefix match, recursive=false: only depth ≤ 1 below
-        // prefix.
-        assert!(slug_matches_filter("a", Some("a"), false));
-        assert!(slug_matches_filter("a/b", Some("a"), false));
-        assert!(!slug_matches_filter("a/b/c", Some("a"), false));
-        // Prefix mismatch.
-        assert!(!slug_matches_filter("ab", Some("a"), true));
-        assert!(!slug_matches_filter("b/a", Some("a"), true));
     }
 
     #[tokio::test]

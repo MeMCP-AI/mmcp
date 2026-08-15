@@ -11,12 +11,13 @@
 
 use anyhow::Result;
 use clap::Args;
+use mmcp_core::config::is_group_adopted;
 use mmcp_store::config::{find_project_root, load as load_project_config};
 use mmcp_store::home::MmcpHome;
 use mmcp_store::memory::resolve_group;
 use uuid::Uuid;
 
-use crate::commands::serve::{is_group_adopted, resolve_subscribed_reads};
+use crate::commands::serve::resolve_subscribed_reads;
 use crate::notes::render_notes_tail;
 
 #[derive(Debug, Args)]

@@ -17,6 +17,7 @@ use std::io::Read;
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
+use mmcp_core::conventions::slug_matches_filter;
 use mmcp_core::manifest::GroupScope;
 use mmcp_core::memory::{
     FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryRef, parse_sections,
@@ -387,27 +388,6 @@ async fn run_list(args: ListArgs) -> Result<()> {
         println!("  {} {}  {}", file.slug, short_id(&file.id), title);
     }
     Ok(())
-}
-
-/// Shared slug-path filter.
-/// Returns `true` when `slug` belongs in a listing constrained to `prefix` and the recursion mode.
-/// Mirrors the MCP-side helper of the same name (kept in sync by the parity test in `serve.rs`).
-fn slug_matches_filter(slug: &str, prefix: Option<&str>, recursive: bool) -> bool {
-    let depth = match prefix {
-        None | Some("") | Some("/") => slug.split('/').count(),
-        Some(p) => {
-            if slug == p {
-                0
-            } else if let Some(rest) = slug.strip_prefix(p)
-                && let Some(suffix) = rest.strip_prefix('/')
-            {
-                suffix.split('/').count()
-            } else {
-                return false;
-            }
-        }
-    };
-    if recursive { true } else { depth <= 1 }
 }
 
 async fn run_tree(args: TreeArgs) -> Result<()> {
