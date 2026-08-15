@@ -59,11 +59,7 @@ export interface MemoryFile {
   body: string;
 }
 
-/** Metadata-only listing entry: one memory's frontmatter plus the
- * owning group's tip commit at read time, no markdown body. Every
- * entry from the same `list_memory_descriptors` call carries the
- * same `commit` — see the Rust doc comment on `MemoryDescriptorDto`
- * for why group-level granularity is the right tradeoff here. */
+/** Wire mirror of the Rust `MemoryDescriptorDto`. */
 export interface MemoryDescriptor {
   slug: string;
   commit: string;
@@ -75,9 +71,7 @@ export interface SyncStatus {
   server_url: string | null;
 }
 
-/** One group whose sync attempt itself errored. Mirrors the Rust
- * `GroupSyncFailureDto`; every OTHER scheduled group still ran to
- * completion even when this one appears here. */
+/** Wire mirror of the Rust `GroupSyncFailureDto`. */
 export interface SyncGroupFailure {
   group_id: string;
   message: string;
@@ -127,11 +121,8 @@ export interface ReachabilityEvent {
   reason: string | null;
 }
 
-// Mirrors the `kind` values gui/src-tauri/src/error.rs's
-// `Serialize for GuiError` impl actually emits — every `GuiError`
-// variant, one string each. Keep this union exhaustive: a Rust-side
-// variant this list misses is invisible to any `kind`-based branch
-// on the frontend (issue #153).
+// Mirrors every `kind` string emitted by `Serialize for GuiError` in gui/src-tauri/src/error.rs.
+// A missing variant is invisible to any `kind`-based branch here, so keep the union exhaustive.
 export interface GuiErrorPayload {
   kind:
     | 'store'

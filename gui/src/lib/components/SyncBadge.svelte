@@ -25,12 +25,7 @@
     }
   });
 
-  // syncStore.configured is the SSOT for this check — do not
-  // re-derive it here. It differs subtly from a bare
-  // `phase.t !== 'not_configured'` check: `syncStore.configured` is
-  // also false while `phase.t` is `'unknown'` or `'failed'`, so the
-  // badge correctly reads "no server" during those phases instead of
-  // showing a blank-hostname spinner (issue #153).
+  // `syncStore.configured` is the SSOT: it is false during `unknown` and `failed` too.
   const configured = $derived(syncStore.configured);
 
   // Host + port only — full URLs get long quickly.

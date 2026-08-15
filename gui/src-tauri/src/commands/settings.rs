@@ -64,13 +64,8 @@ pub async fn save_settings(
 mod tests {
     use super::*;
 
-    /// Backward-compat guard for issue #128: the frontend's
-    /// `UiSettings` type dropped the dead `diff_view` / `ui_variant`
-    /// fields, but `SettingsBlob` wraps `serde_json::Value` precisely
-    /// so this backend never needs to know the frontend's schema.
-    /// The exact `to_string_pretty` / `from_str` round trip
-    /// `save_settings` / `load_settings` perform must preserve a
-    /// legacy field verbatim rather than silently dropping it.
+    /// `SettingsBlob` wraps `serde_json::Value`, so the save/load round trip is lossless.
+    /// A key this backend does not know must come back verbatim.
     #[test]
     fn legacy_fields_survive_the_save_load_round_trip() {
         let on_disk_blob = serde_json::json!({

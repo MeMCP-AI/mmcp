@@ -11,9 +11,6 @@
 
   interface Props {
     slug: string;
-    /// Only `frontmatter` is ever read below, so any body-bearing
-    /// shape works here — a full `MemoryFile`, a metadata-only
-    /// `MemoryDescriptor`, or a synthesized `{ frontmatter }`.
     body: { frontmatter: MemoryFrontmatter } | undefined;
     /** Sub-label under the slug, typically `scope · group`. */
     subtitle?: string | null;

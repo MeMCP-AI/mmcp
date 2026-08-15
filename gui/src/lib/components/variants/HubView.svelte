@@ -76,16 +76,13 @@
   }
 
   // ---------------------------------------------------------------
-  //  Data loading — metadata-only descriptors pre-warm every group
-  //  for the home dashboard and global search (issue #126); full
-  //  bodies load only for the group/scope/memory the user actually
-  //  opens, never eagerly for every group on Home.
+  //  Data loading: metadata-only descriptors pre-warm every group for the home dashboard
+  //  and global search.
+  //  Full bodies load only for the group, scope, or memory the user actually opens.
   // ---------------------------------------------------------------
 
-  // One `list_memory_descriptors` call per group instead of one
-  // `load_memory` round trip per memory. Also seeds `memoriesStore
-  // .slugs`, so this effect supersedes the old separate slug-prewarm
-  // effect.
+  // One `list_memory_descriptors` call per group.
+  // Also seeds `memoriesStore.slugs`.
   $effect(() => {
     for (const g of groupsStore.groups) {
       if (
@@ -97,13 +94,9 @@
     }
   });
 
-  // Eager body loads stay scoped to what the user is actually
-  // looking at (scope / group / memory) — never Home, which renders
-  // from cached descriptors only (see `allDescriptorEntries` below).
-  // `bodyFor` / `isLoadingBody` reads are wrapped in `untrack()`
-  // because this effect itself writes those values via `loadBody`;
-  // without `untrack`, every arriving body would re-trigger the
-  // whole scan (the O(N^2) pattern issue #126 also flags).
+  // Eager body loads stay scoped to scope / group / memory, never Home, which renders descriptors.
+  // `untrack` guards the `bodyFor` / `isLoadingBody` reads: this effect writes them via `loadBody`,
+  // so tracking them would rescan on every arriving body.
   $effect(() => {
     const loadBodiesFor = (gid: string) => {
       const slugs = memoriesStore.slugs[gid];
@@ -161,14 +154,8 @@
     body: MemoryFile;
   }
 
-  // Matches against `memoriesStore.descriptors` (frontmatter-only,
-  // pre-warmed for every group — see the data-loading effects above)
-  // so search covers every memory in the mirror, not just whichever
-  // ones happen to have a cached body. `matchesMemoryFilter` never
-  // reads `body.body`, only frontmatter fields, so a synthesized
-  // empty-body `MemoryFile` matches identically to a real cached one
-  // — falling back to the real cached body when one exists costs
-  // nothing and keeps a single code path for both cases.
+  // Searches the descriptor cache, so every mirrored memory is covered, not only cached bodies.
+  // `matchesMemoryFilter` reads frontmatter only, so a synthesized empty body matches identically.
   const globalHits = $derived.by<GlobalHit[]>(() => {
     const q = globalQuery.trim();
     if (q.length < 2) return [];
@@ -192,10 +179,7 @@
   //  Home-dashboard signals
   // ---------------------------------------------------------------
   //
-  // Driven by the metadata-only descriptor cache, not `bodyFor` —
-  // Home no longer eager-loads every memory's body (issue #126), so
-  // these widgets read frontmatter straight off the descriptor
-  // listing instead.
+  // Driven by the descriptor cache: Home reads frontmatter only, never a body.
 
   interface ClassifiedEntry {
     groupId: string;

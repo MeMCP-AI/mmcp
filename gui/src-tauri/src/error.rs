@@ -34,14 +34,8 @@ pub enum GuiStoreError {
     MemoryParse(#[from] mmcp_core::memory::MemoryParseError),
 }
 
-/// Failure modes around driving a native Tauri dialog: no window to
-/// parent it to, the result channel dropped before the callback
-/// fired, or the callback returned a handle that doesn't convert to
-/// a filesystem path. Shared by every command that opens a dialog
-/// (`commands/archive.rs`'s export/import pickers,
-/// `commands/workspace.rs`'s directory picker) so the same failure
-/// mode carries the same typed variant everywhere instead of each
-/// command module re-stating it as its own catch-all string.
+/// Failure modes around driving a native Tauri dialog.
+/// Shared by every command that opens one.
 #[derive(Debug, Error)]
 pub enum GuiDialogError {
     /// No main window to parent a native dialog to.
@@ -94,14 +88,10 @@ pub enum GuiArchiveError {
 
 #[derive(Debug, Error)]
 pub enum GuiError {
-    /// A store-layer failure: memory/group read or write, import,
-    /// archive, or manifest parsing. See [`GuiStoreError`] for the
-    /// specific cause. Boxed: `mmcp_store::StoreError`'s path-and-
-    /// operation-carrying struct variants make `GuiStoreError` grow
-    /// past clippy's `result_large_err` threshold; boxing keeps
-    /// `GuiError` itself pointer-sized for this variant instead of
-    /// inflating every `GuiResult<T>` return by the largest possible
-    /// store failure.
+    /// A store-layer failure: memory/group read or write, import, archive, or manifest parsing.
+    /// See [`GuiStoreError`] for the specific cause.
+    /// Boxed: trades one indirection for a pointer-sized variant, keeping `GuiResult<T>` small.
+    /// `GuiStoreError` otherwise crosses clippy's `result_large_err` threshold.
     #[error("store: {0}")]
     Store(#[from] Box<GuiStoreError>),
 
@@ -226,15 +216,8 @@ mod tests {
         let err: GuiError = source.into();
 
         assert!(matches!(err, GuiError::Store(_)));
-        // `GuiError::Store` now boxes its `GuiStoreError` source (see
-        // its doc comment): `err.source()`'s concrete underlying type
-        // is `Box<GuiStoreError>`, not `GuiStoreError`, so a direct
-        // `downcast_ref::<GuiStoreError>()` at this level no longer
-        // matches. `Box<T: Error>`'s own `Error::source()` delegates
-        // to the inner value's `source()` (std's blanket impl), so
-        // calling `.source()` once more here reaches the same
-        // `mmcp_store::StoreError` this test always chained through,
-        // without downcasting the intermediate box.
+        // `Box<GuiStoreError>` delegates `source()` to the inner error.
+        // One extra hop reaches `mmcp_store::StoreError`, with no downcast of the box.
         let level1 = err.source().expect("gui-store source must be preserved");
         let level2 = level1
             .source()

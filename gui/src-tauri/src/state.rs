@@ -112,28 +112,18 @@ impl AppState {
 /// Where one filesystem-watch event, relative to `repos_root`, points.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum WatchTarget {
-    /// Inside a specific group repository, carrying its bare UUID —
-    /// the same shape `GroupEntryDto.group_id` uses everywhere else.
+    /// Inside a specific group repository, carrying its bare UUID.
     Group(String),
     /// At the mirror root itself, or under an entry that doesn't
     /// look like a real group repository.
     Root,
 }
 
-/// Classify `rel` (a watch-event path already stripped of the
-/// `repos_root` prefix) as either a change inside a specific group
-/// repository or a change at the mirror root.
+/// Classify `rel`, a watch-event path stripped of the `repos_root` prefix.
 ///
-/// Every locally-mirrored group lives at `<repos_root>/<uuid>.git/`
-/// (see `mmcp_store::groups::scan_repos_root`). The emitted
-/// `group_id` must be the bare UUID, never the raw `<uuid>.git`
-/// directory name — emitting the raw name broke the frontend's
-/// per-group refresh entirely, since `GroupEntryDto.group_id` (and
-/// therefore every comparison against it) is always the bare UUID
-/// (issue #130). A top-level entry that isn't a valid `<uuid>.git`
-/// name — a stray directory, a partial clone, anything that doesn't
-/// parse — falls back to [`WatchTarget::Root`] instead of being
-/// emitted as a bogus group id.
+/// A mirrored group lives at `<repos_root>/<uuid>.git/` (see `mmcp_store::groups::scan_repos_root`).
+/// The emitted id is the bare UUID, matching `GroupEntryDto.group_id`.
+/// Anything else at top level classifies as [`WatchTarget::Root`], never as a bogus group id.
 fn classify_watch_path(rel: &Path) -> WatchTarget {
     let Some(first) = rel.components().next().and_then(|c| c.as_os_str().to_str()) else {
         return WatchTarget::Root;
@@ -147,12 +137,10 @@ fn classify_watch_path(rel: &Path) -> WatchTarget {
     }
 }
 
-/// Spawn a debounced recursive watcher on the mirror root. When
-/// any file under a group repo changes, a `mirror:changed` event
-/// fires with the group's bare UUID (see [`classify_watch_path`]).
-/// Events targeting files directly under repos_root carry
-/// `group_id: null` so the frontend does a full group-list refresh —
-/// picking up newly-cloned group repos after a pull.
+/// Spawn a debounced recursive watcher on the mirror root.
+/// A `mirror:changed` event fires with the group's bare UUID (see [`classify_watch_path`]).
+/// Events directly under `repos_root` carry `group_id: null`, triggering a full group-list refresh.
+/// This picks up newly-cloned group repos after a pull.
 fn spawn_mirror_watcher(
     app: &AppHandle,
     repos_root: &Path,
@@ -278,11 +266,7 @@ fn load_project_sync(
 mod tests {
     use super::*;
 
-    /// Falsification target for issue #130: a change under a real
-    /// `<uuid>.git` directory must classify as `Group(<bare uuid>)`,
-    /// never the raw `<uuid>.git` directory name — the frontend's
-    /// `mirror:changed` comparison is against
-    /// `GroupEntryDto.group_id`, which is always the bare UUID.
+    /// A path under `<uuid>.git/` classifies as `Group` with the bare UUID, never the directory name.
     #[test]
     fn group_directory_path_yields_a_bare_uuid_parseable_group_id() {
         let rel = Path::new("019d955d-4cce-77f2-a0b3-0b79ed394612.git/objects/pack/x");

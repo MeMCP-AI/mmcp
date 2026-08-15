@@ -3,16 +3,8 @@
 // side-by-side with plain knowledge memories in the mmcp mirror;
 // every variant wants to surface them separately.
 //
-// This is the hand-written companion to the generated kind
-// vocabulary, not the source of truth itself: MEMORY_KIND_VALUES is
-// re-exported from `./memory_kind.generated`, which a Rust test in
-// crates/mmcp-core/src/memory/kind.rs (MemoryKind::ALL) asserts
-// against on every `cargo test -p mmcp-core` run, so a 9th kind
-// added server-side either regenerates this file or fails CI, never
-// drifts silently. `KindStr` is derived from that re-export so every
-// consumer (types.ts and every Record<KindStr, ...> site) gets a
-// compile error, not a runtime lookup failure, the day a kind is
-// added or removed.
+// `MEMORY_KIND_VALUES` is re-exported from `./memory_kind.generated`, the generated vocabulary.
+// `KindStr` derives from it, so a kind added or removed server-side is a compile error here.
 
 import { MEMORY_KIND_VALUES } from './memory_kind.generated';
 

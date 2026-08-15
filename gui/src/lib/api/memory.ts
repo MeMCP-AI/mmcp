@@ -4,9 +4,6 @@ import type { MemoryDescriptor, MemoryFile } from '../types';
 export const listMemorySlugs = (groupId: string) =>
   invoke<string[]>('list_memory_slugs', { groupId });
 
-/// Metadata-only listing for one group: every memory's frontmatter
-/// plus a shared change-detection commit id, no bodies. One IPC call
-/// per group instead of one `loadMemory` round trip per memory.
 export const listMemoryDescriptors = (groupId: string) =>
   invoke<MemoryDescriptor[]>('list_memory_descriptors', { groupId });
 

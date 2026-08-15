@@ -7,13 +7,8 @@ import type { MemoryDescriptor, MemoryFile } from '$lib/types';
 // currently-viewed memory; the viewer renders a banner and swaps
 // only when the user opts in.
 //
-// `descriptors` + `groupCommit` back the metadata-only listing
-// (issue #126): one `list_memory_descriptors` call per group returns
-// every memory's frontmatter plus the group's tip commit, so callers
-// that only need frontmatter (the home dashboard, global search)
-// never trigger a body download. `refreshGroup` uses `groupCommit`
-// to skip re-downloading cached bodies when the group hasn't
-// actually changed.
+// `descriptors` holds frontmatter-only listings; `groupCommit` holds each group's last-seen tip.
+// `refreshGroup` compares that tip to skip re-downloading unchanged cached bodies.
 class MemoriesStore {
   slugs = $state<Record<string, string[]>>({});
   descriptors = $state<Record<string, MemoryDescriptor[]>>({});
@@ -37,11 +32,7 @@ class MemoriesStore {
     }
   }
 
-  /// Metadata-only listing for one group: frontmatter for every
-  /// memory plus the group's tip commit, no bodies. Also seeds
-  /// `slugs[groupId]` so callers that only need the slug list (e.g.
-  /// `FeatureRelations`, `graph.ts`) keep working off this single
-  /// call instead of a separate `loadSlugs` round trip.
+  /// Loads `descriptors[groupId]` and seeds `slugs[groupId]` from the same call.
   async loadDescriptors(groupId: string) {
     this.loadingDescriptors[groupId] = true;
     this.error = null;
@@ -105,19 +96,10 @@ class MemoriesStore {
     }
   }
 
-  /// Refetch the descriptor list for `groupId` and silently
-  /// reconcile every already-cached body in that group.
-  /// `currentlyViewed` identifies the one memory the user is reading
-  /// right now — its fresh copy goes to `pendingBodies` instead of
-  /// overwriting `bodies` (see `refreshBody`). Memories that no
-  /// longer appear in the fresh listing (deleted upstream) get
-  /// dropped.
-  ///
-  /// Cached bodies are only re-downloaded when the group's tip
-  /// commit actually changed since the last listing — comparing
-  /// `groupCommit[groupId]` catches the common case (some OTHER
-  /// group's file changed, or an unrelated file in this same repo)
-  /// without a wasted `loadMemory` round trip per cached slug.
+  /// Refetch `groupId`'s descriptors and reconcile every cached body in that group.
+  /// The currently-viewed memory lands in `pendingBodies` instead of `bodies` (see `refreshBody`).
+  /// Slugs absent from the fresh listing are dropped.
+  /// Cached bodies are re-downloaded only when the group tip commit changed.
   async refreshGroup(
     groupId: string,
     currentlyViewed: { groupId: string; slug: string } | null

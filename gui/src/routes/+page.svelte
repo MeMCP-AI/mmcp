@@ -20,12 +20,7 @@
     group_id: string | null;
   }
 
-  // Set when the Rust setup closure's `AppState::discover` fails
-  // (see gui/src-tauri/src/lib.rs). Every command depends on
-  // `AppState`, so this is fatal: without this subscriber the app
-  // rendered as a fully interactive but permanently inert shell,
-  // with only a tracing log to explain why — a silent failure (issue
-  // #129, mmcp rule software-surfaces-its-errors-no-silent-failure).
+  // Fatal `AppState::discover` failure reported by the backend; every command needs `AppState`.
   let initFailedMessage = $state<string | null>(null);
 
   $effect(() => {
@@ -65,14 +60,8 @@
   // Currently-viewed memory lands in `pendingBodies` for the
   // banner, so a refresh never yanks the reader off their page.
   //
-  // Events are coalesced (issue #126): a single sync pull touching
-  // several groups fires one `mirror:changed` event PER group, each
-  // in its own debounce window on the Rust side. Handling each event
-  // independently meant one pull of 8 groups triggered 8 full
-  // `refreshQuiet()` rescans. Every event arriving within
-  // `MIRROR_EVENT_COALESCE_MS` of the first is instead folded into
-  // one pending batch; the batch flushes as a single `refreshQuiet()`
-  // call plus at most one `refreshGroup()` call for the active group.
+  // Coalescing window for `mirror:changed`: one sync pull emits one event per group.
+  // A batch flushes as one `refreshQuiet()` plus at most one `refreshGroup()` for the active group.
   const MIRROR_EVENT_COALESCE_MS = 200;
 
   $effect(() => {
@@ -131,8 +120,6 @@
     </div>
   {/if}
 
-  <!-- Hub is the only variant (RepoView / FeedView were removed as
-       dead code — issue #128). -->
   <div class="relative flex min-h-0 flex-1 flex-col overflow-hidden">
     <HubView />
   </div>

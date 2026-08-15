@@ -19,23 +19,16 @@ pub struct SyncStatusDto {
     pub server_url: Option<String>,
 }
 
-/// One group whose sync attempt itself errored, carrying enough
-/// information for the frontend to tell the user which group failed
-/// and why. Wire mirror of `mmcp_sync::GroupSyncFailure`, whose
-/// `SyncError` field does not implement `Serialize`.
+/// One group whose sync attempt errored.
+/// Wire mirror of `mmcp_sync::GroupSyncFailure`, whose `SyncError` field is not `Serialize`.
 #[derive(Debug, Serialize)]
 pub struct GroupSyncFailureDto {
     pub group_id: String,
     pub message: String,
 }
 
-/// Populator helper: convert an engine report's `failed` list into
-/// its DTO shape. Shared by `sync_pull` and `sync_push` so both
-/// commands carry the same failure information the CLI and MCP
-/// surfaces already expose via `GroupSyncFailure` (see
-/// `crates/mmcp-client/src/notes.rs::sync_group_failure_notes`)
-/// instead of silently discarding it, which is what this DTO type
-/// existed without doing before this fix.
+/// Convert an engine report's `failed` list into its DTO shape.
+/// Shared by `sync_pull` and `sync_push`.
 fn sync_failures_dto(failed: &[mmcp_sync::GroupSyncFailure]) -> Vec<GroupSyncFailureDto> {
     failed
         .iter()
@@ -50,18 +43,14 @@ fn sync_failures_dto(failed: &[mmcp_sync::GroupSyncFailure]) -> Vec<GroupSyncFai
 pub struct PullReportDto {
     pub updated: usize,
     pub new_groups: usize,
-    /// Groups whose pull attempt itself errored. Every OTHER
-    /// scheduled group still ran to completion; see
-    /// `mmcp_sync::GroupSyncFailure`'s doc comment.
+    /// Groups whose own attempt errored; see `mmcp_sync::GroupSyncFailure`.
     pub failed: Vec<GroupSyncFailureDto>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct PushReportDto {
     pub pushed: usize,
-    /// Groups whose push attempt itself errored. Every OTHER
-    /// scheduled group still ran to completion; see
-    /// `mmcp_sync::GroupSyncFailure`'s doc comment.
+    /// Groups whose own attempt errored; see `mmcp_sync::GroupSyncFailure`.
     pub failed: Vec<GroupSyncFailureDto>,
 }
 

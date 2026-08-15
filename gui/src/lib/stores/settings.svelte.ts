@@ -17,19 +17,12 @@ export interface UiSettings {
   layout_mode: LayoutMode;
   theme: ThemeMode;
   /** UUIDs of groups the user has pinned on the home dashboard.
-   * GitHub-style "starred repos" — scales with thousands of groups
-   * because the long tail never makes it into the dashboard unless
-   * the user opts in. */
+   * GitHub-style "starred repos": pinning scales to thousands of groups.
+   * The long tail never makes it into the dashboard unless the user opts in. */
   pinned_groups: string[];
 }
 
-// `diff_view` / `ui_variant` used to live here (a `repo`/`feed`
-// variant switcher and a diff-view-mode picker, both dead code —
-// see issue #128). Dropping them from `UiSettings` does not drop
-// them from an on-disk blob written by an older build: `mount()`
-// spreads the parsed JSON over `DEFAULT_SETTINGS`, and a plain
-// object spread keeps every key the parsed JSON actually has,
-// typed or not, so `save()` round-trips them unchanged.
+// `mount()` spreads the parsed JSON over these defaults, so untyped on-disk keys survive `save()`.
 const DEFAULT_SETTINGS: UiSettings = {
   kind_display: 'icon_and_text',
   reference_point: null,

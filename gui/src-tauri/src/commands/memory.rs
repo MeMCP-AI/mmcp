@@ -72,10 +72,8 @@ pub struct MemoryFileDto {
     pub body: String,
 }
 
-/// Build the wire DTO for one frontmatter block. Shared by
-/// [`MemoryFileDto::from`] (full body reads) and
-/// [`MemoryDescriptorDto`] listings (metadata-only reads) so the two
-/// call sites can never drift on which fields the frontend sees.
+/// Build the wire DTO for one frontmatter block.
+/// Shared by [`MemoryFileDto::from`] and [`MemoryDescriptorDto`] so the two cannot drift.
 fn frontmatter_to_dto(fm: &MemoryFrontmatter) -> MemoryFrontmatterDto {
     MemoryFrontmatterDto {
         id: fm.id,
@@ -125,23 +123,13 @@ impl From<&MemoryFile> for MemoryFileDto {
     }
 }
 
-/// One memory's frontmatter plus a change-detection identifier, with
-/// no markdown body. Backs [`list_memory_descriptors`]: a single
-/// batched call per group instead of one `load_memory` round trip
-/// per memory (see issue #126).
+/// One memory's frontmatter plus a change-detection identifier, with no markdown body.
+/// Backs [`list_memory_descriptors`].
 #[derive(Debug, Serialize)]
 pub struct MemoryDescriptorDto {
     pub slug: String,
-    /// The group repository's tip commit at read time. Every
-    /// descriptor in one `list_memory_descriptors` response carries
-    /// the same value — the group is one git repo, so there is no
-    /// cheaper per-file granularity available without walking each
-    /// file's own history. The frontend re-downloads a cached body
-    /// only when this value changes from what it last saw, which is
-    /// a safe, conservative check: zero false negatives (a real
-    /// change always changes the tip), occasional false positives
-    /// (an unrelated file in the same group also triggers a
-    /// re-check) that cost one wasted body read, never a stale read.
+    /// Group repository tip commit at read time, shared by every descriptor in one response.
+    /// Group-level granularity: coarser than per-file, so a re-check can be wasted, never stale.
     pub commit: String,
     pub frontmatter: MemoryFrontmatterDto,
 }
@@ -180,15 +168,9 @@ pub async fn list_memory_slugs(
     Ok(slugs)
 }
 
-/// Metadata-only listing for one group: every memory's frontmatter
-/// plus a shared change-detection commit id, with no markdown body.
-/// Resolves the group's tip commit and reads every file's bytes in
-/// one batch (`NativeBackend::read_files`, which resolves the
-/// commit/tree once for the whole call) instead of the home route's
-/// former per-slug `load_memory` round trip. A slug whose path can no
-/// longer be resolved, or whose bytes fail to parse as a memory file
-/// (e.g. a mid-write race with a concurrent commit), is logged and
-/// skipped rather than failing the whole listing — see issue #126.
+/// Frontmatter for every memory in one group, plus the group tip commit.
+/// Returns [`MemoryDescriptorDto`].
+/// An unresolvable slug, or bytes that do not parse as a memory file, is logged and skipped.
 #[tauri::command]
 pub async fn list_memory_descriptors(
     group_id: String,
