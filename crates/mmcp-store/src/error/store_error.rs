@@ -70,18 +70,6 @@ pub enum StoreError {
     #[error("transcript signature error: {0}")]
     Transcript(#[from] mmcp_session::SessionError),
 
-    /// Generic `#[from]` conversion for `mmcp_core::config::ConfigError`.
-    ///
-    /// This crate's own `config::load`/`config::save` no longer
-    /// construct this variant: they decompose `ConfigError` into
-    /// [`StoreError::TomlParse`]/[`StoreError::TomlSerialize`] so the
-    /// resulting error names the exact file that failed. The
-    /// conversion stays available for an external caller that holds
-    /// a bare `ConfigError` and wants `?` into `StoreError` without
-    /// a path to attach.
-    #[error("project config error: {0}")]
-    Config(#[from] mmcp_core::config::ConfigError),
-
     /// Sync client construction failed for `server_url`.
     #[error("failed to configure sync client for {server_url}: {source}")]
     Sync {
