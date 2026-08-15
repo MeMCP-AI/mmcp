@@ -37,6 +37,7 @@ use crate::routes::defaults::{
     AUTH_REQUEST_BODY_LIMIT_BYTES, OAUTH_STATE_HEX_LENGTH, OAUTH_STATE_SESSION_KEY_PREFIX,
     OAUTH_STATE_TOKEN_BYTES,
 };
+use crate::routes::registration_limits::RegistrationLimits;
 use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
 
@@ -123,12 +124,10 @@ fn validate_non_blank(field: &'static str, value: &str) -> Result<(), AuthHttpEr
 /// bounds.
 fn validate_register_request(
     req: &RegisterRequest,
-    min_password_length: usize,
-    max_password_length: usize,
-    max_handle_length: usize,
+    limits: RegistrationLimits,
 ) -> Result<(), AuthHttpError> {
     validate_non_blank("handle", &req.handle)?;
-    validate_max_length("handle", &req.handle, max_handle_length)?;
+    validate_max_length("handle", &req.handle, limits.max_handle_length)?;
     if let Some(email) = &req.email {
         validate_non_blank("email", email)?;
         validate_max_length("email", email, MAX_EMAIL_LENGTH)?;
@@ -137,8 +136,12 @@ fn validate_register_request(
         validate_non_blank("display_name", display_name)?;
         validate_max_length("display_name", display_name, MAX_DISPLAY_NAME_LENGTH)?;
     }
-    validate_password_policy(&req.password, min_password_length, max_password_length)
-        .map_err(AuthHttpError::PasswordPolicy)?;
+    validate_password_policy(
+        &req.password,
+        limits.min_password_length,
+        limits.max_password_length,
+    )
+    .map_err(AuthHttpError::PasswordPolicy)?;
     Ok(())
 }
 
@@ -148,9 +151,11 @@ async fn register(
 ) -> Result<(StatusCode, Json<RegisterResponse>), AuthHttpError> {
     validate_register_request(
         &req,
-        state.min_password_length,
-        state.max_password_length,
-        state.max_handle_length,
+        RegistrationLimits {
+            min_password_length: state.min_password_length,
+            max_password_length: state.max_password_length,
+            max_handle_length: state.max_handle_length,
+        },
     )?;
     let hash = hash_password(&req.password).map_err(into_generic_response)?;
     let user_id = Uuid::now_v7();
@@ -857,9 +862,11 @@ mod tests {
     fn validate(req: &RegisterRequest) -> Result<(), AuthHttpError> {
         validate_register_request(
             req,
-            mmcp_auth::MIN_PASSWORD_LENGTH,
-            mmcp_auth::MAX_PASSWORD_LENGTH,
-            MAX_HANDLE_LENGTH,
+            RegistrationLimits {
+                min_password_length: mmcp_auth::MIN_PASSWORD_LENGTH,
+                max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
+                max_handle_length: MAX_HANDLE_LENGTH,
+            },
         )
     }
 
@@ -999,11 +1006,25 @@ mod tests {
             ..valid_request()
         };
         assert!(
-            validate_register_request(&req, 4, mmcp_auth::MAX_PASSWORD_LENGTH, MAX_HANDLE_LENGTH)
-                .is_ok()
+            validate_register_request(
+                &req,
+                RegistrationLimits {
+                    min_password_length: 4,
+                    max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
+                    max_handle_length: MAX_HANDLE_LENGTH,
+                }
+            )
+            .is_ok()
         );
         assert!(matches!(
-            validate_register_request(&req, 20, mmcp_auth::MAX_PASSWORD_LENGTH, MAX_HANDLE_LENGTH),
+            validate_register_request(
+                &req,
+                RegistrationLimits {
+                    min_password_length: 20,
+                    max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
+                    max_handle_length: MAX_HANDLE_LENGTH,
+                }
+            ),
             Err(AuthHttpError::PasswordPolicy(
                 mmcp_auth::AuthError::PasswordTooShort { min: 20, .. }
             ))
@@ -1026,18 +1047,22 @@ mod tests {
         assert!(
             validate_register_request(
                 &req,
-                mmcp_auth::MIN_PASSWORD_LENGTH,
-                mmcp_auth::MAX_PASSWORD_LENGTH,
-                MAX_HANDLE_LENGTH
+                RegistrationLimits {
+                    min_password_length: mmcp_auth::MIN_PASSWORD_LENGTH,
+                    max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
+                    max_handle_length: MAX_HANDLE_LENGTH,
+                }
             )
             .is_ok()
         );
         assert!(matches!(
             validate_register_request(
                 &req,
-                mmcp_auth::MIN_PASSWORD_LENGTH,
-                mmcp_auth::MAX_PASSWORD_LENGTH,
-                8
+                RegistrationLimits {
+                    min_password_length: mmcp_auth::MIN_PASSWORD_LENGTH,
+                    max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
+                    max_handle_length: 8,
+                }
             ),
             Err(AuthHttpError::FieldTooLong {
                 field: "handle",

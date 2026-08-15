@@ -6,5 +6,6 @@ mod defaults;
 pub mod git_http;
 pub mod health;
 pub mod mcp;
+mod registration_limits;
 pub mod response;
 pub mod sync;
