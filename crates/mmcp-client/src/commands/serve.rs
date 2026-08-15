@@ -4094,11 +4094,16 @@ impl McpServer {
             .sync
             .as_ref()
             .and_then(mmcp_core::config::SyncConfig::resolve_token);
+        let push_token = cfg
+            .sync
+            .as_ref()
+            .and_then(mmcp_core::config::SyncConfig::resolve_push_token);
         let (engine, resolver) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
             self.state.groups.clone(),
             &server_url,
             token.as_deref(),
+            push_token.as_deref(),
         )
         .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
         let report = engine
@@ -4143,11 +4148,16 @@ impl McpServer {
             .sync
             .as_ref()
             .and_then(mmcp_core::config::SyncConfig::resolve_token);
+        let push_token = cfg
+            .sync
+            .as_ref()
+            .and_then(mmcp_core::config::SyncConfig::resolve_push_token);
         let (engine, resolver) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
             self.state.groups.clone(),
             &server_url,
             token.as_deref(),
+            push_token.as_deref(),
         )
         .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
         let report = engine
@@ -4191,11 +4201,16 @@ impl McpServer {
             .sync
             .as_ref()
             .and_then(mmcp_core::config::SyncConfig::resolve_token);
+        let push_token = cfg
+            .sync
+            .as_ref()
+            .and_then(mmcp_core::config::SyncConfig::resolve_push_token);
         let (engine, resolver) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
             self.state.groups.clone(),
             &server_url,
             token.as_deref(),
+            push_token.as_deref(),
         )
         .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
         let report = engine
@@ -4251,11 +4266,16 @@ impl McpServer {
             .sync
             .as_ref()
             .and_then(mmcp_core::config::SyncConfig::resolve_token);
+        let push_token = cfg
+            .sync
+            .as_ref()
+            .and_then(mmcp_core::config::SyncConfig::resolve_push_token);
         let (engine, resolver) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
             self.state.groups.clone(),
             &server_url,
             token.as_deref(),
+            push_token.as_deref(),
         )
         .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
         let report = engine

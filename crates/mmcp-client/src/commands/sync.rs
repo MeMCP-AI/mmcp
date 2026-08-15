@@ -113,8 +113,14 @@ pub async fn run_fetch(selector: SyncSelector) -> Result<()> {
     let (backend, group_index) = mmcp_home.init_backend().await?;
     let filter = resolve_sync_filter(&selector, &group_index).await?;
     let token = sync_cfg.resolve_token();
-    let (engine, resolver) =
-        build_engine(backend, group_index, &sync_cfg.server_url, token.as_deref())?;
+    let push_token = sync_cfg.resolve_push_token();
+    let (engine, resolver) = build_engine(
+        backend,
+        group_index,
+        &sync_cfg.server_url,
+        token.as_deref(),
+        push_token.as_deref(),
+    )?;
     let report = engine
         .fetch(filter, &resolver, &resolver)
         .await
@@ -183,6 +189,7 @@ async fn prepare(
     };
     let server_url = sync_cfg.server_url.clone();
     let token = sync_cfg.resolve_token();
+    let push_token = sync_cfg.resolve_push_token();
 
     let mmcp_home = MmcpHome::discover()?;
     let (backend, group_index) = mmcp_home.init_backend().await?;
@@ -190,7 +197,13 @@ async fn prepare(
     // Keep our own handle on the backend for the pull-trigger cache
     // hook below; `build_engine` takes ownership of a clone.
     let backend_for_cache = backend.clone();
-    let (engine, resolver) = build_engine(backend, group_index, &server_url, token.as_deref())?;
+    let (engine, resolver) = build_engine(
+        backend,
+        group_index,
+        &server_url,
+        token.as_deref(),
+        push_token.as_deref(),
+    )?;
     Ok((server_url, engine, resolver, filter, backend_for_cache))
 }
 
