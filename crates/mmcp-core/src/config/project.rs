@@ -63,12 +63,49 @@ pub fn is_group_adopted(slug: &str, cfg: &ProjectConfig) -> bool {
             .any(|lang| slug == format!("lang/{lang}"))
 }
 
+/// Environment variable carrying the bearer token for the `/sync/*`
+/// control plane, mirroring the server-side `MMCP_PUSH_TOKEN`
+/// convention for the git content plane.
+pub const SYNC_TOKEN_ENV: &str = "MMCP_SYNC_TOKEN";
+
 /// Remote sync configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SyncConfig {
     /// URL of the mmcp server this project syncs against.
     pub server_url: String,
+
+    /// Bearer token authorizing `/sync/*` requests against
+    /// `server_url`, issued by the server's login flow.
+    /// [`SyncConfig::resolve_token`] is the effective accessor:
+    /// `MMCP_SYNC_TOKEN` overrides this field when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
+impl SyncConfig {
+    /// Effective bearer token for `/sync/*` requests, reading
+    /// `MMCP_SYNC_TOKEN` from the real process environment.
+    #[must_use]
+    pub fn resolve_token(&self) -> Option<String> {
+        self.resolve_token_with(|key| std::env::var(key).ok())
+    }
+
+    /// Same resolution as [`SyncConfig::resolve_token`], with the
+    /// env lookup injected so tests never touch `std::env`, which
+    /// would race under cargo's default parallel test runner.
+    ///
+    /// `MMCP_SYNC_TOKEN` overrides the config file value when set,
+    /// mirroring the env-over-file precedence already used server
+    /// side for password-length limits. An empty value from either
+    /// source is treated as absent, matching `SyncClient::git_credentials`'s
+    /// existing `Some(token) if !token.is_empty()` pattern in the
+    /// `mmcp-sync` crate.
+    fn resolve_token_with(&self, get: impl Fn(&str) -> Option<String>) -> Option<String> {
+        get(SYNC_TOKEN_ENV)
+            .filter(|token| !token.is_empty())
+            .or_else(|| self.token.clone().filter(|token| !token.is_empty()))
+    }
 }
 
 /// Unified opt-in surface for which groups and memories the project
@@ -165,6 +202,7 @@ project_slug = "team-acme"
 
 [sync]
 server_url = "https://mmcp.example.com"
+token = "s3cr3t-bearer"
 
 [subscriptions]
 no_default_global = false
@@ -176,10 +214,9 @@ tags = ["git", "testing"]
 "#;
         let cfg = ProjectConfig::from_toml(source).expect("parse full config");
         assert_eq!(cfg.project_slug.as_deref(), Some("team-acme"));
-        assert_eq!(
-            cfg.sync.as_ref().expect("sync present").server_url,
-            "https://mmcp.example.com"
-        );
+        let sync = cfg.sync.as_ref().expect("sync present");
+        assert_eq!(sync.server_url, "https://mmcp.example.com");
+        assert_eq!(sync.token.as_deref(), Some("s3cr3t-bearer"));
         assert_eq!(
             cfg.subscriptions.groups,
             vec!["team-acme/shared".to_string()]
@@ -198,6 +235,51 @@ tags = ["git", "testing"]
         let rendered = cfg.to_toml().expect("render full config");
         let reparsed = ProjectConfig::from_toml(&rendered).expect("reparse rendered config");
         assert_eq!(cfg, reparsed);
+    }
+
+    /// Build a `SyncConfig` with the given config-file token, so
+    /// each `resolve_token_with` case only varies the env layer.
+    fn sync_config(token: Option<&str>) -> SyncConfig {
+        SyncConfig {
+            server_url: "https://mmcp.example.com".to_string(),
+            token: token.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn resolve_token_with_prefers_env_over_config_file() {
+        let cfg = sync_config(Some("file-token"));
+        let resolved =
+            cfg.resolve_token_with(|key| (key == SYNC_TOKEN_ENV).then(|| "env-token".to_string()));
+        assert_eq!(resolved.as_deref(), Some("env-token"));
+    }
+
+    #[test]
+    fn resolve_token_with_falls_back_to_config_file_when_env_absent() {
+        let cfg = sync_config(Some("file-token"));
+        let resolved = cfg.resolve_token_with(|_| None);
+        assert_eq!(resolved.as_deref(), Some("file-token"));
+    }
+
+    #[test]
+    fn resolve_token_with_is_none_when_both_sources_are_absent() {
+        let cfg = sync_config(None);
+        let resolved = cfg.resolve_token_with(|_| None);
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn resolve_token_with_treats_an_empty_env_value_as_absent_and_falls_back() {
+        let cfg = sync_config(Some("file-token"));
+        let resolved = cfg.resolve_token_with(|key| (key == SYNC_TOKEN_ENV).then(String::new));
+        assert_eq!(resolved.as_deref(), Some("file-token"));
+    }
+
+    #[test]
+    fn resolve_token_with_treats_an_empty_config_file_value_as_absent() {
+        let cfg = sync_config(Some(""));
+        let resolved = cfg.resolve_token_with(|_| None);
+        assert!(resolved.is_none());
     }
 
     #[test]
