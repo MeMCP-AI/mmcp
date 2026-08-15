@@ -160,12 +160,12 @@ impl SyncEngine {
     ///    `backend.fast_forward(main, origin/main)` to move local
     ///    `main` forward.
     ///
-    /// Divergence (local is not an ancestor of remote) surfaces
-    /// today as a silent `FastForwardOutcome::NotFastForward` -
-    /// the group still appears in the report so operators know
-    /// it was considered, but local `main` is left unchanged.
-    /// Step 7 of the sync plan upgrades this to a structured
-    /// `pull_diverged` error.
+    /// Divergence (local is not an ancestor of remote) is captured,
+    /// not silent: a `FastForwardOutcome::NotFastForward` from the
+    /// backend is raised as the structured `SyncError::PullDiverged`
+    /// and lands in the returned report's `failed` field, attributed
+    /// to its own group. Local `main` is left unchanged for that
+    /// group; every other in-flight group still completes normally.
     ///
     /// `filter` and `new_groups` semantics match `fetch`.
     pub async fn pull(

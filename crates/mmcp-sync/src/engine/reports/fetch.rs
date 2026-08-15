@@ -8,9 +8,11 @@ use super::GroupSyncFailure;
 #[derive(Debug)]
 pub struct FetchReport {
     /// Groups whose remote head was written into the local
-    /// `refs/remotes/origin/main` tracking ref. Empty list means
-    /// no in-scope group was both present locally and advertised
-    /// by the server.
+    /// `refs/remotes/origin/main` tracking ref. An empty list means
+    /// either no in-scope group was both present locally and
+    /// advertised by the server, or every candidate group's fetch
+    /// attempt itself errored - that second case still surfaces
+    /// those groups in `failed` below, never silently here.
     pub groups: Vec<FetchedGroup>,
     /// Groups the server advertises that the client has no local
     /// clone for yet. Reported so operators can decide whether to
