@@ -505,6 +505,26 @@ mod tests {
     }
 
     #[test]
+    fn run_serve_reports_a_typed_open_repo_error_with_its_structured_kind() {
+        // A directory that is not a git repository makes `gix::open`
+        // fail, proving the dispatch path actually reaches
+        // `ServeError::OpenRepo` end to end (error -> variant ->
+        // structured label), not just that the enum compiles.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let interrupt = AtomicBool::new(false);
+        let err = run_serve(
+            ServeKind::ReceivePack,
+            tmp.path(),
+            std::io::empty(),
+            Vec::<u8>::new(),
+            &interrupt,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ServeError::OpenRepo(_)));
+        assert_eq!(err.kind_label(), "open_repo");
+    }
+
+    #[test]
     fn unauthorized_response_advertises_a_bearer_challenge_matching_what_is_accepted() {
         let response = GitHttpError::Unauthorized.into_response();
         let challenge = response
