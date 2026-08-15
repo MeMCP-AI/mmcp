@@ -42,6 +42,18 @@ pub fn memory_path(slug: &str, id: MemoryId) -> String {
     format!("{MEMORIES_DIR}/{slug}/{id}{MEMORY_EXTENSION}")
 }
 
+/// How far [`slug_matches_filter`] walks beneath the anchor (the
+/// prefix when one is set, or the implicit `memories/` root when
+/// not).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlugRecursion {
+    /// Every descendant beneath the anchor matches, at any depth.
+    Recursive,
+    /// Only the anchor itself and its immediate children match; a
+    /// slug two or more levels below the anchor is excluded.
+    AnchorAndImmediateChildren,
+}
+
 /// Does `slug` belong in a listing constrained to `prefix` and the
 /// recursion mode?
 ///
@@ -51,19 +63,19 @@ pub fn memory_path(slug: &str, id: MemoryId) -> String {
 /// the root, and one level below a prefix is depth 1 from the
 /// prefix.
 ///
-/// - `prefix = None, recursive = true` (default): every slug
+/// - `prefix = None, recursion = Recursive` (default): every slug
 ///   matches.
-/// - `prefix = None, recursive = false`: only top-level slugs (no
-///   `/` separator) match.
-/// - `prefix = Some("a/b"), recursive = true`: slugs that equal
+/// - `prefix = None, recursion = AnchorAndImmediateChildren`: only
+///   top-level slugs (no `/` separator) match.
+/// - `prefix = Some("a/b"), recursion = Recursive`: slugs that equal
 ///   `"a/b"` or live underneath it match.
-/// - `prefix = Some("a/b"), recursive = false`: only the immediate
-///   children of the prefix and the prefix itself match (so `a/b`,
-///   `a/b/c` ok; `a/b/c/d` filtered out).
+/// - `prefix = Some("a/b"), recursion = AnchorAndImmediateChildren`:
+///   only the immediate children of the prefix and the prefix itself
+///   match (so `a/b`, `a/b/c` ok; `a/b/c/d` filtered out).
 ///
 /// Single source of truth for this filter, shared by `commands::memory` and `commands::serve`.
 #[must_use]
-pub fn slug_matches_filter(slug: &str, prefix: Option<&str>, recursive: bool) -> bool {
+pub fn slug_matches_filter(slug: &str, prefix: Option<&str>, recursion: SlugRecursion) -> bool {
     let depth = match prefix {
         None | Some("") | Some("/") => slug.split('/').count(),
         Some(p) => {
@@ -78,7 +90,10 @@ pub fn slug_matches_filter(slug: &str, prefix: Option<&str>, recursive: bool) ->
             }
         }
     };
-    if recursive { true } else { depth <= 1 }
+    match recursion {
+        SlugRecursion::Recursive => true,
+        SlugRecursion::AnchorAndImmediateChildren => depth <= 1,
+    }
 }
 
 #[cfg(test)]
@@ -104,22 +119,40 @@ mod tests {
     /// guaranteed.
     #[test]
     fn slug_matches_filter_truth_table_agrees_across_callers() {
-        // No prefix, recursive=true: every slug matches.
-        assert!(slug_matches_filter("a", None, true));
-        assert!(slug_matches_filter("a/b/c", None, true));
-        // No prefix, recursive=false: only top-level slugs.
-        assert!(slug_matches_filter("a", None, false));
-        assert!(!slug_matches_filter("a/b", None, false));
-        // Prefix match, recursive=true.
-        assert!(slug_matches_filter("a/b", Some("a"), true));
-        assert!(slug_matches_filter("a/b/c/d", Some("a/b"), true));
-        // Prefix match, recursive=false: only depth <= 1 below
-        // prefix.
-        assert!(slug_matches_filter("a", Some("a"), false));
-        assert!(slug_matches_filter("a/b", Some("a"), false));
-        assert!(!slug_matches_filter("a/b/c", Some("a"), false));
+        use SlugRecursion::{AnchorAndImmediateChildren, Recursive};
+
+        // No prefix, Recursive: every slug matches.
+        assert!(slug_matches_filter("a", None, Recursive));
+        assert!(slug_matches_filter("a/b/c", None, Recursive));
+        // No prefix, AnchorAndImmediateChildren: only top-level slugs.
+        assert!(slug_matches_filter("a", None, AnchorAndImmediateChildren));
+        assert!(!slug_matches_filter(
+            "a/b",
+            None,
+            AnchorAndImmediateChildren
+        ));
+        // Prefix match, Recursive.
+        assert!(slug_matches_filter("a/b", Some("a"), Recursive));
+        assert!(slug_matches_filter("a/b/c/d", Some("a/b"), Recursive));
+        // Prefix match, AnchorAndImmediateChildren: only depth <= 1
+        // below prefix.
+        assert!(slug_matches_filter(
+            "a",
+            Some("a"),
+            AnchorAndImmediateChildren
+        ));
+        assert!(slug_matches_filter(
+            "a/b",
+            Some("a"),
+            AnchorAndImmediateChildren
+        ));
+        assert!(!slug_matches_filter(
+            "a/b/c",
+            Some("a"),
+            AnchorAndImmediateChildren
+        ));
         // Prefix mismatch.
-        assert!(!slug_matches_filter("ab", Some("a"), true));
-        assert!(!slug_matches_filter("b/a", Some("a"), true));
+        assert!(!slug_matches_filter("ab", Some("a"), Recursive));
+        assert!(!slug_matches_filter("b/a", Some("a"), Recursive));
     }
 }

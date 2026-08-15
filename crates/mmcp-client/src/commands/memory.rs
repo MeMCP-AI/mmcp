@@ -17,7 +17,7 @@ use std::io::Read;
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
-use mmcp_core::conventions::slug_matches_filter;
+use mmcp_core::conventions::{SlugRecursion, slug_matches_filter};
 use mmcp_core::manifest::GroupScope;
 use mmcp_core::memory::{
     FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryRef, parse_sections,
@@ -361,10 +361,14 @@ async fn run_list(args: ListArgs) -> Result<()> {
         .await
         .context("listing memory files")?;
     let prefix = args.prefix.as_deref().map(|p| p.trim_end_matches('/'));
-    let recursive = !args.no_recursive;
+    let recursion = if args.no_recursive {
+        SlugRecursion::AnchorAndImmediateChildren
+    } else {
+        SlugRecursion::Recursive
+    };
     let files: Vec<_> = all_files
         .into_iter()
-        .filter(|f| slug_matches_filter(&f.slug, prefix, recursive))
+        .filter(|f| slug_matches_filter(&f.slug, prefix, recursion))
         .collect();
     if files.is_empty() {
         match prefix {
@@ -402,7 +406,7 @@ async fn run_tree(args: TreeArgs) -> Result<()> {
         .context("listing memory files")?;
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for file in &files {
-        if !slug_matches_filter(&file.slug, prefix, true) {
+        if !slug_matches_filter(&file.slug, prefix, SlugRecursion::Recursive) {
             continue;
         }
         let relative = match prefix {

@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use mmcp_core::config::is_group_adopted;
-use mmcp_core::conventions::slug_matches_filter;
+use mmcp_core::conventions::{SlugRecursion, slug_matches_filter};
 use mmcp_core::id::GroupId;
 use mmcp_core::memory::{MemoryFile, MemoryFrontmatter};
 use mmcp_git::{GitBackend, NativeBackend, Rev};
@@ -2105,7 +2105,11 @@ impl McpServer {
             })));
         };
         let files = list_memory_files(&self.state.backend, &entry).await?;
-        let recursive = args.recursive.unwrap_or(true);
+        let recursion = if args.recursive.unwrap_or(true) {
+            SlugRecursion::Recursive
+        } else {
+            SlugRecursion::AnchorAndImmediateChildren
+        };
         let prefix = args.path_prefix.as_deref().map(|p| p.trim_end_matches('/'));
         let mut memories = Vec::with_capacity(files.len());
         // A memory whose frontmatter fails to parse is never
@@ -2122,7 +2126,7 @@ impl McpServer {
         // descriptor and immediately projecting most of it away.
         let compact = args.compact.unwrap_or(false);
         for file in files {
-            if !slug_matches_filter(&file.slug, prefix, recursive) {
+            if !slug_matches_filter(&file.slug, prefix, recursion) {
                 continue;
             }
             match read_memory_descriptor(
