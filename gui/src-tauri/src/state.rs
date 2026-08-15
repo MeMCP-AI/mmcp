@@ -221,11 +221,13 @@ fn build_sync(
     };
     let server_url = cfg.server_url.clone();
     let token = cfg.resolve_token();
+    let push_token = cfg.resolve_push_token();
     let (engine, resolver) = build_engine(
         Arc::clone(backend),
         index.clone(),
         &server_url,
         token.as_deref(),
+        push_token.as_deref(),
     )
     .map_err(GuiError::from)?;
     Ok(Some(SyncBundle {
