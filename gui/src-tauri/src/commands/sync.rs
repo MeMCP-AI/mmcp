@@ -109,6 +109,7 @@ pub async fn sync_push(state: State<'_, AppState>) -> GuiResult<PushReportDto> {
 
 #[cfg(test)]
 mod tests {
+    use mmcp_core::id::GroupId;
     use mmcp_sync::{GroupSyncFailure, SyncError};
     use uuid::Uuid;
 
@@ -125,7 +126,7 @@ mod tests {
     fn sync_failures_dto_carries_group_id_and_message() {
         let group_id = Uuid::from_u128(0x1234_5678_9abc_def0_1234_5678_9abc_def0);
         let failed = vec![GroupSyncFailure {
-            group_id,
+            group_id: GroupId::from_uuid(group_id),
             error: SyncError::NotFound("edit-x".into()),
         }];
 
