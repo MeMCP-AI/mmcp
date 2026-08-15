@@ -21,8 +21,6 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use futures_util::StreamExt;
-use futures_util::stream;
 use jiff::Timestamp;
 use mmcp_core::memory::BumpIntent;
 use mmcp_db::entities::memory::MemoryKind;
@@ -30,7 +28,9 @@ use mmcp_db::entities::memory_version;
 use mmcp_db::repository::{group_repo, memory_repo};
 use mmcp_git::{GitBackend, RepoHandle};
 use mmcp_proto::ProtoError;
-use mmcp_sync::{ManifestResponse, PushRequest, PushResponse, RefEntry, RefsResponse, RemoteGroup};
+use mmcp_sync::{
+    ManifestResponse, PushRequest, PushResponse, RefEntry, RefsResponse, RemoteGroup, run_bounded,
+};
 use sea_orm::EntityTrait;
 use serde_json::json;
 use uuid::Uuid;
@@ -102,24 +102,22 @@ async fn get_manifest(
         .await
         .map_err(into_generic_response)?;
 
-    // Bounded concurrency instead of one row's read_manifest +
-    // walk_history after another: each row's git reads are
-    // independent. `buffer_unordered` completes rows out of
-    // submission order, so each result carries its original index and
-    // the collected vector is sorted back into `rows` order below.
-    let mut results: Vec<(usize, RemoteGroup)> = stream::iter(rows.into_iter().enumerate())
-        .map(|(index, row)| {
+    // Bounded concurrency instead of one row's git read after
+    // another: each row's git reads are independent. `run_bounded`
+    // (shared with the `mmcp-sync` engine's own push/pull/fetch fan
+    // out) keeps the result in `rows`' original order regardless of
+    // which row's read finishes first.
+    let outcomes = run_bounded(
+        rows,
+        MAX_CONCURRENT_MANIFEST_LOOKUPS,
+        |row| row.id,
+        |row| {
             let state = state.clone();
-            async move {
-                let group = manifest_row_to_remote_group(&state, row).await;
-                (index, group)
-            }
-        })
-        .buffer_unordered(MAX_CONCURRENT_MANIFEST_LOOKUPS)
-        .collect()
-        .await;
-    results.sort_by_key(|(index, _)| *index);
-    let groups = results.into_iter().map(|(_, group)| group).collect();
+            async move { manifest_row_to_remote_group(&state, row).await }
+        },
+    )
+    .await;
+    let groups: Vec<RemoteGroup> = outcomes.into_iter().map(|(_, group)| group).collect();
 
     Ok(Json(ManifestResponse { groups }))
 }
