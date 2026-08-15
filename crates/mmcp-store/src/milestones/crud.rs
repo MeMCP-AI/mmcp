@@ -201,15 +201,22 @@ pub async fn read_milestone(
         MemoryFile::parse(&text).map_err(|e| MilestoneError::Memory(ImportError::Parse(e)))?;
     // Validate the `[milestone]` block is present BEFORE paying for the rollup's DB query: this
     // is pure and DB-free, so a slug that is not a milestone fails fast with `NotAMilestone`,
-    // never with a cache error surfaced by a rollup query it never needed.
-    require_milestone_metadata(slug, &file)?;
+    // never with a cache error surfaced by a rollup query it never needed. The extracted
+    // metadata is threaded into `record_from_file` below rather than re-validated there.
+    let metadata = require_milestone_metadata(slug, &file)?;
     // Compute the live rollup only once validation passed: `record_from_file` still takes it as
     // a required constructor parameter (never a mutable stub a caller might forget to
     // overwrite), so no path through this module can hand back a fabricated `Planning`/0/0/0
     // placeholder.
     let owner_group_id = *entry.manifest.group_id.as_uuid();
     let rollup = rollup::compute(pool, backend, groups, owner_group_id, resolved.id).await?;
-    record_from_file(slug, file, String::new(), rollup)
+    Ok(record_from_file(
+        slug,
+        file,
+        String::new(),
+        rollup,
+        metadata,
+    ))
 }
 
 /// Apply partial mutations and commit a new revision.
@@ -366,14 +373,18 @@ fn require_milestone_metadata(
 /// which never routes through this function and builds its `MilestoneRecord` directly. Every other
 /// caller must pass the value [`super::rollup::compute`] actually returned, so a fabricated
 /// `Planning`/0/0/0 placeholder can never reach a caller unrecomputed.
+///
+/// `metadata` is likewise a required parameter rather than re-derived here: the caller already
+/// ran [`require_milestone_metadata`] once, before paying for the rollup query, and this function
+/// trusts that result instead of re-validating (and re-cloning) the same `[milestone]` block.
 fn record_from_file(
     slug: &str,
     file: MemoryFile,
     commit_id: String,
     rollup: MilestoneRollup,
-) -> Result<MilestoneRecord, MilestoneError> {
-    let metadata = require_milestone_metadata(slug, &file)?;
-    Ok(MilestoneRecord {
+    metadata: MilestoneMetadata,
+) -> MilestoneRecord {
+    MilestoneRecord {
         slug: slug.to_string(),
         title: file.frontmatter.name,
         description: file.frontmatter.description,
@@ -381,7 +392,7 @@ fn record_from_file(
         status: metadata.status,
         rollup,
         commit_id,
-    })
+    }
 }
 
 #[cfg(test)]
