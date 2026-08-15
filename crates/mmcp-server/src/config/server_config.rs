@@ -158,7 +158,9 @@ impl ServerConfig {
         // `cargo run` just needs something that boots.
         let origin =
             get("MMCP_ORIGIN").unwrap_or_else(|| format!("http://localhost:{}", bind.port()));
-        let push_token = get("MMCP_PUSH_TOKEN").filter(|token| !token.is_empty());
+        let push_token = get("MMCP_PUSH_TOKEN")
+            .map(|token| token.trim().to_string())
+            .filter(|token| !token.is_empty());
 
         let mut oauth_providers = Vec::new();
         if let (Some(id), Some(secret)) = (
@@ -426,6 +428,21 @@ mod tests {
     fn push_token_present_when_env_var_is_a_nonempty_string() {
         let cfg = from_map(&[("MMCP_PUSH_TOKEN", "s3cr3t")]);
         assert_eq!(cfg.push_token.as_deref(), Some("s3cr3t"));
+    }
+
+    #[test]
+    fn push_token_strips_surrounding_whitespace() {
+        // A copy-pasted .env line often carries a trailing newline or
+        // trailing spaces; the stored token must match what a client
+        // sends verbatim, so padding is stripped before comparison.
+        let cfg = from_map(&[("MMCP_PUSH_TOKEN", "  s3cr3t\n")]);
+        assert_eq!(cfg.push_token.as_deref(), Some("s3cr3t"));
+    }
+
+    #[test]
+    fn push_token_absent_when_env_var_is_whitespace_only() {
+        let cfg = from_map(&[("MMCP_PUSH_TOKEN", "   \n\t")]);
+        assert!(cfg.push_token.is_none());
     }
 
     #[test]
