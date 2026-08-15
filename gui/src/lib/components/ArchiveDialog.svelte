@@ -29,10 +29,11 @@
   } from '$lib/api/archive';
   import type { GroupEntry } from '$lib/types';
   import { formatErr } from '$lib/utils/error';
+  import { MEMORY_KIND_VALUES } from '$lib/utils/memory_kind';
 
   let { mode, onClose }: { mode: 'export' | 'import'; onClose: () => void } = $props();
 
-  const KINDS = ['rule', 'snapshot', 'log', 'reference', 'scratch', 'feature', 'issue'];
+  const KINDS = [...MEMORY_KIND_VALUES];
   const SCOPES: { id: string; label: string }[] = [
     { id: 'global', label: 'Global' },
     { id: 'shared', label: 'Shared' },
