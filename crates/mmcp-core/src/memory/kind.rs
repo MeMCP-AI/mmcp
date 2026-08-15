@@ -2,42 +2,103 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Built-in memory kinds shipped with mmcp.
+/// Declares the full `MemoryKind` variant list exactly once.
 ///
-/// Each kind carries behavioral implications, not just classification.
-/// The retrieval layer inspects the kind to decide whether to attach staleness warnings,
-/// whether edits are restricted to appends, and whether versioning applies.
-///
-/// Users may register custom kinds on top of these defaults,
-/// but the core set is fixed because server-side logic branches on it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MemoryKind {
+/// Every mirror of that list (the enum itself, `as_str()`,
+/// `FromStr`, [`MemoryKind::ALL`], and the parse-error message text)
+/// expands from this single invocation, so a new variant can never
+/// update one mirror while leaving another behind. See the
+/// invocation below for the actual variant list and doc comments.
+macro_rules! define_memory_kind {
+    (
+        $(
+            $(#[$variant_meta:meta])*
+            $variant:ident => $wire:literal
+        ),+ $(,)?
+    ) => {
+        /// Built-in memory kinds shipped with mmcp.
+        ///
+        /// Each kind carries behavioral implications, not just classification.
+        /// The retrieval layer inspects the kind to decide whether to attach staleness warnings,
+        /// whether edits are restricted to appends, and whether versioning applies.
+        ///
+        /// Users may register custom kinds on top of these defaults,
+        /// but the core set is fixed because server-side logic branches on it.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        pub enum MemoryKind {
+            $(
+                $(#[$variant_meta])*
+                $variant,
+            )+
+        }
+
+        impl MemoryKind {
+            /// Every variant, in declaration order.
+            ///
+            /// The single generated-list consumer: exhaustive tests
+            /// (round-trip, TS-export drift) iterate this instead of
+            /// hand-listing variants a second time.
+            pub const ALL: &'static [MemoryKind] = &[$(MemoryKind::$variant),+];
+
+            /// The canonical string representation of this kind, matching the serde `snake_case` serialization.
+            /// `feature` is the only wire form accepted for this variant.
+            #[must_use]
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(MemoryKind::$variant => $wire,)+
+                }
+            }
+        }
+
+        /// Canonical parser for the lowercase wire form of [`MemoryKind`].
+        ///
+        /// This is the single owning parser every hand-rolled `MemoryKind`
+        /// decoder in the codebase delegates to (mmcp-store's create-time
+        /// parser, the archive filter's facet parser, the GUI's DTO
+        /// converter) so the accepted-kind set can never drift between
+        /// call sites again.
+        impl std::str::FromStr for MemoryKind {
+            type Err = MemoryKindParseError;
+
+            fn from_str(raw: &str) -> Result<Self, Self::Err> {
+                match raw {
+                    $($wire => Ok(MemoryKind::$variant),)+
+                    other => Err(MemoryKindParseError {
+                        input: other.to_string(),
+                    }),
+                }
+            }
+        }
+    };
+}
+
+define_memory_kind! {
     /// Stable convention or guideline.
     /// Session-agnostic, no automatic staleness warning attached.
-    Rule,
+    Rule => "rule",
 
     /// Point-in-time fact about the project (status, counts, test results).
     /// Retrieval always attaches a "may be stale" warning because snapshots rot by definition.
-    Snapshot,
+    Snapshot => "snapshot",
 
     /// Append-only record (decisions, incidents).
     /// Edits may only add entries; prior entries are immutable.
-    Log,
+    Log => "log",
 
     /// Pointer to an external resource (Linear project, Grafana dashboard, spec URL).
     /// Rarely changes; no staleness warning.
-    Reference,
+    Reference => "reference",
 
     /// Short-lived working notes.
     /// Not versioned, no warnings.
-    Scratch,
+    Scratch => "scratch",
 
     /// Feature request.
     /// Carries a structured [`FeatureMetadata`](crate::memory::FeatureMetadata)
     /// block in frontmatter (status, depends_on, blocks)
     /// so the feature lifecycle tools can filter and cross-reference without parsing the body.
-    Feature,
+    Feature => "feature",
 
     /// Issue tracker entry.
     /// Sister kind to `Feature`.
@@ -45,7 +106,7 @@ pub enum MemoryKind {
     /// block in frontmatter (status, depends_on, blocks).
     /// The hybrid model permits a memory to carry both `[feature]` and `[issue]` blocks;
     /// listings filter by block presence.
-    Issue,
+    Issue => "issue",
 
     /// Milestone: a grouping container over features, possibly
     /// spanning multiple project groups.
@@ -56,26 +117,10 @@ pub enum MemoryKind {
     /// via [`FeatureMetadata::milestone`](crate::memory::FeatureMetadata::milestone);
     /// the milestone's own live status is computed by `mmcp_store::rollup`,
     /// never stored here.
-    Milestone,
+    Milestone => "milestone",
 }
 
 impl MemoryKind {
-    /// The canonical string representation of this kind, matching the serde `snake_case` serialization.
-    /// `feature` is the only wire form accepted for this variant.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            MemoryKind::Rule => "rule",
-            MemoryKind::Snapshot => "snapshot",
-            MemoryKind::Log => "log",
-            MemoryKind::Reference => "reference",
-            MemoryKind::Scratch => "scratch",
-            MemoryKind::Feature => "feature",
-            MemoryKind::Issue => "issue",
-            MemoryKind::Milestone => "milestone",
-        }
-    }
-
     /// True if retrieval should attach a "content may be out of date"
     /// warning by default for this kind.
     #[must_use]
@@ -101,41 +146,34 @@ impl MemoryKind {
 
 /// Raised when [`MemoryKind`]'s [`FromStr`](std::str::FromStr) impl
 /// sees a string that does not match any known kind.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "invalid memory kind '{input}': expected one of rule / snapshot / log / reference / scratch / feature / issue / milestone"
-)]
+///
+/// `Display` is hand-written rather than a `thiserror` `#[error(...)]`
+/// attribute because the message body must join
+/// [`MemoryKind::ALL`]'s wire strings at runtime; a `thiserror`
+/// attribute literal is fixed at macro-expansion time and cannot
+/// interpolate that runtime-built join, which is exactly the
+/// hand-listed mirror this restructuring closes. `input` and the
+/// `FromStr::Err` association are unchanged public API.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryKindParseError {
     /// The offending input string, echoed back for user-facing errors.
     pub input: String,
 }
 
-/// Canonical parser for the lowercase wire form of [`MemoryKind`].
-///
-/// This is the single owning parser every hand-rolled `MemoryKind`
-/// decoder in the codebase delegates to (mmcp-store's create-time
-/// parser, the archive filter's facet parser, the GUI's DTO
-/// converter) so the accepted-kind set can never drift between
-/// call sites again.
-impl std::str::FromStr for MemoryKind {
-    type Err = MemoryKindParseError;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        match raw {
-            "rule" => Ok(MemoryKind::Rule),
-            "snapshot" => Ok(MemoryKind::Snapshot),
-            "log" => Ok(MemoryKind::Log),
-            "reference" => Ok(MemoryKind::Reference),
-            "scratch" => Ok(MemoryKind::Scratch),
-            "feature" => Ok(MemoryKind::Feature),
-            "issue" => Ok(MemoryKind::Issue),
-            "milestone" => Ok(MemoryKind::Milestone),
-            other => Err(MemoryKindParseError {
-                input: other.to_string(),
-            }),
+impl std::fmt::Display for MemoryKindParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid memory kind '{}': expected one of ", self.input)?;
+        for (index, kind) in MemoryKind::ALL.iter().enumerate() {
+            if index > 0 {
+                write!(f, " / ")?;
+            }
+            write!(f, "{}", kind.as_str())?;
         }
+        Ok(())
     }
 }
+
+impl std::error::Error for MemoryKindParseError {}
 
 #[cfg(test)]
 mod tests {
@@ -167,18 +205,9 @@ mod tests {
 
     #[test]
     fn from_str_round_trips_every_kind() {
-        for kind in [
-            MemoryKind::Rule,
-            MemoryKind::Snapshot,
-            MemoryKind::Log,
-            MemoryKind::Reference,
-            MemoryKind::Scratch,
-            MemoryKind::Feature,
-            MemoryKind::Issue,
-            MemoryKind::Milestone,
-        ] {
+        for kind in MemoryKind::ALL {
             let parsed: MemoryKind = kind.as_str().parse().expect("round trip");
-            assert_eq!(parsed, kind);
+            assert_eq!(parsed, *kind);
         }
     }
 
@@ -186,5 +215,14 @@ mod tests {
     fn from_str_rejects_unknown_kind() {
         let err = "bogus".parse::<MemoryKind>().expect_err("unknown kind");
         assert_eq!(err.input, "bogus");
+    }
+
+    #[test]
+    fn parse_error_message_lists_every_kind() {
+        let err = "bogus".parse::<MemoryKind>().expect_err("unknown kind");
+        assert_eq!(
+            err.to_string(),
+            "invalid memory kind 'bogus': expected one of rule / snapshot / log / reference / scratch / feature / issue / milestone"
+        );
     }
 }
