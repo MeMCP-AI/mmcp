@@ -158,6 +158,7 @@ export interface GuiErrorPayload {
 
 export interface UserSyncConfig {
   server_url: string;
+  token: string | null;
 }
 
 export interface UserAuthorConfig {
@@ -195,6 +196,7 @@ export interface LoadedUserConfig {
 
 export interface ProjectSyncConfig {
   server_url: string;
+  token: string | null;
 }
 
 export interface ProjectSubscriptionsConfig {
