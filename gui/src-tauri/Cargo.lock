@@ -3439,7 +3439,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-core"
-version = "0.1.60"
+version = "0.1.63"
 dependencies = [
  "gray_matter",
  "jiff",
@@ -3456,7 +3456,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-git"
-version = "0.1.60"
+version = "0.1.63"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3493,7 +3493,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-session"
-version = "0.1.60"
+version = "0.1.63"
 dependencies = [
  "serde",
  "sha2 0.11.0",
@@ -3502,12 +3502,13 @@ dependencies = [
 
 [[package]]
 name = "mmcp-store"
-version = "0.1.60"
+version = "0.1.63"
 dependencies = [
  "acdc-converters-core",
  "acdc-converters-markdown",
  "acdc-parser",
  "flate2",
+ "futures-util",
  "gix",
  "jiff",
  "mmcp-core",
@@ -3531,8 +3532,9 @@ dependencies = [
 
 [[package]]
 name = "mmcp-sync"
-version = "0.1.60"
+version = "0.1.63"
 dependencies = [
+ "futures-util",
  "mmcp-core",
  "mmcp-git",
  "reqwest",
