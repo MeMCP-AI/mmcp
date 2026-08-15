@@ -3,14 +3,18 @@
   // pin toggle. Used by Hub home's pinned list and Hub scope's
   // filterable list; consolidating keeps the two in visual sync.
 
-  import { Star } from '@lucide/svelte';
+  import { AlertTriangle, Star } from '@lucide/svelte';
   import ScopeIcon from './ScopeIcon.svelte';
   import { SCOPE_META } from '$lib/utils/scope';
-  import type { GroupEntry } from '$lib/types';
+  import type { GroupEntry, SkippedMemoryDescriptor } from '$lib/types';
 
   interface Props {
     group: GroupEntry;
     memoryCount?: number | null;
+    /** Memories `list_memory_descriptors` could not resolve/read/decode/parse
+     * for this group. Non-empty means the listing is truncated: render a
+     * visible signal rather than silently showing a short list. */
+    skipped?: SkippedMemoryDescriptor[];
     pinned?: boolean;
     showPinToggle?: boolean;
     /** Shown in smaller text below the name. Defaults to
@@ -24,6 +28,7 @@
   let {
     group,
     memoryCount = null,
+    skipped = [],
     pinned = false,
     showPinToggle = false,
     subtitle,
@@ -60,6 +65,17 @@
     {#if memoryCount !== null}
       <span class="shrink-0 text-[11px] text-fg-subtle">
         {memoryCount} memories
+      </span>
+    {/if}
+    {#if skipped.length > 0}
+      <span
+        class="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-semibold text-amber-300 ring-1 ring-inset ring-amber-500/40"
+        title={`${skipped.length} memory(ies) skipped: ${skipped
+          .map((s) => `${s.slug} (${s.reason})`)
+          .join('; ')}`}
+      >
+        <AlertTriangle size={10} />
+        {skipped.length} skipped
       </span>
     {/if}
   </button>

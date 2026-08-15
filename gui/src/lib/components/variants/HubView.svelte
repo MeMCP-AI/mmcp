@@ -6,6 +6,7 @@
   // owns the routing state + data-loading effects only.
 
   import {
+    AlertTriangle,
     ArrowLeft,
     ChevronRight,
     FolderGit2,
@@ -217,7 +218,7 @@
   let groupQuery = $state('');
   let groupKindFilter = $state<Set<KindStr>>(new Set());
   let groupMandatoryOnly = $state(false);
-  // Memories and issues are separate categories — the tab always
+  // Memories and issues are separate categories: the tab always
   // narrows to one or the other, never both.
   let groupClassFilter = $state<MemoryClass>('memory');
 
@@ -289,6 +290,12 @@
     const gid = route.groupId;
     return groupsStore.groups.find((g) => g.group_id === gid) ?? null;
   });
+
+  // Non-empty means `list_memory_descriptors` truncated this group's listing;
+  // the "group" screen below renders a visible banner instead of a silent gap.
+  const activeGroupSkipped = $derived(
+    route.t === 'group' ? (memoriesStore.skipped[route.groupId] ?? []) : []
+  );
 
   // Memories and issues are separate categories; the tab flips
   // between them, never unifies.
@@ -445,6 +452,7 @@
                   <GroupRow
                     group={g}
                     memoryCount={memoriesStore.slugs[g.group_id]?.length ?? null}
+                    skipped={memoriesStore.skipped[g.group_id] ?? []}
                     onOpen={() => gotoGroup(g.group_id)}
                   />
                 </li>
@@ -541,6 +549,7 @@
                 <GroupRow
                   group={g}
                   memoryCount={memoriesStore.slugs[g.group_id]?.length ?? null}
+                  skipped={memoriesStore.skipped[g.group_id] ?? []}
                   pinned={settingsStore.isGroupPinned(g.group_id)}
                   showPinToggle
                   onOpen={() => gotoGroup(g.group_id)}
@@ -589,6 +598,20 @@
             {/if}
           </button>
         </div>
+
+        {#if activeGroupSkipped.length > 0}
+          <div
+            class="mb-4 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300"
+          >
+            <AlertTriangle size={13} class="mt-0.5 shrink-0" />
+            <span>
+              {activeGroupSkipped.length} memory(ies) in this group could not be read or parsed and
+              are not shown below: {activeGroupSkipped
+                .map((s) => `${s.slug} (${s.reason})`)
+                .join('; ')}
+            </span>
+          </div>
+        {/if}
 
         <!-- Memory vs Issue tabs -->
         <nav class="mb-3 flex items-center gap-0.5">
