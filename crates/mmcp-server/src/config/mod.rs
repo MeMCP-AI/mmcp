@@ -128,23 +128,41 @@ impl ServerConfig {
     where
         F: Fn(&str) -> Option<String>,
     {
-        let bind: SocketAddr = get("MMCP_BIND")
-            .unwrap_or_else(|| DEFAULT_BIND.to_string())
-            .parse()
-            .unwrap_or_else(|_| {
+        let bind_raw = get("MMCP_BIND");
+        let bind: SocketAddr = match bind_raw.as_deref().unwrap_or(DEFAULT_BIND).parse() {
+            Ok(addr) => addr,
+            Err(err) => {
+                tracing::warn!(
+                    bind_value = %bind_raw.as_deref().unwrap_or(""),
+                    error = %err,
+                    "MMCP_BIND is not a valid socket address; falling back to the default bind {DEFAULT_BIND}"
+                );
                 DEFAULT_BIND
                     .parse()
                     .expect("DEFAULT_BIND is a hardcoded, always-valid SocketAddr literal")
-            });
+            }
+        };
         let database_url =
             get("MMCP_DATABASE_URL").unwrap_or_else(|| DEFAULT_DATABASE_URL.to_string());
         let repo_root = get("MMCP_REPO_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_REPO_ROOT));
-        let token_key = get("MMCP_TOKEN_KEY_HEX")
-            .as_deref()
-            .and_then(parse_hex_key)
-            .unwrap_or_else(random_key);
+        let token_key = match get("MMCP_TOKEN_KEY_HEX") {
+            Some(raw) => match parse_hex_key(&raw) {
+                Some(key) => key,
+                None => {
+                    // Never log `raw`: it is the (rejected) key material itself.
+                    tracing::warn!(
+                        "MMCP_TOKEN_KEY_HEX was rejected (must be 64 hex characters encoding \
+                         32 bytes); substituting a freshly generated random session-signing key \
+                         for this run. Sessions signed with the previous key, or across a \
+                         restart, will not validate."
+                    );
+                    random_key()
+                }
+            },
+            None => random_key(),
+        };
         // Fallback origin intentionally uses `localhost` (not the
         // bind IP) because the WebAuthn RP ID is derived from the
         // origin's host and the spec rejects IP literals. Production
@@ -472,9 +490,18 @@ mod tests {
     }
 
     #[test]
-    fn malformed_bind_falls_back_to_default_quietly() {
-        let cfg = from_map(&[("MMCP_BIND", "not-a-socket-addr")]);
+    fn malformed_bind_falls_back_to_default_and_warns() {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let subscriber = WarnCounter(count.clone());
+        let cfg = tracing::subscriber::with_default(subscriber, || {
+            from_map(&[("MMCP_BIND", "not-a-socket-addr")])
+        });
         assert_eq!(cfg.bind.to_string(), "127.0.0.1:8787");
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a malformed MMCP_BIND must log exactly one warning instead of falling back silently"
+        );
     }
 
     #[test]
@@ -486,26 +513,58 @@ mod tests {
     }
 
     #[test]
-    fn invalid_token_key_hex_falls_back_to_random() {
-        // Wrong length: fallback kicks in silently and still yields
-        // 32 non-zero bytes. Two independent fallback calls must
-        // also differ from each other, proving the CSPRNG generates
-        // fresh randomness per call rather than a fixed or zeroed
-        // buffer that would happen to be non-zero once.
-        let cfg_a = from_map(&[("MMCP_TOKEN_KEY_HEX", "deadbeef")]);
-        let cfg_b = from_map(&[("MMCP_TOKEN_KEY_HEX", "deadbeef")]);
+    fn invalid_token_key_hex_falls_back_to_random_and_warns() {
+        // Wrong length: fallback kicks in and still yields 32
+        // non-zero bytes. Two independent fallback calls must also
+        // differ from each other, proving the CSPRNG generates fresh
+        // randomness per call rather than a fixed or zeroed buffer
+        // that would happen to be non-zero once.
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let subscriber = WarnCounter(count.clone());
+        let (cfg_a, cfg_b) = tracing::subscriber::with_default(subscriber, || {
+            (
+                from_map(&[("MMCP_TOKEN_KEY_HEX", "deadbeef")]),
+                from_map(&[("MMCP_TOKEN_KEY_HEX", "deadbeef")]),
+            )
+        });
         assert_eq!(cfg_a.token_key.len(), 32);
         assert_ne!(cfg_a.token_key, [0u8; 32]);
         assert_ne!(cfg_a.token_key, cfg_b.token_key);
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "each rejected MMCP_TOKEN_KEY_HEX must log exactly one warning instead of \
+             falling back silently"
+        );
     }
 
     #[test]
-    fn invalid_hex_digit_falls_back_to_random() {
+    fn invalid_hex_digit_falls_back_to_random_and_warns() {
         // Right length but non-hex chars: parse_hex_key returns None.
         let bad = "z".repeat(64);
-        let cfg = from_map(&[("MMCP_TOKEN_KEY_HEX", bad.as_str())]);
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let subscriber = WarnCounter(count.clone());
+        let cfg = tracing::subscriber::with_default(subscriber, || {
+            from_map(&[("MMCP_TOKEN_KEY_HEX", bad.as_str())])
+        });
         assert_eq!(cfg.token_key.len(), 32);
         assert_ne!(cfg.token_key, [0u8; 32]);
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn absent_token_key_hex_falls_back_to_random_without_warning() {
+        // No MMCP_TOKEN_KEY_HEX at all is the normal zero-config path,
+        // not a rejected value: it must never warn.
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let subscriber = WarnCounter(count.clone());
+        let cfg = tracing::subscriber::with_default(subscriber, || from_map(&[]));
+        assert_eq!(cfg.token_key.len(), 32);
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "an unset MMCP_TOKEN_KEY_HEX is the documented default, not a rejected value"
+        );
     }
 
     #[test]
