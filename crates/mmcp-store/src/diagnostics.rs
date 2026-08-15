@@ -144,13 +144,7 @@ pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> 
                     }
                 };
                 if let Err(err) = MemoryFile::parse(text) {
-                    findings.push(Finding {
-                        group: gid.clone(),
-                        slug: Some(mem_slug.to_string()),
-                        severity: "error",
-                        code: "frontmatter_parse_failed",
-                        message: format!("frontmatter parse failed: {err}"),
-                    });
+                    findings.push(crate::tracker::parse_failed_finding(&gid, mem_slug, &err));
                 }
             }
             Err(err) => {
