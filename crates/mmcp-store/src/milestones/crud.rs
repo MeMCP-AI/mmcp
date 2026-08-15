@@ -199,9 +199,14 @@ pub async fn read_milestone(
     let text = String::from_utf8_lossy(&bytes).into_owned();
     let file =
         MemoryFile::parse(&text).map_err(|e| MilestoneError::Memory(ImportError::Parse(e)))?;
-    // Compute the live rollup BEFORE building the record: `record_from_file` takes it as a
-    // required constructor parameter (never a mutable stub a caller might forget to overwrite),
-    // so no path through this module can hand back a fabricated `Planning`/0/0/0 placeholder.
+    // Validate the `[milestone]` block is present BEFORE paying for the rollup's DB query: this
+    // is pure and DB-free, so a slug that is not a milestone fails fast with `NotAMilestone`,
+    // never with a cache error surfaced by a rollup query it never needed.
+    require_milestone_metadata(slug, &file)?;
+    // Compute the live rollup only once validation passed: `record_from_file` still takes it as
+    // a required constructor parameter (never a mutable stub a caller might forget to
+    // overwrite), so no path through this module can hand back a fabricated `Planning`/0/0/0
+    // placeholder.
     let owner_group_id = *entry.manifest.group_id.as_uuid();
     let rollup = rollup::compute(pool, backend, groups, owner_group_id, resolved.id).await?;
     record_from_file(slug, file, String::new(), rollup)
@@ -340,7 +345,22 @@ fn build_memory_file(
 
 /// Gates on `[milestone]` block PRESENCE, not `frontmatter.kind`, via [`crate::tracker::require_block`],
 /// mirroring `features::record_from_file` / `issues::record_from_file`'s gating exactly.
-///
+/// Pure and DB-free, so a caller can run this BEFORE paying for a rollup query
+/// (see `read_milestone`), turning a non-milestone slug into a fast, deterministic
+/// `NotAMilestone` regardless of cache/DB health.
+fn require_milestone_metadata(
+    slug: &str,
+    file: &MemoryFile,
+) -> Result<MilestoneMetadata, MilestoneError> {
+    let kind = file.frontmatter.kind.as_str().to_string();
+    crate::tracker::require_block(
+        slug,
+        &kind,
+        file.frontmatter.milestone.clone(),
+        |slug, kind| MilestoneError::NotAMilestone { slug, kind },
+    )
+}
+
 /// `rollup` is a REQUIRED constructor parameter, never a mutable stub a caller overwrites after the
 /// fact: the only legitimate zero-features rollup is `add_milestone`'s freshly-minted-UUID case,
 /// which never routes through this function and builds its `MilestoneRecord` directly. Every other
@@ -352,11 +372,7 @@ fn record_from_file(
     commit_id: String,
     rollup: MilestoneRollup,
 ) -> Result<MilestoneRecord, MilestoneError> {
-    let kind = file.frontmatter.kind.as_str().to_string();
-    let metadata =
-        crate::tracker::require_block(slug, &kind, file.frontmatter.milestone, |slug, kind| {
-            MilestoneError::NotAMilestone { slug, kind }
-        })?;
+    let metadata = require_milestone_metadata(slug, &file)?;
     Ok(MilestoneRecord {
         slug: slug.to_string(),
         title: file.frontmatter.name,
@@ -512,6 +528,53 @@ mod tests {
         .await
         .expect_err("read must reject");
         assert!(matches!(err, MilestoneError::NotAMilestone { .. }));
+    }
+
+    /// Falsification test for the validation-before-rollup reorder: closes the cache pool
+    /// BEFORE calling `read_milestone`, so any rollup query attempted against it fails.
+    /// A non-milestone slug must still resolve to `NotAMilestone`, never a cache-originated
+    /// error, proving the validation step runs before the rollup query rather than after it.
+    #[tokio::test]
+    async fn read_rejects_non_milestone_before_touching_a_dead_cache_pool() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("milestone-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+        let (_tmp, pool) = scratch_pool().await;
+
+        crate::features::add_feature(
+            scratch.backend(),
+            &entry,
+            crate::features::AddSpec {
+                slug: Some("dead-pool-feat".into()),
+                title: "feat".into(),
+                description: "dead pool guard test".into(),
+                body: "x".into(),
+                ..crate::features::AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed feat");
+
+        // Close the pool so any query attempted against it fails deterministically: a rollup
+        // query reaching this pool would surface as `MilestoneError::Cache`, never
+        // `NotAMilestone`, so a green result here proves validation ran first.
+        pool.close().await;
+
+        let err = read_milestone(
+            scratch.backend(),
+            &entry,
+            &pool,
+            scratch.groups(),
+            "dead-pool-feat",
+            None,
+        )
+        .await
+        .expect_err("read must reject before touching the dead pool");
+        assert!(
+            matches!(err, MilestoneError::NotAMilestone { .. }),
+            "expected NotAMilestone without any cache query, got: {err:?}"
+        );
     }
 
     #[tokio::test]
