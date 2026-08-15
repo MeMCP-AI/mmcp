@@ -58,6 +58,7 @@ pub async fn semantic_search(
     ensure_built(pool, backend, groups).await?;
 
     let query_embedding = super::embed::embed_text(query);
+    let query_norm = super::embed::norm(&query_embedding);
     let rows: Vec<EmbeddingRow> = sqlx::query_as(
         "SELECT group_id, id, slug, kind, name, description, path, embedding FROM indexed_memory",
     )
@@ -71,7 +72,11 @@ pub async fn semantic_search(
                 .embedding
                 .as_deref()
                 .map(super::embed::bytes_to_vector)?;
-            let score = super::embed::cosine_similarity(&query_embedding, &embedding);
+            let score = super::embed::cosine_similarity_with_query_norm(
+                &query_embedding,
+                query_norm,
+                &embedding,
+            );
             Some((
                 score,
                 Row {
@@ -86,15 +91,30 @@ pub async fn semantic_search(
             ))
         })
         .collect();
+
     // Descending by score; `total_cmp` handles the all-`f32` sort
     // key correctly (including the `NaN`-from-empty-vector edge
     // case `cosine_similarity` never actually produces, since it
     // returns `0.0` rather than dividing by zero).
+    //
+    // Top-`limit` selection, not a full sort: `select_nth_unstable_by`
+    // partitions in O(n) instead of O(n log n), then only the
+    // selected prefix is sorted so its relative ORDER matches a full
+    // sort exactly; the discarded tail's order is unspecified, which
+    // callers never observe since it is never returned.
+    let limit = limit as usize;
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    if limit < scored.len() {
+        let pivot = limit - 1;
+        scored.select_nth_unstable_by(pivot, |a, b| b.0.total_cmp(&a.0));
+        scored.truncate(limit);
+    }
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
 
     scored
         .into_iter()
-        .take(limit as usize)
         .map(|(score, row)| {
             row.into_hit().map(|mut hit| {
                 hit.score = Some(score);
@@ -307,5 +327,77 @@ mod tests {
         assert_eq!(hits[0].slug, "quokka-notes");
         let score = hits[0].score.expect("semantic hit carries a score");
         assert!(score > hits[1].score.expect("second hit also scored"));
+    }
+
+    /// `limit` strictly smaller than the row count exercises the
+    /// `select_nth_unstable_by` top-k path rather than the
+    /// full-sort/no-op-truncate path the previous test's `limit=10`
+    /// never touches. Only the SELECTED prefix's order is asserted,
+    /// per the top-k contract: the discarded tail's internal order is
+    /// unspecified.
+    #[tokio::test]
+    async fn semantic_search_top_k_selection_preserves_rank_order() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch
+            .seed_group("cache-topk-test")
+            .await
+            .expect("seed group");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        write_sample(
+            &scratch,
+            &entry.handle,
+            "quokka-notes",
+            "the quokka is a small marsupial native to Australia",
+        )
+        .await;
+        write_sample(
+            &scratch,
+            &entry.handle,
+            "koala-notes",
+            "the koala is a marsupial that lives in Australia eating eucalyptus",
+        )
+        .await;
+        write_sample(
+            &scratch,
+            &entry.handle,
+            "finance-notes",
+            "quarterly earnings and the stock market closed higher today",
+        )
+        .await;
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let pool = super::super::open_pool(&tmp.path().join("index.sqlite3"))
+            .await
+            .expect("open pool");
+
+        // Three rows exist; ask for the top 2 so the selection path
+        // (limit < row count) runs instead of the full-sort path.
+        let hits = semantic_search(
+            &pool,
+            scratch.backend(),
+            scratch.groups(),
+            "marsupials found in Australia",
+            2,
+        )
+        .await
+        .expect("semantic_search");
+
+        assert_eq!(hits.len(), 2, "top-k must return exactly `limit` hits");
+        // Both marsupial memories must outrank the unrelated finance
+        // memory; their own relative order between the two is what
+        // this test pins (quokka/koala are near-symmetric in shared
+        // vocabulary, so the assertion focuses on both outranking the
+        // finance memory rather than asserting a specific 1st/2nd tie
+        // break the hashing-trick scoring is not obligated to keep
+        // stable).
+        let slugs: Vec<&str> = hits.iter().map(|h| h.slug.as_str()).collect();
+        assert!(slugs.contains(&"quokka-notes"));
+        assert!(slugs.contains(&"koala-notes"));
+        assert!(!slugs.contains(&"finance-notes"));
+        // The returned prefix stays sorted by descending score.
+        let first_score = hits[0].score.expect("first hit scored");
+        let second_score = hits[1].score.expect("second hit scored");
+        assert!(first_score >= second_score);
     }
 }

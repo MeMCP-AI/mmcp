@@ -70,24 +70,51 @@ pub fn embed_text(text: &str) -> Vec<f32> {
     }
 }
 
-/// Cosine similarity between two embeddings of equal length via [`ndarray`]'s dot product,
-/// rather than a hand-rolled loop.
+/// Zero-allocation dot product over two equal-length slices.
+/// The shared primitive [`cosine_similarity`] and
+/// [`cosine_similarity_with_query_norm`] build on, so neither pays
+/// for an [`Array1`] copy of its inputs just to multiply and sum.
+#[must_use]
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+/// L2 norm of `vector`, via [`dot`] rather than an [`Array1`] copy.
+#[must_use]
+pub fn norm(vector: &[f32]) -> f32 {
+    dot(vector, vector).sqrt()
+}
+
+/// Cosine similarity between two embeddings of equal length.
 /// Both [`embed_text`] outputs are already L2-normalized, so a plain dot product already equals cosine similarity;
 /// this function still normalizes defensively,
 /// so a caller holding a non-normalized vector (e.g. one decoded from an older schema),
 /// gets a correct answer rather than a silently wrong one.
 #[must_use]
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    cosine_similarity_with_query_norm(a, norm(a), b)
+}
+
+/// Same contract as [`cosine_similarity`], but takes `a`'s L2 norm
+/// pre-computed by the caller.
+///
+/// A caller scoring one fixed query embedding against many rows (the
+/// [`super::query::semantic_search`] hot path) would otherwise
+/// re-derive the SAME query norm on every single row; `a` never
+/// changes across that loop, so hoisting the norm out and passing it
+/// in here turns an O(rows) repeated computation into an O(1) one.
+/// `b`'s norm is still computed fresh every call: unlike the query,
+/// `b` genuinely differs per row, so there is nothing to hoist there.
+#[must_use]
+pub fn cosine_similarity_with_query_norm(a: &[f32], a_norm: f32, b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }
-    let va = Array1::from_vec(a.to_vec());
-    let vb = Array1::from_vec(b.to_vec());
-    let denom = (va.dot(&va).sqrt()) * (vb.dot(&vb).sqrt());
+    let denom = a_norm * norm(b);
     if denom == 0.0 {
         0.0
     } else {
-        va.dot(&vb) / denom
+        dot(a, b) / denom
     }
 }
 
