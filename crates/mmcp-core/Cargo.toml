@@ -21,6 +21,8 @@ gray_matter = { version = "0.3", features = ["toml", "yaml", "json"] }
 # listing it directly here costs nothing.
 pulldown-cmark = { version = "0.13", default-features = false }
 slug = { workspace = true }
+strum = { workspace = true }
+strum_macros = { workspace = true }
 
 [dev-dependencies]
 proptest = { version = "1", default-features = false, features = ["std"] }

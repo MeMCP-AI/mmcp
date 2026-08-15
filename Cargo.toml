@@ -81,6 +81,22 @@ jiff = { version = "0.2", features = ["serde"] }
 # Semantic versioning
 semver = { version = "1", features = ["serde"] }
 
+# Enum <-> string mirror-list generation (variant array, static str
+# conversion). Replaces the hand-rolled `define_mcp_tool_id!` /
+# `define_memory_kind!` declarative macros: the "derive" feature
+# re-exports strum_macros' derive macros through the `strum` crate
+# itself, so both crates are pulled in explicitly at the same pinned
+# version instead of leaving strum_macros as an implicit transitive.
+strum = { version = "0.28", features = ["derive"] }
+strum_macros = "0.28"
+
+# Bounded, thread-safe in-memory cache with size-based eviction (LRU
+# family). Used by mmcp-git's native backend to cap the previously
+# unbounded process-lifetime repo_cache HashMap. The `sync` variant
+# is a plain blocking `Cache`, matching every caller already running
+# inside `spawn_blocking`, never `async` moka.
+moka = { version = "0.12", default-features = false, features = ["sync"] }
+
 # TOML parsing and rendering
 toml = "1.1"
 
