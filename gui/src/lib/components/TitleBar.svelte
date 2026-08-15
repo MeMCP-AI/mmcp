@@ -12,6 +12,7 @@
   import ArchiveDialog from '$lib/components/ArchiveDialog.svelte';
   import { settingsStore, type ThemeMode } from '$lib/stores/settings.svelte';
   import { syncStore } from '$lib/stores/sync.svelte';
+  import { formatErr } from '$lib/utils/error';
   import { openDiagnosticsWindow, openSettingsWindow } from '$lib/windows';
 
   type MenuId = 'file' | 'view' | 'help';
@@ -22,6 +23,7 @@
   let maximized = $state(false);
   let altHeld = $state(false);
   let archiveDialogMode = $state<'export' | 'import' | null>(null);
+  let openProjectError = $state<string | null>(null);
 
   const win = getCurrentWindow();
 
@@ -133,13 +135,18 @@
 
   async function onOpenProject() {
     openMenu = null;
-    const picked = await pickDirectory(settingsStore.values.reference_point, 'Open project');
-    if (!picked) return;
-    settingsStore.setReferencePoint(picked);
+    openProjectError = null;
     try {
+      const picked = await pickDirectory(settingsStore.values.reference_point, 'Open project');
+      if (!picked) return;
       await setReferencePoint(picked);
+      // Only reflect the new reference point once the backend has
+      // actually persisted it, so the store never claims a state the
+      // backend rejected.
+      settingsStore.setReferencePoint(picked);
       await emit('workspace:changed');
     } catch (err) {
+      openProjectError = formatErr(err);
       console.warn('open project failed', err);
     }
   }
@@ -363,6 +370,15 @@
         </button>
       </li>
     </ul>
+  {/if}
+
+  {#if openProjectError}
+    <div
+      class="absolute left-8 top-full z-40 mt-0 max-w-[320px] rounded-md border border-line bg-surface-1 px-3 py-1.5 text-xs text-red-400 shadow-lg"
+      role="alert"
+    >
+      {openProjectError}
+    </div>
   {/if}
 
   {#if openMenu === 'view'}
