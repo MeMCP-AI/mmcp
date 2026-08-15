@@ -197,13 +197,8 @@ mod tests {
         assert!(value["message"].is_null());
     }
 
-    /// FALSIFICATION: before this fix, every "group not in the local
-    /// mirror" failure was a `GuiError::Other(String)` catch-all
-    /// built by six copy-pasted `format!` call sites, so the wire
-    /// `kind` was indistinguishable from any other unrelated
-    /// GUI-local failure. This asserts the dedicated variant carries
-    /// its own `kind` and embeds the offending group id in the
-    /// message.
+    /// Asserts `GroupNotInMirror` carries its own wire `kind`, distinct from the `Other` catch-all,
+    /// and embeds the offending group id in the message.
     #[test]
     fn group_not_in_mirror_has_its_own_wire_kind_and_names_the_group() {
         let err = GuiError::GroupNotInMirror {

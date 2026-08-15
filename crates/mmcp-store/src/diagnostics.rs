@@ -133,12 +133,9 @@ pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> 
 
         match backend.read_file(&entry.handle, &file.path, &rev).await {
             Ok(bytes) => {
-                // Shares the exact same construction (code, message
-                // format, and fields) every other non-UTF8 memory-file
-                // read path in the workspace uses, via
-                // `crate::tracker::not_utf8_finding`, instead of
-                // dropping the underlying `Utf8Error` from the
-                // message as this branch did before.
+                // Shared non-UTF8 finding constructor: see `crate::tracker::not_utf8_finding`.
+                // Every non-UTF8 memory-file read path in the workspace uses it,
+                // preserving the underlying `Utf8Error` in the message.
                 let text = match std::str::from_utf8(&bytes) {
                     Ok(text) => text,
                     Err(err) => {

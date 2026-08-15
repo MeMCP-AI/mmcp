@@ -115,21 +115,18 @@ impl NativeBackend {
 
     /// Evict `path`'s cached repository handle, if any.
     ///
-    /// `open_repo`'s cache-validity check only catches deletion
-    /// (`open_repo`'s `path.exists()` check): it cannot detect an in-place
-    /// replacement where a new bare repository is renamed onto the
-    /// same path (the exact `install_bare_repo` sequence in
-    /// `mmcp-store::archive::import`), because the path still exists
-    /// throughout the swap. Callers that replace a repository's
-    /// contents in place must call this immediately after the swap so
-    /// the next `open_repo` re-opens fresh rather than relying on the
-    /// cached `gix::ThreadSafeRepository` to notice the replacement on
-    /// its own. Under the pinned gix build and mmcp's loose-object-only
-    /// write path this self-heals today (verified empirically: see
-    /// `crates/mmcp-git/tests/native_backend.rs`'s
-    /// `in_place_repo_swap_on_same_path_is_visible_after_invalidate`),
-    /// so this call is a forward guard against a gix caching change
-    /// (e.g. pack-index caching), not a fix for an observed bug.
+    /// `open_repo`'s cache-validity check only catches deletion (`open_repo`'s `path.exists()` check).
+    /// It cannot detect an in-place replacement where a new bare repository is renamed onto the same path,
+    /// because the path still exists throughout the swap.
+    /// This is exactly the sequence `mmcp_store::archive::import` uses to restore a bare repository in place.
+    /// Callers that replace a repository's contents in place must call this immediately after the swap.
+    /// The next `open_repo` re-opens fresh,
+    /// instead of relying on the cached `gix::ThreadSafeRepository` to notice the replacement on its own.
+    /// Under the pinned gix build and mmcp's loose-object-only write path, this self-heals today.
+    /// Verified empirically by `crates/mmcp-git/tests/native_backend.rs`,
+    /// test `in_place_repo_swap_on_same_path_is_visible_after_invalidate`.
+    /// So this call is a forward guard against a gix caching change (e.g. pack-index caching),
+    /// not a fix for an observed bug.
     pub fn invalidate(&self, path: &Path) {
         let mut cache = self
             .repo_cache

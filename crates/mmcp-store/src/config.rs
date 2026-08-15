@@ -13,13 +13,11 @@ use mmcp_core::config::{ConfigError, ProjectConfig};
 
 use crate::error::{FileOperation, StoreError};
 
-/// Map a `ProjectConfig` TOML round-trip failure onto the caller's
-/// own `path`, so the resulting `StoreError` names the file that
-/// failed instead of losing it behind `ConfigError`'s path-less
-/// `#[from]` conversion (`ProjectConfig::from_toml`/`to_toml` are
-/// generic over any caller, so `ConfigError` itself cannot carry a
-/// path; this crate's `home.rs`/`sessions.rs` thread the path
-/// through the same way for their own TOML round trips).
+/// Map a `ProjectConfig` TOML round-trip failure onto the caller's own `path`.
+/// The resulting `StoreError` names the file that failed,
+/// instead of losing it behind `ConfigError`'s path-less `#[from]` conversion.
+/// `ConfigError` cannot carry a path itself: `ProjectConfig::from_toml`/`to_toml` are generic over any caller.
+/// See `home.rs` and `sessions.rs` for the same pattern.
 fn attach_path(path: PathBuf, error: ConfigError) -> StoreError {
     match error {
         ConfigError::Parse(source) => StoreError::TomlParse { path, source },
@@ -74,11 +72,7 @@ pub fn save(root: &Path, config: &ProjectConfig) -> Result<(), StoreError> {
 mod tests {
     use super::*;
 
-    /// Falsification target for the finding this fixes: `load` used to
-    /// route a TOML parse failure through `StoreError::Config`, whose
-    /// `#[from] ConfigError` conversion drops the file path entirely.
-    /// A malformed `.mmcp.toml` must now surface as
-    /// `StoreError::TomlParse` naming the exact path that failed.
+    /// A malformed `.mmcp.toml` surfaces as `StoreError::TomlParse` naming the failing path.
     #[test]
     fn load_malformed_toml_returns_typed_parse_error_with_path() {
         let tmp = tempfile::TempDir::new().expect("tempdir");

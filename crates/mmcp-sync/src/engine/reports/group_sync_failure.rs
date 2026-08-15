@@ -4,25 +4,19 @@ use mmcp_core::id::GroupId;
 
 use crate::error::SyncError;
 
-/// One group's `push` / `pull` / `fetch` attempt that ended in a
-/// genuine [`SyncError`] (a git-level failure, a diverged ref, and
-/// so on), keeping the failing group's id attached to its error.
+/// One group's `push` / `pull` / `fetch` attempt that ended in a genuine [`SyncError`] (a git-level failure,
+/// a diverged ref, and so on).
+/// Keeps the failing group's id attached to its error.
 ///
 /// `group_id` is the [`GroupId`] newtype rather than a bare `Uuid`,
-/// matching this workspace's identifier convention (see
-/// `mmcp_core::id::group_id`) so a failure record can't be
-/// accidentally compared against or constructed from an unrelated
-/// UUID (a memory id, a user id, ...).
+/// matching this workspace's identifier convention (see [`mmcp_core::id::GroupId`]).
+/// This prevents mixing up a group id with an unrelated UUID (a memory id, a user id, ...).
 ///
-/// Every group scheduled for an operation is attempted regardless of
-/// whether an earlier one (in list order) failed: bounded concurrency
-/// already runs every group to completion (see
-/// `crate::engine::concurrency::run_bounded`'s doc comment on the
-/// index-tag-then-sort pattern), so this type exists purely to carry
-/// the FAILED subset's identity and cause forward into the report
-/// instead of the whole call collapsing to whichever error happened
-/// to be first in list order and silently discarding every group
-/// that actually succeeded, earlier or later.
+/// Every group scheduled for an operation is attempted regardless of an earlier group's outcome.
+/// See also: `crate::engine::concurrency::run_bounded` for the completion-order guarantee that makes this safe.
+///
+/// This type carries only the FAILED subset's identity and cause into the report.
+/// It avoids collapsing to whichever error happened first, discarding every group that actually succeeded.
 #[derive(Debug)]
 pub struct GroupSyncFailure {
     pub group_id: GroupId,

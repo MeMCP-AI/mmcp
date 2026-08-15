@@ -115,13 +115,8 @@ mod tests {
 
     use super::*;
 
-    /// FALSIFICATION: before this fix, `sync_failures_dto` did not
-    /// exist and `PullReportDto`/`PushReportDto` had no `failed`
-    /// field at all, so a per-group failure was silently dropped
-    /// (the DTO carried zero information about it). This test
-    /// constructs a report with a non-empty `failed` list and
-    /// confirms the resulting DTO actually carries the group id and
-    /// the underlying error message, not an empty/absent list.
+    /// Constructs a report with a non-empty `failed` list.
+    /// Confirms the resulting DTO carries the group id and the underlying error message, not an empty or absent list.
     #[test]
     fn sync_failures_dto_carries_group_id_and_message() {
         let group_id = Uuid::from_u128(0x1234_5678_9abc_def0_1234_5678_9abc_def0);

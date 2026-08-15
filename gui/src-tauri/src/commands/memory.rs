@@ -74,13 +74,11 @@ pub struct MemoryFileDto {
 
 /// Builder for [`MemoryFrontmatterDto`].
 ///
-/// The DTO carries 10 fields, several of them nested option/collection
-/// shapes; a bare struct literal at the single call site
-/// ([`frontmatter_to_dto`]) buries which value maps to which wire
-/// field. `new` takes the three fields every frontmatter block always
-/// has (id, name, description, kind); the rest go through one setter
-/// each, mirroring the `TestServerConfigBuilder` house style
-/// (`crates/mmcp-server/tests/common/mod.rs`).
+/// The DTO carries 10 fields, several of them nested option/collection shapes.
+/// A bare struct literal at the single call site ([`frontmatter_to_dto`]) buries which value maps to which wire field.
+/// `new` takes the four fields every frontmatter block always has (id, name, description, kind); `id` is optional.
+/// The rest go through one setter each,
+/// mirroring the `TestServerConfigBuilder` house style (`crates/mmcp-server/tests/common/mod.rs`).
 struct MemoryFrontmatterDtoBuilder {
     dto: MemoryFrontmatterDto,
 }
@@ -227,10 +225,10 @@ impl SkippedMemoryDto {
     }
 }
 
-/// Response shape for [`list_memory_descriptors`]: the descriptors that resolved
-/// cleanly, plus every slug that was skipped and why. Never `descriptors` alone:
-/// a caller that only reads `descriptors` still gets a complete list on the happy
-/// path, but `skipped` makes a partial listing observable instead of silent.
+/// Response shape for [`list_memory_descriptors`]: the descriptors that resolved cleanly,
+/// plus every slug that was skipped and why.
+/// Never `descriptors` alone: a caller that only reads `descriptors` still gets a complete list on the happy path,
+/// but `skipped` makes a partial listing observable instead of silent.
 #[derive(Debug, Serialize)]
 pub struct MemoryDescriptorListDto {
     pub descriptors: Vec<MemoryDescriptorDto>,
@@ -596,14 +594,8 @@ mod tests {
 
     const VALID_MEMORY_BYTES: &[u8] = b"+++\nname = \"Rust Coding Rules\"\ndescription = \"Strict Rust coding conventions\"\nkind = \"rule\"\nmandatory = true\n+++\n# Rust Coding Rules\n\nBody text.\n";
 
-    /// FALSIFICATION: before this fix, an unparseable memory file was only
-    /// logged via `tracing::warn!` and `list_memory_descriptors` still
-    /// returned `Ok(descriptors)` with the file silently absent, so the
-    /// caller could not distinguish "3 memories, all valid" from "5
-    /// memories, 2 dropped". This asserts a deliberately-malformed file
-    /// (no frontmatter fence at all) produces a populated `skipped` entry
-    /// naming the slug and the reason, not just an `Err` swallowed into a
-    /// log line.
+    /// Asserts a deliberately-malformed file (no frontmatter fence at all) produces a populated `skipped` entry.
+    /// It names the slug and the reason, not a caller-invisible log line.
     #[test]
     fn classify_memory_bytes_populates_a_skipped_entry_for_unparseable_content() {
         let garbage = b"this is not a memory file, it has no frontmatter fence at all";

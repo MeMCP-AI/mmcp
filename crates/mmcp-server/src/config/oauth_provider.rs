@@ -31,13 +31,10 @@ impl OAuthProviderConfig {
 
 /// Builder for [`OAuthProviderConfig`].
 ///
-/// Every field is semantically required (there is no sensible default
-/// for a provider's client id, secret, or endpoint URLs), so the
-/// builder exists to name each of the six fields at its call site
-/// instead of repeating a bare six-field struct literal, per the
-/// project's builder-pattern convention for 2-3+ field structs.
-/// Chained-setter style, matching `TestServerConfigBuilder`
-/// (`tests/common/mod.rs`).
+/// Every field is semantically required, with no sensible default for a provider's client id, secret, or endpoint URLs.
+/// The builder names each of the six fields at its call site, instead of repeating a bare six-field struct literal,
+/// per the project's builder-pattern convention for 2-3+ field structs.
+/// Chained-setter style, matching `TestServerConfigBuilder` (`tests/common/mod.rs`).
 pub struct OAuthProviderConfigBuilder {
     slug: String,
     client_id: String,
