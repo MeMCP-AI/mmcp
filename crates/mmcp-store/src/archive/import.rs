@@ -360,11 +360,13 @@ async fn restore_one_group(
 
     let repo_path = backend.repo_path(group_id);
     let backend_for_install = backend.clone();
-    tokio::task::spawn_blocking(move || install_bare_repo(&backend_for_install, &repo_path, &files))
-        .await
-        .map_err(|e| ArchiveError::Malformed {
-            detail: format!("restore task failed: {e}"),
-        })??;
+    tokio::task::spawn_blocking(move || {
+        install_bare_repo(&backend_for_install, &repo_path, &files)
+    })
+    .await
+    .map_err(|e| ArchiveError::Malformed {
+        detail: format!("restore task failed: {e}"),
+    })??;
 
     groups.refresh().await?;
 
@@ -1112,7 +1114,11 @@ mod tests {
             .read_file(&dst_entry.handle, &files_before[0].path, &Rev::Head)
             .await
             .expect("read before");
-        assert!(std::str::from_utf8(&before_bytes).unwrap().contains("before"));
+        assert!(
+            std::str::from_utf8(&before_bytes)
+                .unwrap()
+                .contains("before")
+        );
 
         // Change the source content, then force-restore over the SAME
         // group (same group_id) so dst's repo path is replaced in place.
@@ -1128,7 +1134,11 @@ mod tests {
         )
         .await
         .expect("second memory");
-        let entry_after = src.groups().get(&seeded.group_id).await.expect("entry after");
+        let entry_after = src
+            .groups()
+            .get(&seeded.group_id)
+            .await
+            .expect("entry after");
         let mut buf2 = Vec::new();
         export_archive(
             src.backend(),

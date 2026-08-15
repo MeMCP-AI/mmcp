@@ -111,11 +111,7 @@ pub fn cosine_similarity_with_query_norm(a: &[f32], a_norm: f32, b: &[f32]) -> f
         return 0.0;
     }
     let denom = a_norm * norm(b);
-    if denom == 0.0 {
-        0.0
-    } else {
-        dot(a, b) / denom
-    }
+    if denom == 0.0 { 0.0 } else { dot(a, b) / denom }
 }
 
 /// Serialize an embedding vector to little-endian `f32` bytes for the `indexed_memory.embedding` BLOB column.

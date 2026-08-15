@@ -400,7 +400,11 @@ impl SyncEngine {
         )];
         let remote_url = self.client.git_url_for(remote.group_id);
         let creds = self.client.git_credentials();
-        let ref_updated = match self.backend.fetch(&handle, &remote_url, &refs, &creds).await {
+        let ref_updated = match self
+            .backend
+            .fetch(&handle, &remote_url, &refs, &creds)
+            .await
+        {
             Ok(()) => true,
             // Transport gaps are recorded, not raised: the
             // control-plane view is still worth surfacing, and the
