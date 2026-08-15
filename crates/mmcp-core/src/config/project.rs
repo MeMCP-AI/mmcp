@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::ConfigError;
 use crate::id::ProjectUuid;
+use crate::loadset::GroupRef;
 
 /// Parsed contents of `.mmcp/config.toml`.
 ///
@@ -60,7 +61,7 @@ pub fn is_group_adopted(slug: &str, cfg: &ProjectConfig) -> bool {
             .subscriptions
             .languages
             .iter()
-            .any(|lang| slug == format!("lang/{lang}"))
+            .any(|lang| slug == GroupRef::Language(lang.clone()).canonical_name())
 }
 
 /// Environment variable carrying the control-plane bearer token for
