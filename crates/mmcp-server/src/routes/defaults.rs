@@ -43,3 +43,21 @@ pub(crate) const REJECTION_MESSAGE: &str = "missing or invalid bearer token";
 /// group's bare repo at once on a server with hundreds of groups,
 /// while still running far faster than one row after another.
 pub(crate) const MAX_CONCURRENT_MANIFEST_LOOKUPS: usize = 8;
+
+/// Maximum accepted length of an email address, in bytes. 254 is
+/// the maximum length an RFC 5321 compliant email address can have
+/// (the `MAIL FROM` reverse-path limit), so it is a real protocol
+/// bound rather than an arbitrary pick.
+pub(crate) const MAX_EMAIL_LENGTH: usize = 254;
+
+/// Maximum accepted length of a display name, in bytes. Display
+/// names are shown in WebUI listings; 128 stays far above any real
+/// name while bounding pathological input.
+pub(crate) const MAX_DISPLAY_NAME_LENGTH: usize = 128;
+
+/// Passkey ceremonies (registration or authentication) must complete
+/// within this window; a real browser round-trip takes seconds, not
+/// minutes. An entry older than this is stale and is purged on the
+/// next insert into the same map, bounding memory growth from
+/// ceremonies an authenticated user started but never finished.
+pub(crate) const PASSKEY_CEREMONY_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);

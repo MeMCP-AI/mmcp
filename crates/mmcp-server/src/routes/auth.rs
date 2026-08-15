@@ -34,8 +34,9 @@ use uuid::Uuid;
 use webauthn_rs::prelude::*;
 
 use crate::routes::defaults::{
-    AUTH_REQUEST_BODY_LIMIT_BYTES, OAUTH_STATE_HEX_LENGTH, OAUTH_STATE_SESSION_KEY_PREFIX,
-    OAUTH_STATE_TOKEN_BYTES,
+    AUTH_REQUEST_BODY_LIMIT_BYTES, MAX_DISPLAY_NAME_LENGTH, MAX_EMAIL_LENGTH,
+    OAUTH_STATE_HEX_LENGTH, OAUTH_STATE_SESSION_KEY_PREFIX, OAUTH_STATE_TOKEN_BYTES,
+    PASSKEY_CEREMONY_TTL,
 };
 use crate::routes::registration_limits::RegistrationLimits;
 use crate::routes::response::{self, FromInternalError, into_generic_response};
@@ -66,17 +67,6 @@ pub fn router() -> Router<ServerState> {
 /// See [`mmcp_auth::MAX_HANDLE_LENGTH`]'s doc comment for the cascade that overrides it.
 /// `pub` so the unit tests below can assert the default tier's own numeric value.
 pub use mmcp_auth::MAX_HANDLE_LENGTH;
-
-/// Maximum accepted length of an email address, in bytes. 254 is
-/// the maximum length an RFC 5321 compliant email address can have
-/// (the `MAIL FROM` reverse-path limit), so it is a real protocol
-/// bound rather than an arbitrary pick.
-pub const MAX_EMAIL_LENGTH: usize = 254;
-
-/// Maximum accepted length of a display name, in bytes. Display
-/// names are shown in WebUI listings; 128 stays far above any real
-/// name while bounding pathological input.
-pub const MAX_DISPLAY_NAME_LENGTH: usize = 128;
 
 #[derive(Deserialize)]
 pub struct RegisterRequest {
@@ -455,13 +445,6 @@ async fn oauth_callback(
 }
 
 // ── Passkey ─────────────────────────────────────────────────────
-
-/// Passkey ceremonies (registration or authentication) must complete
-/// within this window; a real browser round-trip takes seconds, not
-/// minutes. An entry older than this is stale and is purged on the
-/// next insert into the same map, bounding memory growth from
-/// ceremonies an authenticated user started but never finished.
-const PASSKEY_CEREMONY_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 /// In-flight passkey registration state, keyed by user id and
 /// timestamped so [`purge_stale_ceremonies`] can evict entries past
