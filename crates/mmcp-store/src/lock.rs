@@ -49,9 +49,9 @@
 //!   callers structure the public entrypoint to acquire once,
 //!   and have any internal helpers it calls operate without re-acquiring.
 
-use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex as StdMutex};
+use std::sync::{Arc, LazyLock};
 
+use mmcp_core::lock_registry::{KeyedLockRegistry, PrunePolicy};
 use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use uuid::Uuid;
 
@@ -95,37 +95,20 @@ pub enum ScopeGuard {
     Write(OwnedRwLockWriteGuard<()>),
 }
 
-static REGISTRY: LazyLock<StdMutex<HashMap<LockScope, Arc<RwLock<()>>>>> =
-    LazyLock::new(|| StdMutex::new(HashMap::new()));
+static REGISTRY: LazyLock<KeyedLockRegistry<LockScope, RwLock<()>>> = LazyLock::new(|| {
+    KeyedLockRegistry::new(
+        PrunePolicy::Threshold(crate::defaults::LOCK_REGISTRY_PRUNE_THRESHOLD),
+        || RwLock::new(()),
+    )
+});
 
-/// Look up (or install) the `Arc<RwLock<()>>` backing `scope`,
-/// pruning every other idle entry first once the registry has grown
-/// past [`LOCK_REGISTRY_PRUNE_THRESHOLD`].
+/// Look up (or install) the `Arc<RwLock<()>>` backing `scope`.
 ///
-/// Threshold-gated prune-on-lookup: below the threshold, an idle
-/// entry costs less to keep than an O(n) sweep costs to run, so the
-/// sweep is skipped entirely. At or above it, every OTHER entry
-/// whose `Arc::strong_count() == 1` is dropped from the map, all
-/// under this function's single lock acquisition. `strong_count()
-/// == 1` means only the registry's own reference survives: no caller
-/// currently holds or is awaiting that scope's guard, because every
-/// caller that intends to use a scope's lock has already cloned its
-/// `Arc` (bumping the count) via this same function, under this same
-/// mutex, before releasing it. That ordering is what makes the check
-/// race-free: a concurrent acquirer either already holds its clone
-/// (count > 1, survives) or has not yet reached this function at all
-/// (nothing to race). Keeps `REGISTRY` from growing without bound
-/// across the process lifetime (every distinct `Group`/`Memory` UUID
-/// ever touched would otherwise leak its entry forever).
+/// Pruning trigger and race-freedom are owned by
+/// [`KeyedLockRegistry`]; this crate only picks the threshold-gated
+/// policy via [`crate::defaults::LOCK_REGISTRY_PRUNE_THRESHOLD`].
 fn lookup_or_install(scope: LockScope) -> Arc<RwLock<()>> {
-    let mut registry = REGISTRY.lock().expect("lock-scope registry mutex poisoned");
-    if registry.len() >= crate::defaults::LOCK_REGISTRY_PRUNE_THRESHOLD {
-        registry.retain(|_, lock| Arc::strong_count(lock) > 1);
-    }
-    registry
-        .entry(scope)
-        .or_insert_with(|| Arc::new(RwLock::new(())))
-        .clone()
+    REGISTRY.get_or_install(scope)
 }
 
 /// Acquire a single scope at the requested mode.

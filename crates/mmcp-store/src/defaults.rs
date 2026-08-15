@@ -8,9 +8,9 @@
 /// directory after another.
 pub(crate) const MAX_CONCURRENT_MANIFEST_SCANS: usize = 8;
 
-/// Minimum [`super::lock::LockScope`] registry size before
-/// `lookup_or_install` runs its idle-entry prune sweep. Below this
-/// size, an O(n) `HashMap::retain` scan on every lock acquisition
+/// Minimum [`super::lock::LockScope`] registry size before its
+/// [`mmcp_core::lock_registry::PrunePolicy::Threshold`] sweeps idle
+/// entries. Below this size, an O(n) scan on every lock acquisition
 /// costs more than the memory it would reclaim; the registry only
 /// needs pruning once it has actually grown large.
 pub(crate) const LOCK_REGISTRY_PRUNE_THRESHOLD: usize = 64;
