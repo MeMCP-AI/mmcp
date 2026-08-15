@@ -16,19 +16,11 @@ use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use jiff::Timestamp;
 use mmcp_auth::AuthError;
+use thiserror::Error;
 use uuid::Uuid;
 
+use crate::routes::defaults::{REJECTION_MESSAGE, WWW_AUTHENTICATE_BEARER};
 use crate::state::ServerState;
-
-/// Challenge header value advertised on every bearer-auth rejection,
-/// matching the scheme this extractor actually accepts.
-const WWW_AUTHENTICATE_BEARER: &str = r#"Bearer realm="mmcp""#;
-
-/// Caller-visible body for a bearer-auth rejection. Carries no detail
-/// beyond "authenticate": the specific cause (missing header versus a
-/// verification failure) is logged server-side only, per
-/// `global-security-rules`'s error-message hygiene.
-const REJECTION_MESSAGE: &str = "missing or invalid bearer token";
 
 /// An authenticated caller of a bearer-guarded route, carrying the
 /// user id verified from the session token's `sub` claim.
@@ -43,13 +35,15 @@ pub struct AuthenticatedUser {
 /// every variant renders the same generic 401 externally: the uniform
 /// response avoids handing an unauthenticated caller a signal about
 /// which part of its request was wrong.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum BearerAuthRejection {
     /// No `Authorization: Bearer <token>` header was present.
+    #[error("no Authorization: Bearer <token> header was present")]
     MissingHeader,
     /// A header was present but the token failed verification
     /// (malformed, wrong key, or expired).
-    Invalid(AuthError),
+    #[error("bearer token failed verification: {0}")]
+    Invalid(#[source] AuthError),
 }
 
 impl IntoResponse for BearerAuthRejection {
