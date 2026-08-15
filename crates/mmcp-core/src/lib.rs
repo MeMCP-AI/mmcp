@@ -13,5 +13,6 @@ pub mod conventions;
 pub mod id;
 pub mod identity;
 pub mod loadset;
+pub mod lock_registry;
 pub mod manifest;
 pub mod memory;
