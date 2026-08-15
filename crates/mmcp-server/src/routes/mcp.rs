@@ -7,6 +7,11 @@
 //! (read, write, verify, diff, search) return a structured
 //! `ProtoError::NotImplemented` so clients see a real capability
 //! gap rather than a fake success.
+//!
+//! Requires the same per-user bearer credential
+//! ([`crate::routes::bearer_auth::AuthenticatedUser`]) as the
+//! `/sync/*` control plane: this dispatcher reaches the same
+//! group/memory data.
 
 use axum::{
     Json, Router,
@@ -21,6 +26,7 @@ use mmcp_proto::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::routes::bearer_auth::AuthenticatedUser;
 use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
 
@@ -48,8 +54,20 @@ struct ToolSuccess {
 /// `ProtoError` values serialized into HTTP responses with the
 /// conventional status code: 400 for request validation, 501 for
 /// unimplemented, 500 for internal failures.
+///
+/// Requires the same per-user bearer credential
+/// ([`AuthenticatedUser`]) as the `/sync/*` control plane. Applied
+/// blanket to the whole dispatcher rather than split per tool:
+/// `ListMemories`, `ListVersions`, and `GroupInfo` all already reach
+/// the same group/memory data the sync-plane bearer gate protects,
+/// and the remaining tools (`ReadMemory`, `WriteMemory`,
+/// `VerifyMemory`, `DiffMemory`, `SearchMemories`) return a bare
+/// `NotImplemented` with no data of their own to protect either way,
+/// so there is no tool in this dispatcher for which staying open
+/// would be a deliberate, justified exception.
 async fn dispatch(
     State(state): State<ServerState>,
+    _caller: AuthenticatedUser,
     Json(envelope): Json<ToolEnvelope>,
 ) -> Result<Json<ToolSuccess>, ToolErrorResponse> {
     let tool = envelope.tool;

@@ -9,6 +9,7 @@
 
 use std::net::SocketAddr;
 
+use mmcp_auth::SessionClaims;
 use mmcp_db::entities::group::OwnerKind;
 use mmcp_db::entities::memory::MemoryKind as DbMemoryKind;
 use mmcp_db::entities::memory_version;
@@ -18,6 +19,39 @@ use tempfile::TempDir;
 use uuid::Uuid;
 
 mod common;
+
+/// Lifetime, in seconds, given to a token minted for these tests;
+/// long enough that no test run can plausibly cross it.
+const TEST_TOKEN_LIFETIME_SECS: i64 = 3600;
+
+/// Seed a real user row and mint a valid bearer token for it, the way
+/// `routes::auth::login` does for a real client. `POST /mcp/tool` now
+/// requires this header, same as the `/sync/*` control plane.
+async fn seed_authenticated_user(
+    state: &mmcp_server::state::ServerState,
+    handle: &str,
+) -> (Uuid, String) {
+    let user_id = Uuid::now_v7();
+    user_repo::create(
+        state.database.connection(),
+        user_repo::NewUser {
+            id: user_id,
+            handle: handle.to_string(),
+            display_name: None,
+            password_hash: None,
+            email: None,
+            created_at: jiff::Timestamp::now().as_millisecond(),
+        },
+    )
+    .await
+    .expect("seed authenticated user");
+
+    let now = jiff::Timestamp::now().as_second();
+    let claims =
+        SessionClaims::new_with_lifetime(user_id, Uuid::now_v7(), now, TEST_TOKEN_LIFETIME_SECS);
+    let token = state.token_issuer.issue(&claims).expect("issue token");
+    (user_id, token)
+}
 
 /// Bring up the full server on an ephemeral port, backed by in-
 /// memory sqlite and a tempdir repo root.
@@ -85,9 +119,10 @@ fn envelope(tool: &str, request: serde_json::Value) -> serde_json::Value {
     json!({ "tool": tool, "request": request })
 }
 
-async fn post_tool(addr: SocketAddr, body: serde_json::Value) -> reqwest::Response {
+async fn post_tool(addr: SocketAddr, token: &str, body: serde_json::Value) -> reqwest::Response {
     reqwest::Client::new()
         .post(format!("http://{addr}/mcp/tool"))
+        .bearer_auth(token)
         .json(&body)
         .send()
         .await
@@ -96,8 +131,9 @@ async fn post_tool(addr: SocketAddr, body: serde_json::Value) -> reqwest::Respon
 
 #[tokio::test]
 async fn mcp_tool_list_memories_with_no_group_returns_empty_list() {
-    let (addr, _state, _tmp) = start_server().await;
-    let resp = post_tool(addr, envelope("list_memories", json!({}))).await;
+    let (addr, state, _tmp) = start_server().await;
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
+    let resp = post_tool(addr, &token, envelope("list_memories", json!({}))).await;
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.expect("json");
     let memories = body
@@ -111,8 +147,10 @@ async fn mcp_tool_list_memories_with_no_group_returns_empty_list() {
 async fn mcp_tool_list_memories_returns_group_contents() {
     let (addr, state, _tmp) = start_server().await;
     let (group, memory) = seed_group_with_memory(&state, "team-rust", "rules").await;
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
     let resp = post_tool(
         addr,
+        &token,
         envelope("list_memories", json!({ "group": group.to_string() })),
     )
     .await;
@@ -168,8 +206,10 @@ async fn mcp_tool_list_memories_honors_only_mandatory_filter() {
     .await
     .unwrap();
 
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
     let resp = post_tool(
         addr,
+        &token,
         envelope(
             "list_memories",
             json!({ "group": group.to_string(), "only_mandatory": true }),
@@ -225,8 +265,10 @@ async fn mcp_tool_list_versions_returns_recorded_versions() {
     .await
     .unwrap();
 
+    let (_user_id, token) = seed_authenticated_user(&state, "bob").await;
     let resp = post_tool(
         addr,
+        &token,
         envelope("list_versions", json!({ "memory": memory.to_string() })),
     )
     .await;
@@ -255,8 +297,10 @@ async fn mcp_tool_list_versions_returns_recorded_versions() {
 async fn mcp_tool_group_info_returns_metadata_for_known_group() {
     let (addr, state, _tmp) = start_server().await;
     let (group, _memory) = seed_group_with_memory(&state, "team-rust", "rules").await;
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
     let resp = post_tool(
         addr,
+        &token,
         envelope("group_info", json!({ "group": group.to_string() })),
     )
     .await;
@@ -294,9 +338,11 @@ async fn mcp_tool_group_info_returns_metadata_for_known_group() {
 
 #[tokio::test]
 async fn mcp_tool_group_info_returns_500_for_unknown_group() {
-    let (addr, _state, _tmp) = start_server().await;
+    let (addr, state, _tmp) = start_server().await;
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
     let resp = post_tool(
         addr,
+        &token,
         envelope("group_info", json!({ "group": Uuid::now_v7().to_string() })),
     )
     .await;
@@ -308,7 +354,8 @@ async fn mcp_tool_group_info_returns_500_for_unknown_group() {
 
 #[tokio::test]
 async fn mcp_tool_client_side_tools_return_501_not_implemented() {
-    let (addr, _state, _tmp) = start_server().await;
+    let (addr, state, _tmp) = start_server().await;
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
     // Every tool whose control plane lives on the client must
     // surface a structured 501 rather than a silent 200.
     for tool in [
@@ -318,7 +365,7 @@ async fn mcp_tool_client_side_tools_return_501_not_implemented() {
         "diff_memory",
         "search_memories",
     ] {
-        let resp = post_tool(addr, envelope(tool, json!({}))).await;
+        let resp = post_tool(addr, &token, envelope(tool, json!({}))).await;
         assert_eq!(resp.status(), 501, "{tool} should be 501 NotImplemented");
         let body: serde_json::Value = resp.json().await.unwrap();
         let kind = body.pointer("/error/kind").and_then(|v| v.as_str());
@@ -328,11 +375,17 @@ async fn mcp_tool_client_side_tools_return_501_not_implemented() {
 
 #[tokio::test]
 async fn mcp_tool_invalid_request_payload_returns_400_bad_request() {
-    let (addr, _state, _tmp) = start_server().await;
+    let (addr, state, _tmp) = start_server().await;
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
     // `list_memories` expects a request object; feeding a string
     // where the struct goes trips the `parse_request` validator,
     // which must produce a `400 invalid_request` error.
-    let resp = post_tool(addr, envelope("list_memories", json!("not an object"))).await;
+    let resp = post_tool(
+        addr,
+        &token,
+        envelope("list_memories", json!("not an object")),
+    )
+    .await;
     assert_eq!(resp.status(), 400);
     let body: serde_json::Value = resp.json().await.unwrap();
     let kind = body.pointer("/error/kind").and_then(|v| v.as_str());
@@ -341,11 +394,14 @@ async fn mcp_tool_invalid_request_payload_returns_400_bad_request() {
 
 #[tokio::test]
 async fn mcp_tool_rejects_envelope_without_tool_name() {
-    let (addr, _state, _tmp) = start_server().await;
-    // A malformed envelope fails at the axum `Json` extraction
-    // layer and surfaces a 4xx before reaching `dispatch`.
+    let (addr, state, _tmp) = start_server().await;
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
+    // An authenticated but malformed envelope fails at the axum
+    // `Json` extraction layer and surfaces a 4xx before reaching
+    // `dispatch`'s own body.
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/mcp/tool"))
+        .bearer_auth(&token)
         .json(&json!({ "not_tool": "list_memories" }))
         .send()
         .await
@@ -355,4 +411,74 @@ async fn mcp_tool_rejects_envelope_without_tool_name() {
         "malformed envelope should be client error, got {}",
         resp.status()
     );
+}
+
+/// Falsification for issue #242
+/// (`post-mcp-tool-dispatcher-reaches-the-same-group-memory-data-the`):
+/// an unauthenticated `POST /mcp/tool` calling `list_memories` must
+/// return 401, never the group's memory listing. Before the fix,
+/// `dispatch` took no auth extractor at all and this exact request
+/// returned 200 with the seeded group's contents.
+#[tokio::test]
+async fn mcp_tool_list_memories_without_bearer_token_returns_401() {
+    let (addr, state, _tmp) = start_server().await;
+    let (group, _memory) = seed_group_with_memory(&state, "team-rust", "rules").await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/mcp/tool"))
+        .json(&envelope(
+            "list_memories",
+            json!({ "group": group.to_string() }),
+        ))
+        .send()
+        .await
+        .expect("POST /mcp/tool");
+    assert_eq!(resp.status(), 401);
+    assert_eq!(
+        resp.headers()
+            .get("www-authenticate")
+            .map(|v| v.to_str().unwrap()),
+        Some(r#"Bearer realm="mmcp""#),
+        "401 must challenge with the Bearer scheme the extractor actually accepts"
+    );
+}
+
+/// Falsification for issue #242, covering `group_info`
+/// specifically (owner id, display name, memory count): an
+/// unauthenticated caller must not reach it either.
+#[tokio::test]
+async fn mcp_tool_group_info_without_bearer_token_returns_401() {
+    let (addr, state, _tmp) = start_server().await;
+    let (group, _memory) = seed_group_with_memory(&state, "team-rust", "rules").await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/mcp/tool"))
+        .json(&envelope(
+            "group_info",
+            json!({ "group": group.to_string() }),
+        ))
+        .send()
+        .await
+        .expect("POST /mcp/tool");
+    assert_eq!(resp.status(), 401);
+}
+
+/// Falsification for issue #242, covering `list_versions` (version
+/// history including `author_id`): an unauthenticated caller must not
+/// reach it either.
+#[tokio::test]
+async fn mcp_tool_list_versions_without_bearer_token_returns_401() {
+    let (addr, state, _tmp) = start_server().await;
+    let (_group, memory) = seed_group_with_memory(&state, "team-rust", "rules").await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/mcp/tool"))
+        .json(&envelope(
+            "list_versions",
+            json!({ "memory": memory.to_string() }),
+        ))
+        .send()
+        .await
+        .expect("POST /mcp/tool");
+    assert_eq!(resp.status(), 401);
 }
