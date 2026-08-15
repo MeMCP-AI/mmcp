@@ -224,6 +224,60 @@ async fn sync_manifest_lists_seeded_groups_with_head_commits() {
     );
 }
 
+/// Falsification for the tip-resolution fix: `/sync/manifest` must
+/// report the branch's true tip, not the last commit that happened
+/// to touch `.mmcp.toml`. A second commit that edits a memory file
+/// without touching the manifest advances `main` past the manifest
+/// commit; the old `walk_history(".mmcp.toml").next()` lookup would
+/// still report the manifest commit here, one commit behind the
+/// real tip.
+#[tokio::test]
+async fn sync_manifest_reports_true_tip_past_the_last_manifest_touching_commit() {
+    let (addr, state, _tmp) = start_server().await;
+    let group = seed_group(&state, "team-rust").await;
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
+
+    let handle = mmcp_git::RepoHandle::new(
+        group,
+        state.group_repo_path(group).to_string_lossy().into_owned(),
+    );
+    let second_commit = state
+        .git
+        .write_commit(
+            &handle,
+            CommitSpec::mmcp_commit(
+                "seed memory commit",
+                vec![(
+                    mmcp_core::conventions::memory_path("rules", MemoryId::new()),
+                    Some(b"+++\nname = \"Rules\"\ndescription = \"A rule\"\nkind = \"rule\"\nmandatory = true\ntags = [\"test\"]\n+++\n\nBody.\n".to_vec()),
+                )],
+                "alice",
+                "alice@example.com",
+            ),
+        )
+        .await
+        .expect("write second commit");
+
+    let body: ManifestResponse = reqwest::Client::new()
+        .get(format!("http://{addr}/sync/manifest"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("GET manifest")
+        .json()
+        .await
+        .expect("decode json");
+    let entry = body
+        .groups
+        .iter()
+        .find(|g| g.group_id == group)
+        .expect("seeded group present in manifest");
+    assert_eq!(
+        entry.head_commit, second_commit,
+        "manifest must report the true branch tip, not the last commit that touched .mmcp.toml"
+    );
+}
+
 /// Falsification test for the bounded-concurrency rewrite of
 /// `get_manifest`'s per-row loop: with more rows than
 /// `MAX_CONCURRENT_MANIFEST_LOOKUPS`, every seeded group must still

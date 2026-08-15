@@ -26,7 +26,7 @@ use mmcp_core::memory::BumpIntent;
 use mmcp_db::entities::memory::MemoryKind;
 use mmcp_db::entities::memory_version;
 use mmcp_db::repository::{group_repo, memory_repo};
-use mmcp_git::{GitBackend, RepoHandle};
+use mmcp_git::{GitBackend, GitError, RepoHandle, Rev};
 use mmcp_proto::ProtoError;
 use mmcp_sync::{
     ManifestResponse, PushRequest, PushResponse, RefEntry, RefsResponse, RemoteGroup, run_bounded,
@@ -123,9 +123,9 @@ async fn get_manifest(
 }
 
 /// Resolve one group row's tip commit and build its [`RemoteGroup`]
-/// advertisement. A missing manifest or history read is not an
-/// error at this layer: the group is still advertised, just at the
-/// conventional zero commit.
+/// advertisement. A missing manifest or an unresolvable tip is not
+/// an error at this layer: the group is still advertised, just at
+/// the conventional zero commit.
 async fn manifest_row_to_remote_group(
     state: &ServerState,
     row: mmcp_db::entities::group::Model,
@@ -134,46 +134,57 @@ async fn manifest_row_to_remote_group(
         row.id,
         state.group_repo_path(row.id).to_string_lossy().into_owned(),
     );
-    let head_commit = match state.git.read_manifest(&handle).await {
-        Ok(_manifest) => {
-            // We have a manifest, so there's a main branch. Resolve
-            // its commit through `list_tree` on an empty prefix: gix
-            // returns the root-tree listing, which implies we can
-            // walk history. But for the manifest endpoint callers
-            // only need the tip commit; grab it via walk_history.
-            match state.git.walk_history(&handle, ".mmcp.toml").await {
-                Ok(mut history) => history
-                    .drain(..)
-                    .next()
-                    .map(|c| c.id)
-                    .unwrap_or_else(|| mmcp_core::conventions::ZERO_COMMIT.to_string()),
-                Err(err) => {
-                    tracing::warn!(
-                        group_id = %row.id,
-                        group_slug = %row.slug,
-                        error = %err,
-                        "walk_history failed while resolving the manifest tip commit; \
-                         advertising the group at the zero commit"
-                    );
-                    mmcp_core::conventions::ZERO_COMMIT.to_string()
-                }
-            }
-        }
-        Err(err) => {
-            tracing::warn!(
-                group_id = %row.id,
-                group_slug = %row.slug,
-                error = %err,
-                "read_manifest failed while building the sync manifest; advertising the \
-                 group at the zero commit"
-            );
-            mmcp_core::conventions::ZERO_COMMIT.to_string()
-        }
-    };
+    let head_commit = resolve_group_tip(state, &handle, row.id, &row.slug).await;
     RemoteGroup {
         group_id: row.id,
         slug: row.slug,
         head_commit,
+    }
+}
+
+/// Resolve `handle`'s `main` tip commit for `/sync/manifest`, or the
+/// conventional zero commit when the manifest file is absent or the
+/// tip cannot be resolved.
+///
+/// The manifest presence check is a plain file read, never a full
+/// TOML parse: only presence/absence decides the zero-commit
+/// fallback, so parsing the manifest's contents here would be
+/// wasted work. `tip_commit` resolves the branch's true tip directly
+/// rather than `walk_history(".mmcp.toml")`'s last commit that
+/// touched the manifest file, which can lag behind `main` whenever a
+/// later commit (a memory edit) never touches `.mmcp.toml` itself.
+async fn resolve_group_tip(
+    state: &ServerState,
+    handle: &RepoHandle,
+    group_id: Uuid,
+    group_slug: &str,
+) -> String {
+    if let Err(err) = state
+        .git
+        .read_file(handle, mmcp_core::manifest::MANIFEST_FILENAME, &Rev::head())
+        .await
+    {
+        tracing::warn!(
+            group_id = %group_id,
+            group_slug,
+            error = %err,
+            "manifest file unreadable while building the sync manifest; advertising the \
+             group at the zero commit"
+        );
+        return mmcp_core::conventions::ZERO_COMMIT.to_string();
+    }
+    match state.git.tip_commit(handle, &Rev::head()).await {
+        Ok(commit) => commit.id,
+        Err(err) => {
+            tracing::warn!(
+                group_id = %group_id,
+                group_slug,
+                error = %err,
+                "tip_commit failed while resolving the manifest tip commit; advertising the \
+                 group at the zero commit"
+            );
+            mmcp_core::conventions::ZERO_COMMIT.to_string()
+        }
     }
 }
 
@@ -198,14 +209,17 @@ async fn get_refs(
             .to_string_lossy()
             .into_owned(),
     );
-    let main_tip = state
-        .git
-        .walk_history(&handle, ".mmcp.toml")
-        .await
-        .map_err(into_generic_response)?
-        .into_iter()
-        .next()
-        .map(|c| c.id);
+    // `tip_commit` resolves the branch's true tip directly, unlike
+    // `walk_history(".mmcp.toml")`'s last commit that touched the
+    // manifest file specifically. `RevNotFound` means the repo has
+    // no commits yet (an unborn `main`): report no refs, same as
+    // the empty-history case before this change. Any other error
+    // (a missing or unreadable repo) still surfaces as a 500.
+    let main_tip = match state.git.tip_commit(&handle, &Rev::head()).await {
+        Ok(commit) => Some(commit.id),
+        Err(GitError::RevNotFound(_)) => None,
+        Err(err) => return Err(into_generic_response(err)),
+    };
 
     let mut refs = Vec::new();
     if let Some(tip) = main_tip {
