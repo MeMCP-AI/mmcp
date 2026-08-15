@@ -5881,13 +5881,32 @@ fn map_sync_error_to_mcp(err: mmcp_sync::SyncError) -> McpError {
 /// rides in the response's own success field (`groups` / `updated` /
 /// `pushed`) alongside this list, instead of the whole call
 /// collapsing into a single top-level error.
+///
+/// `group` and `message` are set ONLY when [`sync_error_payload`]
+/// did not already populate that key for the variant (`PullDiverged`
+/// / `PushDiverged` already carry their own `group`; `Remote` already
+/// carries the remote's own reason as `message`). A prior version of
+/// this function overwrote both keys unconditionally, which for
+/// `Remote` replaced the remote's own reason string with the whole
+/// error's `Display` output (e.g. `"remote error (500): oops"`
+/// instead of `"oops"`) — the SAME `message` key then meant a
+/// different thing here than it did at
+/// [`map_sync_error_to_mcp`]'s call-level, contradicting
+/// `sync_error_payload`'s own doc comment that both surfaces "agree
+/// on the same code vocabulary for the same underlying error".
+/// Guarding instead of overwriting keeps every key genuinely equal
+/// between the two surfaces for the same error.
 fn sync_failures_to_json(failed: &[mmcp_sync::GroupSyncFailure]) -> Vec<serde_json::Value> {
     failed
         .iter()
         .map(|f| {
             let mut payload = sync_error_payload(&f.error);
-            payload["group"] = json!(f.group_id.to_string());
-            payload["message"] = json!(f.error.to_string());
+            if payload.get("group").is_none() {
+                payload["group"] = json!(f.group_id.to_string());
+            }
+            if payload.get("message").is_none() {
+                payload["message"] = json!(f.error.to_string());
+            }
             payload
         })
         .collect()
@@ -10663,6 +10682,78 @@ mod tests {
             Some("sync_remote")
         );
         assert_eq!(payload.get("status").and_then(|v| v.as_i64()), Some(503));
+    }
+
+    /// FALSIFICATION for MEDIUM-1 (independent review, Wave 2 repair
+    /// round 2): the SAME `SyncError::Remote` must produce the SAME
+    /// `message` field whether it reaches the client through
+    /// `map_sync_error_to_mcp` (call-level) or `sync_failures_to_json`
+    /// (per-group, inside an otherwise successful report). Before the
+    /// fix, `sync_failures_to_json` unconditionally overwrote
+    /// `payload["message"]` with the whole error's `Display` output
+    /// (`"remote error (503): backend down"`), disagreeing with the
+    /// call-level payload's own `message` field (the remote's bare
+    /// reason string, `"backend down"`) for the identical error.
+    #[test]
+    fn sync_failures_to_json_agrees_with_call_level_message_for_remote_errors() {
+        use mmcp_sync::{GroupSyncFailure, SyncError};
+
+        let call_level_err = SyncError::Remote {
+            status: 503,
+            message: "backend down".into(),
+        };
+        let call_level_payload = sync_error_payload(&call_level_err);
+
+        let group_id = Uuid::nil();
+        let group_level_err = SyncError::Remote {
+            status: 503,
+            message: "backend down".into(),
+        };
+        let group_json = sync_failures_to_json(&[GroupSyncFailure {
+            group_id,
+            error: group_level_err,
+        }]);
+
+        assert_eq!(
+            group_json[0].get("message"),
+            call_level_payload.get("message"),
+            "the two surfaces must agree on what `message` means for the \
+             same underlying error: call-level {call_level_payload:?}, \
+             group-level {:?}",
+            group_json[0]
+        );
+        assert_eq!(
+            group_json[0].get("message").and_then(|v| v.as_str()),
+            Some("backend down"),
+            "must carry the remote's own reason, not the whole error's Display: {:?}",
+            group_json[0]
+        );
+        assert_eq!(
+            group_json[0].get("group").and_then(|v| v.as_str()),
+            Some(group_id.to_string().as_str())
+        );
+    }
+
+    /// A variant `sync_error_payload` does NOT populate `message` for
+    /// (`NotFound`) must still get one filled in at the group level,
+    /// so a caller reading `failed[].message` never sees an absent
+    /// field for those variants.
+    #[test]
+    fn sync_failures_to_json_fills_message_when_payload_has_none() {
+        use mmcp_sync::{GroupSyncFailure, SyncError};
+
+        let group_id = Uuid::nil();
+        let err = SyncError::NotFound("edit-x".into());
+        let expected_message = err.to_string();
+        let group_json = sync_failures_to_json(&[GroupSyncFailure {
+            group_id,
+            error: err,
+        }]);
+
+        assert_eq!(
+            group_json[0].get("message").and_then(|v| v.as_str()),
+            Some(expected_message.as_str())
+        );
     }
 
     // ── status tool ────────────────────────────────────────────────────
