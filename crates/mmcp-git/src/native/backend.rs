@@ -1,15 +1,15 @@
 //! `GitBackend` implementation using local bare repositories via `gix`.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use mmcp_core::manifest::GroupManifest;
+use moka::sync::Cache;
 
 use crate::backend::GitBackend;
 use crate::error::GitError;
+use crate::native::defaults::REPO_CACHE_MAX_ENTRIES;
 use crate::native::repo_ops;
 use crate::types::{
     CommitMeta, CommitSpec, Credentials, FastForwardOutcome, PushReport, RefSpec, RepoHandle, Rev,
@@ -37,7 +37,17 @@ pub struct NativeBackend {
     /// the first open per path is cached here and reused; each
     /// caller derives its own thread-local `gix::Repository` from it
     /// with `to_thread_local()` inside its own `spawn_blocking`.
-    repo_cache: Arc<Mutex<HashMap<PathBuf, gix::ThreadSafeRepository>>>,
+    ///
+    /// Bounded by [`REPO_CACHE_MAX_ENTRIES`] instead of an unbounded
+    /// `HashMap`: a long-lived server process touching many distinct
+    /// group repositories over its lifetime must not grow this map
+    /// without limit. `moka::sync::Cache` is itself cheaply `Clone`
+    /// (internally `Arc`-backed) and thread-safe, so no outer
+    /// `Arc<Mutex<_>>` wrapper is needed; eviction is safe because
+    /// every live caller already holds its own clone of the
+    /// `ThreadSafeRepository` it is using, so an evicted entry only
+    /// means the next `open_repo` call re-pays discovery cost.
+    repo_cache: Cache<PathBuf, gix::ThreadSafeRepository>,
 }
 
 impl NativeBackend {
@@ -53,7 +63,9 @@ impl NativeBackend {
         std::fs::create_dir_all(&root)?;
         Ok(Self {
             root,
-            repo_cache: Arc::new(Mutex::new(HashMap::new())),
+            repo_cache: Cache::builder()
+                .max_capacity(REPO_CACHE_MAX_ENTRIES)
+                .build(),
         })
     }
 
@@ -91,15 +103,11 @@ impl NativeBackend {
     /// [`GitError::RepoNotFound`] instead of serving that stale
     /// state.
     fn open_repo(&self, path: &Path) -> Result<gix::ThreadSafeRepository, GitError> {
-        let mut cache = self
-            .repo_cache
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if let Some(repo) = cache.get(path) {
+        if let Some(repo) = self.repo_cache.get(path) {
             if path.exists() {
-                return Ok(repo.clone());
+                return Ok(repo);
             }
-            cache.remove(path);
+            self.repo_cache.invalidate(path);
             return Err(GitError::RepoNotFound(path.to_string_lossy().into_owned()));
         }
         if !path.exists() {
@@ -109,7 +117,7 @@ impl NativeBackend {
             path: path.to_string_lossy().into_owned(),
             source: Box::new(e),
         })?;
-        cache.insert(path.to_path_buf(), repo.clone());
+        self.repo_cache.insert(path.to_path_buf(), repo.clone());
         Ok(repo)
     }
 
@@ -128,11 +136,7 @@ impl NativeBackend {
     /// So this call is a forward guard against a gix caching change (e.g. pack-index caching),
     /// not a fix for an observed bug.
     pub fn invalidate(&self, path: &Path) {
-        let mut cache = self
-            .repo_cache
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        cache.remove(path);
+        self.repo_cache.invalidate(path);
     }
 
     /// Read the contents of every path in `paths` at the same
@@ -423,22 +427,14 @@ mod tests {
         gix::init_bare(&repo_path).expect("init bare");
         backend.open_repo(&repo_path).expect("populate cache");
         assert!(
-            backend
-                .repo_cache
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .contains_key(&repo_path),
+            backend.repo_cache.contains_key(&repo_path),
             "precondition: open_repo must have cached the entry"
         );
 
         backend.invalidate(&repo_path);
 
         assert!(
-            !backend
-                .repo_cache
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .contains_key(&repo_path),
+            !backend.repo_cache.contains_key(&repo_path),
             "invalidate must remove the cached entry"
         );
 
