@@ -40,6 +40,18 @@ pub struct GroupEntry {
     pub last_rescan: i64,
 }
 
+impl GroupEntry {
+    /// Build a `GroupEntry` from its three fields.
+    #[must_use]
+    pub fn new(handle: RepoHandle, manifest: GroupManifest, last_rescan: i64) -> Self {
+        Self {
+            handle,
+            manifest,
+            last_rescan,
+        }
+    }
+}
+
 /// Thread-safe map from [`GroupId`] to [`GroupEntry`].
 #[derive(Clone)]
 pub struct GroupIndex {
@@ -225,11 +237,11 @@ async fn scan_repos_root(
                 return None;
             }
 
-            Some(GroupEntry {
+            Some(GroupEntry::new(
                 handle,
                 manifest,
-                last_rescan: Timestamp::now().as_millisecond(),
-            })
+                Timestamp::now().as_millisecond(),
+            ))
         })
         .buffer_unordered(MAX_CONCURRENT_MANIFEST_SCANS)
         .filter_map(std::future::ready)
