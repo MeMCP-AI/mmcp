@@ -2134,16 +2134,34 @@ impl McpServer {
                 compact,
             )
             .await
-            .map_err(git_error)?
             {
-                MemoryDescriptorOutcome::Parsed(descriptor) => memories.push(descriptor),
-                MemoryDescriptorOutcome::ParseFailed(err) => {
+                Ok(MemoryDescriptorOutcome::Parsed(descriptor)) => memories.push(descriptor),
+                Ok(MemoryDescriptorOutcome::ParseFailed(err)) => {
                     notes.push(finding_to_note(&mmcp_store::tracker::parse_failed_finding(
                         &entry.manifest.group_id.to_string(),
                         &file.slug,
                         &err,
                     )));
                 }
+                // A single non-UTF8 memory file must never abort the
+                // rest of the group's listing: mirrors
+                // `search_memories`'s handling of the same
+                // `GitError::Utf8` case just below, and reuses the
+                // exact `memory_not_utf8` note code
+                // `read_memory_file_for_subscription`
+                // (`commands::subscription`) already introduced for
+                // this failure mode, rather than inventing a second
+                // one. Every other sibling file still lists normally.
+                Err(mmcp_git::GitError::Utf8(err)) => {
+                    notes.push(finding_to_note(&mmcp_store::diagnostics::Finding {
+                        group: entry.manifest.group_id.to_string(),
+                        slug: Some(file.slug.clone()),
+                        severity: "error",
+                        code: "memory_not_utf8",
+                        message: format!("memory file is not valid UTF-8: {err}"),
+                    }));
+                }
+                Err(err) => return Err(git_error(err)),
             }
         }
 
@@ -7711,6 +7729,86 @@ mod tests {
                 .and_then(|v| v.as_str())
                 .is_some_and(|m| !m.is_empty()),
             "note must carry the real parse-error text: {note:?}"
+        );
+    }
+
+    /// Falsification test for finding A2 (independent review, Wave 2
+    /// repair round 1): a single memory file carrying genuinely
+    /// invalid UTF-8 bytes must never abort the whole group's
+    /// listing. Before the fix, `read_memory_descriptor`'s
+    /// `GitError::Utf8` propagated with `.map_err(git_error)?` and
+    /// the entire `list_memories` call errored out, dropping every
+    /// sibling; the well-formed sibling must still list normally and
+    /// the broken file must surface as a `memory_not_utf8` note
+    /// instead.
+    #[tokio::test]
+    async fn list_memories_surfaces_a_non_utf8_sibling_without_aborting_the_group() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "good", SAMPLE_MEMORY).await;
+        let entry = state.groups.get(&group).await.expect("group entry");
+
+        // 0xFF is never valid in any position of a UTF-8 byte sequence
+        // (mirrors read_memory_descriptor_errors_on_invalid_utf8_instead_of_lossily_substituting).
+        let invalid_utf8: Vec<u8> = b"+++\nname = \"broken\"\n+++\n\xff\xfe".to_vec();
+        state
+            .backend
+            .write_commit(
+                &entry.handle,
+                CommitSpec {
+                    branch: mmcp_core::conventions::MAIN_BRANCH.to_string(),
+                    author_name: "test".into(),
+                    author_email: "test@example.com".into(),
+                    message: "seed non-utf8 sibling".into(),
+                    files: vec![(
+                        mmcp_core::conventions::memory_path("broken-utf8", MemoryId::new()),
+                        Some(invalid_utf8),
+                    )],
+                },
+            )
+            .await
+            .expect("seed non-utf8 sibling");
+        state.groups.refresh().await.expect("refresh");
+
+        let server = McpServer::new(state, ServeMode::Full);
+        let res = server
+            .list_memories(Parameters(ListMemoriesArgs {
+                group: group.to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect("list_memories must not abort on one non-UTF8 sibling");
+        let parsed = parse_ok_json(res);
+
+        let memories = parsed
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .expect("memories array");
+        assert_eq!(
+            memories.len(),
+            1,
+            "the well-formed sibling must still list normally: {memories:?}"
+        );
+        let good = &memories[0];
+        assert_eq!(good.get("slug").and_then(|v| v.as_str()), Some("good"));
+
+        let notes = parsed
+            .get("notes")
+            .and_then(|v| v.as_array())
+            .expect("the non-UTF8 file must surface a note");
+        assert_eq!(notes.len(), 1, "expected exactly one note: {notes:?}");
+        let note = &notes[0];
+        assert_eq!(
+            note.get("code").and_then(|v| v.as_str()),
+            Some("memory_not_utf8"),
+            "must reuse the same note code read_memory_file_for_subscription already \
+             introduced for this failure mode: {note:?}"
+        );
+        assert_eq!(
+            note.get("context")
+                .and_then(|c| c.get("slug"))
+                .and_then(|v| v.as_str()),
+            Some("broken-utf8"),
+            "note must name the broken record's slug: {note:?}"
         );
     }
 
