@@ -2,10 +2,11 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 
 use anyhow::Result;
 use mmcp_auth::{MmcpAuthBackend, TokenIssuer, TokenVerifier};
+use mmcp_core::lock_registry::{KeyedLockRegistry, PrunePolicy};
 use mmcp_db::{Database, connect};
 use mmcp_git::NativeBackend;
 use tokio::sync::Mutex as AsyncMutex;
@@ -46,9 +47,9 @@ pub struct ServerStateInner {
     /// Per-group async mutex set used to serialize writes (git
     /// `receive-pack`) against the same bare repository. Reads
     /// (`upload-pack`) stay unserialized. Created lazily on first
-    /// access for a given group; `std::sync::Mutex` guards only the
-    /// HashMap insertion, never a subprocess.
-    pub repo_locks: StdMutex<HashMap<Uuid, Arc<AsyncMutex<()>>>>,
+    /// access for a given group; pruning policy and race-freedom are
+    /// owned by [`KeyedLockRegistry`].
+    pub repo_locks: KeyedLockRegistry<Uuid, AsyncMutex<()>>,
 }
 
 impl ServerState {
@@ -92,7 +93,7 @@ impl ServerState {
             min_password_length: cfg.min_password_length,
             max_password_length: cfg.max_password_length,
             max_handle_length: cfg.max_handle_length,
-            repo_locks: StdMutex::new(HashMap::new()),
+            repo_locks: KeyedLockRegistry::new(PrunePolicy::Always, || AsyncMutex::new(())),
         })))
     }
 
@@ -102,22 +103,7 @@ impl ServerState {
     /// repo cannot race and corrupt refs.
     #[must_use]
     pub fn repo_write_lock(&self, group_id: Uuid) -> Arc<AsyncMutex<()>> {
-        let mut locks = self.0.repo_locks.lock().expect(
-            "repo_locks mutex poisoned: another thread panicked while holding it, leaving the \
-             write-serialization map in a possibly inconsistent state that must not be \
-             silently continued past",
-        );
-        // Evict locks nobody currently holds (a strong count of 1
-        // means only this map's own entry remains; an active guard
-        // clones the `Arc`, so anything actively serializing a push
-        // stays above 1) before inserting, so the map does not grow
-        // one permanent entry per group ever pushed to for the life
-        // of the process.
-        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
-        locks
-            .entry(group_id)
-            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
-            .clone()
+        self.0.repo_locks.get_or_install(group_id)
     }
 
     /// Filesystem path of the bare repository for a group.
