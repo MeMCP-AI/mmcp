@@ -8,6 +8,22 @@ use std::path::PathBuf;
 use defaults::{DEFAULT_BIND, DEFAULT_DATABASE_URL, DEFAULT_REPO_ROOT};
 pub use defaults::{MAX_HANDLE_LENGTH_ENV, MAX_PASSWORD_LENGTH_ENV, MIN_PASSWORD_LENGTH_ENV};
 
+/// Failure modes of [`ServerConfig`] construction.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    /// The OS CSPRNG could not be read while generating a random
+    /// session-signing key (used when `MMCP_TOKEN_KEY_HEX` is unset
+    /// or rejected). Genuinely reachable, not merely theoretical: a
+    /// sandboxed or otherwise constrained environment can lack an
+    /// entropy source. The operator's remedy is to set
+    /// `MMCP_TOKEN_KEY_HEX` explicitly there.
+    #[error(
+        "OS CSPRNG unavailable while generating a random session-signing key; \
+         set MMCP_TOKEN_KEY_HEX explicitly on this environment"
+    )]
+    RandomKeyUnavailable(#[source] getrandom::Error),
+}
+
 /// Server configuration.
 ///
 /// Loaded from the following environment variables with the listed
@@ -96,14 +112,21 @@ impl ServerConfig {
     /// Build a config from the process environment using sensible
     /// defaults, with no CLI override tier. Thin wrapper over
     /// [`from_env_with_overrides`](Self::from_env_with_overrides).
-    pub fn from_env() -> Self {
+    ///
+    /// # Errors
+    /// [`ConfigError::RandomKeyUnavailable`] when `MMCP_TOKEN_KEY_HEX`
+    /// is unset or rejected and the OS CSPRNG cannot be read either.
+    pub fn from_env() -> Result<Self, ConfigError> {
         Self::from_env_with_overrides(ServerConfigOverrides::default())
     }
 
     /// Build a config from the process environment, honoring the
     /// given CLI-supplied override tier for the min/max password
     /// length and max handle length cascades.
-    pub fn from_env_with_overrides(overrides: ServerConfigOverrides) -> Self {
+    ///
+    /// # Errors
+    /// See [`ServerConfig::from_env`].
+    pub fn from_env_with_overrides(overrides: ServerConfigOverrides) -> Result<Self, ConfigError> {
         Self::from_source_with_overrides(|key| std::env::var(key).ok(), overrides)
     }
 
@@ -111,7 +134,10 @@ impl ServerConfig {
     /// source, with no CLI override tier. Exposed separately from
     /// [`from_env`](Self::from_env) so tests can feed a deterministic
     /// map without mutating the process environment.
-    pub fn from_source<F>(get: F) -> Self
+    ///
+    /// # Errors
+    /// See [`ServerConfig::from_env`].
+    pub fn from_source<F>(get: F) -> Result<Self, ConfigError>
     where
         F: Fn(&str) -> Option<String>,
     {
@@ -124,7 +150,13 @@ impl ServerConfig {
     /// full [`ServerConfig::from_source`] / [`ServerConfig::from_env`]
     /// wrappers delegate here with a default (all-`None`) override
     /// tier.
-    pub fn from_source_with_overrides<F>(get: F, overrides: ServerConfigOverrides) -> Self
+    ///
+    /// # Errors
+    /// See [`ServerConfig::from_env`].
+    pub fn from_source_with_overrides<F>(
+        get: F,
+        overrides: ServerConfigOverrides,
+    ) -> Result<Self, ConfigError>
     where
         F: Fn(&str) -> Option<String>,
     {
@@ -158,10 +190,10 @@ impl ServerConfig {
                          for this run. Sessions signed with the previous key, or across a \
                          restart, will not validate."
                     );
-                    random_key()
+                    random_key()?
                 }
             },
-            None => random_key(),
+            None => random_key()?,
         };
         // Fallback origin intentionally uses `localhost` (not the
         // bind IP) because the WebAuthn RP ID is derived from the
@@ -191,7 +223,7 @@ impl ServerConfig {
         let max_password_length = resolve_max_password_length(&get, overrides.max_password_length);
         let max_handle_length = resolve_max_handle_length(&get, overrides.max_handle_length);
 
-        Self {
+        Ok(Self {
             bind,
             database_url,
             repo_root,
@@ -202,7 +234,7 @@ impl ServerConfig {
             min_password_length,
             max_password_length,
             max_handle_length,
-        }
+        })
     }
 }
 
@@ -213,16 +245,17 @@ fn parse_hex_key(input: &str) -> Option<[u8; 32]> {
     hex::decode(input).ok()?.try_into().ok()
 }
 
-fn random_key() -> [u8; 32] {
-    // Pull 32 bytes straight from the OS CSPRNG (getrandom defers to
-    // `getrandom(2)` on Linux, `BCryptGenRandom` on Windows, etc.).
-    // On a platform that cannot satisfy that, e.g. a sandbox with no
-    // entropy source, panic at startup rather than hand out
-    // guessable tokens.
-    // Admins set `MMCP_TOKEN_KEY_HEX` explicitly when they need a stable key across restarts.
+/// Pull 32 bytes straight from the OS CSPRNG (getrandom defers to
+/// `getrandom(2)` on Linux, `BCryptGenRandom` on Windows, etc.). A
+/// sandbox with no entropy source can genuinely fail this, so the
+/// failure is propagated as [`ConfigError::RandomKeyUnavailable`]
+/// rather than panicking: admins set `MMCP_TOKEN_KEY_HEX` explicitly
+/// when they need a stable key across restarts, and are the ones who
+/// must be told, not crashed on, when that is not an option either.
+fn random_key() -> Result<[u8; 32], ConfigError> {
     let mut out = [0u8; 32];
-    getrandom::fill(&mut out).expect("OS CSPRNG unavailable; set MMCP_TOKEN_KEY_HEX explicitly");
-    out
+    getrandom::fill(&mut out).map_err(ConfigError::RandomKeyUnavailable)?;
+    Ok(out)
 }
 
 // ── Tunable length-limit tier cascade ───────────────────────────────
@@ -440,6 +473,7 @@ mod tests {
     fn from_map(entries: &[(&str, &str)]) -> ServerConfig {
         let map: HashMap<&str, &str> = entries.iter().copied().collect();
         ServerConfig::from_source(|key| map.get(key).map(|s| (*s).to_string()))
+            .expect("the OS CSPRNG is available in the test environment")
     }
 
     #[test]
@@ -550,6 +584,21 @@ mod tests {
         assert_eq!(cfg.token_key.len(), 32);
         assert_ne!(cfg.token_key, [0u8; 32]);
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// `random_key` returns a typed `Result` (see [`ConfigError::RandomKeyUnavailable`])
+    /// instead of panicking on a CSPRNG failure. A genuine CSPRNG
+    /// outage cannot be simulated portably in a unit test, so this
+    /// asserts the signature is actually `Result`-returning (a
+    /// panicking `-> [u8; 32]` would not compile against this call
+    /// site) and that two calls still yield fresh, independent keys.
+    #[test]
+    fn random_key_returns_ok_with_fresh_bytes_each_call() {
+        let a = random_key().expect("OS CSPRNG must be available in the test environment");
+        let b = random_key().expect("OS CSPRNG must be available in the test environment");
+        assert_eq!(a.len(), 32);
+        assert_ne!(a, [0u8; 32]);
+        assert_ne!(a, b);
     }
 
     #[test]
@@ -794,7 +843,8 @@ mod tests {
                 max_password_length: Some(64),
                 max_handle_length: Some(32),
             },
-        );
+        )
+        .expect("the OS CSPRNG is available in the test environment");
         assert_eq!(cfg.min_password_length, 16);
         assert_eq!(cfg.max_password_length, 64);
         assert_eq!(cfg.max_handle_length, 32);
@@ -809,7 +859,8 @@ mod tests {
                 max_password_length: None,
                 max_handle_length: None,
             },
-        );
+        )
+        .expect("the OS CSPRNG is available in the test environment");
         assert_eq!(cfg.min_password_length, 12);
     }
 
@@ -843,7 +894,8 @@ mod tests {
                 max_password_length: None,
                 max_handle_length: Some(8),
             },
-        );
+        )
+        .expect("the OS CSPRNG is available in the test environment");
         assert_eq!(
             overridden.max_handle_length, 8,
             "the CLI override tier must beat a set env var"
@@ -852,14 +904,16 @@ mod tests {
         let env_only = ServerConfig::from_source_with_overrides(
             |key| (key == MAX_HANDLE_LENGTH_ENV).then(|| "20".to_string()),
             ServerConfigOverrides::default(),
-        );
+        )
+        .expect("the OS CSPRNG is available in the test environment");
         assert_eq!(
             env_only.max_handle_length, 20,
             "the env tier must beat the compiled-in default"
         );
 
         let default_only =
-            ServerConfig::from_source_with_overrides(|_| None, ServerConfigOverrides::default());
+            ServerConfig::from_source_with_overrides(|_| None, ServerConfigOverrides::default())
+                .expect("the OS CSPRNG is available in the test environment");
         assert_eq!(
             default_only.max_handle_length,
             mmcp_auth::MAX_HANDLE_LENGTH,
@@ -876,7 +930,8 @@ mod tests {
                 max_password_length: None,
                 max_handle_length: Some(0),
             },
-        );
+        )
+        .expect("the OS CSPRNG is available in the test environment");
         assert_eq!(
             cfg.max_handle_length, 12,
             "an explicit override of 0 is not a legitimate bound and must fall through to env"
@@ -888,7 +943,8 @@ mod tests {
         let cfg = ServerConfig::from_source_with_overrides(
             |key| (key == MAX_HANDLE_LENGTH_ENV).then(|| "0".to_string()),
             ServerConfigOverrides::default(),
-        );
+        )
+        .expect("the OS CSPRNG is available in the test environment");
         assert_eq!(
             cfg.max_handle_length,
             mmcp_auth::MAX_HANDLE_LENGTH,
@@ -910,7 +966,8 @@ mod tests {
                 // Below MIN_VIABLE_MAX_HANDLE_LENGTH (4) but nonzero.
                 max_handle_length: Some(2),
             },
-        );
+        )
+        .expect("the OS CSPRNG is available in the test environment");
         assert_eq!(
             cfg.max_handle_length, 12,
             "an override too small to leave suffix room is not a legitimate bound and must \
@@ -923,7 +980,8 @@ mod tests {
         let cfg = ServerConfig::from_source_with_overrides(
             |key| (key == MAX_HANDLE_LENGTH_ENV).then(|| "1".to_string()),
             ServerConfigOverrides::default(),
-        );
+        )
+        .expect("the OS CSPRNG is available in the test environment");
         assert_eq!(
             cfg.max_handle_length,
             mmcp_auth::MAX_HANDLE_LENGTH,
@@ -941,7 +999,8 @@ mod tests {
                 max_password_length: None,
                 max_handle_length: Some(mmcp_auth::MIN_VIABLE_MAX_HANDLE_LENGTH),
             },
-        );
+        )
+        .expect("the OS CSPRNG is available in the test environment");
         assert_eq!(
             cfg.max_handle_length,
             mmcp_auth::MIN_VIABLE_MAX_HANDLE_LENGTH,

@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
 async fn run_server(overrides: config::ServerConfigOverrides) -> Result<()> {
     init_tracing();
 
-    let cfg = config::ServerConfig::from_env_with_overrides(overrides);
+    let cfg = config::ServerConfig::from_env_with_overrides(overrides)?;
     tracing::info!(
         address = %cfg.bind,
         database = %cfg.database_url,
@@ -106,7 +106,7 @@ async fn run_server(overrides: config::ServerConfigOverrides) -> Result<()> {
 
 /// GET `/health` on loopback and return zero iff the response is 2xx.
 async fn run_healthcheck() -> Result<()> {
-    let cfg = config::ServerConfig::from_env();
+    let cfg = config::ServerConfig::from_env()?;
     let url = format!("http://127.0.0.1:{}/health", cfg.bind.port());
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
