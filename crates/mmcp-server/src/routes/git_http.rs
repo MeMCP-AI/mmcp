@@ -261,6 +261,7 @@ async fn stream_serve(
             tracing::warn!(
                 target: "mmcp_server::git_http",
                 service = service_label,
+                kind = err.kind_label(),
                 error = %err,
                 "gix serve failed",
             );
@@ -284,36 +285,67 @@ async fn stream_serve(
         .into_response())
 }
 
+/// Failure modes from [`run_serve`]'s four gix dispatch paths.
+///
+/// Each variant wraps the concrete gix error for its path so a caller
+/// can match on the failing stage instead of parsing the rendered
+/// message.
+#[derive(Debug, thiserror::Error)]
+enum ServeError {
+    #[error("failed to open the repository")]
+    OpenRepo(#[source] Box<gix::open::Error>),
+    #[error("upload-pack v1 dispatch failed")]
+    UploadPackV1(#[source] Box<gix::repository::serve::ServePackUploadV1Error>),
+    #[error("upload-pack v2 dispatch failed")]
+    UploadPackV2(#[source] Box<gix::repository::serve::ServePackUploadError>),
+    #[error("receive-pack dispatch failed")]
+    ReceivePack(#[source] Box<gix::repository::serve::ServePackReceiveError>),
+}
+
+impl ServeError {
+    /// Short, stable identifier for structured logging.
+    fn kind_label(&self) -> &'static str {
+        match self {
+            ServeError::OpenRepo(_) => "open_repo",
+            ServeError::UploadPackV1(_) => "upload_pack_v1",
+            ServeError::UploadPackV2(_) => "upload_pack_v2",
+            ServeError::ReceivePack(_) => "receive_pack",
+        }
+    }
+}
+
 /// Dispatch to the appropriate gix serve entry point. Blocking; runs
-/// on the `spawn_blocking` thread. Errors are returned as boxed `dyn`
-/// because the upload-pack and receive-pack error enums are distinct
-/// and the caller only logs.
+/// on the `spawn_blocking` thread.
 fn run_serve<R, W>(
     kind: ServeKind,
     repo_path: &StdPath,
     reader: R,
     mut writer: W,
     interrupt: &AtomicBool,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>
+) -> Result<(), ServeError>
 where
     R: std::io::Read,
     W: std::io::Write,
 {
-    let repo = gix::open(repo_path)?;
+    let repo = gix::open(repo_path).map_err(|e| ServeError::OpenRepo(Box::new(e)))?;
     match kind {
         ServeKind::UploadPack {
             protocol_version: 2,
         } => {
-            let _outcome =
-                repo.serve_pack_upload_v2_dispatch_auto(reader, &mut writer, interrupt)?;
+            let _outcome = repo
+                .serve_pack_upload_v2_dispatch_auto(reader, &mut writer, interrupt)
+                .map_err(|e| ServeError::UploadPackV2(Box::new(e)))?;
         }
         ServeKind::UploadPack { .. } => {
-            let _outcome = repo.serve_pack_upload_v1_auto(reader, &mut writer, interrupt)?;
+            let _outcome = repo
+                .serve_pack_upload_v1_auto(reader, &mut writer, interrupt)
+                .map_err(|e| ServeError::UploadPackV1(Box::new(e)))?;
         }
         ServeKind::ReceivePack => {
             let mut progress = gix::progress::Discard;
-            let _outcome =
-                repo.serve_pack_receive(reader, &mut writer, &mut progress, interrupt)?;
+            let _outcome = repo
+                .serve_pack_receive(reader, &mut writer, &mut progress, interrupt)
+                .map_err(|e| ServeError::ReceivePack(Box::new(e)))?;
         }
     }
     Ok(())
