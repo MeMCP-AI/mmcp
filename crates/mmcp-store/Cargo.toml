@@ -60,6 +60,8 @@ tempfile = "3"
 # Self-dependency so integration tests under `tests/*.rs` (compiled as external crates against this one),
 # can reach `mmcp_store::testing` the same way `mmcp-client`'s integration suite already does.
 mmcp-store = { path = ".", features = ["testing"] }
+# Mock HTTP server for the `build_engine` bearer-auth integration test.
+wiremock = { workspace = true }
 
 [features]
 # Opt-in module with tempdir-backed fixtures reused by consumer test suites.
