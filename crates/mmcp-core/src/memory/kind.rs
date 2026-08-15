@@ -175,6 +175,19 @@ impl std::fmt::Display for MemoryKindParseError {
 
 impl std::error::Error for MemoryKindParseError {}
 
+/// Environment variable that switches the TS-drift test below from
+/// asserting to regenerating: `MMCP_UPDATE_GENERATED=1 cargo test -p
+/// mmcp-core` rewrites `memory_kind.generated.ts` from
+/// [`MemoryKind::ALL`] instead of comparing against it.
+#[cfg(test)]
+const GENERATED_TS_UPDATE_ENV: &str = "MMCP_UPDATE_GENERATED";
+
+/// Path to the generated TypeScript array, relative to this crate's
+/// manifest directory (`crates/mmcp-core`): two levels up reaches
+/// the repo root, then down into the GUI's utils folder.
+#[cfg(test)]
+const GENERATED_TS_RELATIVE_PATH: &str = "../../gui/src/lib/utils/memory_kind.generated.ts";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,6 +236,63 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "invalid memory kind 'bogus': expected one of rule / snapshot / log / reference / scratch / feature / issue / milestone"
+        );
+    }
+
+    /// Renders the exact TypeScript source
+    /// `memory_kind.generated.ts` must contain for the current
+    /// [`MemoryKind::ALL`].
+    fn render_generated_ts() -> String {
+        let values = MemoryKind::ALL
+            .iter()
+            .map(|kind| format!("'{}'", kind.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "// GENERATED FILE - DO NOT EDIT BY HAND.\n\
+             // Source of truth: crates/mmcp-core/src/memory/kind.rs (MemoryKind).\n\
+             // Regenerate: {GENERATED_TS_UPDATE_ENV}=1 cargo test -p mmcp-core\n\
+             export const MEMORY_KIND_VALUES = [\n  {values}\n] as const;\n"
+        )
+    }
+
+    /// Normalizes CRLF to LF so a Windows checkout's line endings
+    /// never register as a content drift: this repo carries no
+    /// `.gitattributes` enforcement beyond the generated file itself,
+    /// so a CRLF checkout of the generated TS file is a real risk.
+    fn normalize_line_endings(text: &str) -> String {
+        text.replace("\r\n", "\n")
+    }
+
+    /// Drift guard between [`MemoryKind::ALL`] and the generated
+    /// `memory_kind.generated.ts` the GUI imports at
+    /// `gui/src/lib/utils/memory_kind.ts`.
+    ///
+    /// Set `MMCP_UPDATE_GENERATED=1` to rewrite the file from the
+    /// current `MemoryKind::ALL` instead of asserting against it.
+    #[test]
+    fn generated_ts_matches_memory_kind_all() {
+        let expected = render_generated_ts();
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(GENERATED_TS_RELATIVE_PATH);
+
+        if std::env::var(GENERATED_TS_UPDATE_ENV).is_ok() {
+            std::fs::write(&path, &expected)
+                .unwrap_or_else(|error| panic!("failed to write {}: {error}", path.display()));
+            return;
+        }
+
+        let actual = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!(
+                "failed to read {}: {error}; regenerate via `{GENERATED_TS_UPDATE_ENV}=1 cargo test -p mmcp-core generated_ts_matches_memory_kind_all`",
+                path.display()
+            )
+        });
+
+        assert_eq!(
+            normalize_line_endings(&actual),
+            normalize_line_endings(&expected),
+            "gui/src/lib/utils/memory_kind.generated.ts is out of sync with MemoryKind::ALL; regenerate via `{GENERATED_TS_UPDATE_ENV}=1 cargo test -p mmcp-core generated_ts_matches_memory_kind_all`"
         );
     }
 }

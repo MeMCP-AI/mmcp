@@ -1,0 +1,5 @@
+# Force LF line endings on the Rust-generated TypeScript kind
+# vocabulary so a Windows checkout's CRLF conversion never registers
+# as content drift against crates/mmcp-core/src/memory/kind.rs's
+# MemoryKind::ALL (the source of truth this file mirrors).
+gui/src/lib/utils/memory_kind.generated.ts text eol=lf
