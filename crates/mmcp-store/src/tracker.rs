@@ -156,6 +156,28 @@ pub fn parse_failed_finding(
     }
 }
 
+/// Build the `memory_not_utf8` [`Finding`] every non-UTF8 memory-file
+/// read path emits, for a memory file whose bytes did not decode as
+/// UTF-8, so a corrupt-on-disk file is reported instead of silently
+/// dropped, aborting the whole listing, or (as `health_check_group`
+/// did before this constructor existed) dropping the underlying
+/// `Utf8Error` from the message entirely.
+///
+/// `pub` (not `pub(crate)`): `mmcp-client`'s `list_memories` MCP tool
+/// and its `resolve_subscribed_reads` subscription-read path both hit
+/// this same failure mode outside the tracker kinds, so every caller
+/// across the workspace builds one `memory_not_utf8` finding with one
+/// message format instead of drifting per call site.
+pub fn not_utf8_finding(group: &str, slug: &str, err: &std::str::Utf8Error) -> Finding {
+    Finding {
+        group: group.to_string(),
+        slug: Some(slug.to_string()),
+        severity: "error",
+        code: "memory_not_utf8",
+        message: format!("memory file is not valid UTF-8: {err}"),
+    }
+}
+
 /// Git move-list produced by [`plan_slug_rename`], ready for `CommitSpec::mmcp_commit`.
 pub(crate) type PlannedRename = Vec<(String, Option<Vec<u8>>)>;
 

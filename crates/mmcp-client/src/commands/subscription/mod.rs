@@ -260,13 +260,11 @@ async fn read_memory_file_for_subscription(
             })
         })?;
     let text = std::str::from_utf8(&bytes).map_err(|err| {
-        finding_to_note(&Finding {
-            group: entry_uuid.to_string(),
-            slug: Some(file_ref.slug.clone()),
-            severity: "error",
-            code: "memory_not_utf8",
-            message: format!("memory file is not valid UTF-8: {err}"),
-        })
+        finding_to_note(&mmcp_store::tracker::not_utf8_finding(
+            &entry_uuid.to_string(),
+            &file_ref.slug,
+            &err,
+        ))
     })?;
     MemoryFile::parse(text).map_err(|err| {
         finding_to_note(&mmcp_store::tracker::parse_failed_finding(

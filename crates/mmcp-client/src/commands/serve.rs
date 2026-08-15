@@ -2147,19 +2147,19 @@ impl McpServer {
                 // rest of the group's listing: mirrors
                 // `search_memories`'s handling of the same
                 // `GitError::Utf8` case just below, and reuses the
-                // exact `memory_not_utf8` note code
-                // `read_memory_file_for_subscription`
-                // (`commands::subscription`) already introduced for
-                // this failure mode, rather than inventing a second
-                // one. Every other sibling file still lists normally.
+                // exact SAME construction (not just the same code
+                // string) via `mmcp_store::tracker::not_utf8_finding`,
+                // the shared constructor `read_memory_file_for_subscription`
+                // (`commands::subscription`) also builds its
+                // `memory_not_utf8` finding through, rather than each
+                // call site hand-rolling its own `Finding` literal.
+                // Every other sibling file still lists normally.
                 Err(mmcp_git::GitError::Utf8(err)) => {
-                    notes.push(finding_to_note(&mmcp_store::diagnostics::Finding {
-                        group: entry.manifest.group_id.to_string(),
-                        slug: Some(file.slug.clone()),
-                        severity: "error",
-                        code: "memory_not_utf8",
-                        message: format!("memory file is not valid UTF-8: {err}"),
-                    }));
+                    notes.push(finding_to_note(&mmcp_store::tracker::not_utf8_finding(
+                        &entry.manifest.group_id.to_string(),
+                        &file.slug,
+                        &err,
+                    )));
                 }
                 Err(err) => return Err(git_error(err)),
             }

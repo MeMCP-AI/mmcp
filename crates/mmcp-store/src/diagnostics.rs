@@ -133,15 +133,18 @@ pub async fn health_check_group(backend: &NativeBackend, entry: &GroupEntry) -> 
 
         match backend.read_file(&entry.handle, &file.path, &rev).await {
             Ok(bytes) => {
-                let Ok(text) = std::str::from_utf8(&bytes) else {
-                    findings.push(Finding {
-                        group: gid.clone(),
-                        slug: Some(mem_slug.to_string()),
-                        severity: "error",
-                        code: "memory_not_utf8",
-                        message: "not valid UTF-8".to_string(),
-                    });
-                    continue;
+                // Shares the exact same construction (code, message
+                // format, and fields) every other non-UTF8 memory-file
+                // read path in the workspace uses, via
+                // `crate::tracker::not_utf8_finding`, instead of
+                // dropping the underlying `Utf8Error` from the
+                // message as this branch did before.
+                let text = match std::str::from_utf8(&bytes) {
+                    Ok(text) => text,
+                    Err(err) => {
+                        findings.push(crate::tracker::not_utf8_finding(&gid, mem_slug, &err));
+                        continue;
+                    }
                 };
                 if let Err(err) = MemoryFile::parse(text) {
                     findings.push(Finding {
