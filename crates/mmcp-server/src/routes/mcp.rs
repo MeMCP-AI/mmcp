@@ -196,10 +196,14 @@ mod handlers {
         req: GroupInfoRequest,
     ) -> Result<GroupInfoResponse> {
         let conn = state.database.connection();
-        let group = group_repo::find_by_id(conn, req.group)
-            .await?
-            .ok_or_else(|| anyhow!("group not found"))?;
-        let memories = memory_repo::list_in_group(conn, req.group).await?;
+        // Neither lookup depends on the other's result, so they run
+        // concurrently instead of one full network/query round trip
+        // after another.
+        let (group, memory_count) = tokio::try_join!(
+            group_repo::find_by_id(conn, req.group),
+            memory_repo::count_in_group(conn, req.group),
+        )?;
+        let group = group.ok_or_else(|| anyhow!("group not found"))?;
         let owner = match group.owner_kind {
             OwnerKind::User => format!("user:{}", group.owner_id),
             OwnerKind::Org => format!("org:{}", group.owner_id),
@@ -209,7 +213,7 @@ mod handlers {
             slug: group.slug,
             owner,
             display_name: group.display_name,
-            memory_count: memories.len() as u32,
+            memory_count: memory_count as u32,
             effective_role: "read".to_string(),
         })
     }

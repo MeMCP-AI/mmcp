@@ -1,6 +1,8 @@
 //! Memory table repository.
 
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, ExprTrait, QueryFilter, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, ExprTrait, PaginatorTrait, QueryFilter, Set,
+};
 use uuid::Uuid;
 
 use crate::entities::memory::{ActiveModel, Column, Entity, MemoryKind, Model};
@@ -58,6 +60,20 @@ pub async fn list_in_group(
     Ok(Entity::find()
         .filter(Column::GroupId.eq(group_id))
         .all(conn)
+        .await?)
+}
+
+/// Count of memories in `group_id`, via `SELECT COUNT(*)` rather than
+/// materializing every row: callers that only need the count (e.g.
+/// `group_info`'s `memory_count`) should never pay for loading and
+/// dropping every `Model` in the group just to call `.len()`.
+pub async fn count_in_group(
+    conn: &sea_orm::DatabaseConnection,
+    group_id: Uuid,
+) -> Result<u64, DbError> {
+    Ok(Entity::find()
+        .filter(Column::GroupId.eq(group_id))
+        .count(conn)
         .await?)
 }
 
