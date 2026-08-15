@@ -172,6 +172,42 @@ async fn sync_manifest_lists_seeded_groups_with_head_commits() {
     );
 }
 
+/// Falsification test for the bounded-concurrency rewrite of
+/// `get_manifest`'s per-row loop: with more rows than
+/// `MAX_CONCURRENT_MANIFEST_LOOKUPS`, every seeded group must still
+/// appear exactly once with its own real head commit, never dropped,
+/// duplicated, or cross-assigned to the wrong slug by the concurrent
+/// scheduling.
+#[tokio::test]
+async fn sync_manifest_lists_every_seeded_group_under_concurrent_lookups() {
+    let (addr, state, _tmp) = start_server().await;
+    let mut seeded = Vec::new();
+    for i in 0..10 {
+        let slug = format!("team-{i:02}");
+        let group_id = seed_group(&state, &slug).await;
+        seeded.push((group_id, slug));
+    }
+
+    let body: ManifestResponse = reqwest::get(format!("http://{addr}/sync/manifest"))
+        .await
+        .expect("GET manifest")
+        .json()
+        .await
+        .expect("decode json");
+    assert_eq!(body.groups.len(), seeded.len());
+
+    for (group_id, slug) in &seeded {
+        let entry = body
+            .groups
+            .iter()
+            .find(|g| g.group_id == *group_id)
+            .unwrap_or_else(|| panic!("group {group_id} missing from manifest response"));
+        assert_eq!(&entry.slug, slug);
+        assert_eq!(entry.head_commit.len(), 40, "real commit id for {slug}");
+        assert_ne!(entry.head_commit, mmcp_core::conventions::ZERO_COMMIT);
+    }
+}
+
 #[tokio::test]
 async fn sync_refs_returns_main_tip_for_known_group() {
     let (addr, state, _tmp) = start_server().await;

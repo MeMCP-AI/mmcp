@@ -18,6 +18,8 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use futures_util::StreamExt;
+use futures_util::stream;
 use jiff::Timestamp;
 use mmcp_core::memory::BumpIntent;
 use mmcp_db::entities::memory::MemoryKind;
@@ -32,6 +34,13 @@ use uuid::Uuid;
 
 use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
+
+/// Cap on simultaneous per-group `read_manifest`/`walk_history` calls
+/// while building the `/sync/manifest` response. Each row's git reads
+/// are independent; bounding concurrency here avoids opening every
+/// group's bare repo at once on a server with hundreds of groups,
+/// while still running far faster than one row after another.
+const MAX_CONCURRENT_MANIFEST_LOOKUPS: usize = 8;
 
 pub fn router() -> Router<ServerState> {
     Router::new()
@@ -94,39 +103,63 @@ async fn get_manifest(
         .await
         .map_err(into_generic_response)?;
 
-    let mut groups = Vec::with_capacity(rows.len());
-    for row in rows {
-        let handle = RepoHandle::new(
-            row.id,
-            state.group_repo_path(row.id).to_string_lossy().into_owned(),
-        );
-        let head_commit = match state.git.read_manifest(&handle).await {
-            Ok(_manifest) => {
-                // We have a manifest, so there's a main branch.
-                // Resolve its commit through `list_tree` on an
-                // empty prefix: gix returns the root-tree listing,
-                // which implies we can walk history. But for the
-                // manifest endpoint callers only need the tip
-                // commit; grab it via walk_history.
-                match state.git.walk_history(&handle, ".mmcp.toml").await {
-                    Ok(mut history) => history
-                        .drain(..)
-                        .next()
-                        .map(|c| c.id)
-                        .unwrap_or_else(|| mmcp_core::conventions::ZERO_COMMIT.to_string()),
-                    Err(_) => mmcp_core::conventions::ZERO_COMMIT.to_string(),
-                }
+    // Bounded concurrency instead of one row's read_manifest +
+    // walk_history after another: each row's git reads are
+    // independent. `buffer_unordered` completes rows out of
+    // submission order, so each result carries its original index and
+    // the collected vector is sorted back into `rows` order below.
+    let mut results: Vec<(usize, RemoteGroup)> = stream::iter(rows.into_iter().enumerate())
+        .map(|(index, row)| {
+            let state = state.clone();
+            async move {
+                let group = manifest_row_to_remote_group(&state, row).await;
+                (index, group)
             }
-            Err(_) => mmcp_core::conventions::ZERO_COMMIT.to_string(),
-        };
-        groups.push(RemoteGroup {
-            group_id: row.id,
-            slug: row.slug,
-            head_commit,
-        });
-    }
+        })
+        .buffer_unordered(MAX_CONCURRENT_MANIFEST_LOOKUPS)
+        .collect()
+        .await;
+    results.sort_by_key(|(index, _)| *index);
+    let groups = results.into_iter().map(|(_, group)| group).collect();
 
     Ok(Json(ManifestResponse { groups }))
+}
+
+/// Resolve one group row's tip commit and build its [`RemoteGroup`]
+/// advertisement. A missing manifest or history read is not an
+/// error at this layer: the group is still advertised, just at the
+/// conventional zero commit, exactly like the previous serial loop.
+async fn manifest_row_to_remote_group(
+    state: &ServerState,
+    row: mmcp_db::entities::group::Model,
+) -> RemoteGroup {
+    let handle = RepoHandle::new(
+        row.id,
+        state.group_repo_path(row.id).to_string_lossy().into_owned(),
+    );
+    let head_commit = match state.git.read_manifest(&handle).await {
+        Ok(_manifest) => {
+            // We have a manifest, so there's a main branch. Resolve
+            // its commit through `list_tree` on an empty prefix: gix
+            // returns the root-tree listing, which implies we can
+            // walk history. But for the manifest endpoint callers
+            // only need the tip commit; grab it via walk_history.
+            match state.git.walk_history(&handle, ".mmcp.toml").await {
+                Ok(mut history) => history
+                    .drain(..)
+                    .next()
+                    .map(|c| c.id)
+                    .unwrap_or_else(|| mmcp_core::conventions::ZERO_COMMIT.to_string()),
+                Err(_) => mmcp_core::conventions::ZERO_COMMIT.to_string(),
+            }
+        }
+        Err(_) => mmcp_core::conventions::ZERO_COMMIT.to_string(),
+    };
+    RemoteGroup {
+        group_id: row.id,
+        slug: row.slug,
+        head_commit,
+    }
 }
 
 /// Return the advertised refs for a single group.
