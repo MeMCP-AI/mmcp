@@ -349,7 +349,7 @@ async fn push_survives_an_earlier_groups_failure_and_attributes_it_correctly() {
         "the earlier group's failure must be attributed, not silently dropped: {:?}",
         report.failed.iter().map(|f| f.group_id).collect::<Vec<_>>()
     );
-    assert_eq!(report.failed[0].group_id, *broken_group_id.as_uuid());
+    assert_eq!(report.failed[0].group_id, broken_group_id);
     assert!(
         matches!(
             report.failed[0].error,

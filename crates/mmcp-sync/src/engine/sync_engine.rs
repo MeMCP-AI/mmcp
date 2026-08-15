@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use mmcp_core::id::GroupId;
 use mmcp_git::{GitBackend, RefSpec};
 use uuid::Uuid;
 
@@ -94,7 +95,10 @@ impl SyncEngine {
             match outcome {
                 Ok(Some(group)) => pushed.push(group),
                 Ok(None) => {}
-                Err(error) => failed.push(GroupSyncFailure { group_id, error }),
+                Err(error) => failed.push(GroupSyncFailure {
+                    group_id: GroupId::from_uuid(group_id),
+                    error,
+                }),
             }
         }
         Ok(PushReport { pushed, failed })
@@ -202,7 +206,10 @@ impl SyncEngine {
         for (group_id, outcome) in outcomes {
             match outcome {
                 Ok(group) => updated.push(group),
-                Err(error) => failed.push(GroupSyncFailure { group_id, error }),
+                Err(error) => failed.push(GroupSyncFailure {
+                    group_id: GroupId::from_uuid(group_id),
+                    error,
+                }),
             }
         }
         Ok(PullReport {
@@ -330,7 +337,10 @@ impl SyncEngine {
         for (group_id, outcome) in outcomes {
             match outcome {
                 Ok(group) => groups.push(group),
-                Err(error) => failed.push(GroupSyncFailure { group_id, error }),
+                Err(error) => failed.push(GroupSyncFailure {
+                    group_id: GroupId::from_uuid(group_id),
+                    error,
+                }),
             }
         }
         Ok(FetchReport {

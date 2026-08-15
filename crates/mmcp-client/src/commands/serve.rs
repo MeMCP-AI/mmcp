@@ -10708,7 +10708,7 @@ mod tests {
             message: "backend down".into(),
         };
         let group_json = sync_failures_to_json(&[GroupSyncFailure {
-            group_id,
+            group_id: GroupId::from_uuid(group_id),
             error: group_level_err,
         }]);
 
@@ -10744,7 +10744,7 @@ mod tests {
         let err = SyncError::NotFound("edit-x".into());
         let expected_message = err.to_string();
         let group_json = sync_failures_to_json(&[GroupSyncFailure {
-            group_id,
+            group_id: GroupId::from_uuid(group_id),
             error: err,
         }]);
 

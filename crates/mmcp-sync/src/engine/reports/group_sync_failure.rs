@@ -1,12 +1,18 @@
 //! [`GroupSyncFailure`]: one group's failed `push` / `pull` / `fetch` attempt.
 
-use uuid::Uuid;
+use mmcp_core::id::GroupId;
 
 use crate::error::SyncError;
 
 /// One group's `push` / `pull` / `fetch` attempt that ended in a
 /// genuine [`SyncError`] (a git-level failure, a diverged ref, and
 /// so on), keeping the failing group's id attached to its error.
+///
+/// `group_id` is the [`GroupId`] newtype rather than a bare `Uuid`,
+/// matching this workspace's identifier convention (see
+/// `mmcp_core::id::group_id`) so a failure record can't be
+/// accidentally compared against or constructed from an unrelated
+/// UUID (a memory id, a user id, ...).
 ///
 /// Every group scheduled for an operation is attempted regardless of
 /// whether an earlier one (in list order) failed: bounded concurrency
@@ -19,6 +25,6 @@ use crate::error::SyncError;
 /// that actually succeeded, earlier or later.
 #[derive(Debug)]
 pub struct GroupSyncFailure {
-    pub group_id: Uuid,
+    pub group_id: GroupId,
     pub error: SyncError,
 }
