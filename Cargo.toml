@@ -204,9 +204,12 @@ wiremock = "0.6"
 [workspace.lints.rust]
 unsafe_code = "forbid"
 warnings = "deny"
+unused_qualifications = "deny"
 
 [workspace.lints.clippy]
 all = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
 
 # Redirect every gitoxide crate to the GGLinnk/gitoxide fork, which
 # carries the pre-upstream implementation of client push and
