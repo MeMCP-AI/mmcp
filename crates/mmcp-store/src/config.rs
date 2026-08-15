@@ -9,9 +9,23 @@
 
 use std::path::{Path, PathBuf};
 
-use mmcp_core::config::ProjectConfig;
+use mmcp_core::config::{ConfigError, ProjectConfig};
 
 use crate::error::{FileOperation, StoreError};
+
+/// Map a `ProjectConfig` TOML round-trip failure onto the caller's
+/// own `path`, so the resulting `StoreError` names the file that
+/// failed instead of losing it behind `ConfigError`'s path-less
+/// `#[from]` conversion (`ProjectConfig::from_toml`/`to_toml` are
+/// generic over any caller, so `ConfigError` itself cannot carry a
+/// path; this crate's `home.rs`/`sessions.rs` thread the path
+/// through the same way for their own TOML round trips).
+fn attach_path(path: PathBuf, error: ConfigError) -> StoreError {
+    match error {
+        ConfigError::Parse(source) => StoreError::TomlParse { path, source },
+        ConfigError::Render(source) => StoreError::TomlSerialize { path, source },
+    }
+}
 
 /// Project-level manifest file name.
 /// Same as the group repo manifest, a single `.mmcp.toml` convention everywhere.
@@ -40,22 +54,55 @@ pub fn config_path_for(root: &Path) -> PathBuf {
 pub fn load(root: &Path) -> Result<ProjectConfig, StoreError> {
     let path = config_path_for(root);
     let text = std::fs::read_to_string(&path).map_err(|source| StoreError::Io {
-        path,
+        path: path.clone(),
         operation: FileOperation::Read,
         source,
     })?;
-    Ok(ProjectConfig::from_toml(&text)?)
+    ProjectConfig::from_toml(&text).map_err(|error| attach_path(path, error))
 }
 
 /// Render `config` into the project's `.mmcp.toml`.
 /// Overwrites any existing file.
 pub fn save(root: &Path, config: &ProjectConfig) -> Result<(), StoreError> {
     let path = config_path_for(root);
-    let text = config.to_toml()?;
+    let text = config
+        .to_toml()
+        .map_err(|error| attach_path(path.clone(), error))?;
     std::fs::write(&path, text).map_err(|source| StoreError::Io {
         path,
         operation: FileOperation::Write,
         source,
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Falsification target for the finding this fixes: `load` used to
+    /// route a TOML parse failure through `StoreError::Config`, whose
+    /// `#[from] ConfigError` conversion drops the file path entirely.
+    /// A malformed `.mmcp.toml` must now surface as
+    /// `StoreError::TomlParse` naming the exact path that failed.
+    #[test]
+    fn load_malformed_toml_returns_typed_parse_error_with_path() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let root = tmp.path();
+        let config_path = config_path_for(root);
+        std::fs::write(&config_path, "not = [valid").expect("write malformed toml");
+
+        let err = load(root).expect_err("malformed TOML must not parse");
+
+        match &err {
+            StoreError::TomlParse { path, .. } => assert_eq!(path, &config_path),
+            other => panic!("expected StoreError::TomlParse, got {other:?}"),
+        }
+        assert!(
+            std::error::Error::source(&err)
+                .and_then(|s| s.downcast_ref::<toml::de::Error>())
+                .is_some(),
+            "source must be the real toml::de::Error, not a stringified copy"
+        );
+    }
 }
