@@ -11,14 +11,10 @@
 //! `commands::serve`, and [`decorate_tool_attrs`] is the shared
 //! decoration step both callers apply to their own base tool list.
 //!
-//! `McpServer::registered_tool_attrs()` (the live, macro-derived base
-//! list) stays in `commands::serve`: it reads
-//! `Self::tool_router().map`, which only exists on `McpServer`'s own
-//! `#[tool_router]` impl block, and moving it would mean moving
-//! `McpServer` itself, out of scope for this extraction. `main.rs`,
-//! not `commands::tools`, supplies that base list to the CLI
-//! subcommand, so `commands::tools` never imports from
-//! `commands::serve`.
+//! `McpServer::registered_tool_attrs()` (the live, macro-derived base list) stays in
+//! `commands::serve`: it reads `Self::tool_router().map`, which only exists on `McpServer`'s own
+//! `#[tool_router]` impl block.
+//! See commands::tools's module doc for why this never imports from commands::serve.
 
 use mmcp_proto::McpToolId;
 
@@ -74,10 +70,7 @@ struct ToolMetadata {
 /// every registered `#[tool]` method needs a variant here (added in
 /// the same change as the method itself) and a match arm declaring
 /// its icon category, `_meta` keys, and argument risk hints
-/// together. Replaces three previously independent, string-keyed
-/// tables (`tool_icon_category`, `meta_for_tool`,
-/// `arg_risk_hints_for`) whose gaps used to default silently to
-/// `Mutate` / no meta / no risk hints instead of failing to build.
+/// together.
 ///
 /// `_meta` vocabulary:
 /// - `mmcp.requires_project`: tool errors without a discovered
@@ -328,9 +321,6 @@ pub(crate) fn meta_for_tool(name: &str) -> Option<rmcp::model::MetaObject> {
 /// `output_schema` so MCP clients can validate that responses are
 /// JSON objects (with optional `notes` channel) and surface the
 /// shape in autocomplete UIs.
-/// Per-tool typed schemas are a candidate future refinement:
-/// replacing the `json!({...})` payloads with typed structs
-/// deriving `JsonSchema` is a 46-tool refactor of its own.
 ///
 /// Cached behind a `OnceLock` so the same `Arc<JsonObject>` reaches
 /// every tool. Cheap to clone; cheaper than rebuilding the map per
@@ -391,17 +381,15 @@ pub(crate) fn shared_output_schema() -> std::sync::Arc<rmcp::model::JsonObject> 
 /// Enum or numeric value triggers can extend the `risk_when` field later without breaking the wire shape.
 #[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct ArgRiskHint {
-    /// Name of the argument as it appears in the tool's input
-    /// schema.
+    /// Name of the argument as it appears in the tool's input schema.
     pub arg: &'static str,
-    /// Value condition that makes the arg risky. Today always
-    /// `"true"` since every existing risky arg is boolean.
+    /// Value condition that makes the arg risky.
+    /// Today always `"true"` since every existing risky arg is boolean.
     pub risk_when: &'static str,
-    /// Stable code matching the tool-level `destructive_hint`
-    /// vocabulary so harnesses can re-use the same prompt text.
+    /// Stable code matching the tool-level `destructive_hint` vocabulary so harnesses can re-use the same prompt text.
     pub kind: &'static str,
-    /// Human-readable one-line explanation. Suitable for direct
-    /// display in a confirmation prompt.
+    /// Human-readable one-line explanation.
+    /// Suitable for direct display in a confirmation prompt.
     pub reason: &'static str,
 }
 
@@ -413,13 +401,9 @@ pub(crate) fn arg_risk_hints_for(tool_name: &str) -> &'static [ArgRiskHint] {
     tool_metadata_for_name(tool_name).risk_hints
 }
 
-/// Decorate a base tool list (icons, `_meta`, output schema) in
-/// place of what used to be inlined at each of `commands::serve`'s
-/// and `commands::tools`' call sites. Takes the base list as a
-/// parameter, rather than fetching it itself, so this module never
-/// needs to reach back into `commands::serve` for
-/// `McpServer::registered_tool_attrs()`: the caller supplies its own
-/// base list, this function only ever adds data to it.
+/// Decorate a base tool list with icons, `_meta`, and output schema.
+/// Takes the base list as a parameter rather than fetching it itself.
+/// See commands::tools's module doc for why this never imports from commands::serve.
 pub(crate) fn decorate_tool_attrs(mut tools: Vec<rmcp::model::Tool>) -> Vec<rmcp::model::Tool> {
     for tool in &mut tools {
         tool.icons = Some(icons_for_category(tool_icon_category(tool.name.as_ref())));
@@ -457,8 +441,7 @@ mod tests {
         assert_eq!(tool_icon_category("sync_pull"), ToolIconCategory::Sync);
     }
 
-    /// An unmapped tool name now panics instead of silently
-    /// defaulting to `Mutate`.
+    /// An unmapped tool name panics.
     /// This is the completeness guarantee `tool_metadata` exists for:
     /// a `#[tool]` method that ships without a matching `McpToolId`
     /// variant fails loudly here rather than shipping a misleading icon.

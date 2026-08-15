@@ -98,13 +98,8 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 /// Same contract as [`cosine_similarity`], but takes `a`'s L2 norm
 /// pre-computed by the caller.
 ///
-/// A caller scoring one fixed query embedding against many rows (the
-/// [`super::query::semantic_search`] hot path) would otherwise
-/// re-derive the SAME query norm on every single row; `a` never
-/// changes across that loop, so hoisting the norm out and passing it
-/// in here turns an O(rows) repeated computation into an O(1) one.
-/// `b`'s norm is still computed fresh every call: unlike the query,
-/// `b` genuinely differs per row, so there is nothing to hoist there.
+/// A caller scoring one query against many rows hoists the query norm out of the loop.
+/// `b`'s norm is recomputed per call, since `b` differs per row.
 #[must_use]
 pub fn cosine_similarity_with_query_norm(a: &[f32], a_norm: f32, b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {

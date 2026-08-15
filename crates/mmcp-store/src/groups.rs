@@ -255,9 +255,8 @@ mod tests {
 
     /// A directory shaped like a group repo (`<uuid>.git`) but with no
     /// git repo inside it at all: `read_manifest` fails, and the
-    /// bounded-concurrency scan must still warn-and-skip it exactly
-    /// like the previous serial loop did, without failing the whole
-    /// refresh or dropping any of the good repos scanned alongside it.
+    /// bounded-concurrency scan must still warn-and-skip it,
+    /// without failing the whole refresh or dropping any of the good repos scanned alongside it.
     #[tokio::test]
     async fn refresh_tolerates_one_broken_repo_among_several_good_ones() {
         let tmp = TempDir::new().expect("tempdir");

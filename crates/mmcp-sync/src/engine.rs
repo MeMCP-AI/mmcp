@@ -37,12 +37,8 @@ use crate::client::{ManifestResponse, SyncClient};
 use crate::error::SyncError;
 use crate::filter::{ScopeIndex, SyncFilter};
 
-/// Cap on simultaneous per-group git network round trips (push,
-/// fetch, and pull's fast-forward step). Independent groups' network
-/// calls used to run one after another; this bounds how many run
-/// concurrently instead of removing the bound entirely, so a sync
-/// covering hundreds of groups does not open hundreds of simultaneous
-/// connections/subprocesses against the remote and the local backend.
+/// Cap on simultaneous per-group git network round trips (push, fetch, and pull's fast-forward step).
+/// Bounds simultaneous connections against the remote and the local backend.
 const MAX_CONCURRENT_GROUP_TRANSFERS: usize = 6;
 
 /// True when `group_id` satisfies `filter`.
@@ -129,21 +125,15 @@ impl SyncEngine {
             SyncFilter::All | SyncFilter::Scope(_) => group_handles.iter_group_ids(),
         };
 
-        // Bounded concurrency instead of one push after another: each
-        // group's network round trip is independent, so up to
+        // Bounded concurrency: each group's network round trip is independent, so up to
         // `MAX_CONCURRENT_GROUP_TRANSFERS` run at once. `buffer_unordered`
         // completes tasks in COMPLETION order, not submission order, so
         // each result carries its original index and the collected
         // vector is sorted back into `targets` order below: this
         // preserves `PushReport::pushed`'s documented "in iteration
-        // order" contract. One failed group's push is never skipped
-        // in favor of stopping early the way the old serial loop's
-        // early `return` did: every scheduled group's push is
-        // attempted regardless of whether an earlier one (in list
-        // order) diverges, and an earlier group's failure no longer
-        // discards a later group's success either - both survive
-        // into the returned report (`pushed` and `failed`
-        // respectively), attributed to their own `group_id`.
+        // order" contract.
+        // Every scheduled group is attempted; failures and successes both reach the report,
+        // attributed to their own `group_id`.
         let mut results: Vec<(usize, Uuid, Result<Option<PushedGroup>, SyncError>)> =
             stream::iter(targets.into_iter().enumerate())
                 .map(|(index, group_id)| async move {

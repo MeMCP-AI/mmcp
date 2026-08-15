@@ -396,11 +396,8 @@ async fn fast_forward_on_equal_refs_reports_already_at() {
     }
 }
 
-/// Falsification test for issue #157: a repo cached via a prior read
-/// must be evicted once its path is deleted, so the next read reports
-/// `RepoNotFound` instead of serving state resolved before deletion.
-/// Comment out `open_repo`'s `path.exists()` eviction branch
-/// (`backend.rs:98-104`) to see this go red.
+/// A repo cached by a prior read is evicted once its path is deleted.
+/// The next read reports `RepoNotFound` rather than pre-deletion state.
 #[tokio::test]
 async fn deleting_repo_after_cache_populated_evicts_on_next_read() {
     let (backend, tmp) = backend_in_tempdir();
@@ -423,33 +420,11 @@ async fn deleting_repo_after_cache_populated_evicts_on_next_read() {
     drop(tmp);
 }
 
-/// Behavioral contract test for the cache-invalidation risk
-/// `install_bare_repo` (`mmcp-store::archive::import`) triggers: an
-/// in-place repo swap on the SAME branch/path, replayed here with
-/// `NativeBackend::invalidate` called explicitly (mirroring what
-/// `install_bare_repo` does after its rename-aside/rename-in
-/// sequence).
+/// An in-place repo swap on the same path stays visible after `NativeBackend::invalidate`.
+/// Mirrors `install_bare_repo`'s rename-aside/rename-in sequence.
 ///
-/// NOTE ON FALSIFIABILITY: this test was run WITHOUT the
-/// `invalidate` call (commenting it out) as the mandated
-/// falsification check, and it stayed GREEN either way -- the
-/// pre-swap read and the post-swap read both returned the correct
-/// content, with or without eviction. Root cause, confirmed by
-/// reading `open_repo`'s doc comment and by this experiment: every
-/// `NativeBackend` read derives a FRESH `gix::Repository` per call
-/// via `to_thread_local()` and mmcp never packs objects
-/// (`write_commit` only ever writes loose objects), so there is no
-/// in-memory ref/object state for a same-path swap to leave stale
-/// under gix's current implementation. `invalidate` is kept in
-/// shipped code regardless: it is the documented, correct contract
-/// for a cache keyed by filesystem path, and it guards against a
-/// future gix caching change (e.g. pack-index caching across
-/// `to_thread_local()` calls) that would reintroduce the staleness
-/// this method exists to prevent. See
-/// `NativeBackend::invalidate_evicts_cached_entry` (backend.rs, unit
-/// test) for a mechanism-level red/green check that CAN fail: it
-/// asserts directly on `repo_cache`'s contents rather than on
-/// behavior gix currently self-heals.
+/// Green with or without the `invalidate` call under the pinned gix build.
+/// See `NativeBackend::invalidate`'s doc comment for why, and `invalidate_evicts_cached_entry` for a check that can fail.
 #[tokio::test]
 async fn in_place_repo_swap_on_same_path_is_visible_after_invalidate() {
     let (backend, tmp) = backend_in_tempdir();

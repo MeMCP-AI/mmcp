@@ -220,18 +220,8 @@ async fn register_with_over_length_handle_returns_400() {
     assert_eq!(resp.status(), 400);
 }
 
-/// Falsification anchor for the `max_handle_length` config cascade
-/// (mirrors `register_with_over_length_handle_returns_400` but
-/// proves the EFFECTIVE, config-resolved bound is what
-/// `/auth/register` actually enforces, not the compiled-in
-/// `MAX_HANDLE_LENGTH` default): a handle well under the compiled
-/// default (64 bytes) but over a smaller `max_handle_length`
-/// supplied through `ServerConfig` must still be rejected. Reverting
-/// the `validate_register_request` call in
-/// `crates/mmcp-server/src/routes/auth.rs` to read the
-/// `MAX_HANDLE_LENGTH` constant instead of `state.max_handle_length`
-/// flips this test from RED (400 expected, 201 observed) back to
-/// GREEN once restored.
+/// `/auth/register` enforces the config-resolved bound, not the compiled-in default.
+/// A handle under the 64-byte default but over a smaller configured bound must still be rejected.
 #[tokio::test]
 async fn overriding_max_handle_length_smaller_than_default_rejects_a_handle_the_default_would_accept()
  {

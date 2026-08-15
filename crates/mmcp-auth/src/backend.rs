@@ -24,19 +24,8 @@ use crate::error::AuthError;
 use crate::password;
 use mmcp_db::repository::{oauth_repo, passkey_repo, user_repo};
 
-/// Compiled-in DEFAULT tier of the account handle length bound, in
-/// bytes. This is the LOWEST-precedence tier only: callers resolve
-/// the effective bound through the config cascade
-/// (`mmcp_server::config::ServerConfig::max_handle_length`, CLI
-/// `--max-handle-length` beats `MMCP_MAX_HANDLE_LENGTH` beats
-/// `~/.mmcp/config.toml` `[limits] max_handle_length` beats this
-/// constant) and pass it in; neither the `/auth/register`
-/// HTTP-boundary check nor [`provision_oauth_handle`] below read
-/// this constant directly anymore. `mmcp-server` depends on
-/// `mmcp-auth` (`crates/mmcp-server/Cargo.toml`), so its
-/// `routes::auth::MAX_HANDLE_LENGTH` re-exports this constant as the
-/// default-tier fallback name rather than declaring an independent
-/// 64.
+/// Compiled-in default account handle length bound, in bytes.
+/// Lowest-precedence tier: callers resolve the effective bound through `mmcp_server::config` and pass it in.
 pub const MAX_HANDLE_LENGTH: usize = 64;
 
 /// Maximum number of numeric-suffix retries when the preferred
@@ -56,42 +45,15 @@ const fn decimal_digit_count(mut value: u32) -> usize {
     digits
 }
 
-/// Bytes reserved, out of [`provision_oauth_handle`]'s effective
-/// `max_handle_length` parameter, for a numeric-suffix retry
-/// candidate's `-N` tail: one byte for the separator plus the widest
-/// possible digit count a suffix up to
-/// [`MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS`] can carry. Depends only on
-/// [`MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS`], never on the effective
-/// handle-length bound itself, so it stays a compile-time constant
-/// even though the bound it is subtracted from is now a runtime
-/// parameter.
+/// Bytes reserved out of the effective `max_handle_length` for a retry candidate's `-N` tail.
+/// Separator byte plus the widest digit count [`MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS`] can produce.
 ///
-/// The base handle is truncated to `max_handle_length -
-/// SUFFIX_RESERVE_BYTES` bytes BEFORE a suffix is appended, so every
-/// suffixed candidate is strictly shorter than a base handle already
-/// truncated to the full cap. Without this reserve, a `base` at or
-/// near `max_handle_length` bytes made `format!("{base}-{suffix}")`
-/// re-truncate back down to exactly `base` on every retry: every
-/// candidate collapsed onto the one handle already known to be
-/// taken, so the collision loop could never find a free handle for a
-/// `{provider}_{provider_user_id}` combination longer than about
-/// `max_handle_length - 2` bytes, defeating the exhaustion guard
-/// entirely.
+/// The base handle is truncated to `max_handle_length - SUFFIX_RESERVE_BYTES` before a suffix is appended.
+/// Without the reserve, every retry re-truncates back to `base` and collapses onto the handle already taken.
 const SUFFIX_RESERVE_BYTES: usize = 1 + decimal_digit_count(MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS);
 
-/// Smallest `max_handle_length` value for which
-/// [`provision_oauth_handle`]'s numeric-suffix collision retry can
-/// still leave [`SUFFIX_RESERVE_BYTES`] of room for a `-N` suffix
-/// after truncating the base handle. The config cascade that resolves
-/// the effective `max_handle_length` (`mmcp_server::config`'s
-/// `resolve_max_handle_length`, see [`MAX_HANDLE_LENGTH`]'s doc
-/// comment) must reject any tier whose value falls below this floor
-/// and fall through to the next tier, exactly like it already rejects
-/// a tier of `0`: a bound this small can still be subtracted from
-/// safely (see [`provision_oauth_handle`]'s own `saturating_sub`
-/// guard), but the collision-retry mechanism this floor protects
-/// would silently degrade to producing duplicate or empty-base
-/// candidates below it.
+/// Smallest `max_handle_length` that still leaves [`SUFFIX_RESERVE_BYTES`] of room after truncating the base handle.
+/// Below it the collision retry produces duplicate or empty-base candidates, so the config cascade rejects that tier.
 pub const MIN_VIABLE_MAX_HANDLE_LENGTH: usize = SUFFIX_RESERVE_BYTES + 1;
 
 // ── AuthUser impl ───────────────────────────────────────────────
@@ -171,18 +133,9 @@ pub enum Credentials {
 #[derive(Clone)]
 pub struct MmcpAuthBackend {
     conn: DatabaseConnection,
-    /// Effective maximum account handle length, in bytes, resolved
-    /// by the caller through the config cascade (see
-    /// [`MAX_HANDLE_LENGTH`]'s doc comment) and captured at
-    /// construction time. `axum_login::AuthnBackend::authenticate`'s
-    /// signature is fixed by the trait it implements, so this is the
-    /// only place the effective bound can reach
-    /// [`provision_oauth_handle`] without that function reading the
-    /// compiled-in constant directly; mirrors how
-    /// `validate_password_policy` already receives its effective
-    /// bounds as parameters rather than reading
-    /// `mmcp_auth::MIN_PASSWORD_LENGTH` / `MAX_PASSWORD_LENGTH`
-    /// internally.
+    /// Effective handle length bound, captured at construction.
+    /// `AuthnBackend::authenticate`'s signature is fixed by the trait.
+    /// This field is the only route by which the bound reaches [`provision_oauth_handle`].
     max_handle_length: usize,
 }
 
@@ -573,14 +526,8 @@ mod tests {
         );
     }
 
-    /// Falsification for the `max_handle_length` underflow finding
-    /// (independent review, Wave 2 repair round 1). The config
-    /// cascade (`mmcp_server::config::resolve_max_handle_length`)
-    /// rejects any tier below [`MIN_VIABLE_MAX_HANDLE_LENGTH`] before
-    /// it ever reaches this function, but `provision_oauth_handle`
-    /// must stay underflow-safe on its own for any caller that
-    /// bypasses that cascade. `max_handle_length = 2` is below
-    /// `SUFFIX_RESERVE_BYTES` (3), so the base handle collides
+    /// `provision_oauth_handle` stays underflow-safe for a caller that bypasses the config cascade.
+    /// `max_handle_length = 2` is below `SUFFIX_RESERVE_BYTES` (3), so the base handle collides
     /// deliberately to force the collision-retry path (the only path
     /// that ever computes `max_handle_length - SUFFIX_RESERVE_BYTES`)
     /// to actually run.

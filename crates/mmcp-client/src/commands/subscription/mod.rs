@@ -234,13 +234,8 @@ pub async fn resolve_subscribed_reads(
     (out, notes)
 }
 
-/// Read and parse one memory file inside `resolve_subscribed_reads`'s
-/// pin/tag matching passes, converting every failure mode into its
-/// own note code: `memory_read_failed` for a git read failure,
-/// `memory_not_utf8` for a non-UTF8 body, and `frontmatter_parse_failed`
-/// (the same shape `read_memory_descriptor` already established) for
-/// an actual frontmatter parse failure. None of the three silently
-/// drops the file anymore.
+/// Read and parse one memory file for `resolve_subscribed_reads`'s pin and tag passes.
+/// Every failure mode becomes its own note code; see that function's doc comment for the vocabulary.
 async fn read_memory_file_for_subscription(
     backend: &NativeBackend,
     entry: &GroupEntry,

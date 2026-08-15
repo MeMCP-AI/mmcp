@@ -356,18 +356,7 @@ mod tests {
         assert_eq!(chain, vec![(process_root(), LockMode::Exclusive)]);
     }
 
-    /// Falsification test for prune-on-lookup (Concern 3, highest
-    /// risk: dropping a live lock silently disables mutual exclusion).
-    /// A held scope's entry must survive a burst of OTHER scope
-    /// lookups that each run the prune sweep, proven not by inspecting
-    /// the registry directly (private, and inspecting it wouldn't
-    /// prove the LOCK still works) but by confirming a second acquire
-    /// attempt on the SAME scope from a different task still correctly
-    /// blocks: if prune-on-lookup had wrongly evicted the held scope's
-    /// entry, a fresh `lookup_or_install` would mint a brand-new,
-    /// independent `Arc<RwLock<()>>` and the second attempt would
-    /// silently succeed against a different lock instance instead of
-    /// waiting on the real one.
+    /// A held scope's entry must survive a burst of other-scope lookups that each run the prune sweep.
     #[tokio::test]
     async fn prune_on_lookup_never_evicts_a_held_scope() {
         let held_group = Uuid::now_v7();

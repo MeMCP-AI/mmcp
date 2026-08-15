@@ -116,7 +116,7 @@ impl NativeBackend {
     /// Evict `path`'s cached repository handle, if any.
     ///
     /// `open_repo`'s cache-validity check only catches deletion
-    /// (`path.exists()` at :99-104): it cannot detect an in-place
+    /// (`open_repo`'s `path.exists()` check): it cannot detect an in-place
     /// replacement where a new bare repository is renamed onto the
     /// same path (the exact `install_bare_repo` sequence in
     /// `mmcp-store::archive::import`), because the path still exists

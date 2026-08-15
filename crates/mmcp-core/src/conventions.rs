@@ -61,11 +61,7 @@ pub fn memory_path(slug: &str, id: MemoryId) -> String {
 ///   children of the prefix and the prefix itself match (so `a/b`,
 ///   `a/b/c` ok; `a/b/c/d` filtered out).
 ///
-/// Single source of truth for this filter: previously duplicated
-/// between `mmcp-client`'s `commands::memory` and `commands::serve`,
-/// each with its own copy and no shared test coverage
-/// (`slug_matches_filter_truth_table_agrees_across_callers`, below,
-/// closes that gap).
+/// Single source of truth for this filter, shared by `commands::memory` and `commands::serve`.
 #[must_use]
 pub fn slug_matches_filter(slug: &str, prefix: Option<&str>, recursive: bool) -> bool {
     let depth = match prefix {

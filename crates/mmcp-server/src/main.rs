@@ -37,10 +37,8 @@ enum Command {
         #[arg(long)]
         max_password_length: Option<usize>,
 
-        /// Override the maximum accepted account handle length, in
-        /// bytes. Highest-precedence tier: beats
-        /// `MMCP_MAX_HANDLE_LENGTH`, the `~/.mmcp/config.toml`
-        /// `[limits]` tier, and the compiled-in default.
+        /// Override the maximum accepted account handle length, in bytes.
+        /// Same precedence as `--min-password-length`.
         #[arg(long)]
         max_handle_length: Option<usize>,
     },

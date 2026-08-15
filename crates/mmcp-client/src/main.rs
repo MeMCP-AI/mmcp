@@ -320,8 +320,8 @@ mod tests {
     /// Lives here, not in `commands::tools`' own test module: this
     /// binary's `main.rs` is the only place that legitimately holds
     /// both `commands::tools::build_rows` and
-    /// `commands::serve::registered_tool_attrs()` (`commands::tools`
-    /// never imports from `commands::serve`; see that module's doc).
+    /// `commands::serve::registered_tool_attrs()`.
+    /// See commands::tools's module doc for why this never imports from commands::serve.
     #[test]
     fn tools_json_lists_every_registered_tool_with_hint_columns() {
         let rows = commands::tools::build_rows(commands::serve::registered_tool_attrs());

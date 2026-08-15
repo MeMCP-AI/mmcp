@@ -159,9 +159,8 @@ pub fn parse_failed_finding(
 /// Build the `memory_not_utf8` [`Finding`] every non-UTF8 memory-file
 /// read path emits, for a memory file whose bytes did not decode as
 /// UTF-8, so a corrupt-on-disk file is reported instead of silently
-/// dropped, aborting the whole listing, or (as `health_check_group`
-/// did before this constructor existed) dropping the underlying
-/// `Utf8Error` from the message entirely.
+/// dropped or aborting the whole listing.
+/// The message carries the underlying `Utf8Error`.
 ///
 /// `pub` (not `pub(crate)`): `mmcp-client`'s `list_memories` MCP tool
 /// and its `resolve_subscribed_reads` subscription-read path both hit

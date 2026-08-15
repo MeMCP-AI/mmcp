@@ -1046,22 +1046,11 @@ mod tests {
         assert!(forced.groups[0].overwritten >= 1);
     }
 
-    /// Contract test for the `NativeBackend::invalidate` wiring: a
-    /// repo handle cached by an earlier read must reflect a
-    /// `force_restore` swap that replaces the same group's bare repo
-    /// in place.
+    /// Contract test for the `NativeBackend::invalidate` wiring.
+    /// A repo handle cached by an earlier read must reflect a `force_restore` swap of the same group's bare repo.
     ///
-    /// This is a behavioral, not falsifiable, check: commenting out
-    /// `install_bare_repo`'s `backend.invalidate(repo_path)` call was
-    /// tried as the mandated falsification step and this test stayed
-    /// GREEN either way, because `to_thread_local()` derives a fresh
-    /// `gix::Repository` per call and mmcp never packs objects, so
-    /// gix has no in-memory state left to go stale on a same-path
-    /// swap today. See `crates/mmcp-git/tests/native_backend.rs`'s
-    /// `in_place_repo_swap_on_same_path_is_visible_after_invalidate`
-    /// for the lower-level repro of the same finding, and
-    /// `NativeBackend::invalidate_evicts_cached_entry` for a
-    /// mechanism-level check that can actually fail.
+    /// Behavioral, not falsifiable: see `mmcp_git::NativeBackend::invalidate`'s doc comment for why.
+    /// `NativeBackend::invalidate_evicts_cached_entry` is the mechanism-level check that can fail.
     #[tokio::test]
     async fn force_restore_invalidates_cached_repo_handle() {
         let src = ScratchHome::new().await.expect("src home");

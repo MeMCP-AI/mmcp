@@ -1,9 +1,4 @@
 //! Default values and environment-variable names for [`super::ServerConfig`].
-//!
-//! Kept in its own file per the project's module-organization
-//! convention: constants and default values always live in their own
-//! dedicated file, never scattered inline alongside the struct/logic
-//! that consumes them.
 
 /// Fallback bind address, used both when `MMCP_BIND` is unset and
 /// when it is present but fails to parse. A hardcoded, always-valid
@@ -32,8 +27,6 @@ pub const MIN_PASSWORD_LENGTH_ENV: &str = "MMCP_MIN_PASSWORD_LENGTH";
 /// length. Same precedence position as [`MIN_PASSWORD_LENGTH_ENV`].
 pub const MAX_PASSWORD_LENGTH_ENV: &str = "MMCP_MAX_PASSWORD_LENGTH";
 
-/// Environment variable overriding the maximum accepted account
-/// handle length. Second in precedence behind an explicit
-/// `--max-handle-length` CLI override, ahead of the
-/// `~/.mmcp/config.toml` `[limits]` tier and the compiled-in default.
+/// Environment variable overriding the maximum accepted account handle length.
+/// Same precedence position as [`MIN_PASSWORD_LENGTH_ENV`].
 pub const MAX_HANDLE_LENGTH_ENV: &str = "MMCP_MAX_HANDLE_LENGTH";

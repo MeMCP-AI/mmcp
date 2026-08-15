@@ -128,7 +128,7 @@ async fn get_manifest(
 /// Resolve one group row's tip commit and build its [`RemoteGroup`]
 /// advertisement. A missing manifest or history read is not an
 /// error at this layer: the group is still advertised, just at the
-/// conventional zero commit, exactly like the previous serial loop.
+/// conventional zero commit.
 async fn manifest_row_to_remote_group(
     state: &ServerState,
     row: mmcp_db::entities::group::Model,

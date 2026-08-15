@@ -81,11 +81,8 @@ pub struct LimitsConfig {
     /// precedence cascade as [`LimitsConfig::min_password_length`].
     pub max_password_length: Option<usize>,
 
-    /// Overrides `mmcp_auth::backend::MAX_HANDLE_LENGTH`, in bytes,
-    /// the maximum accepted account handle length. Beaten by a CLI
-    /// `--max-handle-length` override or the `MMCP_MAX_HANDLE_LENGTH`
-    /// environment variable; wins over the compiled-in default when
-    /// neither of those is set.
+    /// Overrides `mmcp_auth::backend::MAX_HANDLE_LENGTH`, in bytes, the maximum accepted account handle length.
+    /// Same precedence cascade as [`LimitsConfig::min_password_length`].
     pub max_handle_length: Option<usize>,
 }
 

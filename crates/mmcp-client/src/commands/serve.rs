@@ -4186,7 +4186,7 @@ impl McpServer {
         // network blip, etc.). Shared helper keeps the CLI and
         // MCP surfaces emitting identical codes and contexts. The
         // `sync_group_failed` populator covers the distinct case of
-        // a push that errored outright (finding A3): every OTHER
+        // a push that errored outright: every OTHER
         // group in `report.pushed` still shipped despite it.
         let mut notes = crate::notes::sync_push_partial_failure_notes(&report, &server_url);
         notes.extend(sync_group_failure_notes(
@@ -5587,13 +5587,9 @@ impl McpServer {
 
 /// Module-level pub(crate) accessor for the canonical tool list.
 ///
-/// `McpServer::registered_tool_attrs()` is the same data; this free
-/// function is the form internal serve.rs helpers reach for. The
-/// `mmcp tools` CLI (`commands::tools`) reaches for this same list
-/// too, but never through this function: `main.rs`, the composition
-/// root, calls this function itself and passes the result into
-/// `commands::tools::run`, so that CLI-only command module never
-/// imports from `commands::serve`.
+/// `McpServer::registered_tool_attrs()` is the same data; this free function is the form internal
+/// serve.rs helpers reach for.
+/// See commands::tools's module doc for why this never imports from commands::serve.
 ///
 /// Every entry is decorated (via
 /// [`crate::commands::tool_metadata_cli::decorate_tool_attrs`]) with
@@ -5864,38 +5860,21 @@ fn sync_error_payload(err: &mmcp_sync::SyncError) -> serde_json::Value {
 /// structured `code` payload. Callers (AI or test code) can branch
 /// on the code string instead of parsing the human message. Used
 /// only for a call-level failure that precedes any per-group
-/// fan-out (e.g. the manifest fetch); a per-group failure inside an
-/// otherwise successful report never reaches this function anymore,
-/// see [`sync_failures_to_json`].
+/// fan-out (e.g. the manifest fetch).
+/// Call-level failures only; per-group failures go through [`sync_failures_to_json`].
 fn map_sync_error_to_mcp(err: mmcp_sync::SyncError) -> McpError {
     let message = err.to_string();
     let payload = sync_error_payload(&err);
     McpError::invalid_params(message, Some(payload))
 }
 
-/// Serialize a `push` / `pull` / `fetch` report's `failed` list
-/// (independent review finding A3, Wave 2 repair round 1) into the
-/// wire shape: each entry carries the failing `group_id`, the same
-/// structured `code` payload [`map_sync_error_to_mcp`] uses, and the
-/// human-readable `message`. Every group that DID succeed still
-/// rides in the response's own success field (`groups` / `updated` /
-/// `pushed`) alongside this list, instead of the whole call
-/// collapsing into a single top-level error.
+/// Serialize a `push` / `pull` / `fetch` report's `failed` list into the wire shape.
+/// Each entry carries the failing `group_id`, [`sync_error_payload`]'s structured `code`, and a human `message`.
+/// Groups that succeeded still ride in the response's own success field.
 ///
-/// `group` and `message` are set ONLY when [`sync_error_payload`]
-/// did not already populate that key for the variant (`PullDiverged`
-/// / `PushDiverged` already carry their own `group`; `Remote` already
-/// carries the remote's own reason as `message`). A prior version of
-/// this function overwrote both keys unconditionally, which for
-/// `Remote` replaced the remote's own reason string with the whole
-/// error's `Display` output (e.g. `"remote error (500): oops"`
-/// instead of `"oops"`) — the SAME `message` key then meant a
-/// different thing here than it did at
-/// [`map_sync_error_to_mcp`]'s call-level, contradicting
-/// `sync_error_payload`'s own doc comment that both surfaces "agree
-/// on the same code vocabulary for the same underlying error".
-/// Guarding instead of overwriting keeps every key genuinely equal
-/// between the two surfaces for the same error.
+/// `group` and `message` are filled in only when [`sync_error_payload`] left the key unset.
+/// Overwriting would replace `Remote`'s bare reason with the whole error's `Display` output.
+/// The same key must mean the same thing here and at [`map_sync_error_to_mcp`].
 fn sync_failures_to_json(failed: &[mmcp_sync::GroupSyncFailure]) -> Vec<serde_json::Value> {
     failed
         .iter()
@@ -7581,8 +7560,7 @@ mod tests {
     /// Falsification test for the strict-UTF-8 read at
     /// `read_memory_descriptor`: a blob carrying genuinely invalid
     /// UTF-8 bytes must surface as `GitError::Utf8`, not be silently
-    /// mangled via the replacement character (the previous
-    /// `from_utf8_lossy` behavior).
+    /// mangled via the replacement character.
     #[tokio::test]
     async fn read_memory_descriptor_errors_on_invalid_utf8_instead_of_lossily_substituting() {
         let (state, _tmp) = test_state().await;
@@ -7814,15 +7792,7 @@ mod tests {
         );
     }
 
-    /// Falsification test for finding A2 (independent review, Wave 2
-    /// repair round 1): a single memory file carrying genuinely
-    /// invalid UTF-8 bytes must never abort the whole group's
-    /// listing. Before the fix, `read_memory_descriptor`'s
-    /// `GitError::Utf8` propagated with `.map_err(git_error)?` and
-    /// the entire `list_memories` call errored out, dropping every
-    /// sibling; the well-formed sibling must still list normally and
-    /// the broken file must surface as a `memory_not_utf8` note
-    /// instead.
+    /// A memory file with invalid UTF-8 must never abort the whole group's listing.
     #[tokio::test]
     async fn list_memories_surfaces_a_non_utf8_sibling_without_aborting_the_group() {
         let (state, _tmp) = test_state().await;
@@ -10684,16 +10654,7 @@ mod tests {
         assert_eq!(payload.get("status").and_then(|v| v.as_i64()), Some(503));
     }
 
-    /// FALSIFICATION for MEDIUM-1 (independent review, Wave 2 repair
-    /// round 2): the SAME `SyncError::Remote` must produce the SAME
-    /// `message` field whether it reaches the client through
-    /// `map_sync_error_to_mcp` (call-level) or `sync_failures_to_json`
-    /// (per-group, inside an otherwise successful report). Before the
-    /// fix, `sync_failures_to_json` unconditionally overwrote
-    /// `payload["message"]` with the whole error's `Display` output
-    /// (`"remote error (503): backend down"`), disagreeing with the
-    /// call-level payload's own `message` field (the remote's bare
-    /// reason string, `"backend down"`) for the identical error.
+    /// Both surfaces must emit the identical `message` for the identical `SyncError`.
     #[test]
     fn sync_failures_to_json_agrees_with_call_level_message_for_remote_errors() {
         use mmcp_sync::{GroupSyncFailure, SyncError};

@@ -53,8 +53,6 @@ impl ProjectConfig {
 /// Does `cfg` adopt the given group slug? Checks both the explicit
 /// `subscriptions.groups` list and the `lang/<name>` mapping implied
 /// by `subscriptions.languages`.
-/// Bare string equality for now: namespace-aware resolution is a
-/// candidate future refinement once the adoption format stabilises.
 #[must_use]
 pub fn is_group_adopted(slug: &str, cfg: &ProjectConfig) -> bool {
     cfg.subscriptions.groups.iter().any(|s| s == slug)

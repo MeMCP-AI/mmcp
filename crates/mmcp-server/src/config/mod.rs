@@ -54,16 +54,9 @@ pub struct ServerConfig {
     /// over `MMCP_MAX_PASSWORD_LENGTH`, `[limits] max_password_length`,
     /// and `mmcp_auth::MAX_PASSWORD_LENGTH`.
     pub max_password_length: usize,
-    /// Effective maximum accepted account handle length, in bytes,
-    /// resolved through the same override/env/config-file/default
-    /// cascade as [`ServerConfig::min_password_length`] (CLI
-    /// `--max-handle-length` beats `MMCP_MAX_HANDLE_LENGTH` beats
-    /// `~/.mmcp/config.toml` `[limits] max_handle_length` beats
-    /// `mmcp_auth::MAX_HANDLE_LENGTH`). Enforced both at the
-    /// `/auth/register` HTTP boundary and inside OAuth
-    /// JIT-provisioning (`mmcp_auth::backend::provision_oauth_handle`),
-    /// so a JIT-created account can never exceed what the register
-    /// endpoint would accept.
+    /// Effective maximum accepted account handle length, in bytes.
+    /// Same cascade as [`ServerConfig::min_password_length`].
+    /// Tiers: `MMCP_MAX_HANDLE_LENGTH`, `[limits] max_handle_length`, `mmcp_auth::MAX_HANDLE_LENGTH`.
     pub max_handle_length: usize,
 }
 
@@ -331,11 +324,7 @@ fn parse_usize_env(field: &str, var_name: &str, raw: Option<&str>) -> Option<usi
     }
 }
 
-/// Smallest accepted value for the two password-length tunables:
-/// preserves the original "a zero-byte bound is never legitimate"
-/// floor from before [`resolve_usize_from_tiers`] grew a per-tunable
-/// `min_valid` parameter to also serve `max_handle_length`'s stricter
-/// floor ([`mmcp_auth::MIN_VIABLE_MAX_HANDLE_LENGTH`]).
+/// Floor for the password-length tunables: a zero-byte bound is never legitimate.
 const MIN_VALID_LENGTH_LIMIT: usize = 1;
 
 /// Precedence resolution given each tier's already-fetched value:
@@ -619,11 +608,7 @@ mod tests {
         );
     }
 
-    /// Falsification for the `max_handle_length` underflow finding
-    /// (independent review, Wave 2 repair round 1): a `min_valid`
-    /// floor above 1 must reject every tier value at or below it, not
-    /// just a literal `0`, exactly as `max_handle_length`'s cascade
-    /// now does via `mmcp_auth::MIN_VIABLE_MAX_HANDLE_LENGTH`.
+    /// A `min_valid` floor above 1 must reject every tier value at or below it, not just `0`.
     #[test]
     fn resolve_usize_from_tiers_rejects_any_value_below_an_arbitrary_floor() {
         // Floor of 4: 1, 2, and 3 are all below it and must be
@@ -852,17 +837,9 @@ mod tests {
         );
     }
 
-    // ── max_handle_length underflow finding (A1, Wave 2 repair round 1) ──
+    // ── max_handle_length floor ──
     //
-    // Before this repair, `max_handle_length` only rejected an exact
-    // `0`; `--max-handle-length 1` or `--max-handle-length 2` sailed
-    // through the cascade and reached
-    // `mmcp_auth::provision_oauth_handle`'s `max_handle_length -
-    // SUFFIX_RESERVE_BYTES` subtraction, underflowing (`SUFFIX_RESERVE_BYTES`
-    // is 3). These tests prove the cascade itself now rejects any
-    // value below `mmcp_auth::MIN_VIABLE_MAX_HANDLE_LENGTH`, so the
-    // arithmetic in `mmcp-auth` is never reached with an unsafe value
-    // through this entry point.
+    // A configured max_handle_length below the floor is rejected by the cascade, not just an exact 0.
 
     #[test]
     fn max_handle_length_too_small_nonzero_override_falls_through_to_env() {
@@ -871,9 +848,7 @@ mod tests {
             ServerConfigOverrides {
                 min_password_length: None,
                 max_password_length: None,
-                // Below MIN_VIABLE_MAX_HANDLE_LENGTH (4) but nonzero:
-                // the pre-repair cascade would have accepted this and
-                // handed it straight to the underflowing subtraction.
+                // Below MIN_VIABLE_MAX_HANDLE_LENGTH (4) but nonzero.
                 max_handle_length: Some(2),
             },
         );

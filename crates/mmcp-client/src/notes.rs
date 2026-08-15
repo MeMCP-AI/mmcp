@@ -169,18 +169,7 @@ pub fn sync_push_partial_failure_notes(report: &PushReport, server_url: &str) ->
         .collect()
 }
 
-/// Populator helper: turn a `push` / `pull` / `fetch` report's
-/// `failed` list (independent review finding A3, Wave 2 repair round
-/// one) into one `sync_group_failed` error note per group. Each note
-/// names the failing group and carries the real `SyncError` text, so
-/// a caller sees exactly which groups did not complete even though
-/// every OTHER scheduled group still ran to completion and may have
-/// succeeded.
-///
-/// Shared by the MCP `sync_push` / `sync_pull` / `sync_fetch` / `sync`
-/// tools and the CLI `mmcp push` / `mmcp pull` / `mmcp fetch` /
-/// `mmcp sync` commands so both surfaces emit the same code with the
-/// same context shape (`group`, `stage`, `server_url`).
+/// Turn a sync report's `failed` list into one `sync_group_failed` note per group.
 #[must_use]
 pub fn sync_group_failure_notes(
     failed: &[GroupSyncFailure],

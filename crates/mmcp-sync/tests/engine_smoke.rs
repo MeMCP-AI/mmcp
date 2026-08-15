@@ -55,10 +55,7 @@ impl mmcp_sync::ScopeIndex for MapResolver {
 
 /// Insertion-ordered resolver, unlike [`MapResolver`] whose
 /// `HashMap`-backed `iter_group_ids` has unspecified iteration
-/// order. The A3 partial-success falsification test below needs a
-/// deterministic "earlier in list order" group to prove a later
-/// group's success survives an earlier group's failure, which a
-/// `HashMap`-ordered resolver cannot guarantee.
+/// order. The partial-success test below needs a deterministic list order.
 #[derive(Default, Clone)]
 struct OrderedResolver {
     entries: Vec<(Uuid, RepoHandle)>,
@@ -291,18 +288,13 @@ async fn sync_runs_pull_then_push() {
 
 #[tokio::test]
 async fn push_survives_an_earlier_groups_failure_and_attributes_it_correctly() {
-    // Falsification test for finding A3 (independent review, Wave 2
-    // repair round 1): before the fix, `push`'s result-aggregation
-    // loop discarded every already-collected success the instant it
-    // hit the FIRST `Err` in list order via `outcome?`. This seeds an
-    // EARLIER-in-list-order group whose local repo directory is
-    // deleted out from under it (a genuine `GitError::RepoNotFound`,
-    // never `Unsupported`/`Transport`, so it actually reaches the
-    // `Err` arm) and a LATER-in-list-order group that pushes
-    // normally, then asserts both survive into the report: the later
-    // group's success is recorded, and the failure is attributed to
-    // the earlier group specifically, rather than the whole call
-    // collapsing to a single top-level error.
+    // `push`'s result-aggregation keeps every already-collected success after an
+    // earlier-in-list-order group fails. This seeds an EARLIER-in-list-order group whose local
+    // repo directory is deleted out from under it (a genuine `GitError::RepoNotFound`, never
+    // `Unsupported`/`Transport`, so it actually reaches the `Err` arm) and a LATER-in-list-order
+    // group that pushes normally, then asserts both survive into the report: the later group's
+    // success is recorded, and the failure is attributed to the earlier group specifically,
+    // rather than the whole call collapsing to a single top-level error.
     let server = MockServer::start().await;
     let tmp = TempDir::new().expect("tempdir");
     let backend = Arc::new(NativeBackend::new(tmp.path()).expect("backend"));

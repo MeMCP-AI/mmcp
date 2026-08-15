@@ -37,18 +37,7 @@ use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
 
 /// Maximum accepted body size for every `/auth/*` request, in bytes.
-/// A coarse backstop independent of the (configurable)
-/// password-length bound: even a pathologically large JSON body must
-/// never reach the deserializer, let alone the Argon2 hashing step
-/// the register/login password-policy check guards against.
-/// 16 KiB comfortably covers every field's own maximum (the
-/// compiled-in default `MAX_HANDLE_LENGTH` + `MAX_EMAIL_LENGTH` +
-/// `MAX_DISPLAY_NAME_LENGTH` + a generous password ceiling) plus
-/// JSON structural overhead. A larger config-resolved
-/// `max_handle_length` still fits comfortably under this coarse
-/// backstop; it is sized as a defense-in-depth bound against a
-/// pathological body, not as an exact mirror of the configurable
-/// per-field caps.
+/// 16 KiB covers every field's maximum plus JSON overhead, with room for a raised `max_handle_length`.
 const AUTH_REQUEST_BODY_LIMIT_BYTES: usize = 16 * 1024;
 
 pub fn router() -> Router<ServerState> {
@@ -72,26 +61,9 @@ pub fn router() -> Router<ServerState> {
 
 // ── Password ────────────────────────────────────────────────────
 
-/// Compiled-in DEFAULT tier of the account handle length bound, in
-/// bytes. Re-exports `mmcp-auth`'s bound
-/// (`mmcp_auth::backend::MAX_HANDLE_LENGTH`) so this crate and the
-/// OAuth JIT-provisioning path in `mmcp-auth` share exactly one
-/// default-tier definition instead of two independently maintained
-/// 64s; `mmcp-server` already depends on `mmcp-auth`
-/// (`crates/mmcp-server/Cargo.toml`), so referencing its constant
-/// directly costs nothing.
-///
-/// This is the LOWEST-precedence tier only: the live
-/// `/auth/register` HTTP boundary enforces
-/// [`crate::state::ServerStateInner::max_handle_length`], the
-/// EFFECTIVE bound resolved through the full config cascade (CLI
-/// `--max-handle-length` beats `MMCP_MAX_HANDLE_LENGTH` beats
-/// `~/.mmcp/config.toml` `[limits] max_handle_length` beats this
-/// constant), never this constant directly. Kept `pub` because unit
-/// tests below assert the compiled DEFAULT tier's own numeric value
-/// (as opposed to the integration tests in
-/// `crates/mmcp-server/tests/auth_flow.rs`, which exercise the live
-/// HTTP path and must use the effective, config-resolved value).
+/// Compiled-in default tier of the handle length bound.
+/// See [`mmcp_auth::MAX_HANDLE_LENGTH`]'s doc comment for the cascade that overrides it.
+/// `pub` so the unit tests below can assert the default tier's own numeric value.
 pub use mmcp_auth::MAX_HANDLE_LENGTH;
 
 /// Maximum accepted length of an email address, in bytes. 254 is

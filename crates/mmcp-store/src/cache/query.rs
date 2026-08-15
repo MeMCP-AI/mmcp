@@ -330,9 +330,8 @@ mod tests {
     }
 
     /// `limit` strictly smaller than the row count exercises the
-    /// `select_nth_unstable_by` top-k path rather than the
-    /// full-sort/no-op-truncate path the previous test's `limit=10`
-    /// never touches. Only the SELECTED prefix's order is asserted,
+    /// `select_nth_unstable_by` top-k path rather than the full-sort path.
+    /// Only the SELECTED prefix's order is asserted,
     /// per the top-k contract: the discarded tail's internal order is
     /// unspecified.
     #[tokio::test]

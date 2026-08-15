@@ -151,9 +151,8 @@ impl MemoryKind {
 /// attribute because the message body must join
 /// [`MemoryKind::ALL`]'s wire strings at runtime; a `thiserror`
 /// attribute literal is fixed at macro-expansion time and cannot
-/// interpolate that runtime-built join, which is exactly the
-/// hand-listed mirror this restructuring closes. `input` and the
-/// `FromStr::Err` association are unchanged public API.
+/// interpolate that runtime-built join.
+/// `input` and the `FromStr::Err` association are unchanged public API.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryKindParseError {
     /// The offending input string, echoed back for user-facing errors.
