@@ -6,7 +6,7 @@
 
 use std::net::SocketAddr;
 
-use mmcp_server::config::{OAuthProviderConfig, ServerConfig};
+use mmcp_server::config::OAuthProviderConfig;
 use mmcp_server::state::ServerState;
 use serde_json::json;
 use tempfile::TempDir;
@@ -18,11 +18,10 @@ mod common;
 /// the real filesystem beyond a tempdir repo root.
 async fn start_server_with_oauth(providers: Vec<OAuthProviderConfig>) -> (SocketAddr, TempDir) {
     let tmp = TempDir::new().expect("tempdir");
-    let cfg = ServerConfig {
-        token_key: [7u8; 32],
-        oauth_providers: providers,
-        ..common::test_server_config(tmp.path().to_path_buf())
-    };
+    let cfg = common::TestServerConfigBuilder::new(tmp.path().to_path_buf())
+        .token_key([7u8; 32])
+        .oauth_providers(providers)
+        .build();
     let state = ServerState::initialize(&cfg).await.expect("state init");
     let app = mmcp_server::app::build_router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

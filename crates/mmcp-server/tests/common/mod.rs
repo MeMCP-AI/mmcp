@@ -1,38 +1,72 @@
-//! Shared `ServerConfig` construction helper for mmcp-server's
-//! integration tests.
+//! Test-only `ServerConfig` builder shared across mmcp-server's
+//! integration test binaries.
 //!
-//! Every file under `tests/` compiles as its own independent crate,
-//! so this module is pulled in via `mod common;` (never a peer
-//! `use`) in each one that needs it. Centralizes the 10-field
-//! `ServerConfig` literal that used to be hand-duplicated across
-//! `auth_extras.rs`, `auth_flow.rs`, `git_http_e2e.rs`, `health.rs`,
-//! `mcp_routes.rs`, `state.rs`, and `sync_routes.rs`.
+//! Each file under `tests/` compiles as an independent crate, so
+//! this module is pulled in via `mod common;` (never a peer `use`)
+//! in every file that needs it.
 
 use std::path::PathBuf;
 
-use mmcp_server::config::ServerConfig;
+use mmcp_server::config::{OAuthProviderConfig, ServerConfig};
 
-/// Build the `ServerConfig` common to every integration test suite:
-/// an ephemeral loopback bind, an in-memory SQLite database, no
-/// OAuth providers, no push token, and the compiled-in
-/// `mmcp_auth` password-length and handle-length defaults.
-/// `repo_root` is the one field every caller must genuinely supply
-/// (each test uses its own tempdir); `token_key` and
-/// `oauth_providers` are the two fields that vary per test file, and
-/// callers override them with struct-update syntax, e.g.
-/// `ServerConfig { token_key: [7u8; 32],
-/// ..common::test_server_config(repo_root) }`.
-pub fn test_server_config(repo_root: PathBuf) -> ServerConfig {
-    ServerConfig {
-        bind: "127.0.0.1:0".parse().unwrap(),
-        database_url: "sqlite::memory:".to_string(),
-        repo_root,
-        token_key: [0u8; 32],
-        oauth_providers: vec![],
-        origin: "http://localhost:8787".to_string(),
-        push_token: None,
-        min_password_length: mmcp_auth::MIN_PASSWORD_LENGTH,
-        max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
-        max_handle_length: mmcp_auth::MAX_HANDLE_LENGTH,
+/// Builder for the `ServerConfig` used across integration test
+/// suites.
+///
+/// Every field starts at a fixed test default: an ephemeral loopback
+/// bind, an in-memory SQLite database, no OAuth providers, no push
+/// token, and the compiled-in `mmcp_auth` password-length and
+/// handle-length defaults. Only fields with a setter method below
+/// are settable through this builder; `build()` returns the config
+/// with every other field at these defaults.
+pub struct TestServerConfigBuilder {
+    config: ServerConfig,
+}
+
+impl TestServerConfigBuilder {
+    /// Starts a builder with test defaults for the given repo root.
+    ///
+    /// `repo_root` is the one field every test genuinely supplies
+    /// itself, since each test owns its own tempdir.
+    pub fn new(repo_root: PathBuf) -> Self {
+        Self {
+            config: ServerConfig {
+                bind: "127.0.0.1:0".parse().unwrap(),
+                database_url: "sqlite::memory:".to_string(),
+                repo_root,
+                token_key: [0u8; 32],
+                oauth_providers: vec![],
+                origin: "http://localhost:8787".to_string(),
+                push_token: None,
+                min_password_length: mmcp_auth::MIN_PASSWORD_LENGTH,
+                max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
+                max_handle_length: mmcp_auth::MAX_HANDLE_LENGTH,
+            },
+        }
+    }
+
+    /// Overrides the auth token signing key.
+    #[allow(dead_code)] // Live in sibling test binaries; each tests/*.rs compiles common as its own crate.
+    pub fn token_key(mut self, token_key: [u8; 32]) -> Self {
+        self.config.token_key = token_key;
+        self
+    }
+
+    /// Overrides the configured OAuth providers.
+    #[allow(dead_code)] // Live in sibling test binaries; each tests/*.rs compiles common as its own crate.
+    pub fn oauth_providers(mut self, oauth_providers: Vec<OAuthProviderConfig>) -> Self {
+        self.config.oauth_providers = oauth_providers;
+        self
+    }
+
+    /// Overrides the maximum accepted account handle length.
+    #[allow(dead_code)] // Live in sibling test binaries; each tests/*.rs compiles common as its own crate.
+    pub fn max_handle_length(mut self, max_handle_length: usize) -> Self {
+        self.config.max_handle_length = max_handle_length;
+        self
+    }
+
+    /// Finishes the builder, returning the built `ServerConfig`.
+    pub fn build(self) -> ServerConfig {
+        self.config
     }
 }

@@ -6,7 +6,7 @@ mod common;
 
 /// Start the server on an ephemeral port and return its address.
 async fn start_server() -> SocketAddr {
-    let cfg = common::test_server_config(tempfile::tempdir().unwrap().keep());
+    let cfg = common::TestServerConfigBuilder::new(tempfile::tempdir().unwrap().keep()).build();
     let state = mmcp_server::state::ServerState::initialize(&cfg)
         .await
         .expect("server init");

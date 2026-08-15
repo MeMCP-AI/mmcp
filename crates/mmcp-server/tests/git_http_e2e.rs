@@ -24,7 +24,7 @@ mod common;
 async fn start_server(
     repo_root: &std::path::Path,
 ) -> (SocketAddr, mmcp_server::state::ServerState) {
-    let cfg = common::test_server_config(repo_root.to_path_buf());
+    let cfg = common::TestServerConfigBuilder::new(repo_root.to_path_buf()).build();
     let state = mmcp_server::state::ServerState::initialize(&cfg)
         .await
         .expect("server init");

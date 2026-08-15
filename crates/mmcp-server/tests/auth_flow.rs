@@ -2,15 +2,14 @@
 
 use std::net::SocketAddr;
 
-use mmcp_server::config::ServerConfig;
-
 mod common;
 
 async fn start_server() -> SocketAddr {
-    start_server_with_config(ServerConfig {
-        token_key: [42u8; 32],
-        ..common::test_server_config(tempfile::tempdir().unwrap().keep())
-    })
+    start_server_with_config(
+        common::TestServerConfigBuilder::new(tempfile::tempdir().unwrap().keep())
+            .token_key([42u8; 32])
+            .build(),
+    )
     .await
 }
 
@@ -244,11 +243,12 @@ async fn overriding_max_handle_length_smaller_than_default_rejects_a_handle_the_
          override, not the default, can be responsible for a rejection"
     );
 
-    let addr = start_server_with_config(ServerConfig {
-        token_key: [43u8; 32],
-        max_handle_length: NARROWED_MAX_HANDLE_LENGTH,
-        ..common::test_server_config(tempfile::tempdir().unwrap().keep())
-    })
+    let addr = start_server_with_config(
+        common::TestServerConfigBuilder::new(tempfile::tempdir().unwrap().keep())
+            .token_key([43u8; 32])
+            .max_handle_length(NARROWED_MAX_HANDLE_LENGTH)
+            .build(),
+    )
     .await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/auth/register"))

@@ -24,7 +24,7 @@ mod common;
 /// real `mmcp-sync` client would send.
 async fn start_server() -> (SocketAddr, mmcp_server::state::ServerState, TempDir) {
     let tmp = TempDir::new().expect("tempdir");
-    let cfg = common::test_server_config(tmp.path().to_path_buf());
+    let cfg = common::TestServerConfigBuilder::new(tmp.path().to_path_buf()).build();
     let state = mmcp_server::state::ServerState::initialize(&cfg)
         .await
         .expect("server init");
