@@ -12,79 +12,9 @@ use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
 use thiserror::Error;
 
-/// Store-layer failures surfaced to the GUI.
-///
-/// Groups every distinct store-adjacent source type the GUI can
-/// receive (the store's own I/O/manifest/git errors, plus import,
-/// archive, and memory-parse failures) behind one facade so
-/// `GuiError::Store` keeps a single field while each cause stays its
-/// own variant with its own source chain.
-#[derive(Debug, Error)]
-pub enum GuiStoreError {
-    #[error("{0}")]
-    Store(#[from] mmcp_store::StoreError),
-
-    #[error("{0}")]
-    Import(#[from] mmcp_store::ImportError),
-
-    #[error("{0}")]
-    Archive(#[from] mmcp_store::ArchiveError),
-
-    #[error("{0}")]
-    MemoryParse(#[from] mmcp_core::memory::MemoryParseError),
-}
-
-/// Failure modes around driving a native Tauri dialog.
-/// Shared by every command that opens one.
-#[derive(Debug, Error)]
-pub enum GuiDialogError {
-    /// No main window to parent a native dialog to.
-    #[error("main window is not available")]
-    NoMainWindow,
-
-    /// The oneshot channel carrying a native dialog's result was
-    /// dropped before the dialog callback fired.
-    #[error("dialog channel closed before a result arrived")]
-    ChannelClosed,
-
-    /// The dialog returned a handle Tauri could not convert to a
-    /// filesystem path (e.g. a non-`file://` URI).
-    #[error("dialog returned an unusable path: {0}")]
-    PathUnusable(String),
-}
-
-/// Failure modes specific to the archive-command Tauri layer: the
-/// picked-path confinement / size-cap checks around reading an
-/// archive file from disk (see `commands/archive.rs`). Dialog
-/// plumbing itself is [`GuiDialogError`], not duplicated here.
-#[derive(Debug, Error)]
-pub enum GuiArchiveError {
-    /// `value` does not name a recognized memory kind.
-    #[error("unknown memory kind '{0}'")]
-    UnknownKind(String),
-
-    /// Export was requested with no groups selected.
-    #[error("no groups to export")]
-    NoGroupsSelected,
-
-    /// `path` was never returned by the archive file picker, so the
-    /// read is refused rather than trusting an arbitrary IPC-supplied
-    /// filesystem path.
-    #[error("archive path {path} was not selected through the file picker")]
-    PathNotPicked { path: String },
-
-    /// `path` is `size` bytes, exceeding the `max`-byte read cap.
-    #[error("archive {path} is {size} bytes, exceeding the {max} byte limit")]
-    TooLarge { path: String, size: u64, max: u64 },
-
-    /// Reading the archive bytes from disk failed.
-    #[error("reading archive {path}: {source}")]
-    Read {
-        path: String,
-        #[source]
-        source: std::io::Error,
-    },
-}
+use super::archive::GuiArchiveError;
+use super::dialog::GuiDialogError;
+use super::store::GuiStoreError;
 
 #[derive(Debug, Error)]
 pub enum GuiError {
@@ -107,6 +37,14 @@ pub enum GuiError {
     /// No sync bundle is configured for this session.
     #[error("sync-not-configured")]
     SyncNotConfigured,
+
+    /// `group_id` is not present in the local mirror index. Every
+    /// command that resolves a group by id (list/load/create/update/
+    /// delete memory) hits this before touching the group's own
+    /// files, so it gets one shared, structured variant instead of
+    /// being restated as a formatted string at each call site.
+    #[error("group {group_id} is not in the local mirror")]
+    GroupNotInMirror { group_id: String },
 
     /// An archive-command-layer failure: the picked-path confinement
     /// or size checks. See [`GuiArchiveError`].
@@ -177,6 +115,7 @@ impl Serialize for GuiError {
             GuiError::Git(e) => ("git", Some(e.to_string())),
             GuiError::Sync(e) => ("sync", Some(e.to_string())),
             GuiError::SyncNotConfigured => ("sync_not_configured", None),
+            GuiError::GroupNotInMirror { .. } => ("group_not_in_mirror", Some(self.to_string())),
             GuiError::Archive(e) => ("archive", Some(e.to_string())),
             GuiError::Dialog(e) => ("dialog", Some(e.to_string())),
             GuiError::Utf8(e) => ("utf8", Some(e.to_string())),
@@ -258,41 +197,23 @@ mod tests {
         assert!(value["message"].is_null());
     }
 
+    /// FALSIFICATION: before this fix, every "group not in the local
+    /// mirror" failure was a `GuiError::Other(String)` catch-all
+    /// built by six copy-pasted `format!` call sites, so the wire
+    /// `kind` was indistinguishable from any other unrelated
+    /// GUI-local failure. This asserts the dedicated variant carries
+    /// its own `kind` and embeds the offending group id in the
+    /// message.
     #[test]
-    fn archive_error_chains_to_the_real_source() {
-        let source = GuiArchiveError::PathNotPicked {
-            path: "/tmp/archive.tar".into(),
+    fn group_not_in_mirror_has_its_own_wire_kind_and_names_the_group() {
+        let err = GuiError::GroupNotInMirror {
+            group_id: "019d955d-4cce-77f2-a0b3-0b79ed394612".to_string(),
         };
-        let err: GuiError = source.into();
-
-        assert!(matches!(err, GuiError::Archive(_)));
-        let chained = err
-            .source()
-            .and_then(|s| s.downcast_ref::<GuiArchiveError>())
-            .expect("archive source must be preserved");
-        assert!(matches!(
-            chained,
-            GuiArchiveError::PathNotPicked { path } if path == "/tmp/archive.tar"
-        ));
-
         let value = serde_json::to_value(&err).unwrap();
-        assert_eq!(value["kind"], "archive");
+        assert_eq!(value["kind"], "group_not_in_mirror");
         assert_eq!(
             value["message"],
-            "archive path /tmp/archive.tar was not selected through the file picker"
-        );
-    }
-
-    #[test]
-    fn archive_too_large_reports_size_and_limit_in_its_message() {
-        let err = GuiArchiveError::TooLarge {
-            path: "/tmp/big.tar".into(),
-            size: 200,
-            max: 100,
-        };
-        assert_eq!(
-            err.to_string(),
-            "archive /tmp/big.tar is 200 bytes, exceeding the 100 byte limit"
+            "group 019d955d-4cce-77f2-a0b3-0b79ed394612 is not in the local mirror"
         );
     }
 }
