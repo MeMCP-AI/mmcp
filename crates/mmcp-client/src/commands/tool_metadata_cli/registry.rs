@@ -1,0 +1,292 @@
+//! The single owning per-tool metadata registry.
+
+use mmcp_proto::McpToolId;
+
+use super::arg_risk_hint::ArgRiskHint;
+use super::defaults::{
+    META_DEBUG_GATED, META_NETWORK, META_PROTECTED_GROUP_GATED, META_REQUIRES_PROJECT,
+    META_REQUIRES_SYNC,
+};
+use super::icon_category::ToolIconCategory;
+
+/// Per-tool metadata bundle: icon category, `_meta` advisory keys,
+/// and argument risk hints, produced together by one
+/// [`tool_metadata`] match arm.
+#[derive(Clone, Copy)]
+pub(super) struct ToolMetadata {
+    pub(super) category: ToolIconCategory,
+    /// Namespaced `_meta` keys this tool sets to `true`; empty means
+    /// no advisory bits, so the wire `_meta` stays absent.
+    pub(super) meta_keys: &'static [&'static str],
+    pub(super) risk_hints: &'static [ArgRiskHint],
+}
+
+/// One exhaustive match over [`McpToolId`], with no wildcard arm:
+/// every registered `#[tool]` method needs a variant here (added in
+/// the same change as the method itself) and a match arm declaring
+/// its icon category, `_meta` keys, and argument risk hints
+/// together.
+///
+/// `_meta` vocabulary:
+/// - `mmcp.requires_project`: tool errors without a discovered
+///   `.mmcp.toml` (every FR tool plus `subscribe` / `unsubscribe`).
+/// - `mmcp.requires_sync`: tool errors without a configured
+///   `[sync]` block in `.mmcp.toml` (every `sync_*` tool).
+/// - `mmcp.debug_gated`: tool refuses unless `debug_toggle(true)`
+///   has been called this session (every `debug_*` tool).
+/// - `mmcp.protected_group_gated`: tool fires the
+///   `confirm_protected_write` elicitation when targeting a
+///   protected group (write / edit / delete / debug_write_file /
+///   the feature-tracker mutators / the issue-tracker mutators).
+/// - `mmcp.network`: tool reaches outside the local mirror.
+///   Today only the `sync_*` tools set this, mirroring
+///   `open_world_hint` but kept distinct so future open-world
+///   tools that don't sync (e.g. a future fetch-from-URL) classify
+///   cleanly.
+fn tool_metadata(id: McpToolId) -> ToolMetadata {
+    match id {
+        // Read-only tools.
+        McpToolId::ListGroups
+        | McpToolId::ListMemories
+        | McpToolId::ReadMemory
+        | McpToolId::ListVersions
+        | McpToolId::GroupInfo
+        | McpToolId::SearchMemories
+        | McpToolId::ReadMemoryBodySections
+        | McpToolId::CheckHealth
+        | McpToolId::Diagnose
+        | McpToolId::BootstrapContext
+        | McpToolId::Status
+        | McpToolId::Version
+        | McpToolId::DescribeTools
+        // Archive export reads the store to produce an artifact.
+        | McpToolId::ExportArchive => ToolMetadata {
+            category: ToolIconCategory::Read,
+            meta_keys: &[],
+            risk_hints: &[],
+        },
+        // Feature-tracker tools.
+        McpToolId::ReadFeature | McpToolId::ListFeatures => ToolMetadata {
+            category: ToolIconCategory::Feature,
+            meta_keys: &[META_REQUIRES_PROJECT],
+            risk_hints: &[],
+        },
+        McpToolId::AddFeature
+        | McpToolId::UpdateFeature
+        | McpToolId::DeleteFeature
+        | McpToolId::RenameFeature => ToolMetadata {
+            category: ToolIconCategory::Feature,
+            meta_keys: &[META_REQUIRES_PROJECT, META_PROTECTED_GROUP_GATED],
+            risk_hints: &[],
+        },
+        // Issue-tracker tools, sister to Feature.
+        McpToolId::ReadIssue | McpToolId::ListIssues => ToolMetadata {
+            category: ToolIconCategory::Issue,
+            meta_keys: &[META_REQUIRES_PROJECT],
+            risk_hints: &[],
+        },
+        McpToolId::AddIssue
+        | McpToolId::UpdateIssue
+        | McpToolId::DeleteIssue
+        | McpToolId::RenameIssue => ToolMetadata {
+            category: ToolIconCategory::Issue,
+            meta_keys: &[META_REQUIRES_PROJECT, META_PROTECTED_GROUP_GATED],
+            risk_hints: &[],
+        },
+        // Milestone-tracker tools, sister to Feature / Issue but a
+        // reduced surface (no rename/delete tool exists yet).
+        McpToolId::ReadMilestone | McpToolId::ListMilestones => ToolMetadata {
+            category: ToolIconCategory::Milestone,
+            meta_keys: &[META_REQUIRES_PROJECT],
+            risk_hints: &[],
+        },
+        McpToolId::AddMilestone | McpToolId::UpdateMilestone => ToolMetadata {
+            category: ToolIconCategory::Milestone,
+            meta_keys: &[META_REQUIRES_PROJECT, META_PROTECTED_GROUP_GATED],
+            risk_hints: &[],
+        },
+        // `debug_*` raw-git escape hatches.
+        McpToolId::DebugReadFile | McpToolId::DebugListTree | McpToolId::DebugGitLog => {
+            ToolMetadata {
+                category: ToolIconCategory::Debug,
+                meta_keys: &[META_DEBUG_GATED],
+                risk_hints: &[],
+            }
+        }
+        McpToolId::DebugToggle => ToolMetadata {
+            category: ToolIconCategory::Debug,
+            meta_keys: &[META_DEBUG_GATED],
+            risk_hints: &[],
+        },
+        McpToolId::DebugWriteFile => ToolMetadata {
+            category: ToolIconCategory::Debug,
+            meta_keys: &[META_DEBUG_GATED, META_PROTECTED_GROUP_GATED],
+            risk_hints: &[],
+        },
+        // `sync_*` tools that contact the remote server.
+        McpToolId::SyncFetch | McpToolId::SyncPush | McpToolId::SyncPull | McpToolId::Sync => {
+            ToolMetadata {
+                category: ToolIconCategory::Sync,
+                meta_keys: &[META_REQUIRES_SYNC, META_NETWORK],
+                risk_hints: &[],
+            }
+        }
+        // Local mutators with no advisory bits or risk hints.
+        McpToolId::ImportMemory => ToolMetadata {
+            category: ToolIconCategory::Mutate,
+            meta_keys: &[],
+            risk_hints: &[ArgRiskHint {
+                arg: "override",
+                risk_when: "true",
+                kind: "destructive",
+                reason: "override: true replaces the colliding-id memory in place",
+            }],
+        },
+        McpToolId::MoveMemory | McpToolId::DeleteMemory => ToolMetadata {
+            category: ToolIconCategory::Mutate,
+            meta_keys: &[META_PROTECTED_GROUP_GATED],
+            risk_hints: &[],
+        },
+        McpToolId::InitClaude | McpToolId::InitProject | McpToolId::CreateGroup => ToolMetadata {
+            category: ToolIconCategory::Mutate,
+            meta_keys: &[],
+            risk_hints: &[],
+        },
+        McpToolId::Subscribe | McpToolId::Unsubscribe => ToolMetadata {
+            category: ToolIconCategory::Mutate,
+            meta_keys: &[META_REQUIRES_PROJECT],
+            risk_hints: &[],
+        },
+        McpToolId::WriteMemory => ToolMetadata {
+            category: ToolIconCategory::Mutate,
+            meta_keys: &[META_PROTECTED_GROUP_GATED],
+            risk_hints: &[
+                ArgRiskHint {
+                    arg: "override",
+                    risk_when: "true",
+                    kind: "destructive",
+                    reason: "override: true overwrites the existing file silently; prefer edit_memory for partial updates",
+                },
+                ArgRiskHint {
+                    arg: "force",
+                    risk_when: "true",
+                    kind: "destructive",
+                    reason: "force: true bypasses the filename/frontmatter id-mismatch guard",
+                },
+            ],
+        },
+        McpToolId::EditMemory => ToolMetadata {
+            category: ToolIconCategory::Mutate,
+            meta_keys: &[META_PROTECTED_GROUP_GATED],
+            risk_hints: &[ArgRiskHint {
+                arg: "force",
+                risk_when: "true",
+                kind: "destructive",
+                reason: "force: true bypasses the filename/frontmatter id-mismatch guard on a ByFilename write",
+            }],
+        },
+        McpToolId::EditMemoryBody => ToolMetadata {
+            category: ToolIconCategory::Mutate,
+            meta_keys: &[META_PROTECTED_GROUP_GATED],
+            risk_hints: &[ArgRiskHint {
+                arg: "force",
+                risk_when: "true",
+                kind: "destructive",
+                reason: "force: true bypasses the filename/frontmatter id-mismatch guard",
+            }],
+        },
+        McpToolId::ImportArchive => ToolMetadata {
+            category: ToolIconCategory::Mutate,
+            meta_keys: &[META_PROTECTED_GROUP_GATED],
+            risk_hints: &[ArgRiskHint {
+                arg: "overwrite",
+                risk_when: "true",
+                kind: "destructive",
+                reason: "overwrite: true replaces colliding memories in place instead of reporting a conflict",
+            }],
+        },
+    }
+}
+
+/// Resolve a live tool's metadata bundle from its wire name.
+///
+/// # Panics
+/// Panics when `name` has no [`McpToolId`]: every `#[tool]`-registered
+/// method must gain a matching variant, a [`McpToolId::parse`] arm, and a
+/// [`tool_metadata`] arm in the same change, so reaching here signals a
+/// registration gap rather than a normal runtime condition.
+pub(super) fn tool_metadata_for_name(name: &str) -> ToolMetadata {
+    let id = McpToolId::parse(name).unwrap_or_else(|| {
+        panic!(
+            "'{name}' has no McpToolId variant; add one, a McpToolId::parse arm, and a \
+             tool_metadata arm before registering its #[tool] method",
+        )
+    });
+    tool_metadata(id)
+}
+
+/// Build the per-tool `_meta` map carrying mmcp-specific advisory
+/// hints that complement the `ToolAnnotations` bits.
+/// Returns `None` for tools that need none of the bits so the wire
+/// shape stays absent rather than `{}` for unrelated tools.
+/// Vocabulary and per-tool assignment live in [`tool_metadata`].
+pub(crate) fn meta_for_tool(name: &str) -> Option<rmcp::model::MetaObject> {
+    let keys = tool_metadata_for_name(name).meta_keys;
+    if keys.is_empty() {
+        return None;
+    }
+    let mut meta = rmcp::model::MetaObject::new();
+    for k in keys {
+        meta.0
+            .insert((*k).to_string(), serde_json::Value::Bool(true));
+    }
+    Some(meta)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The patching seam decorates each tool with its
+    /// mmcp.* advisory bits.
+    /// Spot-check the four buckets: sync (network + requires_sync),
+    /// debug (debug_gated), protected-group (write_memory hits the
+    /// protected-group guard), feature (requires_project), so a
+    /// refactor of `meta_for_tool` cannot silently strip the
+    /// wire-visible hints.
+    #[test]
+    fn meta_for_tool_covers_each_namespace_bucket() {
+        let sync = meta_for_tool("sync_pull").expect("sync_pull has meta");
+        assert_eq!(
+            sync.0.get("mmcp.requires_sync"),
+            Some(&serde_json::Value::Bool(true)),
+        );
+        assert_eq!(
+            sync.0.get("mmcp.network"),
+            Some(&serde_json::Value::Bool(true)),
+        );
+
+        let debug = meta_for_tool("debug_read_file").expect("debug has meta");
+        assert_eq!(
+            debug.0.get("mmcp.debug_gated"),
+            Some(&serde_json::Value::Bool(true)),
+        );
+
+        let protected = meta_for_tool("write_memory").expect("write_memory has meta");
+        assert_eq!(
+            protected.0.get("mmcp.protected_group_gated"),
+            Some(&serde_json::Value::Bool(true)),
+        );
+
+        let feature = meta_for_tool("read_feature").expect("read_feature has meta");
+        assert_eq!(
+            feature.0.get("mmcp.requires_project"),
+            Some(&serde_json::Value::Bool(true)),
+        );
+
+        // A tool with no advisory bits returns `None` so the wire
+        // stays absent, not `{}`. `list_groups` is a pure-local
+        // read with no preconditions.
+        assert!(meta_for_tool("list_groups").is_none());
+    }
+}
