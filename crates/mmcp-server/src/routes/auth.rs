@@ -241,14 +241,37 @@ async fn login(
 
 // ── OAuth ───────────────────────────────────────────────────────
 
+/// Byte length of the OS-CSPRNG-derived OAuth CSRF `state` token before hex encoding.
+const OAUTH_STATE_TOKEN_BYTES: usize = 32;
+
+/// Per-provider session key for [`oauth_authorize`]/[`oauth_callback`]'s CSRF `state` token.
+const OAUTH_STATE_SESSION_KEY_PREFIX: &str = "oauth_csrf_state:";
+
+/// Builds the per-provider session key from [`OAUTH_STATE_SESSION_KEY_PREFIX`].
+/// Concurrent flows against different providers get distinct keys,
+/// so they cannot clobber each other's pending state.
+fn oauth_state_session_key(provider: &str) -> String {
+    format!("{OAUTH_STATE_SESSION_KEY_PREFIX}{provider}")
+}
+
+/// Mints a fresh OAuth CSRF `state` token from the OS CSPRNG, hex-encoded.
+/// Hex encoding needs no extra escaping under [`oauth_authorize`]'s percent-encoding of the whole value.
+fn generate_oauth_state() -> Result<String, AuthHttpError> {
+    let mut bytes = [0u8; OAUTH_STATE_TOKEN_BYTES];
+    getrandom::fill(&mut bytes).map_err(into_generic_response)?;
+    Ok(hex::encode(bytes))
+}
+
 #[derive(Deserialize)]
 struct OAuthCallbackQuery {
     code: String,
-    #[allow(dead_code)]
+    /// CSRF token minted by [`oauth_authorize`] and echoed back by the provider.
+    /// [`oauth_callback`] compares it against the value stored in the caller's session before any token exchange.
     state: Option<String>,
 }
 
 async fn oauth_authorize(
+    auth_session: AuthSession,
     State(state): State<ServerState>,
     Path(provider): Path<String>,
 ) -> Result<Redirect, AuthHttpError> {
@@ -257,12 +280,20 @@ async fn oauth_authorize(
         .get(&provider)
         .ok_or(AuthHttpError::NotFound("unknown OAuth provider"))?;
 
+    let csrf_state = generate_oauth_state()?;
+    auth_session
+        .session
+        .insert(&oauth_state_session_key(&provider), &csrf_state)
+        .await
+        .map_err(into_generic_response)?;
+
     let callback_url = format!("{}/auth/oauth/{}/callback", state.origin, provider);
     let authorize_url = format!(
-        "{}?client_id={}&redirect_uri={}&scope=user:email",
+        "{}?client_id={}&redirect_uri={}&scope=user:email&state={}",
         cfg.auth_url,
         cfg.client_id,
         urlencoding::encode(&callback_url),
+        urlencoding::encode(&csrf_state),
     );
     Ok(Redirect::temporary(&authorize_url))
 }
@@ -285,6 +316,21 @@ async fn oauth_callback(
         .oauth_providers
         .get(&provider)
         .ok_or(AuthHttpError::NotFound("unknown OAuth provider"))?;
+
+    // Consume the stored state before comparing.
+    // A token is usable for at most one callback, regardless of whether the comparison below passes.
+    let expected_state: Option<String> = auth_session
+        .session
+        .remove(&oauth_state_session_key(&provider))
+        .await
+        .map_err(into_generic_response)?;
+    let state_matches = matches!(
+        (&query.state, &expected_state),
+        (Some(received), Some(expected)) if received == expected
+    );
+    if !state_matches {
+        return Err(AuthHttpError::InvalidOAuthState);
+    }
 
     let callback_url = format!("{}/auth/oauth/{}/callback", state.origin, provider);
 
@@ -638,6 +684,14 @@ enum AuthHttpError {
     /// whitespace-only.
     #[error("field '{field}' must not be empty or whitespace-only")]
     FieldBlank { field: &'static str },
+    /// The OAuth callback's `state` parameter was missing or mismatched against [`oauth_authorize`]'s stored value.
+    /// Rejected before any token-exchange call.
+    /// Closes the login CSRF / authorization-code-injection path,
+    /// where a forged callback binds an attacker's own code into a victim's session.
+    #[error(
+        "oauth state parameter is missing or does not match the value issued at authorize time"
+    )]
+    InvalidOAuthState,
     /// The submitted password failed the password policy (blank, too
     /// short, or too long). Built with an explicit
     /// `.map_err(AuthHttpError::PasswordPolicy)` at the one call
@@ -667,6 +721,7 @@ impl IntoResponse for AuthHttpError {
             AuthHttpError::Conflict(_) => StatusCode::CONFLICT,
             AuthHttpError::FieldTooLong { .. }
             | AuthHttpError::FieldBlank { .. }
+            | AuthHttpError::InvalidOAuthState
             | AuthHttpError::PasswordPolicy(_) => StatusCode::BAD_REQUEST,
             AuthHttpError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };

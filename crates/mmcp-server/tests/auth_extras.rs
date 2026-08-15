@@ -6,6 +6,10 @@
 
 use std::net::SocketAddr;
 
+use axum::{
+    Json, Router,
+    routing::{get, post},
+};
 use mmcp_server::config::OAuthProviderConfig;
 use mmcp_server::state::ServerState;
 use serde_json::json;
@@ -103,6 +107,206 @@ async fn oauth_authorize_known_provider_redirects_to_provider_authorize_url() {
     // The handler appends the scope literally (no URL-encoding on
     // the `:` since it is a reserved char that is legal in a query).
     assert!(location.contains("scope=user:email"));
+}
+
+// ── OAuth CSRF state (mmcp issue #198) ──────────────────────────────
+
+/// Extracts the raw value of a `state` query parameter from an `oauth_authorize`
+/// redirect `Location` header.
+fn extract_state_param(location: &str) -> String {
+    location
+        .split("state=")
+        .nth(1)
+        .expect("redirect Location must carry a state= query parameter")
+        .split('&')
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Spins up a minimal fake OAuth provider (token exchange + userinfo) on an
+/// ephemeral loopback port, so the callback happy path can be proven end to
+/// end without a live GitHub dependency.
+async fn start_fake_oauth_provider() -> SocketAddr {
+    let app = Router::new()
+        .route(
+            "/token",
+            post(|| async { Json(json!({ "access_token": "fake-access-token" })) }),
+        )
+        .route(
+            "/userinfo",
+            get(|| async {
+                Json(json!({ "id": 42, "login": "octocat", "email": "octocat@example.com" }))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+    addr
+}
+
+#[tokio::test]
+async fn oauth_authorize_redirect_includes_a_nonempty_state_parameter() {
+    let (addr, _tmp) = start_server_with_oauth(vec![github_provider()]).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+
+    let resp = client
+        .get(format!("http://{addr}/auth/oauth/github/authorize"))
+        .send()
+        .await
+        .expect("oauth authorize");
+    let location = resp
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .expect("Location header")
+        .to_str()
+        .expect("utf-8");
+
+    let state_value = extract_state_param(location);
+    assert!(
+        !state_value.is_empty(),
+        "state parameter must not be empty, got redirect: {location}"
+    );
+}
+
+#[tokio::test]
+async fn oauth_callback_with_matching_state_completes_the_login() {
+    let fake_addr = start_fake_oauth_provider().await;
+    let provider = OAuthProviderConfig {
+        slug: "github".to_string(),
+        client_id: "client-abc".to_string(),
+        client_secret: "secret-xyz".to_string(),
+        auth_url: format!("http://{fake_addr}/authorize"),
+        token_url: format!("http://{fake_addr}/token"),
+        userinfo_url: format!("http://{fake_addr}/userinfo"),
+    };
+    let (addr, _tmp) = start_server_with_oauth(vec![provider]).await;
+    let client = reqwest::Client::builder()
+        .cookie_store(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+
+    let authorize_resp = client
+        .get(format!("http://{addr}/auth/oauth/github/authorize"))
+        .send()
+        .await
+        .expect("oauth authorize");
+    let location = authorize_resp
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .expect("Location header")
+        .to_str()
+        .expect("utf-8")
+        .to_string();
+    let state = extract_state_param(&location);
+
+    let callback_resp = client
+        .get(format!(
+            "http://{addr}/auth/oauth/github/callback?code=fake-code&state={state}"
+        ))
+        .send()
+        .await
+        .expect("oauth callback");
+
+    let status = callback_resp.status();
+    let body = callback_resp.text().await.unwrap_or_default();
+    assert_eq!(
+        status, 200,
+        "matching state must complete the oauth login, got body: {body}"
+    );
+    assert!(body.contains("OAuth login successful"));
+}
+
+#[tokio::test]
+async fn oauth_callback_with_mismatched_state_is_rejected_before_token_exchange() {
+    // Nothing listens on this loopback port: a live token-exchange call
+    // would fail loudly (connection refused), surfacing as a 500 through
+    // `into_generic_response` rather than the state check's 400. A 400
+    // response therefore proves the exchange was never attempted.
+    let unreachable_provider = OAuthProviderConfig {
+        slug: "github".to_string(),
+        client_id: "client-abc".to_string(),
+        client_secret: "secret-xyz".to_string(),
+        auth_url: "https://github.com/login/oauth/authorize".to_string(),
+        token_url: "http://127.0.0.1:1/oauth/token".to_string(),
+        userinfo_url: "http://127.0.0.1:1/oauth/userinfo".to_string(),
+    };
+    let (addr, _tmp) = start_server_with_oauth(vec![unreachable_provider]).await;
+    let client = reqwest::Client::builder()
+        .cookie_store(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+
+    // Establish a session (and its stored state) via authorize, then send a
+    // callback carrying a state that does not match it.
+    client
+        .get(format!("http://{addr}/auth/oauth/github/authorize"))
+        .send()
+        .await
+        .expect("oauth authorize");
+
+    let resp = client
+        .get(format!(
+            "http://{addr}/auth/oauth/github/callback?code=fake-code&state=not-the-real-state"
+        ))
+        .send()
+        .await
+        .expect("oauth callback");
+
+    assert_eq!(
+        resp.status(),
+        400,
+        "mismatched state must be rejected before any token-exchange call fires"
+    );
+}
+
+#[tokio::test]
+async fn oauth_callback_with_missing_state_is_rejected_before_token_exchange() {
+    let unreachable_provider = OAuthProviderConfig {
+        slug: "github".to_string(),
+        client_id: "client-abc".to_string(),
+        client_secret: "secret-xyz".to_string(),
+        auth_url: "https://github.com/login/oauth/authorize".to_string(),
+        token_url: "http://127.0.0.1:1/oauth/token".to_string(),
+        userinfo_url: "http://127.0.0.1:1/oauth/userinfo".to_string(),
+    };
+    let (addr, _tmp) = start_server_with_oauth(vec![unreachable_provider]).await;
+    let client = reqwest::Client::builder()
+        .cookie_store(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+
+    client
+        .get(format!("http://{addr}/auth/oauth/github/authorize"))
+        .send()
+        .await
+        .expect("oauth authorize");
+
+    let resp = client
+        .get(format!(
+            "http://{addr}/auth/oauth/github/callback?code=fake-code"
+        ))
+        .send()
+        .await
+        .expect("oauth callback");
+
+    assert_eq!(
+        resp.status(),
+        400,
+        "missing state must be rejected before any token-exchange call fires"
+    );
 }
 
 // ── Passkey registration requires an authenticated session ─────────
