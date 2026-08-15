@@ -66,6 +66,21 @@ export interface MemoryDescriptor {
   frontmatter: MemoryFrontmatter;
 }
 
+/** Wire mirror of the Rust `SkippedMemoryDto`: one memory `list_memory_descriptors`
+ * could not resolve, read, decode, or parse, and why. */
+export interface SkippedMemoryDescriptor {
+  slug: string;
+  reason: string;
+}
+
+/** Wire mirror of the Rust `MemoryDescriptorListDto`, the `list_memory_descriptors`
+ * response shape. `skipped` makes a partial listing observable instead of the
+ * caller silently receiving a truncated `descriptors` array with no signal. */
+export interface MemoryDescriptorList {
+  descriptors: MemoryDescriptor[];
+  skipped: SkippedMemoryDescriptor[];
+}
+
 export interface SyncStatus {
   configured: boolean;
   server_url: string | null;
@@ -129,6 +144,7 @@ export interface GuiErrorPayload {
     | 'git'
     | 'sync'
     | 'sync_not_configured'
+    | 'group_not_in_mirror'
     | 'archive'
     | 'dialog'
     | 'utf8'

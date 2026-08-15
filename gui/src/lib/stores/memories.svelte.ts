@@ -1,6 +1,6 @@
-import { listMemoryDescriptors, listMemorySlugs, loadMemory } from '$lib/api/memory';
+import { listMemoryDescriptors, loadMemory } from '$lib/api/memory';
 import { formatErr } from '$lib/utils/error';
-import type { MemoryDescriptor, MemoryFile } from '$lib/types';
+import type { MemoryDescriptor, MemoryFile, SkippedMemoryDescriptor } from '$lib/types';
 
 // Per-group slug lists + parsed MemoryFile cache. Background
 // refreshes land in `pendingBodies` when they'd clobber the
@@ -10,37 +10,45 @@ import type { MemoryDescriptor, MemoryFile } from '$lib/types';
 // `descriptors` holds frontmatter-only listings; `groupCommit` holds each group's last-seen tip.
 // `refreshGroup` compares that tip to skip re-downloading unchanged cached bodies.
 class MemoriesStore {
-  slugs = $state<Record<string, string[]>>({});
   descriptors = $state<Record<string, MemoryDescriptor[]>>({});
+  /** Memories `list_memory_descriptors` could not resolve/read/decode/parse, by group. See `types.ts`. */
+  skipped = $state<Record<string, SkippedMemoryDescriptor[]>>({});
   groupCommit = $state<Record<string, string>>({});
   bodies = $state<Record<string, MemoryFile>>({});
   pendingBodies = $state<Record<string, MemoryFile>>({});
-  loadingSlugs = $state<Record<string, boolean>>({});
   loadingDescriptors = $state<Record<string, boolean>>({});
   loadingBody = $state<Record<string, boolean>>({});
   error = $state<string | null>(null);
 
-  async loadSlugs(groupId: string) {
-    this.loadingSlugs[groupId] = true;
-    this.error = null;
-    try {
-      this.slugs[groupId] = await listMemorySlugs(groupId);
-    } catch (err) {
-      this.error = formatErr(err);
-    } finally {
-      this.loadingSlugs[groupId] = false;
+  /** Derived from `descriptors`, never independently written: a hand-synced
+   * duplicate of the same slugs at multiple call sites risks drift. */
+  get slugs(): Record<string, string[]> {
+    const result: Record<string, string[]> = {};
+    for (const groupId in this.descriptors) {
+      result[groupId] = this.descriptors[groupId].map((d) => d.slug);
+    }
+    return result;
+  }
+
+  private recordSkipped(groupId: string, skipped: SkippedMemoryDescriptor[]) {
+    this.skipped[groupId] = skipped;
+    if (skipped.length > 0) {
+      console.warn(
+        `list_memory_descriptors: ${skipped.length} memory(ies) skipped in group ${groupId}`,
+        skipped
+      );
     }
   }
 
-  /// Loads `descriptors[groupId]` and seeds `slugs[groupId]` from the same call.
+  /// Loads `descriptors[groupId]`; `slugs[groupId]` is derived from it, not set here.
   async loadDescriptors(groupId: string) {
     this.loadingDescriptors[groupId] = true;
     this.error = null;
     try {
-      const list = await listMemoryDescriptors(groupId);
-      this.descriptors[groupId] = list;
-      this.slugs[groupId] = list.map((d) => d.slug);
-      if (list.length > 0) this.groupCommit[groupId] = list[0].commit;
+      const { descriptors, skipped } = await listMemoryDescriptors(groupId);
+      this.descriptors[groupId] = descriptors;
+      this.recordSkipped(groupId, skipped);
+      if (descriptors.length > 0) this.groupCommit[groupId] = descriptors[0].commit;
     } catch (err) {
       this.error = formatErr(err);
     } finally {
@@ -106,13 +114,14 @@ class MemoriesStore {
   ) {
     let list: MemoryDescriptor[];
     try {
-      list = await listMemoryDescriptors(groupId);
+      const response = await listMemoryDescriptors(groupId);
+      list = response.descriptors;
+      this.recordSkipped(groupId, response.skipped);
     } catch (err) {
       this.error = formatErr(err);
       return;
     }
     this.descriptors[groupId] = list;
-    this.slugs[groupId] = list.map((d) => d.slug);
 
     const freshCommit = list[0]?.commit ?? null;
     const staleCommit = this.groupCommit[groupId] ?? null;
@@ -153,8 +162,10 @@ class MemoriesStore {
       delete this.bodies[`${groupId}:${slug}`];
       delete this.pendingBodies[`${groupId}:${slug}`];
     }
-    delete this.slugs[groupId];
+    // `slugs` is derived from `descriptors` (see the `slugs` getter above);
+    // clearing `descriptors[groupId]` clears the derived slug list too.
     delete this.descriptors[groupId];
+    delete this.skipped[groupId];
     delete this.groupCommit[groupId];
   }
 

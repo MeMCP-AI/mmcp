@@ -72,46 +72,114 @@ pub struct MemoryFileDto {
     pub body: String,
 }
 
+/// Builder for [`MemoryFrontmatterDto`].
+///
+/// The DTO carries 10 fields, several of them nested option/collection
+/// shapes; a bare struct literal at the single call site
+/// ([`frontmatter_to_dto`]) buries which value maps to which wire
+/// field. `new` takes the three fields every frontmatter block always
+/// has (id, name, description, kind); the rest go through one setter
+/// each, mirroring the `TestServerConfigBuilder` house style
+/// (`crates/mmcp-server/tests/common/mod.rs`).
+struct MemoryFrontmatterDtoBuilder {
+    dto: MemoryFrontmatterDto,
+}
+
+impl MemoryFrontmatterDtoBuilder {
+    fn new(id: Option<Uuid>, name: String, description: String, kind: String) -> Self {
+        Self {
+            dto: MemoryFrontmatterDto {
+                id,
+                name,
+                description,
+                kind,
+                mandatory: false,
+                version: None,
+                tags: Vec::new(),
+                refs: Vec::new(),
+                feature: None,
+                issue: None,
+            },
+        }
+    }
+
+    fn mandatory(mut self, mandatory: bool) -> Self {
+        self.dto.mandatory = mandatory;
+        self
+    }
+
+    fn version(mut self, version: Option<String>) -> Self {
+        self.dto.version = version;
+        self
+    }
+
+    fn tags(mut self, tags: Vec<String>) -> Self {
+        self.dto.tags = tags;
+        self
+    }
+
+    fn refs(mut self, refs: Vec<MemoryRefDto>) -> Self {
+        self.dto.refs = refs;
+        self
+    }
+
+    fn feature(mut self, feature: Option<FeatureMetadataDto>) -> Self {
+        self.dto.feature = feature;
+        self
+    }
+
+    fn issue(mut self, issue: Option<IssueMetadataDto>) -> Self {
+        self.dto.issue = issue;
+        self
+    }
+
+    fn build(self) -> MemoryFrontmatterDto {
+        self.dto
+    }
+}
+
 /// Build the wire DTO for one frontmatter block.
 /// Shared by [`MemoryFileDto::from`] and [`MemoryDescriptorDto`] so the two cannot drift.
 fn frontmatter_to_dto(fm: &MemoryFrontmatter) -> MemoryFrontmatterDto {
-    MemoryFrontmatterDto {
-        id: fm.id,
-        name: fm.name.clone(),
-        description: fm.description.clone(),
-        kind: fm.kind.as_str().to_string(),
-        mandatory: fm.mandatory,
-        version: fm.version.as_ref().map(|v| v.to_string()),
-        tags: fm.tags.clone(),
-        refs: fm
-            .refs
+    MemoryFrontmatterDtoBuilder::new(
+        fm.id,
+        fm.name.clone(),
+        fm.description.clone(),
+        fm.kind.as_str().to_string(),
+    )
+    .mandatory(fm.mandatory)
+    .version(fm.version.as_ref().map(|v| v.to_string()))
+    .tags(fm.tags.clone())
+    .refs(
+        fm.refs
             .iter()
             .map(|r| MemoryRefDto {
                 target: r.target,
                 commit: r.commit.clone(),
             })
             .collect(),
-        feature: fm.feature.as_ref().map(|fm| FeatureMetadataDto {
-            status: fm.status.as_str().to_string(),
-            number: fm.number,
-            depends_on: fm.depends_on.clone(),
-            blocks: fm.blocks.clone(),
-            superseded_by: fm.superseded_by.as_ref().map(|r| MemoryRefDto {
-                target: r.target,
-                commit: r.commit.clone(),
-            }),
+    )
+    .feature(fm.feature.as_ref().map(|fm| FeatureMetadataDto {
+        status: fm.status.as_str().to_string(),
+        number: fm.number,
+        depends_on: fm.depends_on.clone(),
+        blocks: fm.blocks.clone(),
+        superseded_by: fm.superseded_by.as_ref().map(|r| MemoryRefDto {
+            target: r.target,
+            commit: r.commit.clone(),
         }),
-        issue: fm.issue.as_ref().map(|im| IssueMetadataDto {
-            status: im.status.as_str().to_string(),
-            number: im.number,
-            depends_on: im.depends_on.clone(),
-            blocks: im.blocks.clone(),
-            superseded_by: im.superseded_by.as_ref().map(|r| MemoryRefDto {
-                target: r.target,
-                commit: r.commit.clone(),
-            }),
+    }))
+    .issue(fm.issue.as_ref().map(|im| IssueMetadataDto {
+        status: im.status.as_str().to_string(),
+        number: im.number,
+        depends_on: im.depends_on.clone(),
+        blocks: im.blocks.clone(),
+        superseded_by: im.superseded_by.as_ref().map(|r| MemoryRefDto {
+            target: r.target,
+            commit: r.commit.clone(),
         }),
-    }
+    }))
+    .build()
 }
 
 impl From<&MemoryFile> for MemoryFileDto {
@@ -134,6 +202,41 @@ pub struct MemoryDescriptorDto {
     pub frontmatter: MemoryFrontmatterDto,
 }
 
+impl MemoryDescriptorDto {
+    fn new(slug: String, commit: String, frontmatter: MemoryFrontmatterDto) -> Self {
+        Self {
+            slug,
+            commit,
+            frontmatter,
+        }
+    }
+}
+
+/// One memory `list_memory_descriptors` could not resolve, read, decode, or parse.
+/// Wire mirror of the pattern established by `GroupSyncFailureDto` (`commands/sync.rs`):
+/// a failed/skipped item rides alongside the success list instead of being silently dropped.
+#[derive(Debug, Serialize)]
+pub struct SkippedMemoryDto {
+    pub slug: String,
+    pub reason: String,
+}
+
+impl SkippedMemoryDto {
+    fn new(slug: String, reason: String) -> Self {
+        Self { slug, reason }
+    }
+}
+
+/// Response shape for [`list_memory_descriptors`]: the descriptors that resolved
+/// cleanly, plus every slug that was skipped and why. Never `descriptors` alone —
+/// a caller that only reads `descriptors` still gets a complete list on the happy
+/// path, but `skipped` makes a partial listing observable instead of silent.
+#[derive(Debug, Serialize)]
+pub struct MemoryDescriptorListDto {
+    pub descriptors: Vec<MemoryDescriptorDto>,
+    pub skipped: Vec<SkippedMemoryDto>,
+}
+
 fn parse_kind(s: &str) -> GuiResult<MemoryKind> {
     s.parse::<MemoryKind>()
         .map_err(|e| GuiError::Other(e.to_string()))
@@ -151,9 +254,12 @@ pub async fn list_memory_slugs(
 ) -> GuiResult<Vec<String>> {
     tracing::debug!(group_id = %group_id, "ipc: list_memory_slugs");
     let gid = group_id_from_str(&group_id)?;
-    let entry =
-        state.index.get(&gid).await.ok_or_else(|| {
-            GuiError::Other(format!("group {group_id} is not in the local mirror"))
+    let entry = state
+        .index
+        .get(&gid)
+        .await
+        .ok_or_else(|| GuiError::GroupNotInMirror {
+            group_id: group_id.clone(),
         })?;
     let mut slugs = state
         .backend
@@ -168,19 +274,49 @@ pub async fn list_memory_slugs(
     Ok(slugs)
 }
 
+/// Decode `bytes` as UTF-8 and parse them as a memory file, producing either a
+/// resolved descriptor or a skip record naming why the file was unusable.
+/// Pulled out of [`list_memory_descriptors`] so the skip-populating behavior is
+/// unit-testable without a live git backend or `AppState`.
+fn classify_memory_bytes(
+    slug: String,
+    commit: String,
+    bytes: &[u8],
+) -> Result<MemoryDescriptorDto, SkippedMemoryDto> {
+    let text = match std::str::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(err) => return Err(SkippedMemoryDto::new(slug, format!("non-utf8: {err}"))),
+    };
+    let mf = match MemoryFile::parse(text) {
+        Ok(mf) => mf,
+        Err(err) => return Err(SkippedMemoryDto::new(slug, format!("unparseable: {err}"))),
+    };
+    Ok(MemoryDescriptorDto::new(
+        slug,
+        commit,
+        frontmatter_to_dto(&mf.frontmatter),
+    ))
+}
+
 /// Frontmatter for every memory in one group, plus the group tip commit.
-/// Returns [`MemoryDescriptorDto`].
-/// An unresolvable slug, or bytes that do not parse as a memory file, is logged and skipped.
+/// Returns [`MemoryDescriptorListDto`].
+/// A slug that cannot be resolved, read, decoded as UTF-8, or parsed is logged
+/// AND reported back in the response's `skipped` list, never dropped silently:
+/// `Ok(descriptors)` alone would let the caller mistake a truncated listing for
+/// a complete one, with no way to tell the two apart.
 #[tauri::command]
 pub async fn list_memory_descriptors(
     group_id: String,
     state: State<'_, AppState>,
-) -> GuiResult<Vec<MemoryDescriptorDto>> {
+) -> GuiResult<MemoryDescriptorListDto> {
     tracing::debug!(group_id = %group_id, "ipc: list_memory_descriptors");
     let gid = group_id_from_str(&group_id)?;
-    let entry =
-        state.index.get(&gid).await.ok_or_else(|| {
-            GuiError::Other(format!("group {group_id} is not in the local mirror"))
+    let entry = state
+        .index
+        .get(&gid)
+        .await
+        .ok_or_else(|| GuiError::GroupNotInMirror {
+            group_id: group_id.clone(),
         })?;
     let mut slugs = state
         .backend
@@ -199,6 +335,7 @@ pub async fn list_memory_descriptors(
         .await
         .map_err(GuiError::from)?;
 
+    let mut skipped = Vec::new();
     let mut resolved_slugs = Vec::with_capacity(slugs.len());
     let mut paths = Vec::with_capacity(slugs.len());
     for slug in slugs {
@@ -209,6 +346,7 @@ pub async fn list_memory_descriptors(
             }
             Err(err) => {
                 tracing::warn!(group_id = %group_id, slug = %slug, error = %err, "list_memory_descriptors: skipping unresolvable slug");
+                skipped.push(SkippedMemoryDto::new(slug, format!("unresolvable: {err}")));
             }
         }
     }
@@ -219,36 +357,28 @@ pub async fn list_memory_descriptors(
         .await
         .map_err(GuiError::from)?;
 
-    let mut out = Vec::with_capacity(batch.len());
+    let mut descriptors = Vec::with_capacity(batch.len());
     for (slug, (path, outcome)) in resolved_slugs.into_iter().zip(batch) {
         let bytes = match outcome {
             Ok(bytes) => bytes,
             Err(err) => {
                 tracing::warn!(group_id = %group_id, slug = %slug, path = %path, error = %err, "list_memory_descriptors: skipping unreadable file");
+                skipped.push(SkippedMemoryDto::new(slug, format!("unreadable: {err}")));
                 continue;
             }
         };
-        let text = match std::str::from_utf8(&bytes) {
-            Ok(text) => text,
-            Err(err) => {
-                tracing::warn!(group_id = %group_id, slug = %slug, path = %path, error = %err, "list_memory_descriptors: skipping non-utf8 file");
-                continue;
+        match classify_memory_bytes(slug, tip.id.clone(), &bytes) {
+            Ok(descriptor) => descriptors.push(descriptor),
+            Err(skip) => {
+                tracing::warn!(group_id = %group_id, slug = %skip.slug, path = %path, reason = %skip.reason, "list_memory_descriptors: skipping unusable file");
+                skipped.push(skip);
             }
-        };
-        let mf = match MemoryFile::parse(text) {
-            Ok(mf) => mf,
-            Err(err) => {
-                tracing::warn!(group_id = %group_id, slug = %slug, path = %path, error = %err, "list_memory_descriptors: skipping unparseable file");
-                continue;
-            }
-        };
-        out.push(MemoryDescriptorDto {
-            slug,
-            commit: tip.id.clone(),
-            frontmatter: frontmatter_to_dto(&mf.frontmatter),
-        });
+        }
     }
-    Ok(out)
+    Ok(MemoryDescriptorListDto {
+        descriptors,
+        skipped,
+    })
 }
 
 #[tauri::command]
@@ -259,9 +389,12 @@ pub async fn load_memory(
 ) -> GuiResult<MemoryFileDto> {
     tracing::debug!(group_id = %group_id, slug = %slug, "ipc: load_memory");
     let gid = group_id_from_str(&group_id)?;
-    let entry =
-        state.index.get(&gid).await.ok_or_else(|| {
-            GuiError::Other(format!("group {group_id} is not in the local mirror"))
+    let entry = state
+        .index
+        .get(&gid)
+        .await
+        .ok_or_else(|| GuiError::GroupNotInMirror {
+            group_id: group_id.clone(),
         })?;
     let resolved = resolve_memory(&state.backend, &entry.handle, Some(&slug), None)
         .await
@@ -359,9 +492,12 @@ pub async fn create_memory(
     state: State<'_, AppState>,
 ) -> GuiResult<String> {
     let gid = group_id_from_str(&group_id)?;
-    let entry =
-        state.index.get(&gid).await.ok_or_else(|| {
-            GuiError::Other(format!("group {group_id} is not in the local mirror"))
+    let entry = state
+        .index
+        .get(&gid)
+        .await
+        .ok_or_else(|| GuiError::GroupNotInMirror {
+            group_id: group_id.clone(),
         })?;
     let mut file = to_memory_file(memory)?;
     let id = file.frontmatter.id.unwrap_or_else(Uuid::now_v7);
@@ -394,9 +530,12 @@ pub async fn update_memory(
     state: State<'_, AppState>,
 ) -> GuiResult<String> {
     let gid = group_id_from_str(&group_id)?;
-    let entry =
-        state.index.get(&gid).await.ok_or_else(|| {
-            GuiError::Other(format!("group {group_id} is not in the local mirror"))
+    let entry = state
+        .index
+        .get(&gid)
+        .await
+        .ok_or_else(|| GuiError::GroupNotInMirror {
+            group_id: group_id.clone(),
         })?;
     let resolved = resolve_memory(&state.backend, &entry.handle, Some(&slug), None)
         .await
@@ -429,9 +568,12 @@ pub async fn delete_memory(
     state: State<'_, AppState>,
 ) -> GuiResult<String> {
     let gid = group_id_from_str(&group_id)?;
-    let entry =
-        state.index.get(&gid).await.ok_or_else(|| {
-            GuiError::Other(format!("group {group_id} is not in the local mirror"))
+    let entry = state
+        .index
+        .get(&gid)
+        .await
+        .ok_or_else(|| GuiError::GroupNotInMirror {
+            group_id: group_id.clone(),
         })?;
     let resolved = resolve_memory(&state.backend, &entry.handle, Some(&slug), None)
         .await
@@ -446,4 +588,96 @@ pub async fn delete_memory(
     .await
     .map_err(GuiError::from)?;
     Ok(commit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VALID_MEMORY_BYTES: &[u8] = b"+++\nname = \"Rust Coding Rules\"\ndescription = \"Strict Rust coding conventions\"\nkind = \"rule\"\nmandatory = true\n+++\n# Rust Coding Rules\n\nBody text.\n";
+
+    /// FALSIFICATION: before this fix, an unparseable memory file was only
+    /// logged via `tracing::warn!` and `list_memory_descriptors` still
+    /// returned `Ok(descriptors)` with the file silently absent, so the
+    /// caller could not distinguish "3 memories, all valid" from "5
+    /// memories, 2 dropped". This asserts a deliberately-malformed file
+    /// (no frontmatter fence at all) produces a populated `skipped` entry
+    /// naming the slug and the reason, not just an `Err` swallowed into a
+    /// log line.
+    #[test]
+    fn classify_memory_bytes_populates_a_skipped_entry_for_unparseable_content() {
+        let garbage = b"this is not a memory file, it has no frontmatter fence at all";
+
+        let outcome =
+            classify_memory_bytes("broken-memory".to_string(), "deadbeef".to_string(), garbage);
+
+        let skip = outcome.expect_err("garbage content must not classify as a descriptor");
+        assert_eq!(skip.slug, "broken-memory");
+        assert!(
+            skip.reason.starts_with("unparseable:"),
+            "reason must name the unparseable cause, got: {}",
+            skip.reason
+        );
+    }
+
+    #[test]
+    fn classify_memory_bytes_populates_a_skipped_entry_for_non_utf8_content() {
+        let non_utf8: &[u8] = &[0xFF, 0xFE, 0xFD];
+
+        let outcome = classify_memory_bytes(
+            "binary-memory".to_string(),
+            "deadbeef".to_string(),
+            non_utf8,
+        );
+
+        let skip = outcome.expect_err("non-UTF-8 bytes must not classify as a descriptor");
+        assert_eq!(skip.slug, "binary-memory");
+        assert!(
+            skip.reason.starts_with("non-utf8:"),
+            "reason must name the non-utf8 cause, got: {}",
+            skip.reason
+        );
+    }
+
+    #[test]
+    fn classify_memory_bytes_returns_a_descriptor_for_valid_content() {
+        let outcome = classify_memory_bytes(
+            "good-memory".to_string(),
+            "deadbeef".to_string(),
+            VALID_MEMORY_BYTES,
+        );
+
+        let descriptor = outcome.expect("valid memory bytes must classify as a descriptor");
+        assert_eq!(descriptor.slug, "good-memory");
+        assert_eq!(descriptor.commit, "deadbeef");
+        assert_eq!(descriptor.frontmatter.name, "Rust Coding Rules");
+    }
+
+    /// `MemoryDescriptorListDto` carries `skipped` alongside `descriptors`
+    /// rather than the caller having to infer a partial listing from a
+    /// length mismatch against a separate slug count.
+    #[test]
+    fn descriptor_list_dto_serializes_both_descriptors_and_skipped() {
+        let good = classify_memory_bytes(
+            "good".to_string(),
+            "deadbeef".to_string(),
+            VALID_MEMORY_BYTES,
+        )
+        .expect("valid bytes classify");
+        let bad = classify_memory_bytes(
+            "bad".to_string(),
+            "deadbeef".to_string(),
+            b"not a memory file",
+        )
+        .expect_err("garbage bytes do not classify");
+
+        let dto = MemoryDescriptorListDto {
+            descriptors: vec![good],
+            skipped: vec![bad],
+        };
+        let value = serde_json::to_value(&dto).unwrap();
+        assert_eq!(value["descriptors"].as_array().unwrap().len(), 1);
+        assert_eq!(value["skipped"].as_array().unwrap().len(), 1);
+        assert_eq!(value["skipped"][0]["slug"], "bad");
+    }
 }

@@ -1,11 +1,11 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { MemoryDescriptor, MemoryFile } from '../types';
+import type { MemoryDescriptorList, MemoryFile } from '../types';
 
 export const listMemorySlugs = (groupId: string) =>
   invoke<string[]>('list_memory_slugs', { groupId });
 
 export const listMemoryDescriptors = (groupId: string) =>
-  invoke<MemoryDescriptor[]>('list_memory_descriptors', { groupId });
+  invoke<MemoryDescriptorList>('list_memory_descriptors', { groupId });
 
 export const loadMemory = (groupId: string, slug: string) =>
   invoke<MemoryFile>('load_memory', { groupId, slug });
