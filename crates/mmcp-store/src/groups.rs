@@ -13,6 +13,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use futures_util::StreamExt;
+use futures_util::stream;
 use jiff::Timestamp;
 use mmcp_core::id::GroupId;
 use mmcp_core::manifest::GroupManifest;
@@ -21,6 +23,14 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::error::{FileOperation, StoreError};
+
+/// Cap on simultaneous `read_manifest` calls while scanning
+/// `repos_root`. Each candidate directory's manifest read is
+/// independent; bounding concurrency here avoids opening every local
+/// group repo's bare git handle at once on a mirror with hundreds of
+/// groups, while still running the scan far faster than one
+/// directory after another.
+const MAX_CONCURRENT_MANIFEST_SCANS: usize = 8;
 
 /// One entry in the [`GroupIndex`].
 #[derive(Debug, Clone)]
@@ -160,7 +170,10 @@ async fn scan_repos_root(
         }
     };
 
-    let mut entries = Vec::new();
+    // Phase 1: walk the directory synchronously (cheap, no I/O beyond
+    // the listing itself already paid for by `read_dir`) and collect
+    // every candidate `<uuid>.git` directory's handle.
+    let mut candidates = Vec::new();
     for item in read_dir {
         let item = match item {
             Ok(i) => i,
@@ -187,36 +200,100 @@ async fn scan_repos_root(
                 continue;
             }
         };
-
         let handle = RepoHandle::new(uuid, path.to_string_lossy().into_owned());
-        let manifest = match backend.read_manifest(&handle).await {
-            Ok(m) => m,
-            Err(err) => {
+        candidates.push((dir_name, uuid, handle));
+    }
+
+    // Phase 2: read every candidate's manifest with bounded
+    // concurrency instead of one `read_manifest` after another.
+    // Warn-and-skip semantics for an unreadable manifest or an
+    // id/directory mismatch are byte-identical to the previous serial
+    // loop; only how many run at once changed.
+    let entries: Vec<GroupEntry> = stream::iter(candidates)
+        .map(|(dir_name, uuid, handle)| async move {
+            let manifest = match backend.read_manifest(&handle).await {
+                Ok(m) => m,
+                Err(err) => {
+                    tracing::warn!(
+                        dir = %dir_name,
+                        error = %err,
+                        "group repo missing or unreadable manifest, skipping"
+                    );
+                    return None;
+                }
+            };
+
+            // The directory name must match the manifest's group id,
+            // otherwise we have a drift problem worth flagging.
+            if manifest.group_id.as_uuid() != &uuid {
                 tracing::warn!(
                     dir = %dir_name,
-                    error = %err,
-                    "group repo missing or unreadable manifest, skipping"
+                    manifest_id = %manifest.group_id,
+                    "manifest group id does not match directory name, skipping"
                 );
-                continue;
+                return None;
             }
-        };
 
-        // The directory name must match the manifest's group id,
-        // otherwise we have a drift problem worth flagging.
-        if manifest.group_id.as_uuid() != &uuid {
-            tracing::warn!(
-                dir = %dir_name,
-                manifest_id = %manifest.group_id,
-                "manifest group id does not match directory name, skipping"
-            );
-            continue;
+            Some(GroupEntry {
+                handle,
+                manifest,
+                last_rescan: Timestamp::now().as_millisecond(),
+            })
+        })
+        .buffer_unordered(MAX_CONCURRENT_MANIFEST_SCANS)
+        .filter_map(std::future::ready)
+        .collect()
+        .await;
+    Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mmcp_core::id::UserId;
+    use tempfile::TempDir;
+
+    /// A directory shaped like a group repo (`<uuid>.git`) but with no
+    /// git repo inside it at all: `read_manifest` fails, and the
+    /// bounded-concurrency scan must still warn-and-skip it exactly
+    /// like the previous serial loop did, without failing the whole
+    /// refresh or dropping any of the good repos scanned alongside it.
+    #[tokio::test]
+    async fn refresh_tolerates_one_broken_repo_among_several_good_ones() {
+        let tmp = TempDir::new().expect("tempdir");
+        let repos_root = tmp.path().join("repos");
+        let backend = NativeBackend::new(&repos_root).expect("backend");
+
+        let mut good_ids = Vec::new();
+        for i in 0..5 {
+            let group_id = GroupId::new();
+            let manifest =
+                GroupManifest::new_user_owned(group_id, format!("group-{i}"), UserId::new());
+            backend
+                .create_group_repo(&manifest)
+                .await
+                .expect("create group repo");
+            good_ids.push(group_id);
         }
 
-        entries.push(GroupEntry {
-            handle,
-            manifest,
-            last_rescan: Timestamp::now().as_millisecond(),
-        });
+        let broken_uuid = Uuid::now_v7();
+        std::fs::create_dir_all(repos_root.join(format!("{broken_uuid}.git")))
+            .expect("mkdir broken repo dir");
+
+        let index = GroupIndex::build(repos_root, Arc::new(backend))
+            .await
+            .expect("build must tolerate the broken repo");
+
+        assert_eq!(
+            index.len().await,
+            good_ids.len(),
+            "only the good repos should be indexed"
+        );
+        for group_id in good_ids {
+            assert!(
+                index.get(&group_id).await.is_some(),
+                "every good repo must still be indexed"
+            );
+        }
     }
-    Ok(entries)
 }

@@ -3724,6 +3724,7 @@ dependencies = [
  "acdc-converters-markdown",
  "acdc-parser",
  "flate2",
+ "futures-util",
  "gix",
  "jiff",
  "mmcp-core",

@@ -25,6 +25,7 @@ serde = { workspace = true }
 uuid = { workspace = true }
 jiff = { workspace = true }
 slug = { workspace = true }
+futures-util = { workspace = true }
 
 # AsciiDoc -> Markdown conversion used by the `mmcp import` path.
 # Operators drop `.adoc`/`.asciidoc` files into imports,
