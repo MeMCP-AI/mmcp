@@ -7451,11 +7451,24 @@ mod tests {
     use mmcp_core::id::{GroupId, MemoryId, UserId};
     use mmcp_core::manifest::GroupManifest;
     use mmcp_git::{CommitSpec, GitBackend};
+    use std::sync::LazyLock;
     use tempfile::TempDir;
+
+    /// Backs `mmcp_store::cache::ACTIVE_POOL` for this test binary's whole life.
+    ///
+    /// The pool slot is a process-global `OnceLock`: a per-test `TempDir` would
+    /// be deleted at the end of the first test that installs it, while every
+    /// later test in this shared binary keeps querying the now-dangling path.
+    static SHARED_CACHE_HOME: LazyLock<TempDir> =
+        LazyLock::new(|| TempDir::new().expect("shared cache home"));
 
     /// Build a `ClientState` rooted inside a fresh tempdir so the
     /// test never touches the real user home.
     async fn test_state() -> (ClientState, TempDir) {
+        let cache_home = MmcpHome::from_root(SHARED_CACHE_HOME.path().join("mmcp-home"));
+        mmcp_store::cache::init_from_home(&cache_home)
+            .await
+            .expect("install the process-lifetime cache pool");
         let tmp = TempDir::new().expect("tempdir");
         let home = MmcpHome::from_root(tmp.path().join("mmcp-home"));
         let state = ClientState::initialize_from(home, None, false)
@@ -9866,10 +9879,10 @@ mod tests {
     // Assertions here deliberately avoid depending on `rollup`
     // VALUES beyond "zero features -> Planning / counted == 0":
     // the local content cache pool is a process-global `OnceLock`
-    // (see `mmcp_store::cache::ACTIVE_POOL`'s doc), so whichever
-    // test in this shared unit-test binary wins the race to call
-    // `cache::init_from_home` first determines which pool answers
-    // every later `require_cache_pool()` call in the same process.
+    // (see `mmcp_store::cache::ACTIVE_POOL`'s doc), and `test_state`
+    // pins it once, deterministically, to `SHARED_CACHE_HOME` for
+    // this whole test binary, so every test's `require_cache_pool()`
+    // call answers from that same long-lived pool.
     // A milestone with a fresh UUIDv7 and zero linked features
     // reads back as Planning/0 regardless of which generation of
     // the shared cache is active, so that assertion stays
