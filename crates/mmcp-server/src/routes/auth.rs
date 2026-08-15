@@ -37,7 +37,16 @@ use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
 
 /// Maximum accepted body size for every `/auth/*` request, in bytes.
-/// 16 KiB covers every field's maximum plus JSON overhead, with room for a raised `max_handle_length`.
+/// A coarse defense-in-depth backstop against oversized bodies, not a
+/// proven bound: 16 KiB comfortably covers every field's fixed
+/// maximum (email, display name, password) plus JSON overhead at the
+/// compiled-in `max_handle_length` default, but the cascade in
+/// [`crate::config::ServerConfig::max_handle_length`] has no upper
+/// bound of its own, so an operator-configured value large enough can
+/// still make this limit reject a request before
+/// `validate_max_length` gets a chance to return its field-specific
+/// error. That failure mode is a coarser 413 instead of a 400, never
+/// a validation bypass.
 const AUTH_REQUEST_BODY_LIMIT_BYTES: usize = 16 * 1024;
 
 pub fn router() -> Router<ServerState> {
