@@ -22,7 +22,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.77"
+version = "0.1.78"
 edition = "2024"
 rust-version = "1.94"
 authors = ["Gabriel GRONDIN"]
@@ -145,6 +145,11 @@ rusty_paseto = { version = "0.10", default-features = false, features = ["v4_loc
 axum-login = "0.18"
 tower-sessions = "0.14"
 webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
+# tower-sessions' own `Expiry` variants take this crate's `Duration`
+# directly; declared explicitly rather than relying on the transitive
+# pull-in so the version is pinned at the workspace level like every
+# other dependency.
+time = "0.3"
 
 # HTTP framework
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "macros", "query"] }

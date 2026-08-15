@@ -5,5 +5,6 @@
 
 pub mod app;
 pub mod config;
+mod defaults;
 pub mod routes;
 pub mod state;
