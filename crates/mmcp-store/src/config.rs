@@ -53,11 +53,8 @@ pub fn config_path_for(root: &Path) -> PathBuf {
 /// Load the `ProjectConfig` from `root/.mmcp.toml`.
 pub fn load(root: &Path) -> Result<ProjectConfig, StoreError> {
     let path = config_path_for(root);
-    let text = std::fs::read_to_string(&path).map_err(|source| StoreError::Io {
-        path: path.clone(),
-        operation: FileOperation::Read,
-        source,
-    })?;
+    let text = std::fs::read_to_string(&path)
+        .map_err(|source| StoreError::io(path.clone(), FileOperation::Read, source))?;
     ProjectConfig::from_toml(&text).map_err(|error| attach_path(path, error))
 }
 
@@ -68,11 +65,8 @@ pub fn save(root: &Path, config: &ProjectConfig) -> Result<(), StoreError> {
     let text = config
         .to_toml()
         .map_err(|error| attach_path(path.clone(), error))?;
-    std::fs::write(&path, text).map_err(|source| StoreError::Io {
-        path,
-        operation: FileOperation::Write,
-        source,
-    })?;
+    std::fs::write(&path, text)
+        .map_err(|source| StoreError::io(path, FileOperation::Write, source))?;
     Ok(())
 }
 

@@ -99,11 +99,8 @@ impl MmcpHome {
         if !path.exists() {
             return Ok(UserConfig::default());
         }
-        let text = std::fs::read_to_string(&path).map_err(|source| StoreError::Io {
-            path: path.clone(),
-            operation: FileOperation::Read,
-            source,
-        })?;
+        let text = std::fs::read_to_string(&path)
+            .map_err(|source| StoreError::io(path.clone(), FileOperation::Read, source))?;
         UserConfig::from_toml(&text).map_err(|source| StoreError::TomlParse { path, source })
     }
 
@@ -113,21 +110,16 @@ impl MmcpHome {
     pub fn save_user_config(&self, cfg: &UserConfig) -> Result<(), StoreError> {
         let path = self.user_config_path();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|source| StoreError::Io {
-                path: parent.to_path_buf(),
-                operation: FileOperation::CreateDir,
-                source,
+            std::fs::create_dir_all(parent).map_err(|source| {
+                StoreError::io(parent.to_path_buf(), FileOperation::CreateDir, source)
             })?;
         }
         let text = cfg.to_toml().map_err(|source| StoreError::TomlSerialize {
             path: path.clone(),
             source,
         })?;
-        std::fs::write(&path, text).map_err(|source| StoreError::Io {
-            path,
-            operation: FileOperation::Write,
-            source,
-        })?;
+        std::fs::write(&path, text)
+            .map_err(|source| StoreError::io(path, FileOperation::Write, source))?;
         Ok(())
     }
 

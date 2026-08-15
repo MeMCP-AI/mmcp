@@ -58,10 +58,8 @@ impl GroupIndex {
         repos_root: PathBuf,
         backend: Arc<NativeBackend>,
     ) -> Result<Self, StoreError> {
-        std::fs::create_dir_all(&repos_root).map_err(|source| StoreError::Io {
-            path: repos_root.clone(),
-            operation: FileOperation::CreateDir,
-            source,
+        std::fs::create_dir_all(&repos_root).map_err(|source| {
+            StoreError::io(repos_root.clone(), FileOperation::CreateDir, source)
         })?;
         let index = Self {
             repos_root,
@@ -155,11 +153,11 @@ async fn scan_repos_root(
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(source) => {
-            return Err(StoreError::Io {
-                path: repos_root.to_path_buf(),
-                operation: FileOperation::ReadDir,
+            return Err(StoreError::io(
+                repos_root.to_path_buf(),
+                FileOperation::ReadDir,
                 source,
-            });
+            ));
         }
     };
 

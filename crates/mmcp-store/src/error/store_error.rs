@@ -92,6 +92,24 @@ pub enum StoreError {
     HomeDirUnresolved,
 }
 
+impl StoreError {
+    /// Build the [`StoreError::Io`] variant.
+    ///
+    /// Every filesystem-failure call site across this crate
+    /// constructs the same three fields (`path`, `operation`,
+    /// `source`); this constructor is their single owning
+    /// definition, so a shape change to the variant only has one
+    /// call site to update instead of the bare struct literal
+    /// repeated at every `map_err`.
+    pub fn io(path: impl Into<PathBuf>, operation: FileOperation, source: std::io::Error) -> Self {
+        Self::Io {
+            path: path.into(),
+            operation,
+            source,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::error::Error as _;
@@ -123,6 +141,29 @@ mod tests {
             }
             other => panic!("expected Io, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn io_constructor_builds_the_same_shape_as_the_bare_literal() {
+        let path = PathBuf::from("/tmp/mmcp-test/missing.toml");
+        let source = std::io::Error::new(std::io::ErrorKind::NotFound, "missing.toml");
+        let err = StoreError::io(path.clone(), FileOperation::Read, source);
+
+        match &err {
+            StoreError::Io {
+                path: p, operation, ..
+            } => {
+                assert_eq!(p, &path);
+                assert_eq!(*operation, FileOperation::Read);
+            }
+            other => panic!("expected Io, got {other:?}"),
+        }
+        assert!(
+            err.source()
+                .and_then(|s| s.downcast_ref::<std::io::Error>())
+                .is_some(),
+            "io() must preserve the real std::io::Error as the source"
+        );
     }
 
     #[test]

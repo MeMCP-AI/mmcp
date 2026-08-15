@@ -105,11 +105,8 @@ impl SessionStore {
     /// not already exist.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, StoreError> {
         let root = root.into();
-        std::fs::create_dir_all(&root).map_err(|source| StoreError::Io {
-            path: root.clone(),
-            operation: FileOperation::CreateDir,
-            source,
-        })?;
+        std::fs::create_dir_all(&root)
+            .map_err(|source| StoreError::io(root.clone(), FileOperation::CreateDir, source))?;
         Ok(Self { root })
     }
 
@@ -136,11 +133,7 @@ impl SessionStore {
                 Ok(Some(state))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(source) => Err(StoreError::Io {
-                path,
-                operation: FileOperation::Read,
-                source,
-            }),
+            Err(source) => Err(StoreError::io(path, FileOperation::Read, source)),
         }
     }
 
@@ -154,20 +147,13 @@ impl SessionStore {
             source,
         })?;
         let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, text.as_bytes()).map_err(|source| StoreError::Io {
-            path: tmp.clone(),
-            operation: FileOperation::Write,
-            source,
-        })?;
+        std::fs::write(&tmp, text.as_bytes())
+            .map_err(|source| StoreError::io(tmp.clone(), FileOperation::Write, source))?;
         std::fs::rename(&tmp, &path)
             .inspect_err(|_e| {
                 let _ = std::fs::remove_file(&tmp);
             })
-            .map_err(|source| StoreError::Io {
-                path,
-                operation: FileOperation::Rename,
-                source,
-            })?;
+            .map_err(|source| StoreError::io(path, FileOperation::Rename, source))?;
         Ok(())
     }
 
