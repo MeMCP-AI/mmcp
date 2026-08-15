@@ -27,6 +27,8 @@
 
 use std::sync::Arc;
 
+use futures_util::StreamExt;
+use futures_util::stream;
 use mmcp_core::manifest::GroupScope;
 use mmcp_git::{GitBackend, RefSpec};
 use uuid::Uuid;
@@ -34,6 +36,14 @@ use uuid::Uuid;
 use crate::client::{ManifestResponse, SyncClient};
 use crate::error::SyncError;
 use crate::filter::{ScopeIndex, SyncFilter};
+
+/// Cap on simultaneous per-group git network round trips (push,
+/// fetch, and pull's fast-forward step). Independent groups' network
+/// calls used to run one after another; this bounds how many run
+/// concurrently instead of removing the bound entirely, so a sync
+/// covering hundreds of groups does not open hundreds of simultaneous
+/// connections/subprocesses against the remote and the local backend.
+const MAX_CONCURRENT_GROUP_TRANSFERS: usize = 6;
 
 /// True when `group_id` satisfies `filter`.
 ///
@@ -114,49 +124,88 @@ impl SyncEngine {
             SyncFilter::All | SyncFilter::Scope(_) => group_handles.iter_group_ids(),
         };
 
-        let mut pushed = Vec::new();
-        for group_id in targets {
-            if !group_matches(filter, group_id, scope_index) {
-                continue;
+        // Bounded concurrency instead of one push after another: each
+        // group's network round trip is independent, so up to
+        // `MAX_CONCURRENT_GROUP_TRANSFERS` run at once. `buffer_unordered`
+        // completes tasks in COMPLETION order, not submission order, so
+        // each result carries its original index and the collected
+        // vector is sorted back into `targets` order below: this
+        // preserves `PushReport::pushed`'s documented "in iteration
+        // order" contract, and reproduces the original sequential
+        // code's "first divergence in list order wins" error-reporting
+        // behavior even though the underlying pushes now race. One
+        // failed group's push is never skipped in favor of stopping
+        // early the way the old serial loop's early `return` did:
+        // every scheduled group's push is attempted regardless of
+        // whether an earlier one (in list order) diverges.
+        let mut results: Vec<(usize, Result<Option<PushedGroup>, SyncError>)> =
+            stream::iter(targets.into_iter().enumerate())
+                .map(|(index, group_id)| async move {
+                    let outcome = self
+                        .push_one_group(group_id, filter, group_handles, scope_index)
+                        .await;
+                    (index, outcome)
+                })
+                .buffer_unordered(MAX_CONCURRENT_GROUP_TRANSFERS)
+                .collect()
+                .await;
+        results.sort_by_key(|(index, _)| *index);
+
+        let mut pushed = Vec::with_capacity(results.len());
+        for (_, outcome) in results {
+            if let Some(group) = outcome? {
+                pushed.push(group);
             }
-            let Some(handle) = group_handles.resolve(group_id) else {
-                // Group id appeared in the iteration snapshot but
-                // the handle is gone (index refresh raced with
-                // push). Skip rather than error; the next push
-                // picks it up if the handle comes back.
-                continue;
-            };
-            let refs = vec![RefSpec::new(
-                mmcp_core::conventions::MAIN_BRANCH_REF,
-                mmcp_core::conventions::MAIN_BRANCH_REF,
-            )];
-            let remote_url = self.client.git_url_for(group_id);
-            let creds = self.client.git_credentials();
-            let content_transferred =
-                match self.backend.push(&handle, &remote_url, &refs, &creds).await {
-                    Ok(_) => true,
-                    Err(mmcp_git::GitError::Unsupported(_)) => false,
-                    Err(mmcp_git::GitError::Transport { stderr, .. })
-                        if stderr_indicates_non_fast_forward(&stderr) =>
-                    {
-                        // Git-symmetric signal: remote has commits we
-                        // do not, `git push` refused to overwrite. Raise
-                        // structured so the CLI and MCP surfaces can
-                        // tell the operator to pull first.
-                        return Err(SyncError::PushDiverged {
-                            group: group_id,
-                            stderr,
-                        });
-                    }
-                    Err(mmcp_git::GitError::Transport { .. }) => false,
-                    Err(other) => return Err(SyncError::Git(other)),
-                };
-            pushed.push(PushedGroup {
-                group_id,
-                content_transferred,
-            });
         }
         Ok(PushReport { pushed })
+    }
+
+    /// Push one group's local `main` to its remote. `Ok(None)` means
+    /// the group was out of `filter`'s scope or had no local handle
+    /// (index refresh raced with push); the caller skips it rather
+    /// than treating either as an error.
+    async fn push_one_group(
+        &self,
+        group_id: Uuid,
+        filter: SyncFilter,
+        group_handles: &dyn GroupHandleResolver,
+        scope_index: &dyn ScopeIndex,
+    ) -> Result<Option<PushedGroup>, SyncError> {
+        if !group_matches(filter, group_id, scope_index) {
+            return Ok(None);
+        }
+        let Some(handle) = group_handles.resolve(group_id) else {
+            return Ok(None);
+        };
+        let refs = vec![RefSpec::new(
+            mmcp_core::conventions::MAIN_BRANCH_REF,
+            mmcp_core::conventions::MAIN_BRANCH_REF,
+        )];
+        let remote_url = self.client.git_url_for(group_id);
+        let creds = self.client.git_credentials();
+        let content_transferred = match self.backend.push(&handle, &remote_url, &refs, &creds).await
+        {
+            Ok(_) => true,
+            Err(mmcp_git::GitError::Unsupported(_)) => false,
+            Err(mmcp_git::GitError::Transport { stderr, .. })
+                if stderr_indicates_non_fast_forward(&stderr) =>
+            {
+                // Git-symmetric signal: remote has commits we do not,
+                // `git push` refused to overwrite. Raised structured
+                // so the CLI and MCP surfaces can tell the operator
+                // to pull first.
+                return Err(SyncError::PushDiverged {
+                    group: group_id,
+                    stderr,
+                });
+            }
+            Err(mmcp_git::GitError::Transport { .. }) => false,
+            Err(other) => return Err(SyncError::Git(other)),
+        };
+        Ok(Some(PushedGroup {
+            group_id,
+            content_transferred,
+        }))
     }
 
     /// Pull: fetch into remote-tracking refs, then fast-forward
@@ -186,56 +235,83 @@ impl SyncEngine {
         scope_index: &dyn ScopeIndex,
     ) -> Result<PullReport, SyncError> {
         let fetched = self.fetch(filter, group_handles, scope_index).await?;
-        let mut updated = Vec::new();
-        for fetched_group in fetched.groups {
-            // Only attempt the fast-forward when the tracking ref
-            // actually moved. `ref_updated=false` means the content
-            // plane was skipped (transport failure), so
-            // `refs/remotes/origin/main` still points at whatever
-            // prior fetch left it at - advancing from that is
-            // harmless at best and misleading at worst.
-            if fetched_group.ref_updated
-                && let Some(handle) = group_handles.resolve(fetched_group.group_id)
-            {
-                match self
-                    .backend
-                    .fast_forward(
-                        &handle,
-                        mmcp_core::conventions::MAIN_BRANCH_REF,
-                        mmcp_core::conventions::MAIN_REMOTE_TRACKING_REF,
-                    )
-                    .await
-                {
-                    Ok(mmcp_git::FastForwardOutcome::AlreadyAt { .. })
-                    | Ok(mmcp_git::FastForwardOutcome::Advanced { .. }) => {}
-                    // Divergence: local has commits the remote
-                    // does not. Git-symmetric `git pull --ff-only`
-                    // failure. Raise so the operator can resolve
-                    // before any more groups get touched.
-                    Ok(mmcp_git::FastForwardOutcome::NotFastForward { local, target }) => {
-                        return Err(SyncError::PullDiverged {
-                            group: fetched_group.group_id,
-                            local,
-                            target,
-                        });
-                    }
-                    // Missing tracking ref on first fetch of a
-                    // freshly-cloned repo: benign, the local
-                    // `main` is already at the target anyway.
-                    Err(mmcp_git::GitError::RevNotFound(_)) => {}
-                    Err(mmcp_git::GitError::Unsupported(_)) => {}
-                    Err(other) => return Err(SyncError::Git(other)),
-                }
-            }
-            updated.push(crate::client::RemoteGroup {
-                group_id: fetched_group.group_id,
-                slug: fetched_group.slug,
-                head_commit: fetched_group.remote_head,
-            });
+
+        // Bounded concurrency instead of one fast-forward after
+        // another; see `push`'s doc comment for the index-tag-then-sort
+        // rationale that keeps `PullReport::updated` in fetch order
+        // despite `buffer_unordered` completing out of order.
+        let mut results: Vec<(usize, Result<crate::client::RemoteGroup, SyncError>)> =
+            stream::iter(fetched.groups.into_iter().enumerate())
+                .map(|(index, fetched_group)| async move {
+                    let handle = group_handles.resolve(fetched_group.group_id);
+                    let outcome = self.fast_forward_one_group(fetched_group, handle).await;
+                    (index, outcome)
+                })
+                .buffer_unordered(MAX_CONCURRENT_GROUP_TRANSFERS)
+                .collect()
+                .await;
+        results.sort_by_key(|(index, _)| *index);
+
+        let mut updated = Vec::with_capacity(results.len());
+        for (_, outcome) in results {
+            updated.push(outcome?);
         }
         Ok(PullReport {
             updated,
             new_groups: fetched.new_groups,
+        })
+    }
+
+    /// Fast-forward one group's local `main` to its already-fetched
+    /// tracking ref, then return its `RemoteGroup` summary regardless
+    /// of whether a fast-forward actually ran.
+    async fn fast_forward_one_group(
+        &self,
+        fetched_group: FetchedGroup,
+        handle: Option<mmcp_git::RepoHandle>,
+    ) -> Result<crate::client::RemoteGroup, SyncError> {
+        // Only attempt the fast-forward when the tracking ref
+        // actually moved. `ref_updated=false` means the content
+        // plane was skipped (transport failure), so
+        // `refs/remotes/origin/main` still points at whatever prior
+        // fetch left it at - advancing from that is harmless at best
+        // and misleading at worst.
+        if fetched_group.ref_updated
+            && let Some(handle) = handle
+        {
+            match self
+                .backend
+                .fast_forward(
+                    &handle,
+                    mmcp_core::conventions::MAIN_BRANCH_REF,
+                    mmcp_core::conventions::MAIN_REMOTE_TRACKING_REF,
+                )
+                .await
+            {
+                Ok(mmcp_git::FastForwardOutcome::AlreadyAt { .. })
+                | Ok(mmcp_git::FastForwardOutcome::Advanced { .. }) => {}
+                // Divergence: local has commits the remote does not.
+                // Git-symmetric `git pull --ff-only` failure. Raised
+                // so the operator can resolve.
+                Ok(mmcp_git::FastForwardOutcome::NotFastForward { local, target }) => {
+                    return Err(SyncError::PullDiverged {
+                        group: fetched_group.group_id,
+                        local,
+                        target,
+                    });
+                }
+                // Missing tracking ref on first fetch of a
+                // freshly-cloned repo: benign, the local `main` is
+                // already at the target anyway.
+                Err(mmcp_git::GitError::RevNotFound(_)) => {}
+                Err(mmcp_git::GitError::Unsupported(_)) => {}
+                Err(other) => return Err(SyncError::Git(other)),
+            }
+        }
+        Ok(crate::client::RemoteGroup {
+            group_id: fetched_group.group_id,
+            slug: fetched_group.slug,
+            head_commit: fetched_group.remote_head,
         })
     }
 
@@ -269,48 +345,77 @@ impl SyncEngine {
         scope_index: &dyn ScopeIndex,
     ) -> Result<FetchReport, SyncError> {
         let manifest: ManifestResponse = self.client.get_manifest().await?;
-        let mut groups = Vec::new();
+
+        // Split synchronously first: `new_groups` needs no network
+        // call, and only the resolved-plus-in-scope subset needs the
+        // concurrent fetch below.
         let mut new_groups = Vec::new();
+        let mut candidates = Vec::new();
         for remote in manifest.groups {
             match group_handles.resolve(remote.group_id) {
                 None => new_groups.push(remote),
                 Some(handle) => {
-                    if !group_matches(filter, remote.group_id, scope_index) {
-                        continue;
+                    if group_matches(filter, remote.group_id, scope_index) {
+                        candidates.push((remote, handle));
                     }
-                    // `refs/heads/main:refs/remotes/origin/main` - the
-                    // git-native shape for "inspect before apply"
-                    // fetches. Local `main` stays put; the next `pull`
-                    // fast-forwards it from this tracking ref.
-                    let refs = vec![RefSpec::new(
-                        mmcp_core::conventions::MAIN_BRANCH_REF,
-                        mmcp_core::conventions::MAIN_REMOTE_TRACKING_REF,
-                    )];
-                    let remote_url = self.client.git_url_for(remote.group_id);
-                    let creds = self.client.git_credentials();
-                    let ref_updated = match self
-                        .backend
-                        .fetch(&handle, &remote_url, &refs, &creds)
-                        .await
-                    {
-                        Ok(()) => true,
-                        // Transport gaps are recorded, not raised:
-                        // the control-plane view is still worth
-                        // surfacing, and the caller can retry.
-                        Err(mmcp_git::GitError::Unsupported(_))
-                        | Err(mmcp_git::GitError::Transport { .. }) => false,
-                        Err(other) => return Err(SyncError::Git(other)),
-                    };
-                    groups.push(FetchedGroup {
-                        group_id: remote.group_id,
-                        slug: remote.slug,
-                        remote_head: remote.head_commit,
-                        ref_updated,
-                    });
                 }
             }
         }
+
+        // Bounded concurrency instead of one fetch after another; see
+        // `push`'s doc comment for the index-tag-then-sort rationale
+        // that keeps `FetchReport::groups` in manifest order despite
+        // `buffer_unordered` completing out of order.
+        let mut results: Vec<(usize, Result<FetchedGroup, SyncError>)> =
+            stream::iter(candidates.into_iter().enumerate())
+                .map(|(index, (remote, handle))| async move {
+                    let outcome = self.fetch_one_group(remote, handle).await;
+                    (index, outcome)
+                })
+                .buffer_unordered(MAX_CONCURRENT_GROUP_TRANSFERS)
+                .collect()
+                .await;
+        results.sort_by_key(|(index, _)| *index);
+
+        let mut groups = Vec::with_capacity(results.len());
+        for (_, outcome) in results {
+            groups.push(outcome?);
+        }
         Ok(FetchReport { groups, new_groups })
+    }
+
+    /// Fetch one group's remote head into its local tracking ref.
+    async fn fetch_one_group(
+        &self,
+        remote: crate::client::RemoteGroup,
+        handle: mmcp_git::RepoHandle,
+    ) -> Result<FetchedGroup, SyncError> {
+        // `refs/heads/main:refs/remotes/origin/main` - the
+        // git-native shape for "inspect before apply" fetches. Local
+        // `main` stays put; the next `pull` fast-forwards it from
+        // this tracking ref.
+        let refs = vec![RefSpec::new(
+            mmcp_core::conventions::MAIN_BRANCH_REF,
+            mmcp_core::conventions::MAIN_REMOTE_TRACKING_REF,
+        )];
+        let remote_url = self.client.git_url_for(remote.group_id);
+        let creds = self.client.git_credentials();
+        let ref_updated = match self.backend.fetch(&handle, &remote_url, &refs, &creds).await {
+            Ok(()) => true,
+            // Transport gaps are recorded, not raised: the
+            // control-plane view is still worth surfacing, and the
+            // caller can retry.
+            Err(mmcp_git::GitError::Unsupported(_)) | Err(mmcp_git::GitError::Transport { .. }) => {
+                false
+            }
+            Err(other) => return Err(SyncError::Git(other)),
+        };
+        Ok(FetchedGroup {
+            group_id: remote.group_id,
+            slug: remote.slug,
+            remote_head: remote.head_commit,
+            ref_updated,
+        })
     }
 }
 

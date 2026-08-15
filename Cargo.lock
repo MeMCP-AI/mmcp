@@ -3751,6 +3751,7 @@ dependencies = [
 name = "mmcp-sync"
 version = "0.1.61"
 dependencies = [
+ "futures-util",
  "mmcp-core",
  "mmcp-git",
  "reqwest",
