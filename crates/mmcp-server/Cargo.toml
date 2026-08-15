@@ -10,6 +10,13 @@ authors.workspace = true
 name = "mmcp-server"
 path = "src/main.rs"
 
+[features]
+# Exposes `config::test_support`'s `ServerConfig` fixture builder
+# outside the crate, so the `tests/` integration-test crates build on
+# the same canonical fixture as the crate's own unit tests instead of
+# each restating the struct literal.
+test-support = []
+
 [dependencies]
 mmcp-core = { workspace = true }
 mmcp-git = { workspace = true }
@@ -52,6 +59,7 @@ urlencoding = "2"
 gix = { workspace = true }
 
 [dev-dependencies]
+mmcp-server = { path = ".", features = ["test-support"] }
 tokio = { workspace = true }
 reqwest = { workspace = true, features = ["cookies"] }
 tempfile = "3"

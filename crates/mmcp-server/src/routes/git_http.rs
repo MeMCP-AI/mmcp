@@ -417,17 +417,10 @@ mod tests {
     /// config layer end to end, not a hand-rolled stand-in.
     async fn state_with_push_token(push_token: Option<&str>) -> (ServerState, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
+        let cfg = crate::config::test_support::minimal_server_config(tmp.path().to_path_buf());
         let cfg = crate::config::ServerConfig {
-            bind: "127.0.0.1:0".parse().unwrap(),
-            database_url: "sqlite::memory:".to_string(),
-            repo_root: tmp.path().to_path_buf(),
-            token_key: [0u8; 32],
-            oauth_providers: vec![],
-            origin: "http://localhost:8787".to_string(),
             push_token: push_token.map(str::to_string),
-            min_password_length: mmcp_auth::MIN_PASSWORD_LENGTH,
-            max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
-            max_handle_length: mmcp_auth::MAX_HANDLE_LENGTH,
+            ..cfg
         };
         let state = ServerState::initialize(&cfg).await.expect("state init");
         (state, tmp)

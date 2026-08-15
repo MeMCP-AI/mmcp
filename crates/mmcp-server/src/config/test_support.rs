@@ -1,14 +1,15 @@
-//! Test-only helpers shared across the crate's own unit tests.
+//! Test-only helpers shared across the crate's own unit tests and,
+//! behind the `test-support` Cargo feature, the `tests/` integration
+//! test crates.
 //!
-//! `pub(crate)` (not test-module-private) so unit tests outside
-//! `config` (`routes::sync`, `routes::mcp`) can reach it too, instead
-//! of each keeping its own copy of the same tracing subscriber or
-//! `ServerConfig` fixture, per the project's commonization rule.
+//! `minimal_server_config` is `pub` so both in-crate unit tests
+//! (`routes::sync`, `routes::mcp`, `routes::git_http`) and the
+//! `tests/common` integration-test crate build the same canonical
+//! `ServerConfig` fixture instead of each restating the struct
+//! literal.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::ServerConfig;
 
@@ -21,7 +22,7 @@ const TEST_BIND: &str = "127.0.0.1:0";
 /// integration-test crate, unreachable from an in-crate unit test).
 /// Every field is a deterministic test default; only `repo_root` is
 /// caller-supplied, since each test owns its own tempdir.
-pub(crate) fn minimal_server_config(repo_root: PathBuf) -> ServerConfig {
+pub fn minimal_server_config(repo_root: PathBuf) -> ServerConfig {
     ServerConfig {
         bind: TEST_BIND
             .parse::<SocketAddr>()
@@ -41,8 +42,14 @@ pub(crate) fn minimal_server_config(repo_root: PathBuf) -> ServerConfig {
 /// Minimal `tracing::Subscriber` counting `WARN`-level events, so a
 /// rejected config value can be asserted to actually log instead of
 /// silently discarding it.
-pub(crate) struct WarnCounter(pub(crate) Arc<AtomicUsize>);
+///
+/// Unlike [`minimal_server_config`], only reachable from this crate's
+/// own unit tests: the `tests/common` integration-test crate has no
+/// use for it, so it stays out of the `test-support` feature surface.
+#[cfg(test)]
+pub(crate) struct WarnCounter(pub(crate) std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
+#[cfg(test)]
 impl tracing::Subscriber for WarnCounter {
     fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
         *metadata.level() == tracing::Level::WARN
@@ -54,7 +61,7 @@ impl tracing::Subscriber for WarnCounter {
     fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
     fn event(&self, event: &tracing::Event<'_>) {
         if *event.metadata().level() == tracing::Level::WARN {
-            self.0.fetch_add(1, Ordering::SeqCst);
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
     fn enter(&self, _span: &tracing::span::Id) {}

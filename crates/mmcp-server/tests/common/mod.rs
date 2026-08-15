@@ -7,17 +7,19 @@
 
 use std::path::PathBuf;
 
+use mmcp_server::config::test_support::minimal_server_config;
 use mmcp_server::config::{OAuthProviderConfig, ServerConfig};
 
 /// Builder for the `ServerConfig` used across integration test
 /// suites.
 ///
-/// Every field starts at a fixed test default: an ephemeral loopback
-/// bind, an in-memory SQLite database, no OAuth providers, no push
-/// token, and the compiled-in `mmcp_auth` password-length and
-/// handle-length defaults. Only fields with a setter method below
-/// are settable through this builder; `build()` returns the config
-/// with every other field at these defaults.
+/// Every field starts at [`minimal_server_config`]'s fixed test
+/// default: an ephemeral loopback bind, an in-memory SQLite database,
+/// no OAuth providers, no push token, and the compiled-in
+/// `mmcp_auth` password-length and handle-length defaults. Only
+/// fields with a setter method below are settable through this
+/// builder; `build()` returns the config with every other field at
+/// these defaults.
 pub struct TestServerConfigBuilder {
     config: ServerConfig,
 }
@@ -29,18 +31,7 @@ impl TestServerConfigBuilder {
     /// itself, since each test owns its own tempdir.
     pub fn new(repo_root: PathBuf) -> Self {
         Self {
-            config: ServerConfig {
-                bind: "127.0.0.1:0".parse().unwrap(),
-                database_url: "sqlite::memory:".to_string(),
-                repo_root,
-                token_key: [0u8; 32],
-                oauth_providers: vec![],
-                origin: "http://localhost:8787".to_string(),
-                push_token: None,
-                min_password_length: mmcp_auth::MIN_PASSWORD_LENGTH,
-                max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
-                max_handle_length: mmcp_auth::MAX_HANDLE_LENGTH,
-            },
+            config: minimal_server_config(repo_root),
         }
     }
 

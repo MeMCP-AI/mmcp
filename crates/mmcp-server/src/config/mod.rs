@@ -6,8 +6,8 @@ mod error;
 mod oauth_provider;
 mod overrides;
 mod server_config;
-#[cfg(test)]
-pub(crate) mod test_support;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 pub use defaults::{MAX_HANDLE_LENGTH_ENV, MAX_PASSWORD_LENGTH_ENV, MIN_PASSWORD_LENGTH_ENV};
 pub use error::ConfigError;
