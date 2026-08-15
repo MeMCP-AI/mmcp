@@ -8,6 +8,7 @@ use mmcp_git::{GitBackend, RefSpec};
 use uuid::Uuid;
 
 use super::concurrency::run_bounded;
+use super::defaults::MAX_CONCURRENT_GROUP_TRANSFERS;
 use super::reports::{
     FetchReport, FetchedGroup, GroupSyncFailure, PullReport, PushReport, PushedGroup, SyncReport,
 };
@@ -16,6 +17,27 @@ use super::scope::group_matches;
 use crate::client::SyncClient;
 use crate::error::SyncError;
 use crate::filter::{ScopeIndex, SyncFilter};
+
+/// Split `run_bounded`'s tagged outcomes into successes and
+/// [`GroupSyncFailure`]s, attributing each failure to its own group
+/// id. `push`, `pull`'s fast-forward step, and `fetch` all reduce
+/// their `run_bounded` output this same way.
+fn partition_sync_outcomes<R>(
+    outcomes: Vec<(Uuid, Result<R, SyncError>)>,
+) -> (Vec<R>, Vec<GroupSyncFailure>) {
+    let mut successes = Vec::with_capacity(outcomes.len());
+    let mut failed = Vec::new();
+    for (group_id, outcome) in outcomes {
+        match outcome {
+            Ok(value) => successes.push(value),
+            Err(error) => failed.push(GroupSyncFailure {
+                group_id: GroupId::from_uuid(group_id),
+                error,
+            }),
+        }
+    }
+    (successes, failed)
+}
 
 /// Engine bound to a specific git backend and sync client.
 ///
@@ -91,6 +113,7 @@ impl SyncEngine {
         // report, attributed to their own `group_id`.
         let outcomes = run_bounded(
             targets,
+            MAX_CONCURRENT_GROUP_TRANSFERS,
             |group_id| *group_id,
             |group_id| async move {
                 self.push_one_group(group_id, filter, group_handles, scope_index)
@@ -99,18 +122,12 @@ impl SyncEngine {
         )
         .await;
 
-        let mut pushed = Vec::with_capacity(outcomes.len());
-        let mut failed = Vec::new();
-        for (group_id, outcome) in outcomes {
-            match outcome {
-                Ok(Some(group)) => pushed.push(group),
-                Ok(None) => {}
-                Err(error) => failed.push(GroupSyncFailure {
-                    group_id: GroupId::from_uuid(group_id),
-                    error,
-                }),
-            }
-        }
+        let (pushed, failed) = partition_sync_outcomes(outcomes);
+        // `push_one_group` reports `Ok(None)` for an out-of-scope or
+        // unresolved group; `partition_sync_outcomes` keeps that
+        // `Option` layer, so flatten it away here to get the final
+        // `pushed` list.
+        let pushed = pushed.into_iter().flatten().collect();
         Ok(PushReport { pushed, failed })
     }
 
@@ -219,6 +236,7 @@ impl SyncEngine {
         // other group's already-advanced result.
         let outcomes = run_bounded(
             fetched.groups,
+            MAX_CONCURRENT_GROUP_TRANSFERS,
             |fetched_group| fetched_group.group_id,
             |fetched_group| {
                 let handle = group_handles.resolve(fetched_group.group_id);
@@ -227,16 +245,8 @@ impl SyncEngine {
         )
         .await;
 
-        let mut updated = Vec::with_capacity(outcomes.len());
-        for (group_id, outcome) in outcomes {
-            match outcome {
-                Ok(group) => updated.push(group),
-                Err(error) => failed.push(GroupSyncFailure {
-                    group_id: GroupId::from_uuid(group_id),
-                    error,
-                }),
-            }
-        }
+        let (updated, new_failed) = partition_sync_outcomes(outcomes);
+        failed.extend(new_failed);
         Ok(PullReport {
             updated,
             new_groups: fetched.new_groups,
@@ -352,22 +362,13 @@ impl SyncEngine {
         // other group's already-succeeded fetch.
         let outcomes = run_bounded(
             candidates,
+            MAX_CONCURRENT_GROUP_TRANSFERS,
             |(remote, _handle)| remote.group_id,
             |(remote, handle)| async move { self.fetch_one_group(remote, handle).await },
         )
         .await;
 
-        let mut groups = Vec::with_capacity(outcomes.len());
-        let mut failed = Vec::new();
-        for (group_id, outcome) in outcomes {
-            match outcome {
-                Ok(group) => groups.push(group),
-                Err(error) => failed.push(GroupSyncFailure {
-                    group_id: GroupId::from_uuid(group_id),
-                    error,
-                }),
-            }
-        }
+        let (groups, failed) = partition_sync_outcomes(outcomes);
         Ok(FetchReport {
             groups,
             new_groups,

@@ -32,7 +32,7 @@ pub use client::{
 };
 pub use engine::{
     FetchReport, FetchedGroup, GroupHandleResolver, GroupSyncFailure, PullReport, PushReport,
-    PushedGroup, SyncEngine, SyncReport,
+    PushedGroup, SyncEngine, SyncReport, run_bounded,
 };
 pub use error::SyncError;
 pub use filter::{ScopeIndex, SyncFilter};

@@ -26,12 +26,13 @@
 //! a running `mmcp-server`.
 //!
 //! Module layout: [`defaults`] holds the shared concurrency cap,
-//! [`concurrency`] holds the `run_bounded` helper the three verbs
-//! all call instead of duplicating their own bounded-fan-out
-//! skeleton, [`scope`] holds scope-filter matching, [`resolver`]
-//! holds the local-handle-lookup trait, [`sync_engine`] holds
-//! [`SyncEngine`] itself and its push/pull/fetch orchestration, and
-//! [`reports`] holds the outcome types every verb returns.
+//! [`concurrency`] holds the [`run_bounded`] helper (exported at the
+//! crate root so `mmcp-server` can reuse it instead of hand-rolling
+//! its own bounded fan-out), [`scope`] holds scope-filter matching,
+//! [`resolver`] holds the local-handle-lookup trait, [`sync_engine`]
+//! holds [`SyncEngine`] itself, its push/pull/fetch orchestration,
+//! and the `partition_sync_outcomes` helper the three verbs share,
+//! and [`reports`] holds the outcome types every verb returns.
 
 mod concurrency;
 mod defaults;
@@ -40,6 +41,7 @@ mod resolver;
 mod scope;
 mod sync_engine;
 
+pub use concurrency::run_bounded;
 pub use reports::{
     FetchReport, FetchedGroup, GroupSyncFailure, PullReport, PushReport, PushedGroup, SyncReport,
 };
