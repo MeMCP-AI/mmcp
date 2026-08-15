@@ -38,8 +38,15 @@ pub enum ToolName {
 
 impl ToolName {
     /// Canonical string form exposed on the MCP wire.
+    ///
+    /// Not `const`: the six delegated arms call
+    /// [`McpToolId::as_str`], which itself delegates to strum's
+    /// `IntoStaticStr`-derived, non-`const` `From<McpToolId> for
+    /// &'static str` conversion (no call site anywhere in the
+    /// workspace evaluates `ToolName::as_str` in a const context, so
+    /// this is not a behavior change for any real caller).
     #[must_use]
-    pub const fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             ToolName::ListMemories => McpToolId::ListMemories.as_str(),
             ToolName::ReadMemory => McpToolId::ReadMemory.as_str(),

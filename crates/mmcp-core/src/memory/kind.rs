@@ -1,104 +1,59 @@
 //! Classification of a memory's behavior at retrieval time.
 
 use serde::{Deserialize, Serialize};
+use strum::VariantArray as _;
+use strum_macros::{IntoStaticStr, VariantArray};
 
-/// Declares the full `MemoryKind` variant list exactly once.
+/// Built-in memory kinds shipped with mmcp.
 ///
-/// Every mirror of that list (the enum itself, `as_str()`,
-/// `FromStr`, [`MemoryKind::ALL`], and the parse-error message text)
-/// expands from this single invocation, so a new variant can never
-/// update one mirror while leaving another behind. See the
-/// invocation below for the actual variant list and doc comments.
-macro_rules! define_memory_kind {
-    (
-        $(
-            $(#[$variant_meta:meta])*
-            $variant:ident => $wire:literal
-        ),+ $(,)?
-    ) => {
-        /// Built-in memory kinds shipped with mmcp.
-        ///
-        /// Each kind carries behavioral implications, not just classification.
-        /// The retrieval layer inspects the kind to decide whether to attach staleness warnings,
-        /// whether edits are restricted to appends, and whether versioning applies.
-        ///
-        /// Users may register custom kinds on top of these defaults,
-        /// but the core set is fixed because server-side logic branches on it.
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-        #[serde(rename_all = "snake_case")]
-        pub enum MemoryKind {
-            $(
-                $(#[$variant_meta])*
-                $variant,
-            )+
-        }
-
-        impl MemoryKind {
-            /// Every variant, in declaration order.
-            ///
-            /// The single generated-list consumer: exhaustive tests
-            /// (round-trip, TS-export drift) iterate this instead of
-            /// hand-listing variants a second time.
-            pub const ALL: &'static [MemoryKind] = &[$(MemoryKind::$variant),+];
-
-            /// The canonical string representation of this kind, matching the serde `snake_case` serialization.
-            /// `feature` is the only wire form accepted for this variant.
-            #[must_use]
-            pub const fn as_str(self) -> &'static str {
-                match self {
-                    $(MemoryKind::$variant => $wire,)+
-                }
-            }
-        }
-
-        /// Canonical parser for the lowercase wire form of [`MemoryKind`].
-        ///
-        /// This is the single owning parser every hand-rolled `MemoryKind`
-        /// decoder in the codebase delegates to (mmcp-store's create-time
-        /// parser, the archive filter's facet parser, the GUI's DTO
-        /// converter) so the accepted-kind set can never drift between
-        /// call sites again.
-        impl std::str::FromStr for MemoryKind {
-            type Err = MemoryKindParseError;
-
-            fn from_str(raw: &str) -> Result<Self, Self::Err> {
-                match raw {
-                    $($wire => Ok(MemoryKind::$variant),)+
-                    other => Err(MemoryKindParseError {
-                        input: other.to_string(),
-                    }),
-                }
-            }
-        }
-    };
-}
-
-define_memory_kind! {
+/// Each kind carries behavioral implications, not just classification.
+/// The retrieval layer inspects the kind to decide whether to attach staleness warnings,
+/// whether edits are restricted to appends, and whether versioning applies.
+///
+/// Users may register custom kinds on top of these defaults,
+/// but the core set is fixed because server-side logic branches on it.
+///
+/// [`VariantArray`] derives [`Self::VARIANTS`] (every variant, in
+/// declaration order) and [`IntoStaticStr`] derives the wire-name
+/// conversion (`self.into(): &'static str`), replacing the hand-rolled
+/// `define_memory_kind!` macro's `ALL`/`as_str` mirrors. `FromStr` and
+/// [`MemoryKindParseError`] stay hand-written below: the error message
+/// joins [`MemoryKind::VARIANTS`]'s wire strings at runtime, which
+/// strum's derived `EnumString`/parse-error type cannot reproduce.
+/// `#[strum(serialize_all = "snake_case")]` matches the `#[serde(rename_all
+/// = "snake_case")]` wire form below, so both mirrors agree by
+/// construction.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, VariantArray, IntoStaticStr,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum MemoryKind {
     /// Stable convention or guideline.
     /// Session-agnostic, no automatic staleness warning attached.
-    Rule => "rule",
+    Rule,
 
     /// Point-in-time fact about the project (status, counts, test results).
     /// Retrieval always attaches a "may be stale" warning because snapshots rot by definition.
-    Snapshot => "snapshot",
+    Snapshot,
 
     /// Append-only record (decisions, incidents).
     /// Edits may only add entries; prior entries are immutable.
-    Log => "log",
+    Log,
 
     /// Pointer to an external resource (Linear project, Grafana dashboard, spec URL).
     /// Rarely changes; no staleness warning.
-    Reference => "reference",
+    Reference,
 
     /// Short-lived working notes.
     /// Not versioned, no warnings.
-    Scratch => "scratch",
+    Scratch,
 
     /// Feature request.
     /// Carries a structured [`FeatureMetadata`](crate::memory::FeatureMetadata)
     /// block in frontmatter (status, depends_on, blocks)
     /// so the feature lifecycle tools can filter and cross-reference without parsing the body.
-    Feature => "feature",
+    Feature,
 
     /// Issue tracker entry.
     /// Sister kind to `Feature`.
@@ -106,7 +61,7 @@ define_memory_kind! {
     /// block in frontmatter (status, depends_on, blocks).
     /// The hybrid model permits a memory to carry both `[feature]` and `[issue]` blocks;
     /// listings filter by block presence.
-    Issue => "issue",
+    Issue,
 
     /// Milestone: a grouping container over features, possibly
     /// spanning multiple project groups.
@@ -117,7 +72,42 @@ define_memory_kind! {
     /// via [`FeatureMetadata::milestone`](crate::memory::FeatureMetadata::milestone);
     /// the milestone's own live status is computed by `mmcp_store::rollup`,
     /// never stored here.
-    Milestone => "milestone",
+    Milestone,
+}
+
+impl MemoryKind {
+    /// The canonical string representation of this kind, matching the serde `snake_case` serialization.
+    /// `feature` is the only wire form accepted for this variant.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        self.into()
+    }
+}
+
+/// Canonical parser for the lowercase wire form of [`MemoryKind`].
+///
+/// This is the single owning parser every hand-rolled `MemoryKind`
+/// decoder in the codebase delegates to (mmcp-store's create-time
+/// parser, the archive filter's facet parser, the GUI's DTO
+/// converter) so the accepted-kind set can never drift between
+/// call sites again.
+///
+/// Hand-written rather than strum's derived `FromStr`/`EnumString`:
+/// [`MemoryKindParseError`]'s `Display` joins [`MemoryKind::VARIANTS`]'s
+/// wire strings at runtime, which strum's derived error type cannot
+/// reproduce (see that type's doc comment).
+impl std::str::FromStr for MemoryKind {
+    type Err = MemoryKindParseError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        MemoryKind::VARIANTS
+            .iter()
+            .copied()
+            .find(|kind| kind.as_str() == raw)
+            .ok_or_else(|| MemoryKindParseError {
+                input: raw.to_string(),
+            })
+    }
 }
 
 impl MemoryKind {
@@ -149,7 +139,7 @@ impl MemoryKind {
 ///
 /// `Display` is hand-written rather than a `thiserror` `#[error(...)]`
 /// attribute because the message body must join
-/// [`MemoryKind::ALL`]'s wire strings at runtime; a `thiserror`
+/// [`MemoryKind::VARIANTS`]'s wire strings at runtime; a `thiserror`
 /// attribute literal is fixed at macro-expansion time and cannot
 /// interpolate that runtime-built join.
 /// `input` and the `FromStr::Err` association are unchanged public API.
@@ -162,7 +152,7 @@ pub struct MemoryKindParseError {
 impl std::fmt::Display for MemoryKindParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "invalid memory kind '{}': expected one of ", self.input)?;
-        for (index, kind) in MemoryKind::ALL.iter().enumerate() {
+        for (index, kind) in MemoryKind::VARIANTS.iter().enumerate() {
             if index > 0 {
                 write!(f, " / ")?;
             }
@@ -177,7 +167,7 @@ impl std::error::Error for MemoryKindParseError {}
 /// Environment variable that switches the TS-drift test below from
 /// asserting to regenerating: `MMCP_UPDATE_GENERATED=1 cargo test -p
 /// mmcp-core` rewrites `memory_kind.generated.ts` from
-/// [`MemoryKind::ALL`] instead of comparing against it.
+/// [`MemoryKind::VARIANTS`] instead of comparing against it.
 #[cfg(test)]
 const GENERATED_TS_UPDATE_ENV: &str = "MMCP_UPDATE_GENERATED";
 
@@ -217,7 +207,7 @@ mod tests {
 
     #[test]
     fn from_str_round_trips_every_kind() {
-        for kind in MemoryKind::ALL {
+        for kind in MemoryKind::VARIANTS {
             let parsed: MemoryKind = kind.as_str().parse().expect("round trip");
             assert_eq!(parsed, *kind);
         }
@@ -240,9 +230,9 @@ mod tests {
 
     /// Renders the exact TypeScript source
     /// `memory_kind.generated.ts` must contain for the current
-    /// [`MemoryKind::ALL`].
+    /// [`MemoryKind::VARIANTS`].
     fn render_generated_ts() -> String {
-        let values = MemoryKind::ALL
+        let values = MemoryKind::VARIANTS
             .iter()
             .map(|kind| format!("'{}'", kind.as_str()))
             .collect::<Vec<_>>()
@@ -263,12 +253,12 @@ mod tests {
         text.replace("\r\n", "\n")
     }
 
-    /// Drift guard between [`MemoryKind::ALL`] and the generated
+    /// Drift guard between [`MemoryKind::VARIANTS`] and the generated
     /// `memory_kind.generated.ts` the GUI imports at
     /// `gui/src/lib/utils/memory_kind.ts`.
     ///
     /// Set `MMCP_UPDATE_GENERATED=1` to rewrite the file from the
-    /// current `MemoryKind::ALL` instead of asserting against it.
+    /// current `MemoryKind::VARIANTS` instead of asserting against it.
     #[test]
     fn generated_ts_matches_memory_kind_all() {
         let expected = render_generated_ts();
@@ -291,7 +281,7 @@ mod tests {
         assert_eq!(
             normalize_line_endings(&actual),
             normalize_line_endings(&expected),
-            "gui/src/lib/utils/memory_kind.generated.ts is out of sync with MemoryKind::ALL; regenerate via `{GENERATED_TS_UPDATE_ENV}=1 cargo test -p mmcp-core generated_ts_matches_memory_kind_all`"
+            "gui/src/lib/utils/memory_kind.generated.ts is out of sync with MemoryKind::VARIANTS; regenerate via `{GENERATED_TS_UPDATE_ENV}=1 cargo test -p mmcp-core generated_ts_matches_memory_kind_all`"
         );
     }
 }
