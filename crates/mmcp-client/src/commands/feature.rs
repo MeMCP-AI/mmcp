@@ -17,6 +17,7 @@ use mmcp_store::features::{
 };
 use mmcp_store::home::MmcpHome;
 
+use crate::commands::tracker_cli::{join_uuids, read_body};
 use crate::notes::{dangling_ref_notes_for, findings_to_notes, render_notes_tail};
 
 // ── Clap surface ────────────────────────────────────────────────
@@ -262,7 +263,7 @@ async fn run_add(args: AddArgs) -> Result<()> {
         slug: args.slug,
         title: args.title.unwrap_or_default(),
         description: args.description,
-        body: read_body(&args.body)?,
+        body: read_body(&args.body, "feature")?,
         status,
         depends_on,
         blocks,
@@ -323,7 +324,7 @@ async fn run_update(args: UpdateArgs) -> Result<()> {
 
     let status = parse_status_cli(args.status.as_deref())?;
     let body = match args.body {
-        Some(raw) => Some(read_body(&raw)?),
+        Some(raw) => Some(read_body(&raw, "feature")?),
         None => None,
     };
     let depends_on = if args.depends_on_clear {
@@ -549,30 +550,4 @@ fn parse_milestone_cli(raw: Option<&str>) -> Result<Option<uuid::Uuid>> {
 fn parse_milestone_uuid(raw: &str) -> Result<uuid::Uuid> {
     uuid::Uuid::parse_str(raw)
         .map_err(|_| anyhow::anyhow!("`--milestone` expects a UUID, got '{raw}'"))
-}
-
-/// Join UUIDs into a comma-separated display string for the
-/// human-readable CLI output.
-fn join_uuids(values: &[uuid::Uuid]) -> String {
-    values
-        .iter()
-        .map(uuid::Uuid::to_string)
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// Interpret a body argument: the literal `-` reads from stdin so
-/// operators can pipe in markdown without quoting hell; any other
-/// value is used verbatim.
-fn read_body(raw: &str) -> Result<String> {
-    use std::io::Read;
-    if raw == "-" {
-        let mut buf = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buf)
-            .context("reading feature body from stdin")?;
-        Ok(buf)
-    } else {
-        Ok(raw.to_string())
-    }
 }

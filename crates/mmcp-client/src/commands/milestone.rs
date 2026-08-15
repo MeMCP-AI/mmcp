@@ -19,6 +19,7 @@ use mmcp_store::milestones::{
     update_milestone,
 };
 
+use crate::commands::tracker_cli::read_body;
 use crate::notes::{findings_to_notes, render_notes_tail};
 
 // ── Clap surface ────────────────────────────────────────────────
@@ -142,7 +143,7 @@ async fn run_add(args: AddArgs) -> Result<()> {
         slug: args.slug,
         title: args.title.unwrap_or_default(),
         description: args.description,
-        body: read_body(&args.body)?,
+        body: read_body(&args.body, "milestone")?,
         status,
         message: args.message,
     };
@@ -202,7 +203,7 @@ async fn run_update(args: UpdateArgs) -> Result<()> {
 
     let status = parse_status_cli(args.status.as_deref())?;
     let body = match args.body {
-        Some(raw) => Some(read_body(&raw)?),
+        Some(raw) => Some(read_body(&raw, "milestone")?),
         None => None,
     };
     let spec = UpdateSpec {
@@ -334,18 +335,5 @@ fn parse_status_cli(raw: Option<&str>) -> Result<Option<MilestoneStatus>> {
                     .join(" / ")
             )
         }),
-    }
-}
-
-fn read_body(raw: &str) -> Result<String> {
-    use std::io::Read;
-    if raw == "-" {
-        let mut buf = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buf)
-            .context("reading milestone body from stdin")?;
-        Ok(buf)
-    } else {
-        Ok(raw.to_string())
     }
 }

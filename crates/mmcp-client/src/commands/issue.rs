@@ -18,6 +18,7 @@ use mmcp_store::issues::{
     read_issue, rename_issue, update_issue,
 };
 
+use crate::commands::tracker_cli::{join_uuids, read_body};
 use crate::notes::{dangling_ref_notes_for, findings_to_notes, render_notes_tail};
 
 // ── Clap surface ────────────────────────────────────────────────
@@ -204,7 +205,7 @@ async fn run_add(args: AddArgs) -> Result<()> {
         slug: args.slug,
         title: args.title.unwrap_or_default(),
         description: args.description,
-        body: read_body(&args.body)?,
+        body: read_body(&args.body, "issue")?,
         status,
         depends_on,
         blocks,
@@ -260,7 +261,7 @@ async fn run_update(args: UpdateArgs) -> Result<()> {
 
     let status = parse_status_cli(args.status.as_deref())?;
     let body = match args.body {
-        Some(raw) => Some(read_body(&raw)?),
+        Some(raw) => Some(read_body(&raw, "issue")?),
         None => None,
     };
     let depends_on = if args.depends_on_clear {
@@ -484,26 +485,5 @@ fn parse_status_cli(raw: Option<&str>) -> Result<Option<IssueStatus>> {
                     .join(" / ")
             )
         }),
-    }
-}
-
-fn join_uuids(values: &[uuid::Uuid]) -> String {
-    values
-        .iter()
-        .map(uuid::Uuid::to_string)
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn read_body(raw: &str) -> Result<String> {
-    use std::io::Read;
-    if raw == "-" {
-        let mut buf = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buf)
-            .context("reading issue body from stdin")?;
-        Ok(buf)
-    } else {
-        Ok(raw.to_string())
     }
 }
