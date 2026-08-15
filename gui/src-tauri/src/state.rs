@@ -132,7 +132,7 @@ fn classify_watch_path(rel: &Path) -> WatchTarget {
         return WatchTarget::Root;
     };
     match Uuid::parse_str(stem) {
-        Ok(_) => WatchTarget::Group(stem.to_string()),
+        Ok(uuid) => WatchTarget::Group(uuid.to_string()),
         Err(_) => WatchTarget::Root,
     }
 }
