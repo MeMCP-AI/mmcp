@@ -115,9 +115,14 @@ pub enum GitError {
         stderr: String,
     },
 
-    /// UTF-8 decoding error when reading a text file.
+    /// UTF-8 decoding error when reading a text file. Every
+    /// `GitBackend::read_file` implementation returns a borrowed
+    /// `Bytes` buffer, not an owned `Vec<u8>`, so callers validate
+    /// via `std::str::from_utf8` (borrowing) rather than
+    /// `String::from_utf8` (consuming); this variant wraps that
+    /// error type to match.
     #[error("invalid UTF-8 in file: {0}")]
-    Utf8(#[from] std::string::FromUtf8Error),
+    Utf8(#[from] std::str::Utf8Error),
 }
 
 impl GitError {

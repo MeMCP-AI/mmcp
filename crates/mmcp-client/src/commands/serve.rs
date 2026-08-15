@@ -2108,13 +2108,25 @@ impl McpServer {
         // `frontmatter_parse_failed` note instead, so one corrupt
         // file never takes down the rest of the group's listing.
         let mut notes = Vec::new();
+        // Compact mode is selected once, up front, and threaded into
+        // `read_memory_descriptor` itself: it builds only the fields
+        // the requested shape needs instead of building the full
+        // descriptor and immediately projecting most of it away.
+        let compact = args.compact.unwrap_or(false);
         for file in files {
             if !slug_matches_filter(&file.slug, prefix, recursive) {
                 continue;
             }
-            match read_memory_descriptor(&self.state.backend, &entry, &file.path, &file.slug, None)
-                .await
-                .map_err(git_error)?
+            match read_memory_descriptor(
+                &self.state.backend,
+                &entry,
+                &file.path,
+                &file.slug,
+                None,
+                compact,
+            )
+            .await
+            .map_err(git_error)?
             {
                 MemoryDescriptorOutcome::Parsed(descriptor) => memories.push(descriptor),
                 MemoryDescriptorOutcome::ParseFailed(err) => {
@@ -2124,15 +2136,6 @@ impl McpServer {
                         &err,
                     )));
                 }
-            }
-        }
-
-        // Compact mode drops `description` and the other
-        // rarely-needed fields per descriptor before pagination, so
-        // the mandatory-always-included set below is compact too.
-        if args.compact.unwrap_or(false) {
-            for memory in &mut memories {
-                *memory = compact_descriptor(memory);
             }
         }
 
@@ -2469,6 +2472,7 @@ impl McpServer {
                     &file.path,
                     &file.slug,
                     None,
+                    false,
                 )
                 .await
                 {
@@ -7695,13 +7699,22 @@ enum MemoryDescriptorOutcome {
     ParseFailed(mmcp_core::memory::MemoryParseError),
 }
 
-/// Read one memory and return a compact descriptor including the
-/// slug, the parsed frontmatter fields, and a short summary.
+/// Read one memory and return a descriptor including the slug, the
+/// parsed frontmatter fields, and a short summary.
 ///
 /// `path` is the resolved on-disk path under the group repo:
 /// `memories/<slug>/<uuid>.md` in the current on-disk layout, but
 /// legacy mirrors still keep `memories/<slug>.md`; callers supply
 /// whichever the enumeration walker returned.
+///
+/// `compact` selects the shape directly, at construction time:
+/// `slug`, `path`, `name`, `kind`, `mandatory` only when `true`
+/// (dropping `description`, the single largest measured per-record
+/// field, plus `group`, `tags`, `source`, and `latest_version`), the
+/// full set of fields when `false`. Compact mode never builds the
+/// full `json!` object and discards it afterward: every field this
+/// function assembles is one both shapes need, or one only the
+/// requested shape needs.
 ///
 /// Returns `Err` only for a git-level read failure. A frontmatter
 /// parse failure is NOT an `Err` here; see
@@ -7712,11 +7725,17 @@ async fn read_memory_descriptor(
     path: &str,
     slug: &str,
     version: Option<&str>,
+    compact: bool,
 ) -> Result<MemoryDescriptorOutcome, mmcp_git::GitError> {
     let rev = parse_rev(version);
     let bytes = backend.read_file(&entry.handle, path, &rev).await?;
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    let file = match MemoryFile::parse(&text) {
+    // Zero-copy: borrow `bytes` as UTF-8 instead of lossily
+    // substituting the replacement character, which would silently
+    // corrupt frontmatter/body content on a genuinely malformed blob
+    // (pattern already used correctly at diagnostics.rs's per-file
+    // walk). Invalid UTF-8 surfaces as `GitError::Utf8` via `?`.
+    let text = std::str::from_utf8(&bytes)?;
+    let file = match MemoryFile::parse(text) {
         Ok(file) => file,
         Err(err) => return Ok(MemoryDescriptorOutcome::ParseFailed(err)),
     };
@@ -7728,38 +7747,34 @@ async fn read_memory_descriptor(
     // `path`. Callers that want the joined form do `path.join("/")`.
     let path: Vec<&str> = slug.split('/').filter(|s| !s.is_empty()).collect();
     let leaf = path.last().copied().unwrap_or(slug);
-    Ok(MemoryDescriptorOutcome::Parsed(json!({
-        "group": entry.manifest.group_id,
-        "slug": leaf,
-        "path": path,
-        "name": file.frontmatter.name,
-        "description": file.frontmatter.description,
-        "kind": file.frontmatter.kind.as_str(),
-        "mandatory": file.frontmatter.mandatory,
-        "latest_version": file.frontmatter.version.map(|v| v.to_string()),
-        "tags": file.frontmatter.tags,
-        "source": file.frontmatter.source,
-    })))
+    let descriptor = if compact {
+        json!({
+            "slug": leaf,
+            "path": path,
+            "name": file.frontmatter.name,
+            "kind": file.frontmatter.kind.as_str(),
+            "mandatory": file.frontmatter.mandatory,
+        })
+    } else {
+        json!({
+            "group": entry.manifest.group_id,
+            "slug": leaf,
+            "path": path,
+            "name": file.frontmatter.name,
+            "description": file.frontmatter.description,
+            "kind": file.frontmatter.kind.as_str(),
+            "mandatory": file.frontmatter.mandatory,
+            "latest_version": file.frontmatter.version.map(|v| v.to_string()),
+            "tags": file.frontmatter.tags,
+            "source": file.frontmatter.source,
+        })
+    };
+    Ok(MemoryDescriptorOutcome::Parsed(descriptor))
 }
 
-/// Project a full `list_memories` descriptor (as built by
-/// [`read_memory_descriptor`]) down to the compact shape:
-/// `slug`, `path`, `name`, `kind`, `mandatory` only. Drops
-/// `description` (the single largest measured per-record field),
-/// plus `tags`, `source`, and `latest_version`.
-fn compact_descriptor(full: &serde_json::Value) -> serde_json::Value {
-    json!({
-        "slug": full.get("slug"),
-        "path": full.get("path"),
-        "name": full.get("name"),
-        "kind": full.get("kind"),
-        "mandatory": full.get("mandatory"),
-    })
-}
-
-/// Read the `mandatory` flag back off a descriptor built by either
-/// [`read_memory_descriptor`] or [`compact_descriptor`] (both carry
-/// the field). Missing/non-boolean is treated as `false` rather than
+/// Read the `mandatory` flag back off a descriptor built by
+/// [`read_memory_descriptor`] (compact or full; both carry the
+/// field). Missing/non-boolean is treated as `false` rather than
 /// panicking: the field is always present in practice, but a
 /// partition predicate must never fabricate a `true` from absent
 /// data.
@@ -8156,6 +8171,49 @@ mod tests {
             .expect("write commit");
         state.groups.refresh().await.expect("refresh");
         group_id
+    }
+
+    /// Falsification test for the strict-UTF-8 read at
+    /// `read_memory_descriptor`: a blob carrying genuinely invalid
+    /// UTF-8 bytes must surface as `GitError::Utf8`, not be silently
+    /// mangled via the replacement character (the previous
+    /// `from_utf8_lossy` behavior).
+    #[tokio::test]
+    async fn read_memory_descriptor_errors_on_invalid_utf8_instead_of_lossily_substituting() {
+        let (state, _tmp) = test_state().await;
+        let owner = UserId::new();
+        let group_id = GroupId::new();
+        let manifest = GroupManifest::new_user_owned(group_id, "bad-utf8", owner);
+        let handle = state
+            .backend
+            .create_group_repo(&manifest)
+            .await
+            .expect("create group repo");
+        let path = mmcp_core::conventions::memory_path("broken", MemoryId::new());
+        // 0xFF is never valid in any position of a UTF-8 byte sequence.
+        let invalid_utf8: Vec<u8> = b"+++\nname = \"broken\"\n+++\n\xff\xfe".to_vec();
+        state
+            .backend
+            .write_commit(
+                &handle,
+                CommitSpec {
+                    branch: mmcp_core::conventions::MAIN_BRANCH.to_string(),
+                    author_name: "test".into(),
+                    author_email: "test@example.com".into(),
+                    message: "seed invalid utf8".into(),
+                    files: vec![(path.clone(), Some(invalid_utf8))],
+                },
+            )
+            .await
+            .expect("write commit");
+        state.groups.refresh().await.expect("refresh");
+        let entry = state.groups.get(&group_id).await.expect("entry");
+
+        match read_memory_descriptor(&state.backend, &entry, &path, "broken", None, false).await {
+            Err(mmcp_git::GitError::Utf8(_)) => {}
+            Err(other) => panic!("expected GitError::Utf8, got {other:?}"),
+            Ok(_) => panic!("invalid UTF-8 must error, not be silently substituted"),
+        }
     }
 
     /// Seed `total` memories into a fresh group in one commit, the
