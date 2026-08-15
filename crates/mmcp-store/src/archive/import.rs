@@ -359,7 +359,8 @@ async fn restore_one_group(
     }
 
     let repo_path = backend.repo_path(group_id);
-    tokio::task::spawn_blocking(move || install_bare_repo(&repo_path, &files))
+    let backend_for_install = backend.clone();
+    tokio::task::spawn_blocking(move || install_bare_repo(&backend_for_install, &repo_path, &files))
         .await
         .map_err(|e| ArchiveError::Malformed {
             detail: format!("restore task failed: {e}"),
@@ -389,7 +390,17 @@ async fn restore_one_group(
 /// Atomically install a bare repo's `files` at `repo_path`: stage in a sibling temp dir,
 /// then rename into place so a partial write never leaves a broken repo.
 /// Replaces an existing repo (the caller gates that on `force_restore`).
-fn install_bare_repo(repo_path: &Path, files: &[(String, Vec<u8>)]) -> Result<(), ArchiveError> {
+///
+/// Invalidates `backend`'s cached repo handle for `repo_path` immediately
+/// after the swap completes: the rename-aside/rename-in sequence below
+/// leaves the path existing throughout, so `NativeBackend::open_repo`'s
+/// `path.exists()` validity check alone cannot detect the in-place
+/// replacement and would keep serving the pre-restore content.
+fn install_bare_repo(
+    backend: &NativeBackend,
+    repo_path: &Path,
+    files: &[(String, Vec<u8>)],
+) -> Result<(), ArchiveError> {
     let parent = repo_path.parent().ok_or_else(|| ArchiveError::Malformed {
         detail: format!("repo path {} has no parent", repo_path.display()),
     })?;
@@ -416,6 +427,7 @@ fn install_bare_repo(repo_path: &Path, files: &[(String, Vec<u8>)]) -> Result<()
     } else {
         std::fs::rename(&stage, repo_path)?;
     }
+    backend.invalidate(repo_path);
     Ok(())
 }
 
@@ -1030,6 +1042,150 @@ mod tests {
         .await
         .expect("forced restore");
         assert!(forced.groups[0].overwritten >= 1);
+    }
+
+    /// Contract test for the `NativeBackend::invalidate` wiring: a
+    /// repo handle cached by an earlier read must reflect a
+    /// `force_restore` swap that replaces the same group's bare repo
+    /// in place.
+    ///
+    /// This is a behavioral, not falsifiable, check: commenting out
+    /// `install_bare_repo`'s `backend.invalidate(repo_path)` call was
+    /// tried as the mandated falsification step and this test stayed
+    /// GREEN either way, because `to_thread_local()` derives a fresh
+    /// `gix::Repository` per call and mmcp never packs objects, so
+    /// gix has no in-memory state left to go stale on a same-path
+    /// swap today. See `crates/mmcp-git/tests/native_backend.rs`'s
+    /// `in_place_repo_swap_on_same_path_is_visible_after_invalidate`
+    /// for the lower-level repro of the same finding, and
+    /// `NativeBackend::invalidate_evicts_cached_entry` for a
+    /// mechanism-level check that can actually fail.
+    #[tokio::test]
+    async fn force_restore_invalidates_cached_repo_handle() {
+        let src = ScratchHome::new().await.expect("src home");
+        let seeded = src.seed_group("origin").await.expect("seed");
+        let entry = src.groups().get(&seeded.group_id).await.expect("entry");
+        import_memory(
+            src.backend(),
+            &entry.handle,
+            "note",
+            &memory_doc(Uuid::now_v7(), "before"),
+            None,
+            src.author(),
+            false,
+        )
+        .await
+        .expect("seed memory");
+        let entry = src.groups().get(&seeded.group_id).await.expect("entry");
+        let mut buf = Vec::new();
+        export_archive(
+            src.backend(),
+            &[entry],
+            &ExportOptions {
+                mode: ArchiveMode::History,
+                ..Default::default()
+            },
+            &mut buf,
+        )
+        .await
+        .expect("history export");
+
+        let dst = ScratchHome::new().await.expect("dst home");
+        import_archive(
+            dst.backend(),
+            dst.groups(),
+            dst.author(),
+            &buf,
+            &ImportArchiveOptions::default(),
+        )
+        .await
+        .expect("first restore");
+
+        // Populate dst's repo_cache via a read BEFORE the swap.
+        let dst_entry = dst.groups().get(&seeded.group_id).await.expect("dst entry");
+        let files_before = list_all_memory_files(dst.backend(), &dst_entry.handle, &Rev::Head)
+            .await
+            .expect("files before");
+        assert_eq!(files_before.len(), 1);
+        let before_bytes = dst
+            .backend()
+            .read_file(&dst_entry.handle, &files_before[0].path, &Rev::Head)
+            .await
+            .expect("read before");
+        assert!(std::str::from_utf8(&before_bytes).unwrap().contains("before"));
+
+        // Change the source content, then force-restore over the SAME
+        // group (same group_id) so dst's repo path is replaced in place.
+        let entry = src.groups().get(&seeded.group_id).await.expect("entry");
+        import_memory(
+            src.backend(),
+            &entry.handle,
+            "note-after",
+            &memory_doc(Uuid::now_v7(), "after"),
+            None,
+            src.author(),
+            false,
+        )
+        .await
+        .expect("second memory");
+        let entry_after = src.groups().get(&seeded.group_id).await.expect("entry after");
+        let mut buf2 = Vec::new();
+        export_archive(
+            src.backend(),
+            &[entry_after],
+            &ExportOptions {
+                mode: ArchiveMode::History,
+                ..Default::default()
+            },
+            &mut buf2,
+        )
+        .await
+        .expect("second export");
+
+        let forced = import_archive(
+            dst.backend(),
+            dst.groups(),
+            dst.author(),
+            &buf2,
+            &ImportArchiveOptions {
+                force_restore: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("forced restore");
+        assert!(forced.groups[0].overwritten >= 1);
+
+        // The dst backend must now serve the NEW content: two memory
+        // files, and the original file's body no longer says "before"
+        // (the archive rebuilds file paths from memory names/ids, so
+        // the safest check is total count plus a content scan).
+        let dst_entry_after = dst
+            .groups()
+            .get(&seeded.group_id)
+            .await
+            .expect("dst entry after");
+        let files_after = list_all_memory_files(dst.backend(), &dst_entry_after.handle, &Rev::Head)
+            .await
+            .expect("files after");
+        assert_eq!(
+            files_after.len(),
+            2,
+            "restored repo should carry both memories, not the stale single-file state"
+        );
+        let mut saw_after = false;
+        for file_ref in &files_after {
+            let bytes = dst
+                .backend()
+                .read_file(&dst_entry_after.handle, &file_ref.path, &Rev::Head)
+                .await
+                .expect("read after");
+            let text = std::str::from_utf8(&bytes).unwrap();
+            if text.contains("after") {
+                saw_after = true;
+            }
+        }
+        assert!(saw_after, "new content must be reachable post-restore");
     }
 
     /// The snapshot-only knobs are rejected for a history restore.

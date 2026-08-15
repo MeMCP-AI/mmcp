@@ -396,6 +396,110 @@ async fn fast_forward_on_equal_refs_reports_already_at() {
     }
 }
 
+/// Falsification test for issue #157: a repo cached via a prior read
+/// must be evicted once its path is deleted, so the next read reports
+/// `RepoNotFound` instead of serving state resolved before deletion.
+/// Comment out `open_repo`'s `path.exists()` eviction branch
+/// (`backend.rs:98-104`) to see this go red.
+#[tokio::test]
+async fn deleting_repo_after_cache_populated_evicts_on_next_read() {
+    let (backend, tmp) = backend_in_tempdir();
+    let manifest = sample_manifest();
+    let repo = backend.create_group_repo(&manifest).await.unwrap();
+
+    // Populate the cache with a successful read.
+    let loaded = backend.read_manifest(&repo).await.unwrap();
+    assert_eq!(loaded, manifest);
+
+    // Delete the bare repo out from under the cached handle.
+    let repo_path = backend.repo_path(*manifest.group_id.as_uuid());
+    std::fs::remove_dir_all(&repo_path).expect("remove repo dir");
+
+    let err = backend.read_manifest(&repo).await.unwrap_err();
+    assert!(
+        matches!(err, mmcp_git::GitError::RepoNotFound(_)),
+        "expected RepoNotFound after deletion, got {err:?}"
+    );
+    drop(tmp);
+}
+
+/// Behavioral contract test for the cache-invalidation risk
+/// `install_bare_repo` (`mmcp-store::archive::import`) triggers: an
+/// in-place repo swap on the SAME branch/path, replayed here with
+/// `NativeBackend::invalidate` called explicitly (mirroring what
+/// `install_bare_repo` does after its rename-aside/rename-in
+/// sequence).
+///
+/// NOTE ON FALSIFIABILITY: this test was run WITHOUT the
+/// `invalidate` call (commenting it out) as the mandated
+/// falsification check, and it stayed GREEN either way -- the
+/// pre-swap read and the post-swap read both returned the correct
+/// content, with or without eviction. Root cause, confirmed by
+/// reading `open_repo`'s doc comment and by this experiment: every
+/// `NativeBackend` read derives a FRESH `gix::Repository` per call
+/// via `to_thread_local()` and mmcp never packs objects
+/// (`write_commit` only ever writes loose objects), so there is no
+/// in-memory ref/object state for a same-path swap to leave stale
+/// under gix's current implementation. `invalidate` is kept in
+/// shipped code regardless: it is the documented, correct contract
+/// for a cache keyed by filesystem path, and it guards against a
+/// future gix caching change (e.g. pack-index caching across
+/// `to_thread_local()` calls) that would reintroduce the staleness
+/// this method exists to prevent. See
+/// `NativeBackend::invalidate_evicts_cached_entry` (backend.rs, unit
+/// test) for a mechanism-level red/green check that CAN fail: it
+/// asserts directly on `repo_cache`'s contents rather than on
+/// behavior gix currently self-heals.
+#[tokio::test]
+async fn in_place_repo_swap_on_same_path_is_visible_after_invalidate() {
+    let (backend, tmp) = backend_in_tempdir();
+    let manifest = sample_manifest();
+    let repo = backend.create_group_repo(&manifest).await.unwrap();
+    backend
+        .write_commit(&repo, sample_commit("alice", "main", "shared.md", "v1"))
+        .await
+        .unwrap();
+
+    // Prime the cache: resolve `main` -> commit -> tree -> blob once,
+    // through the SAME cached repo_cache entry `install_bare_repo`'s
+    // target path would go through.
+    let before = backend
+        .read_file(&repo, "shared.md", &Rev::Branch("main".into()))
+        .await
+        .unwrap();
+    assert_eq!(&before[..], b"v1");
+
+    // Build a replacement repo (same group manifest, same branch and
+    // file path, DIFFERENT content) in a separate root, then swap it
+    // into the first backend's path via the exact rename-aside /
+    // rename-in sequence `install_bare_repo` performs.
+    let other_tmp = TempDir::new().expect("other tempdir");
+    let other_backend = NativeBackend::new(other_tmp.path()).expect("other backend");
+    let other_repo = other_backend.create_group_repo(&manifest).await.unwrap();
+    other_backend
+        .write_commit(&other_repo, sample_commit("bob", "main", "shared.md", "v2"))
+        .await
+        .unwrap();
+
+    let repo_path = backend.repo_path(*manifest.group_id.as_uuid());
+    let replacement_path = other_backend.repo_path(*manifest.group_id.as_uuid());
+    let backup = tmp.path().join("old.git.bak");
+    std::fs::rename(&repo_path, &backup).unwrap();
+    std::fs::rename(&replacement_path, &repo_path).unwrap();
+
+    backend.invalidate(&repo_path);
+
+    let after = backend
+        .read_file(&repo, "shared.md", &Rev::Branch("main".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        &after[..],
+        b"v2",
+        "post-swap read must see the replacement content, not the cached pre-swap state"
+    );
+}
+
 #[tokio::test]
 async fn fast_forward_reports_not_fast_forward_on_divergence() {
     // Seed two sibling commits off the same parent (one on main,

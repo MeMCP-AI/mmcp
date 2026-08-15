@@ -113,6 +113,31 @@ impl NativeBackend {
         Ok(repo)
     }
 
+    /// Evict `path`'s cached repository handle, if any.
+    ///
+    /// `open_repo`'s cache-validity check only catches deletion
+    /// (`path.exists()` at :99-104): it cannot detect an in-place
+    /// replacement where a new bare repository is renamed onto the
+    /// same path (the exact `install_bare_repo` sequence in
+    /// `mmcp-store::archive::import`), because the path still exists
+    /// throughout the swap. Callers that replace a repository's
+    /// contents in place must call this immediately after the swap so
+    /// the next `open_repo` re-opens fresh rather than relying on the
+    /// cached `gix::ThreadSafeRepository` to notice the replacement on
+    /// its own. Under the pinned gix build and mmcp's loose-object-only
+    /// write path this self-heals today (verified empirically: see
+    /// `crates/mmcp-git/tests/native_backend.rs`'s
+    /// `in_place_repo_swap_on_same_path_is_visible_after_invalidate`),
+    /// so this call is a forward guard against a gix caching change
+    /// (e.g. pack-index caching), not a fix for an observed bug.
+    pub fn invalidate(&self, path: &Path) {
+        let mut cache = self
+            .repo_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        cache.remove(path);
+    }
+
     /// Read the contents of every path in `paths` at the same
     /// revision, resolving the commit and its root tree once instead
     /// of once per file. Each path keeps its own outcome, in request
@@ -371,5 +396,56 @@ impl GitBackend for NativeBackend {
             repo_ops::list_subtrees(&handle.to_thread_local(), &prefix, &rev)
         })
         .await?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Mechanism-level falsification check for `invalidate`, since the
+    /// behavioral integration tests (`crates/mmcp-git/tests/native_backend.rs`)
+    /// cannot discriminate gix's current self-healing reads from a
+    /// genuinely working eviction: assert directly against
+    /// `repo_cache`'s contents instead of on behavior. Red check
+    /// performed manually: emptying `invalidate`'s body (`let _ =
+    /// path;` instead of `cache.remove(path);`) makes this fail with
+    /// `assert!(!cache.contains_key...)` since the entry survives;
+    /// restoring the real body makes it pass again.
+    #[test]
+    fn invalidate_evicts_cached_entry() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let backend = NativeBackend::new(tmp.path()).expect("backend");
+        let path = tmp.path().join("nonexistent.git");
+
+        // `gix::ThreadSafeRepository` has no cheap standalone test
+        // constructor, so the cache is populated the real way: init a
+        // bare repo and open it through `open_repo`.
+        let repo_path = backend.repo_path(uuid::Uuid::now_v7());
+        std::fs::create_dir_all(&repo_path).expect("mkdir");
+        gix::init_bare(&repo_path).expect("init bare");
+        backend.open_repo(&repo_path).expect("populate cache");
+        assert!(
+            backend
+                .repo_cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains_key(&repo_path),
+            "precondition: open_repo must have cached the entry"
+        );
+
+        backend.invalidate(&repo_path);
+
+        assert!(
+            !backend
+                .repo_cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains_key(&repo_path),
+            "invalidate must remove the cached entry"
+        );
+
+        // A path never cached is a harmless no-op, not a panic.
+        backend.invalidate(&path);
     }
 }
