@@ -26,15 +26,27 @@ use crate::groups::GroupIndex;
 /// would open a duplicate backend; the CLI builds them once via
 /// `MmcpHome::init_backend` and then threads the pair through.
 ///
-/// `token` authorizes every request against the `/sync/*` control
-/// plane, typically `SyncConfig::resolve_token`'s result. An absent
-/// or empty token leaves the client untokened, matching
-/// `SyncClient::git_credentials`'s existing empty-token handling.
+/// `token` and `push_token` carry two mutually incompatible
+/// credential types, each wired to its own [`SyncClient`] builder
+/// method: neither one substitutes for the other, and configuring
+/// only one never leaks it into the other's slot.
+///
+/// - `token` authorizes every request against the `/sync/*` control
+///   plane, typically `SyncConfig::resolve_token`'s result: a
+///   per-user PASETO session token.
+/// - `push_token` authorizes the git content-plane push, typically
+///   `SyncConfig::resolve_push_token`'s result: a shared secret
+///   compared against the server's `MMCP_PUSH_TOKEN`.
+///
+/// An absent or empty value in either slot leaves that plane
+/// untokened, matching `SyncClient::git_credentials`'s and the
+/// `Authorization` header's existing empty-token handling.
 pub fn build_engine(
     backend: Arc<NativeBackend>,
     groups: GroupIndex,
     server_url: &str,
     token: Option<&str>,
+    push_token: Option<&str>,
 ) -> Result<(SyncEngine, IndexResolver), StoreError> {
     let mut client = SyncClient::new(server_url.to_owned()).map_err(|source| StoreError::Sync {
         server_url: server_url.to_owned(),
@@ -42,6 +54,9 @@ pub fn build_engine(
     })?;
     if let Some(token) = token.filter(|token| !token.is_empty()) {
         client = client.with_bearer(token);
+    }
+    if let Some(push_token) = push_token.filter(|token| !token.is_empty()) {
+        client = client.with_push_credential(push_token);
     }
     let engine = SyncEngine::new(backend, client);
     let resolver = IndexResolver { index: groups };
