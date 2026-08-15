@@ -96,9 +96,14 @@ pub enum GuiArchiveError {
 pub enum GuiError {
     /// A store-layer failure: memory/group read or write, import,
     /// archive, or manifest parsing. See [`GuiStoreError`] for the
-    /// specific cause.
+    /// specific cause. Boxed: `mmcp_store::StoreError`'s path-and-
+    /// operation-carrying struct variants make `GuiStoreError` grow
+    /// past clippy's `result_large_err` threshold; boxing keeps
+    /// `GuiError` itself pointer-sized for this variant instead of
+    /// inflating every `GuiResult<T>` return by the largest possible
+    /// store failure.
     #[error("store: {0}")]
-    Store(#[from] GuiStoreError),
+    Store(#[from] Box<GuiStoreError>),
 
     /// A git-backend failure while opening a repository, reading a
     /// manifest, or committing a write.
@@ -137,25 +142,25 @@ pub enum GuiError {
 
 impl From<mmcp_store::StoreError> for GuiError {
     fn from(e: mmcp_store::StoreError) -> Self {
-        GuiError::Store(e.into())
+        GuiError::Store(Box::new(e.into()))
     }
 }
 
 impl From<mmcp_store::ImportError> for GuiError {
     fn from(e: mmcp_store::ImportError) -> Self {
-        GuiError::Store(e.into())
+        GuiError::Store(Box::new(e.into()))
     }
 }
 
 impl From<mmcp_store::ArchiveError> for GuiError {
     fn from(e: mmcp_store::ArchiveError) -> Self {
-        GuiError::Store(e.into())
+        GuiError::Store(Box::new(e.into()))
     }
 }
 
 impl From<mmcp_core::memory::MemoryParseError> for GuiError {
     fn from(e: mmcp_core::memory::MemoryParseError) -> Self {
-        GuiError::Store(e.into())
+        GuiError::Store(Box::new(e.into()))
     }
 }
 
@@ -221,10 +226,16 @@ mod tests {
         let err: GuiError = source.into();
 
         assert!(matches!(err, GuiError::Store(_)));
-        let level1 = err
-            .source()
-            .and_then(|s| s.downcast_ref::<GuiStoreError>())
-            .expect("gui-store source must be preserved");
+        // `GuiError::Store` now boxes its `GuiStoreError` source (see
+        // its doc comment): `err.source()`'s concrete underlying type
+        // is `Box<GuiStoreError>`, not `GuiStoreError`, so a direct
+        // `downcast_ref::<GuiStoreError>()` at this level no longer
+        // matches. `Box<T: Error>`'s own `Error::source()` delegates
+        // to the inner value's `source()` (std's blanket impl), so
+        // calling `.source()` once more here reaches the same
+        // `mmcp_store::StoreError` this test always chained through,
+        // without downcasting the intermediate box.
+        let level1 = err.source().expect("gui-store source must be preserved");
         let level2 = level1
             .source()
             .and_then(|s| s.downcast_ref::<mmcp_store::StoreError>())
