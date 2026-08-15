@@ -30,3 +30,6 @@ pub const MAX_PASSWORD_LENGTH_ENV: &str = "MMCP_MAX_PASSWORD_LENGTH";
 /// Environment variable overriding the maximum accepted account handle length.
 /// Same precedence position as [`MIN_PASSWORD_LENGTH_ENV`].
 pub const MAX_HANDLE_LENGTH_ENV: &str = "MMCP_MAX_HANDLE_LENGTH";
+
+/// Floor for the password-length tunables: a zero-byte bound is never legitimate.
+pub(crate) const MIN_VALID_LENGTH_LIMIT: usize = 1;
