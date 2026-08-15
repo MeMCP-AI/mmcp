@@ -13,8 +13,6 @@
 //! The read path also feeds the notes channel via `malformed_frontmatter_notes`;
 //! the section reader uses `mmcp_core::memory::body::parse_sections` directly.
 
-use std::io::Read;
-
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use mmcp_core::conventions::{SlugRecursion, slug_matches_filter};
@@ -1023,22 +1021,13 @@ fn parse_addr(addr: &str) -> (Option<String>, Option<Uuid>) {
     }
 }
 
-/// Read body / ops input. Literal returns as-is; a `@PATH`
-/// prefix reads from a file; `-` reads from stdin. Lets every
-/// write subcommand accept the same three input shapes without
-/// re-implementing the dispatch.
+/// Read body / ops input. Delegates to the shared
+/// [`super::tracker_cli::read_body`] (literal, `-` for stdin, or
+/// `@PATH` for a file), the single owner of all three input shapes
+/// every write subcommand across `feature`/`issue`/`milestone`/
+/// `memory` accepts.
 fn read_body_input(raw: &str) -> Result<String> {
-    if raw == "-" {
-        let mut buf = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buf)
-            .context("reading body from stdin")?;
-        Ok(buf)
-    } else if let Some(path) = raw.strip_prefix('@') {
-        std::fs::read_to_string(path).with_context(|| format!("reading body from {path}"))
-    } else {
-        Ok(raw.to_string())
-    }
+    super::tracker_cli::read_body(raw, "memory")
 }
 
 /// Parse `--ref-add target=commit` pairs. `target` must be a
