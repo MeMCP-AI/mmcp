@@ -309,6 +309,223 @@ async fn oauth_callback_with_missing_state_is_rejected_before_token_exchange() {
     );
 }
 
+// ── OAuth session cookie (SameSite=Lax survives the provider's cross-site redirect) ──
+
+#[tokio::test]
+async fn oauth_authorize_sets_a_samesite_lax_cookie() {
+    let (addr, _tmp) = start_server_with_oauth(vec![github_provider()]).await;
+    // Disable auto-follow: a followed redirect would inspect
+    // github.com's own response cookies instead of the Set-Cookie
+    // this server's own authorize handler just emitted.
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+    let resp = client
+        .get(format!("http://{addr}/auth/oauth/github/authorize"))
+        .send()
+        .await
+        .expect("oauth authorize");
+
+    let set_cookie_headers: Vec<String> = resp
+        .headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .map(|v| v.to_str().expect("utf-8 Set-Cookie header").to_lowercase())
+        .collect();
+    assert!(
+        set_cookie_headers
+            .iter()
+            .any(|c| c.contains("samesite=lax")),
+        "authorize must set the session cookie with SameSite=Lax so it survives the OAuth \
+         provider's cross-site top-level redirect back to the callback, got: \
+         {set_cookie_headers:?}"
+    );
+}
+
+// ── OAuth state rejection causes take independent code paths ───────
+
+#[tokio::test]
+async fn oauth_callback_with_no_stored_state_is_rejected() {
+    // No prior `authorize` call: the session carries no stored state
+    // at all, distinct from a callback query that omits `state`
+    // entirely
+    // (`oauth_callback_with_missing_state_is_rejected_before_token_exchange`).
+    let unreachable_provider = OAuthProviderConfig {
+        slug: "github".to_string(),
+        client_id: "client-abc".to_string(),
+        client_secret: "secret-xyz".to_string(),
+        auth_url: "https://github.com/login/oauth/authorize".to_string(),
+        token_url: "http://127.0.0.1:1/oauth/token".to_string(),
+        userinfo_url: "http://127.0.0.1:1/oauth/userinfo".to_string(),
+    };
+    let (addr, _tmp) = start_server_with_oauth(vec![unreachable_provider]).await;
+
+    let resp = reqwest::Client::new()
+        .get(format!(
+            "http://{addr}/auth/oauth/github/callback?code=fake-code&state={}",
+            "a".repeat(64)
+        ))
+        .send()
+        .await
+        .expect("oauth callback");
+
+    assert_eq!(
+        resp.status(),
+        400,
+        "a callback state with nothing stored server-side must be rejected before any \
+         token-exchange call fires"
+    );
+}
+
+#[tokio::test]
+async fn oauth_callback_state_length_mismatch_is_rejected_before_equality_comparison() {
+    let unreachable_provider = OAuthProviderConfig {
+        slug: "github".to_string(),
+        client_id: "client-abc".to_string(),
+        client_secret: "secret-xyz".to_string(),
+        auth_url: "https://github.com/login/oauth/authorize".to_string(),
+        token_url: "http://127.0.0.1:1/oauth/token".to_string(),
+        userinfo_url: "http://127.0.0.1:1/oauth/userinfo".to_string(),
+    };
+    let (addr, _tmp) = start_server_with_oauth(vec![unreachable_provider]).await;
+    let client = reqwest::Client::builder()
+        .cookie_store(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+
+    // Establish a real stored state via authorize, so this exercises
+    // the length check specifically rather than the "nothing stored"
+    // branch.
+    client
+        .get(format!("http://{addr}/auth/oauth/github/authorize"))
+        .send()
+        .await
+        .expect("oauth authorize");
+
+    // 63 hex characters: one short of the 64 the server always mints
+    // (32 CSPRNG bytes, hex-encoded).
+    let resp = client
+        .get(format!(
+            "http://{addr}/auth/oauth/github/callback?code=fake-code&state={}",
+            "a".repeat(63)
+        ))
+        .send()
+        .await
+        .expect("oauth callback");
+
+    assert_eq!(
+        resp.status(),
+        400,
+        "a state of the wrong length must be rejected before any token-exchange call fires"
+    );
+}
+
+#[tokio::test]
+async fn oauth_callback_with_same_length_but_wrong_value_state_is_rejected() {
+    let unreachable_provider = OAuthProviderConfig {
+        slug: "github".to_string(),
+        client_id: "client-abc".to_string(),
+        client_secret: "secret-xyz".to_string(),
+        auth_url: "https://github.com/login/oauth/authorize".to_string(),
+        token_url: "http://127.0.0.1:1/oauth/token".to_string(),
+        userinfo_url: "http://127.0.0.1:1/oauth/userinfo".to_string(),
+    };
+    let (addr, _tmp) = start_server_with_oauth(vec![unreachable_provider]).await;
+    let client = reqwest::Client::builder()
+        .cookie_store(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+
+    client
+        .get(format!("http://{addr}/auth/oauth/github/authorize"))
+        .send()
+        .await
+        .expect("oauth authorize");
+
+    // 64 hex characters, the correct width, but not the value the
+    // server actually stored: proves the equality comparison itself
+    // still runs once the length guard passes.
+    let resp = client
+        .get(format!(
+            "http://{addr}/auth/oauth/github/callback?code=fake-code&state={}",
+            "a".repeat(64)
+        ))
+        .send()
+        .await
+        .expect("oauth callback");
+
+    assert_eq!(
+        resp.status(),
+        400,
+        "a same-length but wrong-value state must still be rejected"
+    );
+}
+
+// ── OAuth state is single-use ───────────────────────────────────────
+
+#[tokio::test]
+async fn oauth_state_is_single_use_a_replayed_valid_callback_is_rejected_the_second_time() {
+    let fake_addr = start_fake_oauth_provider().await;
+    let provider = OAuthProviderConfig {
+        slug: "github".to_string(),
+        client_id: "client-abc".to_string(),
+        client_secret: "secret-xyz".to_string(),
+        auth_url: format!("http://{fake_addr}/authorize"),
+        token_url: format!("http://{fake_addr}/token"),
+        userinfo_url: format!("http://{fake_addr}/userinfo"),
+    };
+    let (addr, _tmp) = start_server_with_oauth(vec![provider]).await;
+    let client = reqwest::Client::builder()
+        .cookie_store(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+
+    let authorize_resp = client
+        .get(format!("http://{addr}/auth/oauth/github/authorize"))
+        .send()
+        .await
+        .expect("oauth authorize");
+    let location = authorize_resp
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .expect("Location header")
+        .to_str()
+        .expect("utf-8")
+        .to_string();
+    let state = extract_state_param(&location);
+
+    let first = client
+        .get(format!(
+            "http://{addr}/auth/oauth/github/callback?code=fake-code&state={state}"
+        ))
+        .send()
+        .await
+        .expect("first oauth callback");
+    assert_eq!(
+        first.status(),
+        200,
+        "the first, genuine callback must complete the login"
+    );
+
+    let second = client
+        .get(format!(
+            "http://{addr}/auth/oauth/github/callback?code=fake-code&state={state}"
+        ))
+        .send()
+        .await
+        .expect("second oauth callback");
+    assert_eq!(
+        second.status(),
+        400,
+        "replaying the same state a second time must be rejected: the session key was \
+         already removed by the first callback"
+    );
+}
+
 // ── Passkey registration requires an authenticated session ─────────
 //
 // `passkey_register_start`/`finish` used to accept an arbitrary

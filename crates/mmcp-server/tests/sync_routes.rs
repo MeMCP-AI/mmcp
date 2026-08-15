@@ -450,6 +450,33 @@ async fn sync_manifest_without_bearer_token_returns_401() {
     assert_eq!(resp.status(), 401);
 }
 
+/// A lowercase `authorization: bearer <token>` scheme must be
+/// rejected exactly like a missing header: `strip_prefix("Bearer ")`
+/// is case-sensitive by design (same precedent as `git_http.rs`'s
+/// `enforce_write`), so this pins the current fail-closed behavior
+/// rather than changing it.
+#[tokio::test]
+async fn sync_manifest_with_lowercase_bearer_scheme_is_rejected_like_a_missing_header() {
+    let (addr, state, _tmp) = start_server().await;
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
+
+    let resp = reqwest::Client::new()
+        .get(format!("http://{addr}/sync/manifest"))
+        .header("Authorization", format!("bearer {token}"))
+        .send()
+        .await
+        .expect("GET manifest");
+    assert_eq!(resp.status(), 401);
+    assert_eq!(
+        resp.headers()
+            .get("www-authenticate")
+            .map(|v| v.to_str().unwrap()),
+        Some(r#"Bearer realm="mmcp""#),
+        "a lowercase scheme must be treated as no bearer token at all, same challenge as a \
+         missing header"
+    );
+}
+
 /// Falsification: an unauthenticated `GET /sync/refs/{group_id}` must
 /// not disclose a group's refs to an anonymous caller.
 #[tokio::test]
