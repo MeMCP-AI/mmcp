@@ -18,6 +18,14 @@
 
 use mmcp_proto::McpToolId;
 
+mod defaults;
+
+use defaults::{
+    DEBUG_ICON_SRC, FEATURE_ICON_SRC, ISSUE_ICON_SRC, META_DEBUG_GATED, META_NETWORK,
+    META_PROTECTED_GROUP_GATED, META_REQUIRES_PROJECT, META_REQUIRES_SYNC, MILESTONE_ICON_SRC,
+    MUTATE_ICON_SRC, READ_ICON_SRC, SYNC_ICON_SRC,
+};
+
 /// Per-tool category that drives icon selection.
 /// Declared per tool in [`tool_metadata`], the single exhaustive
 /// registry backing icons, `_meta`, and argument risk hints alike;
@@ -43,14 +51,6 @@ pub(crate) enum ToolIconCategory {
     /// `sync_*` tools that contact the remote server.
     Sync,
 }
-
-/// Namespaced `_meta` advisory keys.
-/// See [`tool_metadata`]'s doc for the vocabulary each one signals.
-const META_REQUIRES_PROJECT: &str = "mmcp.requires_project";
-const META_REQUIRES_SYNC: &str = "mmcp.requires_sync";
-const META_NETWORK: &str = "mmcp.network";
-const META_DEBUG_GATED: &str = "mmcp.debug_gated";
-const META_PROTECTED_GROUP_GATED: &str = "mmcp.protected_group_gated";
 
 /// Per-tool metadata bundle: icon category, `_meta` advisory keys,
 /// and argument risk hints, produced together by one
@@ -286,18 +286,6 @@ pub(crate) fn icons_for_category(cat: ToolIconCategory) -> Vec<rmcp::model::Icon
     };
     vec![rmcp::model::Icon::new(src).with_mime_type("image/svg+xml")]
 }
-
-// Tiny inline-SVG data URIs so the icon ships with the
-// binary instead of relying on an external CDN. Each glyph is a
-// single emoji rendered as text inside a 16x16 viewBox; clients
-// with icon-capable UIs render the emoji at any size.
-const READ_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F4D6}</text></svg>";
-const MUTATE_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{270F}\u{FE0F}</text></svg>";
-const FEATURE_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F6A9}</text></svg>";
-const ISSUE_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F41E}</text></svg>";
-const MILESTONE_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F3C1}</text></svg>";
-const DEBUG_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F41B}</text></svg>";
-const SYNC_ICON_SRC: &str = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>\u{1F504}</text></svg>";
 
 /// Build the per-tool `_meta` map carrying mmcp-specific advisory
 /// hints that complement the `ToolAnnotations` bits.
