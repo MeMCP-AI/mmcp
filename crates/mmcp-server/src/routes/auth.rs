@@ -635,7 +635,6 @@ async fn passkey_login_finish(
 /// string one frame earlier, so a caller matching on the password
 /// error's own typed variants (e.g. distinguishing
 /// [`mmcp_auth::AuthError::PasswordBlank`] from
-/// [`mmcp_auth::AuthError::PasswordWhitespaceOnly`] or
 /// [`mmcp_auth::AuthError::PasswordTooShort`]) can still do so.
 #[derive(Debug, Error)]
 enum AuthHttpError {
@@ -740,17 +739,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_whitespace_only_password() {
+    fn accepts_whitespace_only_password_at_min_length() {
+        // 8 spaces meets MIN_PASSWORD_LENGTH (8): whitespace content
+        // gets no special treatment, so this passes like any other
+        // password of the same length.
         let req = RegisterRequest {
-            password: "        ".to_string(),
+            password: " ".repeat(mmcp_auth::MIN_PASSWORD_LENGTH),
             ..valid_request()
         };
-        match validate(&req) {
-            Err(AuthHttpError::PasswordPolicy(mmcp_auth::AuthError::PasswordWhitespaceOnly {
-                actual,
-            })) => assert_eq!(actual, 8),
-            other => panic!("expected PasswordWhitespaceOnly, got {other:?}"),
-        }
+        assert!(validate(&req).is_ok());
     }
 
     #[test]

@@ -31,12 +31,10 @@ pub const MIN_PASSWORD_LENGTH: usize = 8;
 pub const MAX_PASSWORD_LENGTH: usize = 256;
 
 /// Validate `plaintext` against the password policy: rejects a truly
-/// empty password ([`AuthError::PasswordBlank`], zero bytes) or a
-/// non-empty password that is entirely whitespace
-/// ([`AuthError::PasswordWhitespaceOnly`], checked via `trim`, so a
-/// password of spaces alone is rejected regardless of its raw
-/// length), then enforces the caller-supplied `min_len` / `max_len`
-/// bounds, in bytes.
+/// empty password ([`AuthError::PasswordBlank`], zero bytes), then
+/// enforces the caller-supplied `min_len` / `max_len` bounds, in
+/// bytes, on every other byte sequence with no distinction by
+/// content, whitespace included.
 ///
 /// `min_len` and `max_len` are resolved by the caller through the
 /// config cascade (env/config-file/CLI-override, falling back to
@@ -52,11 +50,6 @@ pub fn validate_password_policy(
 ) -> Result<(), AuthError> {
     if plaintext.is_empty() {
         return Err(AuthError::PasswordBlank);
-    }
-    if plaintext.trim().is_empty() {
-        return Err(AuthError::PasswordWhitespaceOnly {
-            actual: plaintext.len(),
-        });
     }
     let actual = plaintext.len();
     if actual < min_len {
@@ -131,17 +124,33 @@ mod tests {
     }
 
     #[test]
-    fn validate_password_policy_rejects_whitespace_only_as_weak_not_blank() {
-        // 8 raw bytes, but blank after trim: real content was
-        // submitted, so this must be PasswordWhitespaceOnly with the
-        // true 8-byte length (not PasswordBlank, which would falsely
-        // claim nothing was submitted; and not "too short with
-        // actual=0", which would misreport the real 8-byte input).
-        let err = validate_password_policy("        ", MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH)
-            .unwrap_err();
+    fn validate_password_policy_accepts_whitespace_only_at_min_length() {
+        // A password of only spaces, at exactly MIN_PASSWORD_LENGTH,
+        // is accepted like any other content: whitespace bytes carry
+        // no special rejection.
+        assert!(
+            validate_password_policy(
+                &" ".repeat(MIN_PASSWORD_LENGTH),
+                MIN_PASSWORD_LENGTH,
+                MAX_PASSWORD_LENGTH
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_password_policy_rejects_whitespace_only_below_min_length_as_too_short() {
+        // A whitespace-only password shorter than min_len is rejected
+        // by the ordinary length check, not by any whitespace-specific
+        // path.
+        let err =
+            validate_password_policy("   ", MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH).unwrap_err();
         match err {
-            AuthError::PasswordWhitespaceOnly { actual } => assert_eq!(actual, 8),
-            other => panic!("expected PasswordWhitespaceOnly, got {other:?}"),
+            AuthError::PasswordTooShort { min, actual } => {
+                assert_eq!(min, MIN_PASSWORD_LENGTH);
+                assert_eq!(actual, 3);
+            }
+            other => panic!("expected PasswordTooShort, got {other:?}"),
         }
     }
 

@@ -144,7 +144,10 @@ async fn register_with_empty_password_returns_400() {
 }
 
 #[tokio::test]
-async fn register_with_whitespace_only_password_returns_400() {
+async fn register_with_whitespace_only_password_at_min_length_returns_201() {
+    // 8 spaces meets the server's default `min_password_length` (8):
+    // whitespace content is subject only to the length bound, like
+    // any other password.
     let addr = start_server().await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/auth/register"))
@@ -155,7 +158,7 @@ async fn register_with_whitespace_only_password_returns_400() {
         .send()
         .await
         .expect("register");
-    assert_eq!(resp.status(), 400);
+    assert_eq!(resp.status(), 201);
 }
 
 #[tokio::test]
