@@ -2120,11 +2120,15 @@ impl McpServer {
         // `frontmatter_parse_failed` note instead, so one corrupt
         // file never takes down the rest of the group's listing.
         let mut notes = Vec::new();
-        // Compact mode is selected once, up front, and threaded into
+        // Detail level is selected once, up front, and threaded into
         // `read_memory_descriptor` itself: it builds only the fields
         // the requested shape needs instead of building the full
         // descriptor and immediately projecting most of it away.
-        let compact = args.compact.unwrap_or(false);
+        let detail = if args.compact.unwrap_or(false) {
+            DescriptorDetail::Compact
+        } else {
+            DescriptorDetail::Full
+        };
         for file in files {
             if !slug_matches_filter(&file.slug, prefix, recursion) {
                 continue;
@@ -2135,7 +2139,7 @@ impl McpServer {
                 &file.path,
                 &file.slug,
                 None,
-                compact,
+                detail,
             )
             .await
             {
@@ -2502,7 +2506,7 @@ impl McpServer {
                     &file.path,
                     &file.slug,
                     None,
-                    false,
+                    DescriptorDetail::Full,
                 )
                 .await
                 {
@@ -7087,6 +7091,17 @@ enum MemoryDescriptorOutcome {
     ParseFailed(mmcp_core::memory::MemoryParseError),
 }
 
+/// How much of a memory's fields [`read_memory_descriptor`] builds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DescriptorDetail {
+    /// `slug`, `path`, `name`, `kind`, `mandatory` only, dropping
+    /// `description`, the single largest measured per-record field,
+    /// plus `group`, `tags`, `source`, and `latest_version`.
+    Compact,
+    /// The full field set.
+    Full,
+}
+
 /// Read one memory and return a descriptor including the slug, the
 /// parsed frontmatter fields, and a short summary.
 ///
@@ -7095,14 +7110,11 @@ enum MemoryDescriptorOutcome {
 /// legacy mirrors still keep `memories/<slug>.md`; callers supply
 /// whichever the enumeration walker returned.
 ///
-/// `compact` selects the shape directly, at construction time:
-/// `slug`, `path`, `name`, `kind`, `mandatory` only when `true`
-/// (dropping `description`, the single largest measured per-record
-/// field, plus `group`, `tags`, `source`, and `latest_version`), the
-/// full set of fields when `false`. Compact mode never builds the
-/// full `json!` object and discards it afterward: every field this
-/// function assembles is one both shapes need, or one only the
-/// requested shape needs.
+/// `detail` selects the shape directly, at construction time: see
+/// [`DescriptorDetail`]. Compact mode never builds the full `json!`
+/// object and discards it afterward: every field this function
+/// assembles is one both shapes need, or one only the requested
+/// shape needs.
 ///
 /// Returns `Err` only for a git-level read failure. A frontmatter
 /// parse failure is NOT an `Err` here; see
@@ -7113,7 +7125,7 @@ async fn read_memory_descriptor(
     path: &str,
     slug: &str,
     version: Option<&str>,
-    compact: bool,
+    detail: DescriptorDetail,
 ) -> Result<MemoryDescriptorOutcome, mmcp_git::GitError> {
     let rev = parse_rev(version);
     let bytes = backend.read_file(&entry.handle, path, &rev).await?;
@@ -7135,16 +7147,15 @@ async fn read_memory_descriptor(
     // `path`. Callers that want the joined form do `path.join("/")`.
     let path: Vec<&str> = slug.split('/').filter(|s| !s.is_empty()).collect();
     let leaf = path.last().copied().unwrap_or(slug);
-    let descriptor = if compact {
-        json!({
+    let descriptor = match detail {
+        DescriptorDetail::Compact => json!({
             "slug": leaf,
             "path": path,
             "name": file.frontmatter.name,
             "kind": file.frontmatter.kind.as_str(),
             "mandatory": file.frontmatter.mandatory,
-        })
-    } else {
-        json!({
+        }),
+        DescriptorDetail::Full => json!({
             "group": entry.manifest.group_id,
             "slug": leaf,
             "path": path,
@@ -7155,7 +7166,7 @@ async fn read_memory_descriptor(
             "latest_version": file.frontmatter.version.map(|v| v.to_string()),
             "tags": file.frontmatter.tags,
             "source": file.frontmatter.source,
-        })
+        }),
     };
     Ok(MemoryDescriptorOutcome::Parsed(descriptor))
 }
@@ -7609,7 +7620,16 @@ mod tests {
         state.groups.refresh().await.expect("refresh");
         let entry = state.groups.get(&group_id).await.expect("entry");
 
-        match read_memory_descriptor(&state.backend, &entry, &path, "broken", None, false).await {
+        match read_memory_descriptor(
+            &state.backend,
+            &entry,
+            &path,
+            "broken",
+            None,
+            DescriptorDetail::Full,
+        )
+        .await
+        {
             Err(mmcp_git::GitError::Utf8(_)) => {}
             Err(other) => panic!("expected GitError::Utf8, got {other:?}"),
             Ok(_) => panic!("invalid UTF-8 must error, not be silently substituted"),
