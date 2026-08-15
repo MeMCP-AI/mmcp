@@ -129,14 +129,33 @@ impl FromInternalError for ToolErrorResponse {
 }
 
 mod handlers {
-    use anyhow::{Result, anyhow};
+    use anyhow::Result;
     use mmcp_db::entities::group::OwnerKind;
     use mmcp_db::entities::memory::MemoryKind;
+    use mmcp_db::error::DbError;
     use mmcp_db::repository::{group_repo, memory_repo};
     use mmcp_proto::{
         GroupInfoRequest, GroupInfoResponse, ListMemoriesRequest, ListMemoriesResponse,
         ListVersionsRequest, ListVersionsResponse, MemoryDescriptor, VersionEntry,
     };
+    use thiserror::Error;
+
+    /// Failure modes of [`group_info`].
+    ///
+    /// A dedicated typed enum instead of a stringly-typed
+    /// `anyhow!("group not found")`, per `global-coding-rules-errors`:
+    /// the caller can match on [`GroupInfoError::NotFound`] instead of
+    /// pattern-matching message text, and the database failure keeps
+    /// its source chain via `#[from]`.
+    #[derive(Debug, Error)]
+    pub enum GroupInfoError {
+        /// No group row exists for the requested id.
+        #[error("group not found")]
+        NotFound,
+        /// The lookup or count query itself failed.
+        #[error(transparent)]
+        Database(#[from] DbError),
+    }
 
     use crate::state::ServerState;
 
@@ -194,7 +213,7 @@ mod handlers {
     pub async fn group_info(
         state: &ServerState,
         req: GroupInfoRequest,
-    ) -> Result<GroupInfoResponse> {
+    ) -> Result<GroupInfoResponse, GroupInfoError> {
         let conn = state.database.connection();
         // Neither lookup depends on the other's result, so they run
         // concurrently instead of one full network/query round trip
@@ -203,7 +222,7 @@ mod handlers {
             group_repo::find_by_id(conn, req.group),
             memory_repo::count_in_group(conn, req.group),
         )?;
-        let group = group.ok_or_else(|| anyhow!("group not found"))?;
+        let group = group.ok_or(GroupInfoError::NotFound)?;
         let owner = match group.owner_kind {
             OwnerKind::User => format!("user:{}", group.owner_id),
             OwnerKind::Org => format!("org:{}", group.owner_id),
@@ -282,5 +301,42 @@ mod tests {
             }
             other => panic!("expected ProtoError::Internal, got {other:?}"),
         }
+    }
+
+    /// `group_info` must return the typed [`handlers::GroupInfoError::NotFound`]
+    /// variant for an unknown group id, matchable by callers instead
+    /// of a stringly-typed `anyhow!("group not found")`.
+    #[tokio::test]
+    async fn group_info_returns_the_typed_not_found_variant() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let cfg = crate::config::ServerConfig {
+            bind: "127.0.0.1:0".parse().expect("valid loopback addr"),
+            database_url: "sqlite::memory:".to_string(),
+            repo_root: tmp.path().to_path_buf(),
+            token_key: [0u8; 32],
+            oauth_providers: vec![],
+            origin: "http://localhost:8787".to_string(),
+            push_token: None,
+            min_password_length: mmcp_auth::MIN_PASSWORD_LENGTH,
+            max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
+            max_handle_length: mmcp_auth::MAX_HANDLE_LENGTH,
+        };
+        let state = crate::state::ServerState::initialize(&cfg)
+            .await
+            .expect("state init");
+
+        let err = handlers::group_info(
+            &state,
+            mmcp_proto::GroupInfoRequest {
+                group: uuid::Uuid::now_v7(),
+            },
+        )
+        .await
+        .expect_err("unknown group must fail");
+
+        assert!(
+            matches!(err, handlers::GroupInfoError::NotFound),
+            "expected GroupInfoError::NotFound, got {err:?}"
+        );
     }
 }
