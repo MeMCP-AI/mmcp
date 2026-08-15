@@ -19,21 +19,33 @@ pub struct SyncStatusDto {
     pub server_url: Option<String>,
 }
 
-/// One group whose sync attempt errored.
-/// Wire mirror of `mmcp_sync::GroupSyncFailure`, whose `SyncError` field is not `Serialize`.
-#[derive(Debug, Serialize)]
-pub struct GroupSyncFailureDto {
-    pub group_id: String,
-    pub message: String,
+/// Stable [`mmcp_store::Finding::code`] for each `mmcp_sync::SyncError`
+/// variant, so a caller can branch on the failure cause without
+/// parsing `message`'s free-form text.
+fn sync_error_code(err: &mmcp_sync::SyncError) -> &'static str {
+    match err {
+        mmcp_sync::SyncError::InvalidVersion(_) => "sync_invalid_version",
+        mmcp_sync::SyncError::NotFound(_) => "sync_not_found",
+        mmcp_sync::SyncError::Git(_) => "sync_git_error",
+        mmcp_sync::SyncError::Transport(_) => "sync_transport_error",
+        mmcp_sync::SyncError::Remote { .. } => "sync_remote_error",
+        mmcp_sync::SyncError::Conflict { .. } => "sync_conflict",
+        mmcp_sync::SyncError::PullDiverged { .. } => "sync_pull_diverged",
+        mmcp_sync::SyncError::PushDiverged { .. } => "sync_push_diverged",
+    }
 }
 
-/// Convert an engine report's `failed` list into its DTO shape.
-/// Shared by `sync_pull` and `sync_push`.
-fn sync_failures_dto(failed: &[mmcp_sync::GroupSyncFailure]) -> Vec<GroupSyncFailureDto> {
+/// Convert an engine report's `failed` list into [`mmcp_store::Finding`]s,
+/// the workspace's one skip/failure record shape, instead of a bespoke
+/// `{ group_id, message }` pair. Shared by `sync_pull` and `sync_push`.
+fn sync_failures_dto(failed: &[mmcp_sync::GroupSyncFailure]) -> Vec<mmcp_store::Finding> {
     failed
         .iter()
-        .map(|f| GroupSyncFailureDto {
-            group_id: f.group_id.to_string(),
+        .map(|f| mmcp_store::Finding {
+            group: f.group_id.to_string(),
+            slug: None,
+            severity: "error",
+            code: sync_error_code(&f.error),
             message: f.error.to_string(),
         })
         .collect()
@@ -44,14 +56,14 @@ pub struct PullReportDto {
     pub updated: usize,
     pub new_groups: usize,
     /// Groups whose own attempt errored; see `mmcp_sync::GroupSyncFailure`.
-    pub failed: Vec<GroupSyncFailureDto>,
+    pub failed: Vec<mmcp_store::Finding>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct PushReportDto {
     pub pushed: usize,
     /// Groups whose own attempt errored; see `mmcp_sync::GroupSyncFailure`.
-    pub failed: Vec<GroupSyncFailureDto>,
+    pub failed: Vec<mmcp_store::Finding>,
 }
 
 #[tauri::command]
@@ -116,7 +128,9 @@ mod tests {
     use super::*;
 
     /// Constructs a report with a non-empty `failed` list.
-    /// Confirms the resulting DTO carries the group id and the underlying error message, not an empty or absent list.
+    /// Confirms the resulting `Finding` carries the group id, a stable
+    /// code naming the failure cause, and the underlying error
+    /// message, not an empty or absent list.
     #[test]
     fn sync_failures_dto_carries_group_id_and_message() {
         let group_id = Uuid::from_u128(0x1234_5678_9abc_def0_1234_5678_9abc_def0);
@@ -128,7 +142,9 @@ mod tests {
         let dto = sync_failures_dto(&failed);
 
         assert_eq!(dto.len(), 1);
-        assert_eq!(dto[0].group_id, group_id.to_string());
+        assert_eq!(dto[0].group, group_id.to_string());
+        assert_eq!(dto[0].slug, None);
+        assert_eq!(dto[0].code, "sync_not_found");
         assert_eq!(dto[0].message, "pending edit not found: edit-x");
     }
 
