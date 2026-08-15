@@ -50,6 +50,7 @@
     return () => {
       reachabilityStore.onRestore = null;
       reachabilityStore.unmount();
+      syncStore.unmount();
       cancelled = true;
       unlistenInitFailed?.();
     };
