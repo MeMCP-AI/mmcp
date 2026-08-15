@@ -31,5 +31,13 @@ pub const MAX_PASSWORD_LENGTH_ENV: &str = "MMCP_MAX_PASSWORD_LENGTH";
 /// Same precedence position as [`MIN_PASSWORD_LENGTH_ENV`].
 pub const MAX_HANDLE_LENGTH_ENV: &str = "MMCP_MAX_HANDLE_LENGTH";
 
+/// Environment variable gating `POST /auth/register`. Any value that
+/// case-insensitively equals `"true"` or `"1"` after trimming
+/// whitespace enables self-registration; anything else (including
+/// unset) leaves it disabled. See
+/// [`super::ServerConfig::allow_self_registration`]'s doc comment for
+/// why the default is closed.
+pub const ALLOW_SELF_REGISTRATION_ENV: &str = "MMCP_ALLOW_SELF_REGISTRATION";
+
 /// Floor for the password-length tunables: a zero-byte bound is never legitimate.
 pub(crate) const MIN_VALID_LENGTH_LIMIT: usize = 1;

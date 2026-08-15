@@ -43,6 +43,10 @@ pub struct ServerStateInner {
     /// Effective maximum accepted account handle length, in bytes;
     /// see [`crate::config::ServerConfig::max_handle_length`].
     pub max_handle_length: usize,
+    /// Whether `POST /auth/register` accepts self-registration
+    /// requests; see
+    /// [`crate::config::ServerConfig::allow_self_registration`].
+    pub allow_self_registration: bool,
 
     /// Per-group async mutex set used to serialize writes (git
     /// `receive-pack`) against the same bare repository. Reads
@@ -93,6 +97,7 @@ impl ServerState {
             min_password_length: cfg.min_password_length,
             max_password_length: cfg.max_password_length,
             max_handle_length: cfg.max_handle_length,
+            allow_self_registration: cfg.allow_self_registration,
             repo_locks: KeyedLockRegistry::new(PrunePolicy::Always, || AsyncMutex::new(())),
         })))
     }

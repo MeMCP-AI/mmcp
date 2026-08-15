@@ -221,6 +221,36 @@ async fn register_with_over_length_handle_returns_400() {
     assert_eq!(resp.status(), 400);
 }
 
+/// Falsification for issue #247
+/// (`open-self-registration-converts-the-sync-plane-acl-gap-into-an`):
+/// with `allow_self_registration` explicitly closed, `POST
+/// /auth/register` must be rejected with 403 before any validation,
+/// hashing, or database work, never a 201. Before the fix, there was
+/// no gate at all: the same request here would have returned 201 and
+/// created a live account, the first of the three HTTP calls
+/// (register, login, push) issue #247 documents as reachable by any
+/// anonymous caller.
+#[tokio::test]
+async fn register_with_self_registration_disabled_returns_403() {
+    let addr = start_server_with_config(
+        common::TestServerConfigBuilder::new(tempfile::tempdir().unwrap().keep())
+            .token_key([44u8; 32])
+            .allow_self_registration(false)
+            .build(),
+    )
+    .await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/auth/register"))
+        .json(&serde_json::json!({
+            "handle": "mallory",
+            "password": "validpassword"
+        }))
+        .send()
+        .await
+        .expect("register");
+    assert_eq!(resp.status(), 403);
+}
+
 /// `/auth/register` enforces the config-resolved bound, not the compiled-in default.
 /// A handle under the 64-byte default but over a smaller configured bound must still be rejected.
 #[tokio::test]

@@ -24,6 +24,16 @@ const TEST_BIND: &str = "127.0.0.1:0";
 /// integration-test crate, unreachable from an in-crate unit test).
 /// Every field is a deterministic test default; only `repo_root` is
 /// caller-supplied, since each test owns its own tempdir.
+///
+/// `allow_self_registration` defaults to `true` here, UNLIKE
+/// [`ServerConfig`]'s own production default of `false`
+/// ([`super::ServerConfig::allow_self_registration`]): almost every
+/// existing test that exercises `/auth/*` registers a user as its
+/// first step, so this fixture opts a test server in explicitly
+/// rather than making every call site restate the override. A test
+/// that specifically covers the closed-by-default gate builds its own
+/// `ServerConfig` (or uses `TestServerConfigBuilder::allow_self_registration(false)`)
+/// instead of relying on this fixture's value.
 pub fn minimal_server_config(repo_root: PathBuf) -> ServerConfig {
     ServerConfig {
         bind: TEST_BIND
@@ -38,6 +48,7 @@ pub fn minimal_server_config(repo_root: PathBuf) -> ServerConfig {
         min_password_length: mmcp_auth::MIN_PASSWORD_LENGTH,
         max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
         max_handle_length: mmcp_auth::MAX_HANDLE_LENGTH,
+        allow_self_registration: true,
     }
 }
 

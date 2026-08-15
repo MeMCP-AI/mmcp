@@ -2,7 +2,9 @@
 //!
 //! Three authentication strategies are supported:
 //!
-//! - **Password**: `POST /auth/register` + `POST /auth/login`
+//! - **Password**: `POST /auth/register` (gated by
+//!   [`crate::config::ServerConfig::allow_self_registration`],
+//!   closed by default) + `POST /auth/login`
 //! - **OAuth**: `GET /auth/oauth/:provider/authorize` redirects to
 //!   the provider, `GET /auth/oauth/:provider/callback` exchanges
 //!   the code for a token and logs the user in.
@@ -139,6 +141,9 @@ async fn register(
     State(state): State<ServerState>,
     Json(req): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<RegisterResponse>), AuthHttpError> {
+    if !state.allow_self_registration {
+        return Err(AuthHttpError::RegistrationDisabled);
+    }
     validate_register_request(
         &req,
         RegistrationLimits {
@@ -715,6 +720,16 @@ enum AuthHttpError {
     BadRequest(&'static str),
     #[error("{0}")]
     Conflict(&'static str),
+    /// `POST /auth/register` was called while
+    /// [`crate::state::ServerStateInner::allow_self_registration`] is
+    /// `false` (the closed-by-default state; see
+    /// [`crate::config::ServerConfig::allow_self_registration`]).
+    /// Rejected before any validation, hashing, or database work.
+    #[error(
+        "self-registration is disabled on this server; set MMCP_ALLOW_SELF_REGISTRATION=true \
+         to enable it"
+    )]
+    RegistrationDisabled,
     /// A request field exceeded its maximum accepted length.
     #[error("field '{field}' is too long: {actual} bytes exceeds the {max}-byte maximum")]
     FieldTooLong {
@@ -761,6 +776,7 @@ impl IntoResponse for AuthHttpError {
             AuthHttpError::NotFound(_) => StatusCode::NOT_FOUND,
             AuthHttpError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AuthHttpError::Conflict(_) => StatusCode::CONFLICT,
+            AuthHttpError::RegistrationDisabled => StatusCode::FORBIDDEN,
             AuthHttpError::FieldTooLong { .. }
             | AuthHttpError::FieldBlank { .. }
             | AuthHttpError::InvalidOAuthState

@@ -7,7 +7,9 @@ use super::cascade::{
     load_user_limits, resolve_max_handle_length, resolve_max_password_length,
     resolve_min_password_length,
 };
-use super::defaults::{DEFAULT_BIND, DEFAULT_DATABASE_URL, DEFAULT_REPO_ROOT};
+use super::defaults::{
+    ALLOW_SELF_REGISTRATION_ENV, DEFAULT_BIND, DEFAULT_DATABASE_URL, DEFAULT_REPO_ROOT,
+};
 use super::error::ConfigError;
 use super::oauth_provider::OAuthProviderConfig;
 use super::overrides::ServerConfigOverrides;
@@ -30,6 +32,7 @@ use super::overrides::ServerConfigOverrides;
 /// | `MMCP_MIN_PASSWORD_LENGTH`        | see `min_password_length` cascade below |
 /// | `MMCP_MAX_PASSWORD_LENGTH`        | see `max_password_length` cascade below |
 /// | `MMCP_MAX_HANDLE_LENGTH`          | see `max_handle_length` cascade below |
+/// | `MMCP_ALLOW_SELF_REGISTRATION`    | `false` (self-registration disabled) |
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub bind: SocketAddr,
@@ -62,6 +65,25 @@ pub struct ServerConfig {
     /// Same cascade as [`ServerConfig::min_password_length`].
     /// Tiers: `MMCP_MAX_HANDLE_LENGTH`, `[limits] max_handle_length`, `mmcp_auth::MAX_HANDLE_LENGTH`.
     pub max_handle_length: usize,
+    /// Whether `POST /auth/register` accepts unauthenticated
+    /// self-registration requests. Sourced from
+    /// `MMCP_ALLOW_SELF_REGISTRATION` (any value case-insensitively
+    /// equal to `"true"` or `"1"` after trimming whitespace enables
+    /// it); **defaults to `false` (closed) when the variable is unset
+    /// or holds any other value**.
+    ///
+    /// Full per-group ACL work (tracked separately, out of scope
+    /// here) is what will eventually let a self-hosted deployment
+    /// safely open registration to arbitrary callers; until then,
+    /// `post_push` authorizes writes on group/memory ids taken
+    /// straight from the request body with no membership check, so
+    /// an open registration endpoint turns that gap into a live
+    /// anonymous write/read capability in three HTTP calls
+    /// (register, login, push). A self-hosted/dev deployment that
+    /// wants open registration opts in explicitly by setting
+    /// `MMCP_ALLOW_SELF_REGISTRATION=true`; production must never
+    /// rely on an implicit default here.
+    pub allow_self_registration: bool,
 }
 
 impl ServerConfig {
@@ -182,6 +204,7 @@ impl ServerConfig {
             resolve_max_password_length(&get, overrides.max_password_length, user_limits.as_ref());
         let max_handle_length =
             resolve_max_handle_length(&get, overrides.max_handle_length, user_limits.as_ref());
+        let allow_self_registration = parse_bool_env(get(ALLOW_SELF_REGISTRATION_ENV).as_deref());
 
         Ok(Self {
             bind,
@@ -194,7 +217,21 @@ impl ServerConfig {
             min_password_length,
             max_password_length,
             max_handle_length,
+            allow_self_registration,
         })
+    }
+}
+
+/// Parse an environment-variable-style boolean: a value that, after
+/// trimming ASCII whitespace, case-insensitively equals `"true"` or
+/// exactly equals `"1"` is `true`; every other value (including
+/// `None`, empty, or unrecognized text) is `false`. Fails closed by
+/// construction: there is no branch that can return `true` from an
+/// absent or malformed value.
+fn parse_bool_env(raw: Option<&str>) -> bool {
+    match raw.map(str::trim) {
+        Some(v) => v.eq_ignore_ascii_case("true") || v == "1",
+        None => false,
     }
 }
 
@@ -628,5 +665,32 @@ mod tests {
             "a value exactly at the viable floor leaves just enough suffix room and must be \
              accepted, not rejected"
         );
+    }
+
+    // ── allow_self_registration: defaults closed (issue #247) ───────
+
+    #[test]
+    fn allow_self_registration_defaults_to_false_when_unset() {
+        assert!(!from_map(&[]).allow_self_registration);
+    }
+
+    #[test]
+    fn allow_self_registration_is_true_when_env_var_is_true() {
+        assert!(from_map(&[("MMCP_ALLOW_SELF_REGISTRATION", "true")]).allow_self_registration);
+        assert!(from_map(&[("MMCP_ALLOW_SELF_REGISTRATION", "TRUE")]).allow_self_registration);
+        assert!(from_map(&[("MMCP_ALLOW_SELF_REGISTRATION", "1")]).allow_self_registration);
+    }
+
+    #[test]
+    fn allow_self_registration_stays_false_for_any_other_value() {
+        assert!(!from_map(&[("MMCP_ALLOW_SELF_REGISTRATION", "false")]).allow_self_registration);
+        assert!(!from_map(&[("MMCP_ALLOW_SELF_REGISTRATION", "0")]).allow_self_registration);
+        assert!(!from_map(&[("MMCP_ALLOW_SELF_REGISTRATION", "yes")]).allow_self_registration);
+        assert!(!from_map(&[("MMCP_ALLOW_SELF_REGISTRATION", "")]).allow_self_registration);
+    }
+
+    #[test]
+    fn allow_self_registration_trims_surrounding_whitespace() {
+        assert!(from_map(&[("MMCP_ALLOW_SELF_REGISTRATION", "  true\n")]).allow_self_registration);
     }
 }

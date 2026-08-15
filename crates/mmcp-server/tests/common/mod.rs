@@ -58,6 +58,16 @@ impl TestServerConfigBuilder {
         self
     }
 
+    /// Overrides whether `POST /auth/register` accepts
+    /// self-registration requests. [`minimal_server_config`] defaults
+    /// this to `true` (test convenience); pass `false` here for a
+    /// test that specifically covers the closed-by-default gate.
+    #[allow(dead_code)] // Live in sibling test binaries; each tests/*.rs compiles common as its own crate.
+    pub fn allow_self_registration(mut self, allow_self_registration: bool) -> Self {
+        self.config.allow_self_registration = allow_self_registration;
+        self
+    }
+
     /// Finishes the builder, returning the built `ServerConfig`.
     pub fn build(self) -> ServerConfig {
         self.config
