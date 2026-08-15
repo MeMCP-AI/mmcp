@@ -112,7 +112,12 @@ impl SyncEngine {
     /// `Transport`) are recorded as `content_transferred: false`
     /// rather than raised, so partial network gaps surface in the
     /// report instead of aborting the whole run. Any other git
-    /// error propagates as `SyncError::Git`.
+    /// error (including a diverged push) lands in the returned
+    /// report's `failed` field, attributed to its own group, rather
+    /// than aborting every other in-flight group's push; this
+    /// function itself only ever returns `Err` for a failure that
+    /// precedes the per-group fan-out (none exist today, but the
+    /// `Result` signature is kept for forward compatibility).
     pub async fn push(
         &self,
         filter: SyncFilter,
@@ -131,33 +136,37 @@ impl SyncEngine {
         // each result carries its original index and the collected
         // vector is sorted back into `targets` order below: this
         // preserves `PushReport::pushed`'s documented "in iteration
-        // order" contract, and reproduces the original sequential
-        // code's "first divergence in list order wins" error-reporting
-        // behavior even though the underlying pushes now race. One
-        // failed group's push is never skipped in favor of stopping
-        // early the way the old serial loop's early `return` did:
-        // every scheduled group's push is attempted regardless of
-        // whether an earlier one (in list order) diverges.
-        let mut results: Vec<(usize, Result<Option<PushedGroup>, SyncError>)> =
+        // order" contract. One failed group's push is never skipped
+        // in favor of stopping early the way the old serial loop's
+        // early `return` did: every scheduled group's push is
+        // attempted regardless of whether an earlier one (in list
+        // order) diverges, and an earlier group's failure no longer
+        // discards a later group's success either - both survive
+        // into the returned report (`pushed` and `failed`
+        // respectively), attributed to their own `group_id`.
+        let mut results: Vec<(usize, Uuid, Result<Option<PushedGroup>, SyncError>)> =
             stream::iter(targets.into_iter().enumerate())
                 .map(|(index, group_id)| async move {
                     let outcome = self
                         .push_one_group(group_id, filter, group_handles, scope_index)
                         .await;
-                    (index, outcome)
+                    (index, group_id, outcome)
                 })
                 .buffer_unordered(MAX_CONCURRENT_GROUP_TRANSFERS)
                 .collect()
                 .await;
-        results.sort_by_key(|(index, _)| *index);
+        results.sort_by_key(|(index, ..)| *index);
 
         let mut pushed = Vec::with_capacity(results.len());
-        for (_, outcome) in results {
-            if let Some(group) = outcome? {
-                pushed.push(group);
+        let mut failed = Vec::new();
+        for (_, group_id, outcome) in results {
+            match outcome {
+                Ok(Some(group)) => pushed.push(group),
+                Ok(None) => {}
+                Err(error) => failed.push(GroupSyncFailure { group_id, error }),
             }
         }
-        Ok(PushReport { pushed })
+        Ok(PushReport { pushed, failed })
     }
 
     /// Push one group's local `main` to its remote. `Ok(None)` means
@@ -235,30 +244,44 @@ impl SyncEngine {
         scope_index: &dyn ScopeIndex,
     ) -> Result<PullReport, SyncError> {
         let fetched = self.fetch(filter, group_handles, scope_index).await?;
+        // Groups that already failed during the fetch phase (see
+        // `fetch`'s own `failed` field) carry forward into this
+        // report unchanged: `fetched.groups` only ever contains the
+        // fetches that actually succeeded, so the fast-forward loop
+        // below never re-attempts or silently drops them.
+        let mut failed = fetched.failed;
 
         // Bounded concurrency instead of one fast-forward after
         // another; see `push`'s doc comment for the index-tag-then-sort
         // rationale that keeps `PullReport::updated` in fetch order
-        // despite `buffer_unordered` completing out of order.
-        let mut results: Vec<(usize, Result<crate::client::RemoteGroup, SyncError>)> =
+        // despite `buffer_unordered` completing out of order. Same
+        // group-id tagging as `push` so a fast-forward failure is
+        // attributed to its own group instead of discarding every
+        // other group's already-advanced result.
+        let mut results: Vec<(usize, Uuid, Result<crate::client::RemoteGroup, SyncError>)> =
             stream::iter(fetched.groups.into_iter().enumerate())
                 .map(|(index, fetched_group)| async move {
-                    let handle = group_handles.resolve(fetched_group.group_id);
+                    let group_id = fetched_group.group_id;
+                    let handle = group_handles.resolve(group_id);
                     let outcome = self.fast_forward_one_group(fetched_group, handle).await;
-                    (index, outcome)
+                    (index, group_id, outcome)
                 })
                 .buffer_unordered(MAX_CONCURRENT_GROUP_TRANSFERS)
                 .collect()
                 .await;
-        results.sort_by_key(|(index, _)| *index);
+        results.sort_by_key(|(index, ..)| *index);
 
         let mut updated = Vec::with_capacity(results.len());
-        for (_, outcome) in results {
-            updated.push(outcome?);
+        for (_, group_id, outcome) in results {
+            match outcome {
+                Ok(group) => updated.push(group),
+                Err(error) => failed.push(GroupSyncFailure { group_id, error }),
+            }
         }
         Ok(PullReport {
             updated,
             new_groups: fetched.new_groups,
+            failed,
         })
     }
 
@@ -365,23 +388,35 @@ impl SyncEngine {
         // Bounded concurrency instead of one fetch after another; see
         // `push`'s doc comment for the index-tag-then-sort rationale
         // that keeps `FetchReport::groups` in manifest order despite
-        // `buffer_unordered` completing out of order.
-        let mut results: Vec<(usize, Result<FetchedGroup, SyncError>)> =
+        // `buffer_unordered` completing out of order. Same group-id
+        // tagging as `push` so one group's fetch failure is
+        // attributed to it specifically instead of discarding every
+        // other group's already-succeeded fetch.
+        let mut results: Vec<(usize, Uuid, Result<FetchedGroup, SyncError>)> =
             stream::iter(candidates.into_iter().enumerate())
                 .map(|(index, (remote, handle))| async move {
+                    let group_id = remote.group_id;
                     let outcome = self.fetch_one_group(remote, handle).await;
-                    (index, outcome)
+                    (index, group_id, outcome)
                 })
                 .buffer_unordered(MAX_CONCURRENT_GROUP_TRANSFERS)
                 .collect()
                 .await;
-        results.sort_by_key(|(index, _)| *index);
+        results.sort_by_key(|(index, ..)| *index);
 
         let mut groups = Vec::with_capacity(results.len());
-        for (_, outcome) in results {
-            groups.push(outcome?);
+        let mut failed = Vec::new();
+        for (_, group_id, outcome) in results {
+            match outcome {
+                Ok(group) => groups.push(group),
+                Err(error) => failed.push(GroupSyncFailure { group_id, error }),
+            }
         }
-        Ok(FetchReport { groups, new_groups })
+        Ok(FetchReport {
+            groups,
+            new_groups,
+            failed,
+        })
     }
 
     /// Fetch one group's remote head into its local tracking ref.
@@ -458,13 +493,44 @@ pub trait GroupHandleResolver: Send + Sync {
     fn iter_group_ids(&self) -> Vec<Uuid>;
 }
 
+/// One group's `push` / `pull` / `fetch` attempt that ended in a
+/// genuine [`SyncError`] (a git-level failure, a diverged ref, and
+/// so on), keeping the failing group's id attached to its error.
+///
+/// Every group scheduled for an operation is attempted regardless of
+/// whether an earlier one (in list order) failed: bounded concurrency
+/// already runs every group to completion (see `push`'s doc comment
+/// on the index-tag-then-sort pattern), so this type exists purely
+/// to carry the FAILED subset's identity and cause forward into the
+/// report instead of the whole call collapsing to whichever error
+/// happened to be first in list order and silently discarding every
+/// group that actually succeeded, earlier or later.
+#[derive(Debug)]
+pub struct GroupSyncFailure {
+    pub group_id: Uuid,
+    pub error: SyncError,
+}
+
 /// Report of a completed `push` call.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `SyncError` is not `Clone`/`PartialEq` (it wraps `mmcp_git::GitError`,
+/// which wraps `std::io::Error`), so this report does not derive
+/// those either; nothing in this workspace compares or clones a
+/// `PushReport` as a whole (field-level assertions cover the tests).
+#[derive(Debug)]
 pub struct PushReport {
-    /// Groups the engine attempted to push, in iteration order.
+    /// Groups whose push attempt did NOT error, in iteration order.
     /// A group appears here even when the content plane was
-    /// skipped (see `PushedGroup::content_transferred`).
+    /// skipped (see `PushedGroup::content_transferred`); a group
+    /// whose push attempt itself errored appears in `failed`
+    /// instead, never here.
     pub pushed: Vec<PushedGroup>,
+    /// Groups whose push attempt itself errored (not merely a
+    /// content-plane transport skip, which still counts as a
+    /// successful `PushedGroup` with `content_transferred: false`).
+    /// Every OTHER scheduled group still ran to completion regardless
+    /// of a group appearing here; see [`GroupSyncFailure`].
+    pub failed: Vec<GroupSyncFailure>,
 }
 
 /// One pushed group's before/after snapshot.
@@ -479,24 +545,29 @@ pub struct PushedGroup {
 }
 
 /// Report of a completed `pull` call.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct PullReport {
     /// Groups whose local head was advanced (or is already in sync).
     pub updated: Vec<crate::client::RemoteGroup>,
     /// Groups the server says exist but the client has no local
     /// clone for yet.
     pub new_groups: Vec<crate::client::RemoteGroup>,
+    /// Groups that failed either during the fetch phase or the
+    /// fast-forward phase. See [`GroupSyncFailure`] and
+    /// [`PushReport::failed`]'s doc comment for the same "every
+    /// group is still attempted" guarantee.
+    pub failed: Vec<GroupSyncFailure>,
 }
 
 /// Report of a full sync (pull then push).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct SyncReport {
     pub pulled: PullReport,
     pub pushed: PushReport,
 }
 
 /// Report of a completed `fetch` call.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct FetchReport {
     /// Groups whose remote head was written into the local
     /// `refs/remotes/origin/main` tracking ref. Empty list means
@@ -507,6 +578,10 @@ pub struct FetchReport {
     /// clone for yet. Reported so operators can decide whether to
     /// adopt them; the engine never auto-clones.
     pub new_groups: Vec<crate::client::RemoteGroup>,
+    /// Groups whose fetch attempt itself errored. See
+    /// [`GroupSyncFailure`] and [`PushReport::failed`]'s doc comment
+    /// for the same "every group is still attempted" guarantee.
+    pub failed: Vec<GroupSyncFailure>,
 }
 
 #[cfg(test)]

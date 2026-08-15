@@ -14,7 +14,7 @@ use mmcp_store::memory::resolve_group;
 use mmcp_store::sync::build_engine;
 use mmcp_sync::{SyncError, SyncFilter};
 
-use crate::notes::{render_notes_tail, sync_push_partial_failure_notes};
+use crate::notes::{render_notes_tail, sync_group_failure_notes, sync_push_partial_failure_notes};
 
 /// CLI-side mirror of `GroupScope` that clap can parse via
 /// `ValueEnum`. Kept as a separate wire-form enum so `mmcp-core`
@@ -121,14 +121,34 @@ pub async fn run_fetch(selector: SyncSelector) -> Result<()> {
         server = %sync_cfg.server_url,
         groups = report.groups.len(),
         new_groups = report.new_groups.len(),
+        failed = report.failed.len(),
         "fetch completed"
     );
     println!(
-        "fetch from {} completed: {} groups tracked, {} new groups advertised",
+        "fetch from {} completed: {} groups tracked, {} new groups advertised, {} groups failed",
         sync_cfg.server_url,
         report.groups.len(),
-        report.new_groups.len()
+        report.new_groups.len(),
+        report.failed.len()
     );
+    render_notes_tail(&sync_group_failure_notes(
+        &report.failed,
+        "fetch",
+        &sync_cfg.server_url,
+    ));
+    // A3 partial-success fix: an earlier-in-order group's failure no
+    // longer discards a later group's success (see
+    // `mmcp_sync::engine::GroupSyncFailure`'s doc comment), but the
+    // command must still exit non-zero when any group failed, or a
+    // real failure would silently read as success.
+    if !report.failed.is_empty() {
+        bail!(
+            "fetch from {} failed for {} of {} groups; see notes above for per-group errors",
+            sync_cfg.server_url,
+            report.failed.len(),
+            report.failed.len() + report.groups.len()
+        );
+    }
     Ok(())
 }
 
@@ -184,14 +204,29 @@ pub async fn run_pull(selector: SyncSelector) -> Result<()> {
         server = %server_url,
         updated = report.updated.len(),
         new_groups = report.new_groups.len(),
+        failed = report.failed.len(),
         "pull completed"
     );
     println!(
-        "pull from {} completed: {} groups updated, {} new groups",
+        "pull from {} completed: {} groups updated, {} new groups, {} groups failed",
         server_url,
         report.updated.len(),
-        report.new_groups.len()
+        report.new_groups.len(),
+        report.failed.len()
     );
+    render_notes_tail(&sync_group_failure_notes(
+        &report.failed,
+        "pull",
+        &server_url,
+    ));
+    if !report.failed.is_empty() {
+        bail!(
+            "pull from {} failed for {} of {} groups; see notes above for per-group errors",
+            server_url,
+            report.failed.len(),
+            report.failed.len() + report.updated.len()
+        );
+    }
     Ok(())
 }
 
@@ -206,14 +241,30 @@ pub async fn run_push(selector: SyncSelector) -> Result<()> {
     tracing::info!(
         server = %server_url,
         pushed = report.pushed.len(),
+        failed = report.failed.len(),
         "push completed"
     );
     println!(
-        "push to {} completed: {} groups pushed",
+        "push to {} completed: {} groups pushed, {} groups failed",
         server_url,
-        report.pushed.len()
+        report.pushed.len(),
+        report.failed.len()
     );
-    render_notes_tail(&sync_push_partial_failure_notes(&report, &server_url));
+    let mut notes = sync_push_partial_failure_notes(&report, &server_url);
+    notes.extend(sync_group_failure_notes(
+        &report.failed,
+        "push",
+        &server_url,
+    ));
+    render_notes_tail(&notes);
+    if !report.failed.is_empty() {
+        bail!(
+            "push to {} failed for {} of {} groups; see notes above for per-group errors",
+            server_url,
+            report.failed.len(),
+            report.failed.len() + report.pushed.len()
+        );
+    }
     Ok(())
 }
 
@@ -229,24 +280,42 @@ pub async fn run_sync(selector: SyncSelector) -> Result<()> {
         .await
         .map_err(to_anyhow)?;
     notify_cache_of_pull(&backend, &resolver.index, &report.pulled).await;
+    let total_failed = report.pulled.failed.len() + report.pushed.failed.len();
     tracing::info!(
         server = %server_url,
         updated = report.pulled.updated.len(),
         new_groups = report.pulled.new_groups.len(),
         pushed = report.pushed.pushed.len(),
+        failed = total_failed,
         "sync completed"
     );
     println!(
-        "sync against {} completed: pulled {} groups ({} new), pushed {} groups",
+        "sync against {} completed: pulled {} groups ({} new), pushed {} groups, {} groups failed",
         server_url,
         report.pulled.updated.len(),
         report.pulled.new_groups.len(),
-        report.pushed.pushed.len()
+        report.pushed.pushed.len(),
+        total_failed
     );
-    render_notes_tail(&sync_push_partial_failure_notes(
-        &report.pushed,
+    let mut notes = sync_push_partial_failure_notes(&report.pushed, &server_url);
+    notes.extend(sync_group_failure_notes(
+        &report.pulled.failed,
+        "pull",
         &server_url,
     ));
+    notes.extend(sync_group_failure_notes(
+        &report.pushed.failed,
+        "push",
+        &server_url,
+    ));
+    render_notes_tail(&notes);
+    if total_failed > 0 {
+        bail!(
+            "sync against {} failed for {} groups (pull + push combined); see notes above for per-group errors",
+            server_url,
+            total_failed
+        );
+    }
     Ok(())
 }
 

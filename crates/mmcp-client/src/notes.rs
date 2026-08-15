@@ -22,7 +22,7 @@ use mmcp_proto::{Note, NoteLevel};
 use mmcp_store::diagnostics::Finding;
 use mmcp_store::groups::GroupEntry;
 use mmcp_store::memory::list_all_memory_files;
-use mmcp_sync::PushReport;
+use mmcp_sync::{GroupSyncFailure, PushReport};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -163,6 +163,40 @@ pub fn sync_push_partial_failure_notes(report: &PushReport, server_url: &str) ->
             .with_context(json!({
                 "group": p.group_id.to_string(),
                 "stage": "push",
+                "server_url": server_url,
+            }))
+        })
+        .collect()
+}
+
+/// Populator helper: turn a `push` / `pull` / `fetch` report's
+/// `failed` list (independent review finding A3, Wave 2 repair round
+/// one) into one `sync_group_failed` error note per group. Each note
+/// names the failing group and carries the real `SyncError` text, so
+/// a caller sees exactly which groups did not complete even though
+/// every OTHER scheduled group still ran to completion and may have
+/// succeeded.
+///
+/// Shared by the MCP `sync_push` / `sync_pull` / `sync_fetch` / `sync`
+/// tools and the CLI `mmcp push` / `mmcp pull` / `mmcp fetch` /
+/// `mmcp sync` commands so both surfaces emit the same code with the
+/// same context shape (`group`, `stage`, `server_url`).
+#[must_use]
+pub fn sync_group_failure_notes(
+    failed: &[GroupSyncFailure],
+    stage: &str,
+    server_url: &str,
+) -> Vec<Note> {
+    failed
+        .iter()
+        .map(|f| {
+            Note::error(
+                "sync_group_failed",
+                format!("{stage} failed for group {}: {}", f.group_id, f.error),
+            )
+            .with_context(json!({
+                "group": f.group_id.to_string(),
+                "stage": stage,
                 "server_url": server_url,
             }))
         })

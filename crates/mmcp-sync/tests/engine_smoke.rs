@@ -53,6 +53,42 @@ impl mmcp_sync::ScopeIndex for MapResolver {
     }
 }
 
+/// Insertion-ordered resolver, unlike [`MapResolver`] whose
+/// `HashMap`-backed `iter_group_ids` has unspecified iteration
+/// order. The A3 partial-success falsification test below needs a
+/// deterministic "earlier in list order" group to prove a later
+/// group's success survives an earlier group's failure, which a
+/// `HashMap`-ordered resolver cannot guarantee.
+#[derive(Default, Clone)]
+struct OrderedResolver {
+    entries: Vec<(Uuid, RepoHandle)>,
+}
+
+impl OrderedResolver {
+    fn insert(&mut self, id: Uuid, handle: RepoHandle) {
+        self.entries.push((id, handle));
+    }
+}
+
+impl GroupHandleResolver for OrderedResolver {
+    fn resolve(&self, group_id: Uuid) -> Option<RepoHandle> {
+        self.entries
+            .iter()
+            .find(|(id, _)| *id == group_id)
+            .map(|(_, handle)| handle.clone())
+    }
+
+    fn iter_group_ids(&self) -> Vec<Uuid> {
+        self.entries.iter().map(|(id, _)| *id).collect()
+    }
+}
+
+impl mmcp_sync::ScopeIndex for OrderedResolver {
+    fn scope_of(&self, _group_id: Uuid) -> Option<mmcp_core::manifest::GroupScope> {
+        None
+    }
+}
+
 /// Build a real native backend rooted in a tempdir plus one seeded
 /// group so the tests can exercise the content plane alongside
 /// the control plane.
@@ -251,4 +287,83 @@ async fn sync_runs_pull_then_push() {
     assert_eq!(report.pulled.updated.len(), 1);
     assert_eq!(report.pushed.pushed.len(), 1);
     assert_eq!(report.pushed.pushed[0].group_id, group_uuid);
+}
+
+#[tokio::test]
+async fn push_survives_an_earlier_groups_failure_and_attributes_it_correctly() {
+    // Falsification test for finding A3 (independent review, Wave 2
+    // repair round 1): before the fix, `push`'s result-aggregation
+    // loop discarded every already-collected success the instant it
+    // hit the FIRST `Err` in list order via `outcome?`. This seeds an
+    // EARLIER-in-list-order group whose local repo directory is
+    // deleted out from under it (a genuine `GitError::RepoNotFound`,
+    // never `Unsupported`/`Transport`, so it actually reaches the
+    // `Err` arm) and a LATER-in-list-order group that pushes
+    // normally, then asserts both survive into the report: the later
+    // group's success is recorded, and the failure is attributed to
+    // the earlier group specifically, rather than the whole call
+    // collapsing to a single top-level error.
+    let server = MockServer::start().await;
+    let tmp = TempDir::new().expect("tempdir");
+    let backend = Arc::new(NativeBackend::new(tmp.path()).expect("backend"));
+
+    let broken_owner = UserId::new();
+    let broken_group_id = GroupId::new();
+    let broken_manifest =
+        GroupManifest::new_user_owned(broken_group_id, "team-broken", broken_owner);
+    let broken_handle = backend
+        .create_group_repo(&broken_manifest)
+        .await
+        .expect("create broken group repo");
+    // Delete the repo directory out from under its own handle: the
+    // native backend's `open_repo` reports `GitError::RepoNotFound`
+    // for a vanished path (never `Unsupported`), so `push_one_group`
+    // returns a genuine `Err` for this group.
+    std::fs::remove_dir_all(&broken_handle.locator).expect("delete broken repo directory");
+
+    let good_owner = UserId::new();
+    let good_group_id = GroupId::new();
+    let good_manifest = GroupManifest::new_user_owned(good_group_id, "team-good", good_owner);
+    let good_handle = backend
+        .create_group_repo(&good_manifest)
+        .await
+        .expect("create good group repo");
+
+    // Insertion order fixes list order: the broken group is index 0
+    // (earlier), the good group is index 1 (later).
+    let mut resolver = OrderedResolver::default();
+    resolver.insert(*broken_group_id.as_uuid(), broken_handle);
+    resolver.insert(*good_group_id.as_uuid(), good_handle);
+
+    let client = SyncClient::new(server.uri()).expect("client");
+    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, client);
+    let report = engine
+        .push(mmcp_sync::SyncFilter::All, &resolver, &resolver)
+        .await
+        .expect("push must still return Ok with partial success, not a bare top-level Err");
+
+    assert_eq!(
+        report.pushed.len(),
+        1,
+        "the later, healthy group's push must still be recorded despite the earlier group's \
+         failure: {:?}",
+        report.pushed
+    );
+    assert_eq!(report.pushed[0].group_id, *good_group_id.as_uuid());
+
+    assert_eq!(
+        report.failed.len(),
+        1,
+        "the earlier group's failure must be attributed, not silently dropped: {:?}",
+        report.failed.iter().map(|f| f.group_id).collect::<Vec<_>>()
+    );
+    assert_eq!(report.failed[0].group_id, *broken_group_id.as_uuid());
+    assert!(
+        matches!(
+            report.failed[0].error,
+            mmcp_sync::SyncError::Git(mmcp_git::GitError::RepoNotFound(_))
+        ),
+        "expected a RepoNotFound git error for the deleted repo, got {:?}",
+        report.failed[0].error
+    );
 }

@@ -44,7 +44,7 @@ use crate::commands::tool_metadata_cli::{
 };
 use crate::notes::{
     dangling_ref_notes_for, finding_to_note, findings_to_notes, id_validation_to_notes,
-    malformed_frontmatter_notes,
+    malformed_frontmatter_notes, sync_group_failure_notes,
 };
 use crate::state::{WatcherHandle, spawn_watcher};
 use mmcp_store::config::{PROJECT_MANIFEST, find_project_root, load as load_project_config};
@@ -4067,7 +4067,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Read each in-scope group's remote HEAD into a local remote-tracking ref without advancing the group's `main` branch. Git-symmetric with `fetch`: use this to inspect what `sync_pull` would fast-forward before committing to it. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block, and the usual `selector_required` / `selector_conflict` / `unknown_group` for arg validation.",
+        description = "Read each in-scope group's remote HEAD into a local remote-tracking ref without advancing the group's `main` branch. Git-symmetric with `fetch`: use this to inspect what `sync_pull` would fast-forward before committing to it. A group that fails does not abort the call: it surfaces under `failed` (and as a `sync_group_failed` note) while every other group's result still ships. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block, and the usual `selector_required` / `selector_conflict` / `unknown_group` for arg validation.",
         annotations(
             title = "Fetch remote-tracking refs",
             read_only_hint = false,
@@ -4092,21 +4092,26 @@ impl McpServer {
             .fetch(filter, &resolver, &resolver)
             .await
             .map_err(map_sync_error_to_mcp)?;
-        Ok(ok_json(json!({
-            "groups": report.groups.iter().map(|g| json!({
-                "group_id": g.group_id.to_string(),
-                "slug": g.slug,
-                "remote_head": g.remote_head,
-                "ref_updated": g.ref_updated,
-            })).collect::<Vec<_>>(),
-            "new_groups": report.new_groups,
-            "project_uuid": cfg.project_uuid.to_string(),
-            "server_url": server_url,
-        })))
+        let notes = sync_group_failure_notes(&report.failed, "fetch", &server_url);
+        Ok(ok_json_with_notes(
+            json!({
+                "groups": report.groups.iter().map(|g| json!({
+                    "group_id": g.group_id.to_string(),
+                    "slug": g.slug,
+                    "remote_head": g.remote_head,
+                    "ref_updated": g.ref_updated,
+                })).collect::<Vec<_>>(),
+                "new_groups": report.new_groups,
+                "failed": sync_failures_to_json(&report.failed),
+                "project_uuid": cfg.project_uuid.to_string(),
+                "server_url": server_url,
+            }),
+            notes,
+        ))
     }
 
     #[tool(
-        description = "Pull updates from the configured mmcp sync server into the local mirror. Returns the groups whose local HEAD advanced plus any groups the server has that are not mirrored yet. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block, and code `sync_conflict` / `sync_remote` / `sync_transport` for engine-level failures.",
+        description = "Pull updates from the configured mmcp sync server into the local mirror. Returns the groups whose local HEAD advanced plus any groups the server has that are not mirrored yet. A group that fails does not abort the call: it surfaces under `failed` (and as a `sync_group_failed` note) while every other group's result still ships. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block, and code `sync_conflict` / `sync_remote` / `sync_transport` for a call-level failure that precedes the per-group fan-out.",
         annotations(
             title = "Pull from sync server",
             read_only_hint = false,
@@ -4135,16 +4140,21 @@ impl McpServer {
             report.updated.iter().map(|g| g.group_id).collect();
         mmcp_store::cache::notify_pull(&self.state.backend, &self.state.groups, &updated_group_ids)
             .await;
-        Ok(ok_json(json!({
-            "updated": report.updated,
-            "new_groups": report.new_groups,
-            "project_uuid": cfg.project_uuid.to_string(),
-            "server_url": server_url,
-        })))
+        let notes = sync_group_failure_notes(&report.failed, "pull", &server_url);
+        Ok(ok_json_with_notes(
+            json!({
+                "updated": report.updated,
+                "new_groups": report.new_groups,
+                "failed": sync_failures_to_json(&report.failed),
+                "project_uuid": cfg.project_uuid.to_string(),
+                "server_url": server_url,
+            }),
+            notes,
+        ))
     }
 
     #[tool(
-        description = "Push the local pending-edit queue to the configured mmcp sync server. Returns each drained edit with the server-assigned version and tag, plus whether the content plane (git push) actually shipped bytes. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block.",
+        description = "Push the local pending-edit queue to the configured mmcp sync server. Returns each drained edit with the server-assigned version and tag, plus whether the content plane (git push) actually shipped bytes. A group whose push itself errors does not abort the call: it surfaces under `failed` (and as a `sync_group_failed` note) while every other group's push still ships. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block.",
         annotations(
             title = "Push to sync server",
             read_only_hint = false,
@@ -4174,14 +4184,23 @@ impl McpServer {
         // accepted the push but the git content plane did not
         // actually ship bytes (transport error, server rejected,
         // network blip, etc.). Shared helper keeps the CLI and
-        // MCP surfaces emitting identical codes and contexts.
-        let notes = crate::notes::sync_push_partial_failure_notes(&report, &server_url);
+        // MCP surfaces emitting identical codes and contexts. The
+        // `sync_group_failed` populator covers the distinct case of
+        // a push that errored outright (finding A3): every OTHER
+        // group in `report.pushed` still shipped despite it.
+        let mut notes = crate::notes::sync_push_partial_failure_notes(&report, &server_url);
+        notes.extend(sync_group_failure_notes(
+            &report.failed,
+            "push",
+            &server_url,
+        ));
         Ok(ok_json_with_notes(
             json!({
                 "pushed": report.pushed.iter().map(|p| json!({
                     "group_id": p.group_id.to_string(),
                     "content_transferred": p.content_transferred,
                 })).collect::<Vec<_>>(),
+                "failed": sync_failures_to_json(&report.failed),
                 "project_uuid": cfg.project_uuid.to_string(),
                 "server_url": server_url,
             }),
@@ -4190,7 +4209,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Run a full sync (pull then push) against the configured mmcp server. Returns both report shapes nested under `pulled` and `pushed`. Same error codes as `sync_pull` / `sync_push`.",
+        description = "Run a full sync (pull then push) against the configured mmcp server. Returns both report shapes nested under `pulled` and `pushed`, each carrying its own `failed` list for groups that errored without aborting the rest. Same error codes as `sync_pull` / `sync_push`.",
         annotations(
             title = "Full sync (pull + push)",
             read_only_hint = false,
@@ -4219,20 +4238,31 @@ impl McpServer {
             report.pulled.updated.iter().map(|g| g.group_id).collect();
         mmcp_store::cache::notify_pull(&self.state.backend, &self.state.groups, &updated_group_ids)
             .await;
-        Ok(ok_json(json!({
-            "pulled": {
-                "updated": report.pulled.updated,
-                "new_groups": report.pulled.new_groups,
-            },
-            "pushed": {
-                "pushed": report.pushed.pushed.iter().map(|p| json!({
-                    "group_id": p.group_id.to_string(),
-                    "content_transferred": p.content_transferred,
-                })).collect::<Vec<_>>(),
-            },
-            "project_uuid": cfg.project_uuid.to_string(),
-            "server_url": server_url,
-        })))
+        let mut notes = sync_group_failure_notes(&report.pulled.failed, "pull", &server_url);
+        notes.extend(sync_group_failure_notes(
+            &report.pushed.failed,
+            "push",
+            &server_url,
+        ));
+        Ok(ok_json_with_notes(
+            json!({
+                "pulled": {
+                    "updated": report.pulled.updated,
+                    "new_groups": report.pulled.new_groups,
+                    "failed": sync_failures_to_json(&report.pulled.failed),
+                },
+                "pushed": {
+                    "pushed": report.pushed.pushed.iter().map(|p| json!({
+                        "group_id": p.group_id.to_string(),
+                        "content_transferred": p.content_transferred,
+                    })).collect::<Vec<_>>(),
+                    "failed": sync_failures_to_json(&report.pushed.failed),
+                },
+                "project_uuid": cfg.project_uuid.to_string(),
+                "server_url": server_url,
+            }),
+            notes,
+        ))
     }
 
     #[tool(
@@ -5773,13 +5803,14 @@ fn resolve_sync_config(
     Ok((cfg, server_url))
 }
 
-/// Map a [`mmcp_sync::SyncError`] to an [`McpError`] that carries a
-/// structured `code` payload. Callers (AI or test code) can branch
-/// on the code string instead of parsing the human message.
-fn map_sync_error_to_mcp(err: mmcp_sync::SyncError) -> McpError {
+/// Build the structured `code` payload for a [`mmcp_sync::SyncError`],
+/// shared by [`map_sync_error_to_mcp`] (a call-level error) and
+/// [`sync_failures_to_json`] (a per-group error inside an otherwise
+/// successful report's `failed` list), so both surfaces agree on the
+/// same code vocabulary for the same underlying error.
+fn sync_error_payload(err: &mmcp_sync::SyncError) -> serde_json::Value {
     use mmcp_sync::SyncError;
-    let message = err.to_string();
-    let payload = match &err {
+    match err {
         SyncError::Conflict {
             memory,
             local_commit,
@@ -5826,8 +5857,40 @@ fn map_sync_error_to_mcp(err: mmcp_sync::SyncError) -> McpError {
             "group": group.to_string(),
             "stderr": stderr,
         }),
-    };
+    }
+}
+
+/// Map a [`mmcp_sync::SyncError`] to an [`McpError`] that carries a
+/// structured `code` payload. Callers (AI or test code) can branch
+/// on the code string instead of parsing the human message. Used
+/// only for a call-level failure that precedes any per-group
+/// fan-out (e.g. the manifest fetch); a per-group failure inside an
+/// otherwise successful report never reaches this function anymore,
+/// see [`sync_failures_to_json`].
+fn map_sync_error_to_mcp(err: mmcp_sync::SyncError) -> McpError {
+    let message = err.to_string();
+    let payload = sync_error_payload(&err);
     McpError::invalid_params(message, Some(payload))
+}
+
+/// Serialize a `push` / `pull` / `fetch` report's `failed` list
+/// (independent review finding A3, Wave 2 repair round 1) into the
+/// wire shape: each entry carries the failing `group_id`, the same
+/// structured `code` payload [`map_sync_error_to_mcp`] uses, and the
+/// human-readable `message`. Every group that DID succeed still
+/// rides in the response's own success field (`groups` / `updated` /
+/// `pushed`) alongside this list, instead of the whole call
+/// collapsing into a single top-level error.
+fn sync_failures_to_json(failed: &[mmcp_sync::GroupSyncFailure]) -> Vec<serde_json::Value> {
+    failed
+        .iter()
+        .map(|f| {
+            let mut payload = sync_error_payload(&f.error);
+            payload["group"] = json!(f.group_id.to_string());
+            payload["message"] = json!(f.error.to_string());
+            payload
+        })
+        .collect()
 }
 
 /// Resolve a [`SyncToolArgs`] into a [`mmcp_sync::SyncFilter`].
