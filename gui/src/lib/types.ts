@@ -75,13 +75,23 @@ export interface SyncStatus {
   server_url: string | null;
 }
 
+/** One group whose sync attempt itself errored. Mirrors the Rust
+ * `GroupSyncFailureDto`; every OTHER scheduled group still ran to
+ * completion even when this one appears here. */
+export interface SyncGroupFailure {
+  group_id: string;
+  message: string;
+}
+
 export interface PullReport {
   updated: number;
   new_groups: number;
+  failed: SyncGroupFailure[];
 }
 
 export interface PushReport {
   pushed: number;
+  failed: SyncGroupFailure[];
 }
 
 /** Raw severity string emitted by mmcp-store (`"error" | "warning" | "info"`).

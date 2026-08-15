@@ -19,15 +19,50 @@ pub struct SyncStatusDto {
     pub server_url: Option<String>,
 }
 
+/// One group whose sync attempt itself errored, carrying enough
+/// information for the frontend to tell the user which group failed
+/// and why. Wire mirror of `mmcp_sync::GroupSyncFailure`, whose
+/// `SyncError` field does not implement `Serialize`.
+#[derive(Debug, Serialize)]
+pub struct GroupSyncFailureDto {
+    pub group_id: String,
+    pub message: String,
+}
+
+/// Populator helper: convert an engine report's `failed` list into
+/// its DTO shape. Shared by `sync_pull` and `sync_push` so both
+/// commands carry the same failure information the CLI and MCP
+/// surfaces already expose via `GroupSyncFailure` (see
+/// `crates/mmcp-client/src/notes.rs::sync_group_failure_notes`)
+/// instead of silently discarding it, which is what this DTO type
+/// existed without doing before this fix.
+fn sync_failures_dto(failed: &[mmcp_sync::GroupSyncFailure]) -> Vec<GroupSyncFailureDto> {
+    failed
+        .iter()
+        .map(|f| GroupSyncFailureDto {
+            group_id: f.group_id.to_string(),
+            message: f.error.to_string(),
+        })
+        .collect()
+}
+
 #[derive(Debug, Serialize)]
 pub struct PullReportDto {
     pub updated: usize,
     pub new_groups: usize,
+    /// Groups whose pull attempt itself errored. Every OTHER
+    /// scheduled group still ran to completion; see
+    /// `mmcp_sync::GroupSyncFailure`'s doc comment.
+    pub failed: Vec<GroupSyncFailureDto>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct PushReportDto {
     pub pushed: usize,
+    /// Groups whose push attempt itself errored. Every OTHER
+    /// scheduled group still ran to completion; see
+    /// `mmcp_sync::GroupSyncFailure`'s doc comment.
+    pub failed: Vec<GroupSyncFailureDto>,
 }
 
 #[tauri::command]
@@ -64,6 +99,7 @@ pub async fn sync_pull(app: AppHandle, state: State<'_, AppState>) -> GuiResult<
     Ok(PullReportDto {
         updated: report.updated.len(),
         new_groups: report.new_groups.len(),
+        failed: sync_failures_dto(&report.failed),
     })
 }
 
@@ -78,5 +114,42 @@ pub async fn sync_push(state: State<'_, AppState>) -> GuiResult<PushReportDto> {
         .map_err(GuiError::from)?;
     Ok(PushReportDto {
         pushed: report.pushed.len(),
+        failed: sync_failures_dto(&report.failed),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use mmcp_sync::{GroupSyncFailure, SyncError};
+    use uuid::Uuid;
+
+    use super::*;
+
+    /// FALSIFICATION: before this fix, `sync_failures_dto` did not
+    /// exist and `PullReportDto`/`PushReportDto` had no `failed`
+    /// field at all, so a per-group failure was silently dropped
+    /// (the DTO carried zero information about it). This test
+    /// constructs a report with a non-empty `failed` list and
+    /// confirms the resulting DTO actually carries the group id and
+    /// the underlying error message, not an empty/absent list.
+    #[test]
+    fn sync_failures_dto_carries_group_id_and_message() {
+        let group_id = Uuid::from_u128(0x1234_5678_9abc_def0_1234_5678_9abc_def0);
+        let failed = vec![GroupSyncFailure {
+            group_id,
+            error: SyncError::NotFound("edit-x".into()),
+        }];
+
+        let dto = sync_failures_dto(&failed);
+
+        assert_eq!(dto.len(), 1);
+        assert_eq!(dto[0].group_id, group_id.to_string());
+        assert_eq!(dto[0].message, "pending edit not found: edit-x");
+    }
+
+    #[test]
+    fn empty_failed_list_produces_empty_dto() {
+        let dto = sync_failures_dto(&[]);
+        assert!(dto.is_empty());
+    }
 }
