@@ -291,7 +291,9 @@ async fn main() -> Result<()> {
         Command::Subscribe(args) => commands::subscribe::run_subscribe(args).await?,
         Command::Unsubscribe(args) => commands::subscribe::run_unsubscribe(args).await?,
         Command::Debug(args) => commands::debug::run(args).await?,
-        Command::Tools { format } => commands::tools::run(format)?,
+        Command::Tools { format } => {
+            commands::tools::run(format, commands::serve::registered_tool_attrs())?
+        }
     }
 
     Ok(())
@@ -308,5 +310,52 @@ mod tests {
     #[test]
     fn cli_graph_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    /// `commands::tools::build_rows` against the real, live tool
+    /// list returns one row per registered tool with the annotation
+    /// hint columns wired up. Matches the MCP `describe_tools` shape
+    /// so consumers can switch surfaces without re-parsing.
+    ///
+    /// Lives here, not in `commands::tools`' own test module: this
+    /// binary's `main.rs` is the only place that legitimately holds
+    /// both `commands::tools::build_rows` and
+    /// `commands::serve::registered_tool_attrs()` (`commands::tools`
+    /// never imports from `commands::serve`; see that module's doc).
+    #[test]
+    fn tools_json_lists_every_registered_tool_with_hint_columns() {
+        let rows = commands::tools::build_rows(commands::serve::registered_tool_attrs());
+        assert!(!rows.is_empty());
+        for row in &rows {
+            assert!(!row.name.is_empty(), "tool name must not be empty");
+            assert!(
+                row.title.as_deref().map(|t| !t.is_empty()).unwrap_or(false),
+                "{}: title must be non-empty",
+                row.name,
+            );
+        }
+        // Spot-check a known tool to lock the rendering of the
+        // hint columns once.
+        let read_memory = rows
+            .iter()
+            .find(|r| r.name == "read_memory")
+            .expect("read_memory present");
+        assert_eq!(read_memory.read_only, Some(true));
+        assert_eq!(read_memory.idempotent, Some(true));
+        assert_eq!(read_memory.open_world, Some(false));
+        // read_memory has no risky args; write_memory has
+        // an `override` hint.
+        assert!(read_memory.arg_risk_hints.is_empty());
+        let write_memory = rows
+            .iter()
+            .find(|r| r.name == "write_memory")
+            .expect("write_memory present");
+        assert!(
+            write_memory
+                .arg_risk_hints
+                .iter()
+                .any(|h| h.arg == "override"),
+            "write_memory must surface an `override` arg_risk_hint",
+        );
     }
 }

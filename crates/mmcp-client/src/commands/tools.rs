@@ -6,12 +6,19 @@
 //! description. Same data the `describe_tools` MCP tool returns,
 //! surfaced through the CLI for hook scripts and ad-hoc
 //! audits that should not need to start the stdio server.
+//!
+//! This module never imports from `commands::serve`: the canonical,
+//! live tool list only `McpServer::tool_router()` can produce (in
+//! `commands::serve`), so `main.rs`, the binary's composition root,
+//! fetches it via `commands::serve::registered_tool_attrs()` and
+//! passes it into [`run`]. `commands::tools` only ever renders a
+//! list it is handed.
 
 use anyhow::Result;
 use clap::ValueEnum;
 use serde::Serialize;
 
-use crate::commands::serve::{ArgRiskHint, arg_risk_hints_for, registered_tool_attrs};
+use crate::commands::tool_metadata_cli::{ArgRiskHint, arg_risk_hints_for};
 
 /// Output format selector for `mmcp tools`.
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -27,20 +34,23 @@ pub enum ToolsFormat {
 /// the CLI JSON output stays byte-comparable to the MCP response
 /// (modulo the wrapping object).
 #[derive(Serialize)]
-struct ToolRow {
-    name: String,
-    title: Option<String>,
-    description: String,
-    read_only: Option<bool>,
-    destructive: Option<bool>,
-    idempotent: Option<bool>,
-    open_world: Option<bool>,
-    arg_risk_hints: &'static [ArgRiskHint],
+pub(crate) struct ToolRow {
+    pub(crate) name: String,
+    pub(crate) title: Option<String>,
+    pub(crate) description: String,
+    pub(crate) read_only: Option<bool>,
+    pub(crate) destructive: Option<bool>,
+    pub(crate) idempotent: Option<bool>,
+    pub(crate) open_world: Option<bool>,
+    pub(crate) arg_risk_hints: &'static [ArgRiskHint],
 }
 
-/// Print the tool catalogue to stdout in the requested format.
-pub fn run(format: ToolsFormat) -> Result<()> {
-    let rows: Vec<ToolRow> = registered_tool_attrs()
+/// Project a decorated tool list (already carrying icons / `_meta` /
+/// output schema from `tool_metadata_cli::decorate_tool_attrs`, via
+/// whichever base list the caller supplied) into the CLI/JSON row
+/// shape.
+pub(crate) fn build_rows(tools: Vec<rmcp::model::Tool>) -> Vec<ToolRow> {
+    tools
         .into_iter()
         .map(|tool| {
             let ann = tool.annotations.as_ref();
@@ -60,7 +70,15 @@ pub fn run(format: ToolsFormat) -> Result<()> {
                 arg_risk_hints,
             }
         })
-        .collect();
+        .collect()
+}
+
+/// Print the tool catalogue to stdout in the requested format.
+///
+/// `tools` is the caller's own base list (see the module doc: only
+/// `main.rs` can supply the live, macro-derived one).
+pub fn run(format: ToolsFormat, tools: Vec<rmcp::model::Tool>) -> Result<()> {
+    let rows = build_rows(tools);
 
     match format {
         ToolsFormat::Json => {
@@ -144,63 +162,23 @@ fn bool_cell(value: Option<bool>) -> &'static str {
 mod tests {
     use super::*;
 
-    /// The JSON form returns one row per registered tool with
-    /// the annotation hint columns wired up. Matches the MCP
-    /// `describe_tools` shape so consumers can switch surfaces
-    /// without re-parsing.
+    /// `build_rows` on a synthetic list still wires up the
+    /// arg-risk-hint column: real registry coverage against
+    /// `read_memory` / `write_memory` lives in
+    /// `main::tests::tools_json_lists_every_registered_tool_with_hint_columns`,
+    /// the only place in this binary that legitimately holds both
+    /// `commands::tools` and `commands::serve`'s live tool list.
     #[test]
-    fn tools_json_lists_every_registered_tool_with_hint_columns() {
-        let rows: Vec<ToolRow> = registered_tool_attrs()
-            .into_iter()
-            .map(|tool| {
-                let ann = tool.annotations.as_ref();
-                let arg_risk_hints = arg_risk_hints_for(tool.name.as_ref());
-                ToolRow {
-                    name: tool.name.to_string(),
-                    title: ann.and_then(|a| a.title.clone()),
-                    description: tool
-                        .description
-                        .as_ref()
-                        .map(|c| c.to_string())
-                        .unwrap_or_default(),
-                    read_only: ann.and_then(|a| a.read_only_hint),
-                    destructive: ann.and_then(|a| a.destructive_hint),
-                    idempotent: ann.and_then(|a| a.idempotent_hint),
-                    open_world: ann.and_then(|a| a.open_world_hint),
-                    arg_risk_hints,
-                }
-            })
-            .collect();
-        assert!(!rows.is_empty());
-        for row in &rows {
-            assert!(!row.name.is_empty(), "tool name must not be empty");
-            assert!(
-                row.title.as_deref().map(|t| !t.is_empty()).unwrap_or(false),
-                "{}: title must be non-empty",
-                row.name,
-            );
-        }
-        // Spot-check a known tool to lock the rendering of the
-        // hint columns once.
-        let read_memory = rows
-            .iter()
-            .find(|r| r.name == "read_memory")
-            .expect("read_memory present");
-        assert_eq!(read_memory.read_only, Some(true));
-        assert_eq!(read_memory.idempotent, Some(true));
-        assert_eq!(read_memory.open_world, Some(false));
-        // read_memory has no risky args; write_memory has
-        // an `override` hint.
-        assert!(read_memory.arg_risk_hints.is_empty());
-        let write_memory = rows
-            .iter()
-            .find(|r| r.name == "write_memory")
-            .expect("write_memory present");
+    fn build_rows_wires_up_arg_risk_hints_by_tool_name() {
+        let tool = rmcp::model::Tool::new(
+            std::borrow::Cow::Borrowed("write_memory"),
+            std::borrow::Cow::Borrowed("desc"),
+            std::sync::Arc::new(serde_json::Map::new()),
+        );
+        let rows = build_rows(vec![tool]);
+        assert_eq!(rows.len(), 1);
         assert!(
-            write_memory
-                .arg_risk_hints
-                .iter()
-                .any(|h| h.arg == "override"),
+            rows[0].arg_risk_hints.iter().any(|h| h.arg == "override"),
             "write_memory must surface an `override` arg_risk_hint",
         );
     }
