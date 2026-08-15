@@ -13,7 +13,10 @@ pub mod error;
 pub mod password;
 pub mod token;
 
-pub use backend::{AuthSession, Credentials, MAX_HANDLE_LENGTH, MmcpAuthBackend, MmcpUser};
+pub use backend::{
+    AuthSession, Credentials, MAX_HANDLE_LENGTH, MIN_VIABLE_MAX_HANDLE_LENGTH, MmcpAuthBackend,
+    MmcpUser,
+};
 pub use claims::SessionClaims;
 pub use error::AuthError;
 pub use password::{

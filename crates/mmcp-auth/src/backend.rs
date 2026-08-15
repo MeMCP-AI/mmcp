@@ -79,6 +79,21 @@ const fn decimal_digit_count(mut value: u32) -> usize {
 /// entirely.
 const SUFFIX_RESERVE_BYTES: usize = 1 + decimal_digit_count(MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS);
 
+/// Smallest `max_handle_length` value for which
+/// [`provision_oauth_handle`]'s numeric-suffix collision retry can
+/// still leave [`SUFFIX_RESERVE_BYTES`] of room for a `-N` suffix
+/// after truncating the base handle. The config cascade that resolves
+/// the effective `max_handle_length` (`mmcp_server::config`'s
+/// `resolve_max_handle_length`, see [`MAX_HANDLE_LENGTH`]'s doc
+/// comment) must reject any tier whose value falls below this floor
+/// and fall through to the next tier, exactly like it already rejects
+/// a tier of `0`: a bound this small can still be subtracted from
+/// safely (see [`provision_oauth_handle`]'s own `saturating_sub`
+/// guard), but the collision-retry mechanism this floor protects
+/// would silently degrade to producing duplicate or empty-base
+/// candidates below it.
+pub const MIN_VIABLE_MAX_HANDLE_LENGTH: usize = SUFFIX_RESERVE_BYTES + 1;
+
 // ── AuthUser impl ───────────────────────────────────────────────
 
 /// Wrapper around the database user model that carries the session
@@ -350,9 +365,16 @@ async fn provision_oauth_handle(
     {
         return Ok(base);
     }
+    // `saturating_sub` is a defense-in-depth floor: the config
+    // cascade in `mmcp_server::config::resolve_max_handle_length`
+    // already rejects any effective bound below
+    // `MIN_VIABLE_MAX_HANDLE_LENGTH` before it ever reaches this
+    // function, but this arithmetic stays underflow-safe on its own
+    // for any other caller, present or future, that resolves
+    // `max_handle_length` some other way.
     let suffix_base = truncate_to_byte_length(
         &format!("{provider}_{provider_user_id}"),
-        max_handle_length - SUFFIX_RESERVE_BYTES,
+        max_handle_length.saturating_sub(SUFFIX_RESERVE_BYTES),
     );
     for suffix in 2..=MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS {
         let candidate =
@@ -548,6 +570,36 @@ mod tests {
         assert_ne!(
             second, first,
             "successive suffix candidates must differ from each other"
+        );
+    }
+
+    /// Falsification for the `max_handle_length` underflow finding
+    /// (independent review, Wave 2 repair round 1). The config
+    /// cascade (`mmcp_server::config::resolve_max_handle_length`)
+    /// rejects any tier below [`MIN_VIABLE_MAX_HANDLE_LENGTH`] before
+    /// it ever reaches this function, but `provision_oauth_handle`
+    /// must stay underflow-safe on its own for any caller that
+    /// bypasses that cascade. `max_handle_length = 2` is below
+    /// `SUFFIX_RESERVE_BYTES` (3), so the base handle collides
+    /// deliberately to force the collision-retry path (the only path
+    /// that ever computes `max_handle_length - SUFFIX_RESERVE_BYTES`)
+    /// to actually run.
+    #[tokio::test]
+    async fn provision_oauth_handle_never_underflows_on_a_too_small_max_handle_length() {
+        let conn = test_db().await;
+        // "g_1" truncated to 2 bytes is "g_"; pre-registering it
+        // forces the retry path that subtracts SUFFIX_RESERVE_BYTES.
+        create_user(&conn, "g_").await;
+
+        let result = provision_oauth_handle(&conn, "g", "1", 2).await;
+
+        assert!(
+            matches!(
+                result,
+                Ok(_) | Err(AuthError::HandleAllocationExhausted { .. })
+            ),
+            "a too-small max_handle_length must produce a well-defined outcome (a candidate \
+             handle or a clean exhaustion error), never panic or wrap: {result:?}"
         );
     }
 }

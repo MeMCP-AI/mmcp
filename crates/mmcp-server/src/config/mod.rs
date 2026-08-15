@@ -256,6 +256,7 @@ where
         env_len,
         config_len,
         mmcp_auth::MIN_PASSWORD_LENGTH,
+        MIN_VALID_LENGTH_LIMIT,
     )
 }
 
@@ -278,6 +279,7 @@ where
         env_len,
         config_len,
         mmcp_auth::MAX_PASSWORD_LENGTH,
+        MIN_VALID_LENGTH_LIMIT,
     )
 }
 
@@ -300,6 +302,13 @@ where
         env_len,
         config_len,
         mmcp_auth::MAX_HANDLE_LENGTH,
+        // Below this floor, `mmcp_auth::provision_oauth_handle`'s
+        // numeric-suffix collision retry has no room left for
+        // `SUFFIX_RESERVE_BYTES`: the base handle truncation and the
+        // suffix truncation collapse onto each other. A tier this
+        // small is rejected and falls through, exactly like a tier of
+        // `0` already is.
+        mmcp_auth::MIN_VIABLE_MAX_HANDLE_LENGTH,
     )
 }
 
@@ -322,43 +331,55 @@ fn parse_usize_env(field: &str, var_name: &str, raw: Option<&str>) -> Option<usi
     }
 }
 
+/// Smallest accepted value for the two password-length tunables:
+/// preserves the original "a zero-byte bound is never legitimate"
+/// floor from before [`resolve_usize_from_tiers`] grew a per-tunable
+/// `min_valid` parameter to also serve `max_handle_length`'s stricter
+/// floor ([`mmcp_auth::MIN_VIABLE_MAX_HANDLE_LENGTH`]).
+const MIN_VALID_LENGTH_LIMIT: usize = 1;
+
 /// Precedence resolution given each tier's already-fetched value:
 /// `override_len` beats `env_len` beats `config_len` beats
-/// `default_len`. A `Some(0)` at any tier counts as absent (falls
-/// through), since a zero-byte bound is never a legitimate intent for
-/// any of the tunables this function resolves (password length,
-/// handle length); whichever tier is the one actually rejected for
-/// this reason is logged, naming `field` and that specific tier,
-/// before falling through to the next one.
+/// `default_len`. Any tier value strictly below `min_valid` counts as
+/// absent (falls through), since a bound below that floor is never a
+/// legitimate intent for the tunable being resolved: most callers
+/// pass [`MIN_VALID_LENGTH_LIMIT`] (rejecting only `0`), while
+/// `max_handle_length` passes the stricter
+/// [`mmcp_auth::MIN_VIABLE_MAX_HANDLE_LENGTH`] floor, below which its
+/// numeric-suffix collision retry loses room for the suffix it
+/// appends. Whichever tier is the one actually rejected is logged,
+/// naming `field`, the rejected value, and the floor, before falling
+/// through to the next tier.
 fn resolve_usize_from_tiers(
     field: &str,
     override_len: Option<usize>,
     env_len: Option<usize>,
     config_len: Option<usize>,
     default_len: usize,
+    min_valid: usize,
 ) -> usize {
     if let Some(n) = override_len {
-        if n > 0 {
+        if n >= min_valid {
             return n;
         }
         tracing::warn!(
-            "{field} override tier rejected: an explicit override of 0 is not a legitimate bound; falling through to the next {field} tier"
+            "{field} override tier rejected: {n} is below the minimum valid {field} of {min_valid}; falling through to the next {field} tier"
         );
     }
     if let Some(n) = env_len {
-        if n > 0 {
+        if n >= min_valid {
             return n;
         }
         tracing::warn!(
-            "{field} env tier rejected: a value of 0 is not a legitimate bound; falling through to the next {field} tier"
+            "{field} env tier rejected: {n} is below the minimum valid {field} of {min_valid}; falling through to the next {field} tier"
         );
     }
     if let Some(n) = config_len {
-        if n > 0 {
+        if n >= min_valid {
             return n;
         }
         tracing::warn!(
-            "{field} config tier rejected: a [limits] value of 0 is not a legitimate bound; falling through to the compiled-in default"
+            "{field} config tier rejected: {n} is below the minimum valid {field} of {min_valid}; falling through to the compiled-in default"
         );
     }
     default_len
@@ -564,7 +585,7 @@ mod tests {
     #[test]
     fn resolve_usize_from_tiers_prefers_explicit_override() {
         assert_eq!(
-            resolve_usize_from_tiers("x", Some(10), Some(20), Some(30), 40),
+            resolve_usize_from_tiers("x", Some(10), Some(20), Some(30), 40, 1),
             10
         );
     }
@@ -572,26 +593,57 @@ mod tests {
     #[test]
     fn resolve_usize_from_tiers_falls_back_env_then_config_then_default() {
         assert_eq!(
-            resolve_usize_from_tiers("x", None, Some(20), Some(30), 40),
+            resolve_usize_from_tiers("x", None, Some(20), Some(30), 40, 1),
             20
         );
-        assert_eq!(resolve_usize_from_tiers("x", None, None, Some(30), 40), 30);
-        assert_eq!(resolve_usize_from_tiers("x", None, None, None, 40), 40);
+        assert_eq!(
+            resolve_usize_from_tiers("x", None, None, Some(30), 40, 1),
+            30
+        );
+        assert_eq!(resolve_usize_from_tiers("x", None, None, None, 40, 1), 40);
     }
 
     #[test]
     fn resolve_usize_from_tiers_treats_zero_as_absent_at_every_tier() {
         assert_eq!(
-            resolve_usize_from_tiers("x", Some(0), Some(20), Some(30), 40),
+            resolve_usize_from_tiers("x", Some(0), Some(20), Some(30), 40, 1),
             20
         );
         assert_eq!(
-            resolve_usize_from_tiers("x", Some(0), Some(0), Some(30), 40),
+            resolve_usize_from_tiers("x", Some(0), Some(0), Some(30), 40, 1),
             30
         );
         assert_eq!(
-            resolve_usize_from_tiers("x", Some(0), Some(0), Some(0), 40),
+            resolve_usize_from_tiers("x", Some(0), Some(0), Some(0), 40, 1),
             40
+        );
+    }
+
+    /// Falsification for the `max_handle_length` underflow finding
+    /// (independent review, Wave 2 repair round 1): a `min_valid`
+    /// floor above 1 must reject every tier value at or below it, not
+    /// just a literal `0`, exactly as `max_handle_length`'s cascade
+    /// now does via `mmcp_auth::MIN_VIABLE_MAX_HANDLE_LENGTH`.
+    #[test]
+    fn resolve_usize_from_tiers_rejects_any_value_below_an_arbitrary_floor() {
+        // Floor of 4: 1, 2, and 3 are all below it and must be
+        // rejected at every tier, exactly like `--max-handle-length
+        // 1` / `--max-handle-length 2` reaching the real
+        // `max_handle_length` cascade would be.
+        assert_eq!(
+            resolve_usize_from_tiers("x", Some(2), Some(3), Some(30), 40, 4),
+            30,
+            "an override below the floor must fall through even though it is nonzero"
+        );
+        assert_eq!(
+            resolve_usize_from_tiers("x", Some(1), Some(2), Some(3), 40, 4),
+            40,
+            "every tier below the floor must fall through to the compiled-in default"
+        );
+        assert_eq!(
+            resolve_usize_from_tiers("x", Some(4), None, None, 40, 4),
+            4,
+            "a value exactly at the floor must be accepted"
         );
     }
 
@@ -630,7 +682,7 @@ mod tests {
         // must warn exactly once.
         tracing::subscriber::with_default(subscriber, || {
             assert_eq!(
-                resolve_usize_from_tiers("x", Some(10), None, Some(0), 40),
+                resolve_usize_from_tiers("x", Some(10), None, Some(0), 40, 1),
                 10
             );
         });
@@ -643,7 +695,10 @@ mod tests {
         let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let subscriber = WarnCounter(count.clone());
         tracing::subscriber::with_default(subscriber, || {
-            assert_eq!(resolve_usize_from_tiers("x", None, None, Some(0), 40), 40);
+            assert_eq!(
+                resolve_usize_from_tiers("x", None, None, Some(0), 40, 1),
+                40
+            );
         });
         assert_eq!(
             count.load(std::sync::atomic::Ordering::SeqCst),
@@ -794,6 +849,70 @@ mod tests {
             cfg.max_handle_length,
             mmcp_auth::MAX_HANDLE_LENGTH,
             "an env value of 0 is not a legitimate bound and must fall through to the default"
+        );
+    }
+
+    // ── max_handle_length underflow finding (A1, Wave 2 repair round 1) ──
+    //
+    // Before this repair, `max_handle_length` only rejected an exact
+    // `0`; `--max-handle-length 1` or `--max-handle-length 2` sailed
+    // through the cascade and reached
+    // `mmcp_auth::provision_oauth_handle`'s `max_handle_length -
+    // SUFFIX_RESERVE_BYTES` subtraction, underflowing (`SUFFIX_RESERVE_BYTES`
+    // is 3). These tests prove the cascade itself now rejects any
+    // value below `mmcp_auth::MIN_VIABLE_MAX_HANDLE_LENGTH`, so the
+    // arithmetic in `mmcp-auth` is never reached with an unsafe value
+    // through this entry point.
+
+    #[test]
+    fn max_handle_length_too_small_nonzero_override_falls_through_to_env() {
+        let cfg = ServerConfig::from_source_with_overrides(
+            |key| (key == MAX_HANDLE_LENGTH_ENV).then(|| "12".to_string()),
+            ServerConfigOverrides {
+                min_password_length: None,
+                max_password_length: None,
+                // Below MIN_VIABLE_MAX_HANDLE_LENGTH (4) but nonzero:
+                // the pre-repair cascade would have accepted this and
+                // handed it straight to the underflowing subtraction.
+                max_handle_length: Some(2),
+            },
+        );
+        assert_eq!(
+            cfg.max_handle_length, 12,
+            "an override too small to leave suffix room is not a legitimate bound and must \
+             fall through to env, exactly like an override of 0 already does"
+        );
+    }
+
+    #[test]
+    fn max_handle_length_too_small_nonzero_env_falls_through_to_default() {
+        let cfg = ServerConfig::from_source_with_overrides(
+            |key| (key == MAX_HANDLE_LENGTH_ENV).then(|| "1".to_string()),
+            ServerConfigOverrides::default(),
+        );
+        assert_eq!(
+            cfg.max_handle_length,
+            mmcp_auth::MAX_HANDLE_LENGTH,
+            "an env value too small to leave suffix room must fall through to the compiled-in \
+             default, exactly like a value of 0 already does"
+        );
+    }
+
+    #[test]
+    fn max_handle_length_at_the_viable_floor_is_accepted() {
+        let cfg = ServerConfig::from_source_with_overrides(
+            |_| None,
+            ServerConfigOverrides {
+                min_password_length: None,
+                max_password_length: None,
+                max_handle_length: Some(mmcp_auth::MIN_VIABLE_MAX_HANDLE_LENGTH),
+            },
+        );
+        assert_eq!(
+            cfg.max_handle_length,
+            mmcp_auth::MIN_VIABLE_MAX_HANDLE_LENGTH,
+            "a value exactly at the viable floor leaves just enough suffix room and must be \
+             accepted, not rejected"
         );
     }
 }
