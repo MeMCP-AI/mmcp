@@ -33,6 +33,16 @@ impl SyncEngine {
         Self { backend, client }
     }
 
+    /// Effective content-plane git credentials, as configured on
+    /// the wrapped [`SyncClient`] via `with_push_credential`.
+    /// Exposed so a caller can verify which credential a built
+    /// engine actually carries, distinct from the control-plane
+    /// bearer used by `/sync/*` requests.
+    #[must_use]
+    pub fn git_credentials(&self) -> mmcp_git::Credentials {
+        self.client.git_credentials()
+    }
+
     /// Push each in-scope group's local `main` to its remote.
     ///
     /// Git-symmetric write path. No pending-edit queue: every
@@ -143,7 +153,22 @@ impl SyncEngine {
                     stderr,
                 });
             }
-            Err(mmcp_git::GitError::Transport { .. }) => false,
+            Err(mmcp_git::GitError::Transport { op, url, stderr }) => {
+                // A credential mismatch, a network blip, or a
+                // rejecting remote all land here indistinguishably.
+                // Reported as content_transferred: false rather than
+                // raised (see this method's doc comment), so this
+                // line is the only signal a caller gets that bytes
+                // did not ship.
+                tracing::warn!(
+                    group = %group_id,
+                    op,
+                    url = %url,
+                    stderr = %stderr,
+                    "push content-plane transport failed, reporting content_transferred=false"
+                );
+                false
+            }
             Err(other) => return Err(SyncError::Git(other)),
         };
         Ok(Some(PushedGroup {

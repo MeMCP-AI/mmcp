@@ -90,6 +90,7 @@ struct SyncClientInner {
     http: Client,
     base_url: String,
     bearer_token: Option<String>,
+    push_credential: Option<String>,
 }
 
 impl SyncClient {
@@ -109,18 +110,50 @@ impl SyncClient {
                 http,
                 base_url,
                 bearer_token: None,
+                push_credential: None,
             }),
         })
     }
 
-    /// Attach a bearer token to every request. Rebuilds the inner
-    /// arc so existing clones keep their old authorization state.
+    /// Attach the control-plane bearer token, sent as the
+    /// `Authorization` header on every `/sync/*` request. Rebuilds
+    /// the inner arc so existing clones keep their old
+    /// authorization state.
+    ///
+    /// This is a per-user PASETO session token, verified server
+    /// side against `mmcp_auth::TokenVerifier`. It does not feed
+    /// [`SyncClient::git_credentials`]: the content plane compares
+    /// against a separate shared secret, see
+    /// [`SyncClient::with_push_credential`].
     #[must_use]
     pub fn with_bearer(self, token: impl Into<String>) -> Self {
         let inner = SyncClientInner {
             http: self.inner.http.clone(),
             base_url: self.inner.base_url.clone(),
             bearer_token: Some(token.into()),
+            push_credential: self.inner.push_credential.clone(),
+        };
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+
+    /// Attach the content-plane push credential, returned by
+    /// [`SyncClient::git_credentials`] for the git smart-HTTP
+    /// subprocess. Rebuilds the inner arc so existing clones keep
+    /// their old credential state.
+    ///
+    /// This is a shared secret compared by exact string equality
+    /// against the server's own `MMCP_PUSH_TOKEN`. It does not feed
+    /// the `/sync/*` `Authorization` header, see
+    /// [`SyncClient::with_bearer`].
+    #[must_use]
+    pub fn with_push_credential(self, token: impl Into<String>) -> Self {
+        let inner = SyncClientInner {
+            http: self.inner.http.clone(),
+            base_url: self.inner.base_url.clone(),
+            bearer_token: self.inner.bearer_token.clone(),
+            push_credential: Some(token.into()),
         };
         Self {
             inner: Arc::new(inner),
@@ -139,14 +172,17 @@ impl SyncClient {
         format!("{}/git/{}.git", self.inner.base_url, group_id)
     }
 
-    /// Derive git content-plane credentials from the control-plane
-    /// bearer token, if any. Returning the same auth for both planes
-    /// means a user who configures `--token` once gets authenticated
-    /// pushes to mmcp-server's smart-HTTP endpoint for free, without
-    /// a second credential source to keep in sync.
+    /// Git content-plane credentials, built from the push
+    /// credential set via [`SyncClient::with_push_credential`], if
+    /// any. The control-plane bearer token from
+    /// [`SyncClient::with_bearer`] is a distinct credential type
+    /// (a per-user PASETO session token) and never feeds this
+    /// method: the server's git smart-HTTP endpoint compares
+    /// against its own shared `MMCP_PUSH_TOKEN` secret, not against
+    /// a PASETO token.
     #[must_use]
     pub fn git_credentials(&self) -> mmcp_git::Credentials {
-        match self.inner.bearer_token.as_deref() {
+        match self.inner.push_credential.as_deref() {
             Some(token) if !token.is_empty() => mmcp_git::Credentials::bearer(token),
             _ => mmcp_git::Credentials::None,
         }
@@ -269,39 +305,68 @@ mod tests {
         assert!(url.ends_with(".git"));
     }
 
-    /// `git_credentials` returns `None` when no bearer token was
+    /// `git_credentials` returns `None` when no push credential was
     /// configured. Locks in the negative branch of the match so a
     /// mutation replacing the body with `Default::default()` would
     /// only agree on this case; the positive-branch tests below
     /// then disagree and catch it.
     #[test]
-    fn git_credentials_without_bearer_returns_none() {
+    fn git_credentials_without_push_credential_returns_none() {
         let client = SyncClient::new("http://localhost:0").expect("build client");
         assert_eq!(client.git_credentials(), mmcp_git::Credentials::None);
     }
 
     #[test]
-    fn git_credentials_with_nonempty_bearer_returns_bearer() {
+    fn git_credentials_with_nonempty_push_credential_returns_bearer() {
         let client = SyncClient::new("http://localhost:0")
             .expect("build client")
-            .with_bearer("ghp_test_token");
+            .with_push_credential("push-secret-token");
         assert_eq!(
             client.git_credentials(),
-            mmcp_git::Credentials::bearer("ghp_test_token")
+            mmcp_git::Credentials::bearer("push-secret-token")
+        );
+    }
+
+    /// A control-plane bearer token configured via `with_bearer`
+    /// must never leak into `git_credentials`: the two planes carry
+    /// mutually incompatible credential types, and the server
+    /// rejects a PASETO token presented as the git push secret.
+    /// This is the exact regression the plane split fixes.
+    #[test]
+    fn with_bearer_alone_never_leaks_into_git_credentials() {
+        let client = SyncClient::new("http://localhost:0")
+            .expect("build client")
+            .with_bearer("paseto-control-plane-token");
+        assert_eq!(client.git_credentials(), mmcp_git::Credentials::None);
+    }
+
+    /// The two credential slots are independent: setting both to
+    /// different values keeps each in its own plane, and setting
+    /// one never overwrites the other on the rebuilt inner arc.
+    #[test]
+    fn with_bearer_and_with_push_credential_compose_independently() {
+        let client = SyncClient::new("http://localhost:0")
+            .expect("build client")
+            .with_bearer("paseto-control-plane-token")
+            .with_push_credential("shared-push-secret");
+        assert_eq!(
+            client.git_credentials(),
+            mmcp_git::Credentials::bearer("shared-push-secret"),
+            "git_credentials must carry the push credential, never the bearer token"
         );
     }
 
     /// The `Some(token) if !token.is_empty()` guard specifically
     /// demands a non-empty token. Mutation testing flagged the
     /// `!token.is_empty()` predicate as escaping: a caller that
-    /// stored an empty bearer string must fall back to `None`, not
-    /// produce a `Credentials::bearer("")` call that the server
+    /// stored an empty push credential must fall back to `None`,
+    /// not produce a `Credentials::bearer("")` call that the server
     /// would then silently reject.
     #[test]
-    fn git_credentials_with_empty_bearer_string_falls_back_to_none() {
+    fn git_credentials_with_empty_push_credential_falls_back_to_none() {
         let client = SyncClient::new("http://localhost:0")
             .expect("build client")
-            .with_bearer("");
+            .with_push_credential("");
         assert_eq!(client.git_credentials(), mmcp_git::Credentials::None);
     }
 }

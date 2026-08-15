@@ -15,11 +15,13 @@ uuid = { workspace = true }
 semver = { workspace = true }
 reqwest = { workspace = true }
 futures-util = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
 wiremock = { workspace = true }
 tempfile = "3"
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true

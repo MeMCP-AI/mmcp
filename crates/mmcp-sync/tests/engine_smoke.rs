@@ -9,16 +9,54 @@
 //! and the engine's reports explicitly record that.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::io;
+use std::sync::{Arc, Mutex};
 
 use mmcp_core::id::{GroupId, UserId};
 use mmcp_core::manifest::GroupManifest;
 use mmcp_git::{GitBackend, NativeBackend, RepoHandle};
 use mmcp_sync::{GroupHandleResolver, ManifestResponse, RemoteGroup, SyncClient, SyncEngine};
 use tempfile::TempDir;
+use tracing_subscriber::fmt::MakeWriter;
 use uuid::Uuid;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+/// Thread-safe byte sink shared between a `tracing_subscriber::fmt`
+/// layer and the test that reads it back. `MakeWriter` is
+/// implemented on the handle itself so `.clone()` on each write call
+/// keeps sharing the same underlying buffer.
+#[derive(Clone, Default)]
+struct CapturedLog(Arc<Mutex<Vec<u8>>>);
+
+impl CapturedLog {
+    fn contains(&self, needle: &str) -> bool {
+        let bytes = self.0.lock().expect("log buffer lock");
+        String::from_utf8_lossy(&bytes).contains(needle)
+    }
+}
+
+impl io::Write for CapturedLog {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0
+            .lock()
+            .expect("log buffer lock")
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> MakeWriter<'a> for CapturedLog {
+    type Writer = CapturedLog;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
 
 /// Tiny resolver built from an explicit map. Matches the shape
 /// the real client will expose through its `GroupIndex`.
@@ -86,10 +124,36 @@ impl mmcp_sync::ScopeIndex for OrderedResolver {
     }
 }
 
+/// Seeds tracing's process-global per-callsite interest cache as
+/// permanently "always interested", once per test-binary process.
+///
+/// `tracing` caches whether anyone cares about a given callsite the
+/// FIRST time it fires, and that cache is process-wide, not
+/// thread-local. Under cargo's parallel test runner, whichever test
+/// happens to hit `push_one_group`'s warn! callsite first, with no
+/// subscriber installed, would otherwise cache `Interest::never` and
+/// silently starve every later test's thread-local capturing
+/// subscriber. Installing a maximally-permissive global default
+/// before any test's first `push`/`fetch`/`pull` call keeps the
+/// cache "always interested" for the rest of the process; each
+/// test's own `tracing::subscriber::set_default` then reliably
+/// receives every event on its own thread.
+fn ensure_tracing_interest_cache_stays_open() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(std::io::sink)
+            .finish();
+        let _ = tracing::subscriber::set_global_default(subscriber);
+    });
+}
+
 /// Build a real native backend rooted in a tempdir plus one seeded
 /// group so the tests can exercise the content plane alongside
 /// the control plane.
 async fn seeded_backend() -> (Arc<NativeBackend>, MapResolver, Uuid, TempDir) {
+    ensure_tracing_interest_cache_stays_open();
     let tmp = TempDir::new().expect("tempdir");
     let backend = Arc::new(NativeBackend::new(tmp.path()).expect("backend"));
     let owner = UserId::new();
@@ -121,6 +185,57 @@ async fn push_reports_each_in_scope_group_with_transport_status() {
     assert_eq!(report.pushed.len(), 1);
     assert_eq!(report.pushed[0].group_id, group_uuid);
     assert!(!report.pushed[0].content_transferred);
+}
+
+/// Regression coverage for the sync_engine.rs push-transport swallow:
+/// before this fix, a `GitError::Transport` collapsed into
+/// `content_transferred: false` with no signal at all. The same
+/// wiremock-fronted server used above (it cannot serve git smart
+/// HTTP) drives the native backend into the exact `Transport` arm;
+/// this test additionally asserts the warn-level log line fires and
+/// names the affected group. Installs a scoped `tracing_subscriber`
+/// writing into an in-memory buffer rather than relying on a global
+/// subscriber, so this test never races other tests' log output.
+#[tokio::test]
+async fn push_transport_failure_logs_a_warning_instead_of_staying_silent() {
+    let captured = CapturedLog::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(captured.clone())
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .finish();
+
+    let server = MockServer::start().await;
+    let (backend, resolver, group_uuid, _tmp) = seeded_backend().await;
+    let client = SyncClient::new(server.uri()).expect("client");
+    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, client);
+
+    // `set_default`'s guard is thread-local, not closure-scoped, so
+    // it stays alive across the `.await` below. `#[tokio::test]`
+    // defaults to a single-threaded (`current_thread`) runtime, so
+    // the task resumes on the same OS thread after the git
+    // subprocess's `spawn_blocking` call completes, keeping the
+    // whole call graph under this subscriber. `seeded_backend`
+    // already called `ensure_tracing_interest_cache_stays_open`, so
+    // the callsite below is guaranteed to actually reach this
+    // thread-local subscriber instead of a stale process-global
+    // `Interest::never` verdict.
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let report = engine
+        .push(mmcp_sync::SyncFilter::All, &resolver, &resolver)
+        .await
+        .expect("push ok");
+    drop(_guard);
+
+    assert!(!report.pushed[0].content_transferred);
+    assert!(
+        captured.contains("push content-plane transport failed"),
+        "the transport failure swallow must emit a warn-level log line"
+    );
+    assert!(
+        captured.contains(&group_uuid.to_string()),
+        "the log line must name the affected group"
+    );
 }
 
 #[tokio::test]
