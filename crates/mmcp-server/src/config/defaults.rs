@@ -31,3 +31,9 @@ pub const MIN_PASSWORD_LENGTH_ENV: &str = "MMCP_MIN_PASSWORD_LENGTH";
 /// Environment variable overriding the maximum accepted password
 /// length. Same precedence position as [`MIN_PASSWORD_LENGTH_ENV`].
 pub const MAX_PASSWORD_LENGTH_ENV: &str = "MMCP_MAX_PASSWORD_LENGTH";
+
+/// Environment variable overriding the maximum accepted account
+/// handle length. Second in precedence behind an explicit
+/// `--max-handle-length` CLI override, ahead of the
+/// `~/.mmcp/config.toml` `[limits]` tier and the compiled-in default.
+pub const MAX_HANDLE_LENGTH_ENV: &str = "MMCP_MAX_HANDLE_LENGTH";

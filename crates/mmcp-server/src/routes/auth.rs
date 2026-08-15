@@ -41,9 +41,14 @@ use crate::state::ServerState;
 /// password-length bound: even a pathologically large JSON body must
 /// never reach the deserializer, let alone the Argon2 hashing step
 /// the register/login password-policy check guards against.
-/// 16 KiB comfortably covers every field's own maximum
-/// (`MAX_HANDLE_LENGTH` + `MAX_EMAIL_LENGTH` + `MAX_DISPLAY_NAME_LENGTH`
-/// + a generous password ceiling) plus JSON structural overhead.
+/// 16 KiB comfortably covers every field's own maximum (the
+/// compiled-in default `MAX_HANDLE_LENGTH` + `MAX_EMAIL_LENGTH` +
+/// `MAX_DISPLAY_NAME_LENGTH` + a generous password ceiling) plus
+/// JSON structural overhead. A larger config-resolved
+/// `max_handle_length` still fits comfortably under this coarse
+/// backstop; it is sized as a defense-in-depth bound against a
+/// pathological body, not as an exact mirror of the configurable
+/// per-field caps.
 const AUTH_REQUEST_BODY_LIMIT_BYTES: usize = 16 * 1024;
 
 pub fn router() -> Router<ServerState> {
@@ -67,14 +72,26 @@ pub fn router() -> Router<ServerState> {
 
 // ── Password ────────────────────────────────────────────────────
 
-/// Maximum accepted length of a user handle, in bytes. Re-exports
-/// `mmcp-auth`'s bound (`mmcp_auth::backend::MAX_HANDLE_LENGTH`) so
-/// the password-registration path here and the OAuth
-/// JIT-provisioning path in `mmcp-auth` share exactly one
-/// definition instead of two independently maintained 64s;
-/// `mmcp-server` already depends on `mmcp-auth`
+/// Compiled-in DEFAULT tier of the account handle length bound, in
+/// bytes. Re-exports `mmcp-auth`'s bound
+/// (`mmcp_auth::backend::MAX_HANDLE_LENGTH`) so this crate and the
+/// OAuth JIT-provisioning path in `mmcp-auth` share exactly one
+/// default-tier definition instead of two independently maintained
+/// 64s; `mmcp-server` already depends on `mmcp-auth`
 /// (`crates/mmcp-server/Cargo.toml`), so referencing its constant
 /// directly costs nothing.
+///
+/// This is the LOWEST-precedence tier only: the live
+/// `/auth/register` HTTP boundary enforces
+/// [`crate::state::ServerStateInner::max_handle_length`], the
+/// EFFECTIVE bound resolved through the full config cascade (CLI
+/// `--max-handle-length` beats `MMCP_MAX_HANDLE_LENGTH` beats
+/// `~/.mmcp/config.toml` `[limits] max_handle_length` beats this
+/// constant), never this constant directly. Kept `pub` because unit
+/// tests below assert the compiled DEFAULT tier's own numeric value
+/// (as opposed to the integration tests in
+/// `crates/mmcp-server/tests/auth_flow.rs`, which exercise the live
+/// HTTP path and must use the effective, config-resolved value).
 pub use mmcp_auth::MAX_HANDLE_LENGTH;
 
 /// Maximum accepted length of an email address, in bytes. 254 is
@@ -125,8 +142,10 @@ fn validate_non_blank(field: &'static str, value: &str) -> Result<(), AuthHttpEr
 /// Validate a [`RegisterRequest`]'s fields at the HTTP boundary, so
 /// a rejected request never reaches the password hasher or the
 /// database: an empty/whitespace-only handle, email, or display name
-/// is rejected, every field carries an explicit maximum length, and
-/// the password is checked against the server's resolved
+/// is rejected, the handle is checked against the server's resolved
+/// [`max_handle_length`](crate::config::ServerConfig::max_handle_length)
+/// bound, every other field carries a fixed maximum length, and the
+/// password is checked against the server's resolved
 /// [`min_password_length`](crate::config::ServerConfig::min_password_length) /
 /// [`max_password_length`](crate::config::ServerConfig::max_password_length)
 /// bounds.
@@ -134,9 +153,10 @@ fn validate_register_request(
     req: &RegisterRequest,
     min_password_length: usize,
     max_password_length: usize,
+    max_handle_length: usize,
 ) -> Result<(), AuthHttpError> {
     validate_non_blank("handle", &req.handle)?;
-    validate_max_length("handle", &req.handle, MAX_HANDLE_LENGTH)?;
+    validate_max_length("handle", &req.handle, max_handle_length)?;
     if let Some(email) = &req.email {
         validate_non_blank("email", email)?;
         validate_max_length("email", email, MAX_EMAIL_LENGTH)?;
@@ -154,7 +174,12 @@ async fn register(
     State(state): State<ServerState>,
     Json(req): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<RegisterResponse>), AuthHttpError> {
-    validate_register_request(&req, state.min_password_length, state.max_password_length)?;
+    validate_register_request(
+        &req,
+        state.min_password_length,
+        state.max_password_length,
+        state.max_handle_length,
+    )?;
     let hash = hash_password(&req.password).map_err(into_generic_response)?;
     let user_id = Uuid::now_v7();
     user_repo::create(
@@ -683,13 +708,15 @@ mod tests {
     }
 
     /// Run [`validate_register_request`] with the compiled-in
-    /// default password bounds, matching what `ServerState` resolves
-    /// to when no override/env/config tier is set.
+    /// default password and handle-length bounds, matching what
+    /// `ServerState` resolves to when no override/env/config tier is
+    /// set for any of them.
     fn validate(req: &RegisterRequest) -> Result<(), AuthHttpError> {
         validate_register_request(
             req,
             mmcp_auth::MIN_PASSWORD_LENGTH,
             mmcp_auth::MAX_PASSWORD_LENGTH,
+            MAX_HANDLE_LENGTH,
         )
     }
 
@@ -830,12 +857,52 @@ mod tests {
             password: "shortpw1".to_string(),
             ..valid_request()
         };
-        assert!(validate_register_request(&req, 4, mmcp_auth::MAX_PASSWORD_LENGTH).is_ok());
+        assert!(
+            validate_register_request(&req, 4, mmcp_auth::MAX_PASSWORD_LENGTH, MAX_HANDLE_LENGTH)
+                .is_ok()
+        );
         assert!(matches!(
-            validate_register_request(&req, 20, mmcp_auth::MAX_PASSWORD_LENGTH),
+            validate_register_request(&req, 20, mmcp_auth::MAX_PASSWORD_LENGTH, MAX_HANDLE_LENGTH),
             Err(AuthHttpError::PasswordPolicy(
                 mmcp_auth::AuthError::PasswordTooShort { min: 20, .. }
             ))
+        ));
+    }
+
+    #[test]
+    fn a_narrower_caller_supplied_max_handle_length_is_actually_enforced() {
+        // Mirrors `a_narrower_caller_supplied_min_password_length_is_actually_enforced`:
+        // proves `validate_register_request` reads its own
+        // `max_handle_length` parameter (as `ServerState` resolves
+        // it through the config cascade), not the module-level
+        // `MAX_HANDLE_LENGTH` constant directly. A handle that
+        // satisfies the compiled-in default must still be rejected
+        // once the caller narrows the cap below its own length.
+        let req = RegisterRequest {
+            handle: "h".repeat(10),
+            ..valid_request()
+        };
+        assert!(
+            validate_register_request(
+                &req,
+                mmcp_auth::MIN_PASSWORD_LENGTH,
+                mmcp_auth::MAX_PASSWORD_LENGTH,
+                MAX_HANDLE_LENGTH
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            validate_register_request(
+                &req,
+                mmcp_auth::MIN_PASSWORD_LENGTH,
+                mmcp_auth::MAX_PASSWORD_LENGTH,
+                8
+            ),
+            Err(AuthHttpError::FieldTooLong {
+                field: "handle",
+                actual: 10,
+                max: 8,
+            })
         ));
     }
 

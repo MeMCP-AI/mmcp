@@ -36,6 +36,13 @@ enum Command {
         /// bytes. Same precedence as `--min-password-length`.
         #[arg(long)]
         max_password_length: Option<usize>,
+
+        /// Override the maximum accepted account handle length, in
+        /// bytes. Highest-precedence tier: beats
+        /// `MMCP_MAX_HANDLE_LENGTH`, the `~/.mmcp/config.toml`
+        /// `[limits]` tier, and the compiled-in default.
+        #[arg(long)]
+        max_handle_length: Option<usize>,
     },
     /// Probe the running server's `/health` endpoint on loopback.
     ///
@@ -55,6 +62,7 @@ fn default_serve_command() -> Command {
     Command::Serve {
         min_password_length: None,
         max_password_length: None,
+        max_handle_length: None,
     }
 }
 
@@ -65,10 +73,12 @@ async fn main() -> Result<()> {
         Command::Serve {
             min_password_length,
             max_password_length,
+            max_handle_length,
         } => {
             run_server(config::ServerConfigOverrides {
                 min_password_length,
                 max_password_length,
+                max_handle_length,
             })
             .await
         }

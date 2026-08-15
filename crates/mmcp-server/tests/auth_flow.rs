@@ -7,10 +7,19 @@ use mmcp_server::config::ServerConfig;
 mod common;
 
 async fn start_server() -> SocketAddr {
-    let cfg = ServerConfig {
+    start_server_with_config(ServerConfig {
         token_key: [42u8; 32],
         ..common::test_server_config(tempfile::tempdir().unwrap().keep())
-    };
+    })
+    .await
+}
+
+/// Shared bootstrap behind [`start_server`] and every test that needs
+/// a non-default `ServerConfig` (e.g. the `max_handle_length`
+/// cascade falsification test below): builds the state and router
+/// from a caller-supplied config, binds an ephemeral loopback port,
+/// and spawns the server task.
+async fn start_server_with_config(cfg: mmcp_server::config::ServerConfig) -> SocketAddr {
     let state = mmcp_server::state::ServerState::initialize(&cfg)
         .await
         .expect("server init");
@@ -207,4 +216,50 @@ async fn register_with_over_length_handle_returns_400() {
         .await
         .expect("register");
     assert_eq!(resp.status(), 400);
+}
+
+/// Falsification anchor for the `max_handle_length` config cascade
+/// (mirrors `register_with_over_length_handle_returns_400` but
+/// proves the EFFECTIVE, config-resolved bound is what
+/// `/auth/register` actually enforces, not the compiled-in
+/// `MAX_HANDLE_LENGTH` default): a handle well under the compiled
+/// default (64 bytes) but over a smaller `max_handle_length`
+/// supplied through `ServerConfig` must still be rejected. Reverting
+/// the `validate_register_request` call in
+/// `crates/mmcp-server/src/routes/auth.rs` to read the
+/// `MAX_HANDLE_LENGTH` constant instead of `state.max_handle_length`
+/// flips this test from RED (400 expected, 201 observed) back to
+/// GREEN once restored.
+#[tokio::test]
+async fn overriding_max_handle_length_smaller_than_default_rejects_a_handle_the_default_would_accept()
+ {
+    const NARROWED_MAX_HANDLE_LENGTH: usize = 8;
+    let handle = "h".repeat(NARROWED_MAX_HANDLE_LENGTH + 2);
+    assert!(
+        handle.len() < mmcp_auth::MAX_HANDLE_LENGTH,
+        "the test handle must satisfy the compiled default so only the narrowed \
+         override, not the default, can be responsible for a rejection"
+    );
+
+    let addr = start_server_with_config(ServerConfig {
+        token_key: [43u8; 32],
+        max_handle_length: NARROWED_MAX_HANDLE_LENGTH,
+        ..common::test_server_config(tempfile::tempdir().unwrap().keep())
+    })
+    .await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/auth/register"))
+        .json(&serde_json::json!({
+            "handle": handle,
+            "password": "validpassword"
+        }))
+        .send()
+        .await
+        .expect("register");
+    assert_eq!(
+        resp.status(),
+        400,
+        "a handle under the compiled default but over the config-resolved \
+         max_handle_length must be rejected by the live HTTP endpoint"
+    );
 }

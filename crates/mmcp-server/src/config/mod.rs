@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use defaults::{DEFAULT_BIND, DEFAULT_DATABASE_URL, DEFAULT_REPO_ROOT};
-pub use defaults::{MAX_PASSWORD_LENGTH_ENV, MIN_PASSWORD_LENGTH_ENV};
+pub use defaults::{MAX_HANDLE_LENGTH_ENV, MAX_PASSWORD_LENGTH_ENV, MIN_PASSWORD_LENGTH_ENV};
 
 /// Server configuration.
 ///
@@ -25,6 +25,7 @@ pub use defaults::{MAX_PASSWORD_LENGTH_ENV, MIN_PASSWORD_LENGTH_ENV};
 /// | `MMCP_PUSH_TOKEN`                 | (absent = pushes disabled)|
 /// | `MMCP_MIN_PASSWORD_LENGTH`        | see `min_password_length` cascade below |
 /// | `MMCP_MAX_PASSWORD_LENGTH`        | see `max_password_length` cascade below |
+/// | `MMCP_MAX_HANDLE_LENGTH`          | see `max_handle_length` cascade below |
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub bind: SocketAddr,
@@ -53,6 +54,17 @@ pub struct ServerConfig {
     /// over `MMCP_MAX_PASSWORD_LENGTH`, `[limits] max_password_length`,
     /// and `mmcp_auth::MAX_PASSWORD_LENGTH`.
     pub max_password_length: usize,
+    /// Effective maximum accepted account handle length, in bytes,
+    /// resolved through the same override/env/config-file/default
+    /// cascade as [`ServerConfig::min_password_length`] (CLI
+    /// `--max-handle-length` beats `MMCP_MAX_HANDLE_LENGTH` beats
+    /// `~/.mmcp/config.toml` `[limits] max_handle_length` beats
+    /// `mmcp_auth::MAX_HANDLE_LENGTH`). Enforced both at the
+    /// `/auth/register` HTTP boundary and inside OAuth
+    /// JIT-provisioning (`mmcp_auth::backend::provision_oauth_handle`),
+    /// so a JIT-created account can never exceed what the register
+    /// endpoint would accept.
+    pub max_handle_length: usize,
 }
 
 /// CLI-supplied override tier for [`ServerConfig::from_source_with_overrides`]
@@ -70,6 +82,10 @@ pub struct ServerConfigOverrides {
     /// [`ServerConfigOverrides::min_password_length`], over
     /// [`mmcp_auth::MAX_PASSWORD_LENGTH`].
     pub max_password_length: Option<usize>,
+    /// `--max-handle-length`; highest-precedence tier, beats
+    /// `MMCP_MAX_HANDLE_LENGTH`, the user config file, and the
+    /// compiled-in [`mmcp_auth::MAX_HANDLE_LENGTH`] default.
+    pub max_handle_length: Option<usize>,
 }
 
 /// Configuration for a single OAuth provider.
@@ -92,8 +108,8 @@ impl ServerConfig {
     }
 
     /// Build a config from the process environment, honoring the
-    /// given CLI-supplied override tier for the password-length
-    /// cascade.
+    /// given CLI-supplied override tier for the min/max password
+    /// length and max handle length cascades.
     pub fn from_env_with_overrides(overrides: ServerConfigOverrides) -> Self {
         Self::from_source_with_overrides(|key| std::env::var(key).ok(), overrides)
     }
@@ -111,9 +127,10 @@ impl ServerConfig {
 
     /// Build a config by pulling each variable from an injectable
     /// source, honoring the given CLI-supplied override tier for the
-    /// password-length cascade. The full [`ServerConfig::from_source`]
-    /// / [`ServerConfig::from_env`] wrappers delegate here with a
-    /// default (all-`None`) override tier.
+    /// min/max password length and max handle length cascades. The
+    /// full [`ServerConfig::from_source`] / [`ServerConfig::from_env`]
+    /// wrappers delegate here with a default (all-`None`) override
+    /// tier.
     pub fn from_source_with_overrides<F>(get: F, overrides: ServerConfigOverrides) -> Self
     where
         F: Fn(&str) -> Option<String>,
@@ -161,6 +178,7 @@ impl ServerConfig {
 
         let min_password_length = resolve_min_password_length(&get, overrides.min_password_length);
         let max_password_length = resolve_max_password_length(&get, overrides.max_password_length);
+        let max_handle_length = resolve_max_handle_length(&get, overrides.max_handle_length);
 
         Self {
             bind,
@@ -172,6 +190,7 @@ impl ServerConfig {
             push_token,
             min_password_length,
             max_password_length,
+            max_handle_length,
         }
     }
 }
@@ -195,16 +214,24 @@ fn random_key() -> [u8; 32] {
     out
 }
 
-// ── Password-length tier cascade ───────────────────────────────────
+// ── Tunable length-limit tier cascade ───────────────────────────────
 //
 // Mirrors `mmcp_store::memory::resolve_max_auto_slug_length`'s
 // override -> env -> user-config-file -> compiled-default cascade,
-// applied to two independent tunables (minimum and maximum password
-// length). The pure resolution logic (`resolve_password_length_from_tiers`)
-// stays separate from the I/O-performing wrappers (env var read,
-// config file read) so the precedence rules are unit-testable
-// without mutating process-global environment state or touching the
-// filesystem.
+// applied to three independent `usize` tunables (minimum password
+// length, maximum password length, maximum handle length). The pure
+// resolution logic (`resolve_usize_from_tiers`) stays separate from
+// the I/O-performing wrappers (env var read, config file read) so the
+// precedence rules are unit-testable without mutating process-global
+// environment state or touching the filesystem.
+//
+// `resolve_usize_from_tiers` / `parse_usize_env` / `user_config_length_limit`
+// carry no "password" in their names (unlike the field-specific
+// callers below) precisely because a third, non-password tunable
+// (`max_handle_length`) now shares them: a name claiming
+// password-specificity would lie about a mechanism that is, and
+// always was, generic over any `usize`-valued tier (see
+// feedback-names-must-not-lie).
 
 /// Resolve the effective minimum password length.
 /// Highest-precedence source wins:
@@ -217,13 +244,13 @@ fn resolve_min_password_length<F>(get: &F, override_len: Option<usize>) -> usize
 where
     F: Fn(&str) -> Option<String>,
 {
-    let env_len = parse_password_length_env(
+    let env_len = parse_usize_env(
         "minimum password length",
         MIN_PASSWORD_LENGTH_ENV,
         get(MIN_PASSWORD_LENGTH_ENV).as_deref(),
     );
-    let config_len = user_config_password_length(|limits| limits.min_password_length);
-    resolve_password_length_from_tiers(
+    let config_len = user_config_length_limit(|limits| limits.min_password_length);
+    resolve_usize_from_tiers(
         "minimum password length",
         override_len,
         env_len,
@@ -239,13 +266,13 @@ fn resolve_max_password_length<F>(get: &F, override_len: Option<usize>) -> usize
 where
     F: Fn(&str) -> Option<String>,
 {
-    let env_len = parse_password_length_env(
+    let env_len = parse_usize_env(
         "maximum password length",
         MAX_PASSWORD_LENGTH_ENV,
         get(MAX_PASSWORD_LENGTH_ENV).as_deref(),
     );
-    let config_len = user_config_password_length(|limits| limits.max_password_length);
-    resolve_password_length_from_tiers(
+    let config_len = user_config_length_limit(|limits| limits.max_password_length);
+    resolve_usize_from_tiers(
         "maximum password length",
         override_len,
         env_len,
@@ -254,11 +281,33 @@ where
     )
 }
 
-/// Parse a raw password-length environment variable value, if any,
-/// into a tier value. Logs and falls through (returns `None`) when
-/// the variable is present but not a valid number, rather than
-/// silently discarding it or defaulting it to zero.
-fn parse_password_length_env(field: &str, var_name: &str, raw: Option<&str>) -> Option<usize> {
+/// Resolve the effective maximum account handle length. Same cascade
+/// as [`resolve_min_password_length`], over [`MAX_HANDLE_LENGTH_ENV`],
+/// `[limits] max_handle_length`, and [`mmcp_auth::MAX_HANDLE_LENGTH`].
+fn resolve_max_handle_length<F>(get: &F, override_len: Option<usize>) -> usize
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let env_len = parse_usize_env(
+        "maximum handle length",
+        MAX_HANDLE_LENGTH_ENV,
+        get(MAX_HANDLE_LENGTH_ENV).as_deref(),
+    );
+    let config_len = user_config_length_limit(|limits| limits.max_handle_length);
+    resolve_usize_from_tiers(
+        "maximum handle length",
+        override_len,
+        env_len,
+        config_len,
+        mmcp_auth::MAX_HANDLE_LENGTH,
+    )
+}
+
+/// Parse a raw `usize`-tier environment variable value, if any, into
+/// a tier value. Logs and falls through (returns `None`) when the
+/// variable is present but not a valid number, rather than silently
+/// discarding it or defaulting it to zero.
+fn parse_usize_env(field: &str, var_name: &str, raw: Option<&str>) -> Option<usize> {
     let raw = raw?;
     match raw.parse::<usize>() {
         Ok(n) => Some(n),
@@ -276,11 +325,12 @@ fn parse_password_length_env(field: &str, var_name: &str, raw: Option<&str>) -> 
 /// Precedence resolution given each tier's already-fetched value:
 /// `override_len` beats `env_len` beats `config_len` beats
 /// `default_len`. A `Some(0)` at any tier counts as absent (falls
-/// through), since a zero-byte password bound is never a legitimate
-/// intent; whichever tier is the one actually rejected for this
-/// reason is logged, naming `field` and that specific tier, before
-/// falling through to the next one.
-fn resolve_password_length_from_tiers(
+/// through), since a zero-byte bound is never a legitimate intent for
+/// any of the tunables this function resolves (password length,
+/// handle length); whichever tier is the one actually rejected for
+/// this reason is logged, naming `field` and that specific tier,
+/// before falling through to the next one.
+fn resolve_usize_from_tiers(
     field: &str,
     override_len: Option<usize>,
     env_len: Option<usize>,
@@ -314,10 +364,10 @@ fn resolve_password_length_from_tiers(
     default_len
 }
 
-/// Read a password-length field out of `~/.mmcp/config.toml`
-/// `[limits]`, if present. `select` picks which of the two fields
-/// (`min_password_length` / `max_password_length`) this call
-/// resolves, so the min and max cascades share one read-and-log path
+/// Read a `usize` length-limit field out of `~/.mmcp/config.toml`
+/// `[limits]`, if present. `select` picks which field (
+/// `min_password_length` / `max_password_length` / `max_handle_length`)
+/// this call resolves, so every cascade shares one read-and-log path
 /// instead of duplicating it. Mirrors the read-only,
 /// missing-file-or-section-means-`None` style
 /// `mmcp_store::memory::user_config_max_auto_slug_length` already
@@ -325,7 +375,7 @@ fn resolve_password_length_from_tiers(
 /// absent user config must never fail server startup. A discovery or
 /// parse failure is logged before falling through, rather than
 /// discarded with no signal.
-fn user_config_password_length(
+fn user_config_length_limit(
     select: impl Fn(&mmcp_core::config::LimitsConfig) -> Option<usize>,
 ) -> Option<usize> {
     let home = match mmcp_store::MmcpHome::discover() {
@@ -333,7 +383,7 @@ fn user_config_password_length(
         Err(err) => {
             tracing::warn!(
                 error = %err,
-                "failed to discover MmcpHome while resolving a password-length config tier; falling through to the next tier"
+                "failed to discover MmcpHome while resolving a length-limit config tier; falling through to the next tier"
             );
             return None;
         }
@@ -343,7 +393,7 @@ fn user_config_password_length(
         Err(err) => {
             tracing::warn!(
                 error = %err,
-                "user config failed to parse while resolving a password-length config tier; falling through to the next tier"
+                "user config failed to parse while resolving a length-limit config tier; falling through to the next tier"
             );
             return None;
         }
@@ -509,51 +559,45 @@ mod tests {
         assert_eq!(cfg.push_token.as_deref(), Some("s3cr3t"));
     }
 
-    // ── Password-length tier cascade ───────────────────────────────
+    // ── Tunable length-limit tier cascade ───────────────────────────
 
     #[test]
-    fn resolve_password_length_from_tiers_prefers_explicit_override() {
+    fn resolve_usize_from_tiers_prefers_explicit_override() {
         assert_eq!(
-            resolve_password_length_from_tiers("x", Some(10), Some(20), Some(30), 40),
+            resolve_usize_from_tiers("x", Some(10), Some(20), Some(30), 40),
             10
         );
     }
 
     #[test]
-    fn resolve_password_length_from_tiers_falls_back_env_then_config_then_default() {
+    fn resolve_usize_from_tiers_falls_back_env_then_config_then_default() {
         assert_eq!(
-            resolve_password_length_from_tiers("x", None, Some(20), Some(30), 40),
+            resolve_usize_from_tiers("x", None, Some(20), Some(30), 40),
             20
         );
-        assert_eq!(
-            resolve_password_length_from_tiers("x", None, None, Some(30), 40),
-            30
-        );
-        assert_eq!(
-            resolve_password_length_from_tiers("x", None, None, None, 40),
-            40
-        );
+        assert_eq!(resolve_usize_from_tiers("x", None, None, Some(30), 40), 30);
+        assert_eq!(resolve_usize_from_tiers("x", None, None, None, 40), 40);
     }
 
     #[test]
-    fn resolve_password_length_from_tiers_treats_zero_as_absent_at_every_tier() {
+    fn resolve_usize_from_tiers_treats_zero_as_absent_at_every_tier() {
         assert_eq!(
-            resolve_password_length_from_tiers("x", Some(0), Some(20), Some(30), 40),
+            resolve_usize_from_tiers("x", Some(0), Some(20), Some(30), 40),
             20
         );
         assert_eq!(
-            resolve_password_length_from_tiers("x", Some(0), Some(0), Some(30), 40),
+            resolve_usize_from_tiers("x", Some(0), Some(0), Some(30), 40),
             30
         );
         assert_eq!(
-            resolve_password_length_from_tiers("x", Some(0), Some(0), Some(0), 40),
+            resolve_usize_from_tiers("x", Some(0), Some(0), Some(0), 40),
             40
         );
     }
 
     /// Minimal `tracing::Subscriber` counting `WARN`-level events, so
-    /// a rejected password-length tier can be asserted to actually
-    /// log instead of silently discarding the bad value. Mirrors
+    /// a rejected length-limit tier can be asserted to actually log
+    /// instead of silently discarding the bad value. Mirrors
     /// `mmcp_store::memory`'s `WarnCounter` test helper.
     struct WarnCounter(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
@@ -576,7 +620,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_password_length_from_tiers_warns_only_for_the_tier_actually_reached() {
+    fn resolve_usize_from_tiers_warns_only_for_the_tier_actually_reached() {
         let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let subscriber = WarnCounter(count.clone());
 
@@ -586,7 +630,7 @@ mod tests {
         // must warn exactly once.
         tracing::subscriber::with_default(subscriber, || {
             assert_eq!(
-                resolve_password_length_from_tiers("x", Some(10), None, Some(0), 40),
+                resolve_usize_from_tiers("x", Some(10), None, Some(0), 40),
                 10
             );
         });
@@ -599,10 +643,7 @@ mod tests {
         let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let subscriber = WarnCounter(count.clone());
         tracing::subscriber::with_default(subscriber, || {
-            assert_eq!(
-                resolve_password_length_from_tiers("x", None, None, Some(0), 40),
-                40
-            );
+            assert_eq!(resolve_usize_from_tiers("x", None, None, Some(0), 40), 40);
         });
         assert_eq!(
             count.load(std::sync::atomic::Ordering::SeqCst),
@@ -612,12 +653,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_password_length_env_warns_on_malformed_value() {
+    fn parse_usize_env_warns_on_malformed_value() {
         let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let subscriber = WarnCounter(count.clone());
 
         let result = tracing::subscriber::with_default(subscriber, || {
-            parse_password_length_env("x", "MMCP_X", Some("not-a-number"))
+            parse_usize_env("x", "MMCP_X", Some("not-a-number"))
         });
 
         assert_eq!(
@@ -632,16 +673,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_password_length_env_accepts_a_valid_number() {
-        assert_eq!(
-            parse_password_length_env("x", "MMCP_X", Some("12")),
-            Some(12)
-        );
+    fn parse_usize_env_accepts_a_valid_number() {
+        assert_eq!(parse_usize_env("x", "MMCP_X", Some("12")), Some(12));
     }
 
     #[test]
-    fn parse_password_length_env_treats_absent_as_none() {
-        assert_eq!(parse_password_length_env("x", "MMCP_X", None), None);
+    fn parse_usize_env_treats_absent_as_none() {
+        assert_eq!(parse_usize_env("x", "MMCP_X", None), None);
     }
 
     #[test]
@@ -655,10 +693,12 @@ mod tests {
             ServerConfigOverrides {
                 min_password_length: Some(16),
                 max_password_length: Some(64),
+                max_handle_length: Some(32),
             },
         );
         assert_eq!(cfg.min_password_length, 16);
         assert_eq!(cfg.max_password_length, 64);
+        assert_eq!(cfg.max_handle_length, 32);
     }
 
     #[test]
@@ -668,8 +708,92 @@ mod tests {
             ServerConfigOverrides {
                 min_password_length: Some(0),
                 max_password_length: None,
+                max_handle_length: None,
             },
         );
         assert_eq!(cfg.min_password_length, 12);
+    }
+
+    // ── max_handle_length cascade (falsification anchor) ────────────
+    //
+    // Mirrors the min/max password length precedence tests above,
+    // proving `max_handle_length`'s own override -> env ->
+    // config-file -> default precedence independently of the shared
+    // `resolve_usize_from_tiers` unit tests (those prove the generic
+    // mechanism; these prove `ServerConfig` actually wires
+    // `max_handle_length` through it end to end).
+
+    #[test]
+    fn max_handle_length_defaults_to_the_compiled_in_constant_when_nothing_is_set() {
+        let cfg = from_map(&[]);
+        assert_eq!(cfg.max_handle_length, mmcp_auth::MAX_HANDLE_LENGTH);
+    }
+
+    #[test]
+    fn max_handle_length_env_var_is_honored_via_from_map() {
+        let cfg = from_map(&[(MAX_HANDLE_LENGTH_ENV, "20")]);
+        assert_eq!(cfg.max_handle_length, 20);
+    }
+
+    #[test]
+    fn max_handle_length_override_beats_env_beats_default() {
+        let overridden = ServerConfig::from_source_with_overrides(
+            |key| (key == MAX_HANDLE_LENGTH_ENV).then(|| "20".to_string()),
+            ServerConfigOverrides {
+                min_password_length: None,
+                max_password_length: None,
+                max_handle_length: Some(8),
+            },
+        );
+        assert_eq!(
+            overridden.max_handle_length, 8,
+            "the CLI override tier must beat a set env var"
+        );
+
+        let env_only = ServerConfig::from_source_with_overrides(
+            |key| (key == MAX_HANDLE_LENGTH_ENV).then(|| "20".to_string()),
+            ServerConfigOverrides::default(),
+        );
+        assert_eq!(
+            env_only.max_handle_length, 20,
+            "the env tier must beat the compiled-in default"
+        );
+
+        let default_only =
+            ServerConfig::from_source_with_overrides(|_| None, ServerConfigOverrides::default());
+        assert_eq!(
+            default_only.max_handle_length,
+            mmcp_auth::MAX_HANDLE_LENGTH,
+            "with no override and no env var, the compiled-in default must win"
+        );
+    }
+
+    #[test]
+    fn max_handle_length_zero_override_falls_through_to_env() {
+        let cfg = ServerConfig::from_source_with_overrides(
+            |key| (key == MAX_HANDLE_LENGTH_ENV).then(|| "12".to_string()),
+            ServerConfigOverrides {
+                min_password_length: None,
+                max_password_length: None,
+                max_handle_length: Some(0),
+            },
+        );
+        assert_eq!(
+            cfg.max_handle_length, 12,
+            "an explicit override of 0 is not a legitimate bound and must fall through to env"
+        );
+    }
+
+    #[test]
+    fn max_handle_length_zero_env_falls_through_to_default() {
+        let cfg = ServerConfig::from_source_with_overrides(
+            |key| (key == MAX_HANDLE_LENGTH_ENV).then(|| "0".to_string()),
+            ServerConfigOverrides::default(),
+        );
+        assert_eq!(
+            cfg.max_handle_length,
+            mmcp_auth::MAX_HANDLE_LENGTH,
+            "an env value of 0 is not a legitimate bound and must fall through to the default"
+        );
     }
 }

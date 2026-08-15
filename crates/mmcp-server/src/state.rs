@@ -39,6 +39,9 @@ pub struct ServerStateInner {
     /// Effective maximum accepted account password length, in
     /// bytes; see [`crate::config::ServerConfig::max_password_length`].
     pub max_password_length: usize,
+    /// Effective maximum accepted account handle length, in bytes;
+    /// see [`crate::config::ServerConfig::max_handle_length`].
+    pub max_handle_length: usize,
 
     /// Per-group async mutex set used to serialize writes (git
     /// `receive-pack`) against the same bare repository. Reads
@@ -56,7 +59,8 @@ impl ServerState {
         let git = NativeBackend::new(&cfg.repo_root)?;
         let token_issuer = TokenIssuer::from_key(&cfg.token_key);
         let token_verifier = TokenVerifier::from_key(&cfg.token_key);
-        let auth_backend = MmcpAuthBackend::new(database.connection().clone());
+        let auth_backend =
+            MmcpAuthBackend::new(database.connection().clone(), cfg.max_handle_length);
 
         // WebAuthn relying party derived from the origin.
         let origin_url = Url::parse(&cfg.origin)?;
@@ -87,6 +91,7 @@ impl ServerState {
             push_token: cfg.push_token.clone(),
             min_password_length: cfg.min_password_length,
             max_password_length: cfg.max_password_length,
+            max_handle_length: cfg.max_handle_length,
             repo_locks: StdMutex::new(HashMap::new()),
         })))
     }

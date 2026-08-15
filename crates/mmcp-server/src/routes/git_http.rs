@@ -427,6 +427,7 @@ mod tests {
             push_token: push_token.map(str::to_string),
             min_password_length: mmcp_auth::MIN_PASSWORD_LENGTH,
             max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
+            max_handle_length: mmcp_auth::MAX_HANDLE_LENGTH,
         };
         let state = ServerState::initialize(&cfg).await.expect("state init");
         (state, tmp)

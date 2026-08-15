@@ -24,14 +24,19 @@ use crate::error::AuthError;
 use crate::password;
 use mmcp_db::repository::{oauth_repo, passkey_repo, user_repo};
 
-/// Maximum accepted length of a user handle, in bytes. The sole
-/// owner of this bound: `mmcp-server` depends on `mmcp-auth`
-/// (`crates/mmcp-server/Cargo.toml`), so its
-/// `routes::auth::MAX_HANDLE_LENGTH` re-exports this constant
-/// instead of declaring an independent 64. Shared between the
-/// password-registration path (`/auth/register`) and the
-/// OAuth JIT-provisioning path below; a JIT-created account must
-/// never exceed what the register endpoint would ever accept.
+/// Compiled-in DEFAULT tier of the account handle length bound, in
+/// bytes. This is the LOWEST-precedence tier only: callers resolve
+/// the effective bound through the config cascade
+/// (`mmcp_server::config::ServerConfig::max_handle_length`, CLI
+/// `--max-handle-length` beats `MMCP_MAX_HANDLE_LENGTH` beats
+/// `~/.mmcp/config.toml` `[limits] max_handle_length` beats this
+/// constant) and pass it in; neither the `/auth/register`
+/// HTTP-boundary check nor [`provision_oauth_handle`] below read
+/// this constant directly anymore. `mmcp-server` depends on
+/// `mmcp-auth` (`crates/mmcp-server/Cargo.toml`), so its
+/// `routes::auth::MAX_HANDLE_LENGTH` re-exports this constant as the
+/// default-tier fallback name rather than declaring an independent
+/// 64.
 pub const MAX_HANDLE_LENGTH: usize = 64;
 
 /// Maximum number of numeric-suffix retries when the preferred
@@ -51,21 +56,27 @@ const fn decimal_digit_count(mut value: u32) -> usize {
     digits
 }
 
-/// Bytes reserved, out of [`MAX_HANDLE_LENGTH`], for a numeric-suffix
-/// retry candidate's `-N` tail: one byte for the separator plus the
-/// widest possible digit count a suffix up to
-/// [`MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS`] can carry.
+/// Bytes reserved, out of [`provision_oauth_handle`]'s effective
+/// `max_handle_length` parameter, for a numeric-suffix retry
+/// candidate's `-N` tail: one byte for the separator plus the widest
+/// possible digit count a suffix up to
+/// [`MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS`] can carry. Depends only on
+/// [`MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS`], never on the effective
+/// handle-length bound itself, so it stays a compile-time constant
+/// even though the bound it is subtracted from is now a runtime
+/// parameter.
 ///
-/// The base handle is truncated to `MAX_HANDLE_LENGTH -
+/// The base handle is truncated to `max_handle_length -
 /// SUFFIX_RESERVE_BYTES` bytes BEFORE a suffix is appended, so every
 /// suffixed candidate is strictly shorter than a base handle already
 /// truncated to the full cap. Without this reserve, a `base` at or
-/// near `MAX_HANDLE_LENGTH` bytes made `format!("{base}-{suffix}")`
+/// near `max_handle_length` bytes made `format!("{base}-{suffix}")`
 /// re-truncate back down to exactly `base` on every retry: every
 /// candidate collapsed onto the one handle already known to be
 /// taken, so the collision loop could never find a free handle for a
-/// `{provider}_{provider_user_id}` combination longer than about 62
-/// bytes, defeating the exhaustion guard entirely.
+/// `{provider}_{provider_user_id}` combination longer than about
+/// `max_handle_length - 2` bytes, defeating the exhaustion guard
+/// entirely.
 const SUFFIX_RESERVE_BYTES: usize = 1 + decimal_digit_count(MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS);
 
 // ── AuthUser impl ───────────────────────────────────────────────
@@ -145,6 +156,19 @@ pub enum Credentials {
 #[derive(Clone)]
 pub struct MmcpAuthBackend {
     conn: DatabaseConnection,
+    /// Effective maximum account handle length, in bytes, resolved
+    /// by the caller through the config cascade (see
+    /// [`MAX_HANDLE_LENGTH`]'s doc comment) and captured at
+    /// construction time. `axum_login::AuthnBackend::authenticate`'s
+    /// signature is fixed by the trait it implements, so this is the
+    /// only place the effective bound can reach
+    /// [`provision_oauth_handle`] without that function reading the
+    /// compiled-in constant directly; mirrors how
+    /// `validate_password_policy` already receives its effective
+    /// bounds as parameters rather than reading
+    /// `mmcp_auth::MIN_PASSWORD_LENGTH` / `MAX_PASSWORD_LENGTH`
+    /// internally.
+    max_handle_length: usize,
 }
 
 impl fmt::Debug for MmcpAuthBackend {
@@ -154,8 +178,14 @@ impl fmt::Debug for MmcpAuthBackend {
 }
 
 impl MmcpAuthBackend {
-    pub fn new(conn: DatabaseConnection) -> Self {
-        Self { conn }
+    /// Build the backend, capturing the caller's already-resolved
+    /// effective `max_handle_length` for use by the OAuth
+    /// JIT-provisioning path.
+    pub fn new(conn: DatabaseConnection, max_handle_length: usize) -> Self {
+        Self {
+            conn,
+            max_handle_length,
+        }
     }
 }
 
@@ -223,8 +253,13 @@ impl AuthnBackend for MmcpAuthBackend {
                 // First-time OAuth: auto-create user + link.
                 let now = jiff::Timestamp::now().as_millisecond();
                 let user_id = Uuid::now_v7();
-                let handle =
-                    provision_oauth_handle(&self.conn, &provider, &provider_user_id).await?;
+                let handle = provision_oauth_handle(
+                    &self.conn,
+                    &provider,
+                    &provider_user_id,
+                    self.max_handle_length,
+                )
+                .await?;
                 let user = user_repo::create(
                     &self.conn,
                     user_repo::NewUser {
@@ -282,8 +317,10 @@ impl AuthnBackend for MmcpAuthBackend {
 /// Resolve a free handle for a first-time OAuth login.
 ///
 /// Tries the preferred `{provider}_{provider_user_id}` identifier
-/// first (bounded to [`MAX_HANDLE_LENGTH`] bytes), then falls back
-/// to numeric-suffixed candidates when it collides with an existing
+/// first (bounded to `max_handle_length` bytes, the caller's already
+/// config-resolved effective bound; see [`MAX_HANDLE_LENGTH`]'s doc
+/// comment for the cascade it comes from), then falls back to
+/// numeric-suffixed candidates when it collides with an existing
 /// user. The collision path exists because `/auth/register` places
 /// no namespace restriction on `handle`: an attacker who
 /// pre-registers the literal string a real OAuth user would be
@@ -299,9 +336,10 @@ async fn provision_oauth_handle(
     conn: &DatabaseConnection,
     provider: &str,
     provider_user_id: &str,
+    max_handle_length: usize,
 ) -> Result<String, AuthError> {
     let base =
-        truncate_to_byte_length(&format!("{provider}_{provider_user_id}"), MAX_HANDLE_LENGTH);
+        truncate_to_byte_length(&format!("{provider}_{provider_user_id}"), max_handle_length);
     if user_repo::find_by_handle(conn, &base)
         .await
         .map_err(|source| AuthError::UserLookup {
@@ -314,11 +352,11 @@ async fn provision_oauth_handle(
     }
     let suffix_base = truncate_to_byte_length(
         &format!("{provider}_{provider_user_id}"),
-        MAX_HANDLE_LENGTH - SUFFIX_RESERVE_BYTES,
+        max_handle_length - SUFFIX_RESERVE_BYTES,
     );
     for suffix in 2..=MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS {
         let candidate =
-            truncate_to_byte_length(&format!("{suffix_base}-{suffix}"), MAX_HANDLE_LENGTH);
+            truncate_to_byte_length(&format!("{suffix_base}-{suffix}"), max_handle_length);
         if user_repo::find_by_handle(conn, &candidate)
             .await
             .map_err(|source| AuthError::UserLookup {
@@ -411,7 +449,7 @@ mod tests {
     #[tokio::test]
     async fn provision_oauth_handle_returns_the_preferred_handle_when_free() {
         let conn = test_db().await;
-        let handle = provision_oauth_handle(&conn, "github", "1001")
+        let handle = provision_oauth_handle(&conn, "github", "1001", MAX_HANDLE_LENGTH)
             .await
             .expect("provision handle");
         assert_eq!(handle, "github_1001");
@@ -425,7 +463,7 @@ mod tests {
         // `/auth/register` (no namespace restriction on `handle`).
         create_user(&conn, "github_1001").await;
 
-        let handle = provision_oauth_handle(&conn, "github", "1001")
+        let handle = provision_oauth_handle(&conn, "github", "1001", MAX_HANDLE_LENGTH)
             .await
             .expect("provision handle");
         assert_eq!(
@@ -441,7 +479,7 @@ mod tests {
         create_user(&conn, "github_1001").await;
         create_user(&conn, "github_1001-2").await;
 
-        let handle = provision_oauth_handle(&conn, "github", "1001")
+        let handle = provision_oauth_handle(&conn, "github", "1001", MAX_HANDLE_LENGTH)
             .await
             .expect("provision handle");
         assert_eq!(handle, "github_1001-3");
@@ -455,7 +493,7 @@ mod tests {
             create_user(&conn, &format!("github_1001-{suffix}")).await;
         }
 
-        let err = provision_oauth_handle(&conn, "github", "1001")
+        let err = provision_oauth_handle(&conn, "github", "1001", MAX_HANDLE_LENGTH)
             .await
             .unwrap_err();
         assert!(matches!(
@@ -491,7 +529,7 @@ mod tests {
         );
         create_user(&conn, &base).await;
 
-        let first = provision_oauth_handle(&conn, "github", &provider_user_id)
+        let first = provision_oauth_handle(&conn, "github", &provider_user_id, MAX_HANDLE_LENGTH)
             .await
             .expect("provision handle");
         assert_ne!(
@@ -503,7 +541,7 @@ mod tests {
         // distinct from BOTH the base and the first candidate, not a
         // re-truncated repeat of either.
         create_user(&conn, &first).await;
-        let second = provision_oauth_handle(&conn, "github", &provider_user_id)
+        let second = provision_oauth_handle(&conn, "github", &provider_user_id, MAX_HANDLE_LENGTH)
             .await
             .expect("provision handle");
         assert_ne!(second, base);
