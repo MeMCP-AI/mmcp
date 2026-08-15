@@ -10,6 +10,7 @@
 //! plane for a machine caller rather than identifying a real user.
 
 use axum::extract::FromRequestParts;
+use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
@@ -65,6 +66,39 @@ impl IntoResponse for BearerAuthRejection {
     }
 }
 
+/// Verify a bearer token straight from a header map against `state`'s
+/// token verifier, returning the caller's [`AuthenticatedUser`].
+///
+/// This is the mechanism behind [`AuthenticatedUser`]'s
+/// [`FromRequestParts`] impl below, factored out as a free function so
+/// a handler that cannot use `AuthenticatedUser` as a plain extractor
+/// parameter (because the route serves more than one sub-resource
+/// behind a single dispatch and only some of them require auth, e.g.
+/// `crate::routes::git_http::info_refs`'s `git-upload-pack` branch)
+/// can still gate on the exact same verification path and the exact
+/// same [`BearerAuthRejection`] response instead of hand-rolling a
+/// parallel check.
+pub(crate) fn verify_bearer(
+    headers: &HeaderMap,
+    state: &ServerState,
+) -> Result<AuthenticatedUser, BearerAuthRejection> {
+    let token = headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .ok_or(BearerAuthRejection::MissingHeader)?;
+
+    let now_secs = Timestamp::now().as_second();
+    let claims = state
+        .token_verifier
+        .verify(token, now_secs)
+        .map_err(BearerAuthRejection::Invalid)?;
+
+    Ok(AuthenticatedUser {
+        user_id: claims.sub,
+    })
+}
+
 impl FromRequestParts<ServerState> for AuthenticatedUser {
     type Rejection = BearerAuthRejection;
 
@@ -72,21 +106,6 @@ impl FromRequestParts<ServerState> for AuthenticatedUser {
         parts: &mut Parts,
         state: &ServerState,
     ) -> Result<Self, Self::Rejection> {
-        let token = parts
-            .headers
-            .get(AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "))
-            .ok_or(BearerAuthRejection::MissingHeader)?;
-
-        let now_secs = Timestamp::now().as_second();
-        let claims = state
-            .token_verifier
-            .verify(token, now_secs)
-            .map_err(BearerAuthRejection::Invalid)?;
-
-        Ok(AuthenticatedUser {
-            user_id: claims.sub,
-        })
+        verify_bearer(&parts.headers, state)
     }
 }

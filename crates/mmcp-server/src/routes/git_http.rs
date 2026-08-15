@@ -15,9 +15,15 @@
 //! - `POST /git/:group_id.git/git-upload-pack`
 //! - `POST /git/:group_id.git/git-receive-pack`
 //!
-//! ACL enforcement runs before any serve call. The unauthenticated
-//! baseline in this phase allows reads for any existing group and
-//! rejects writes unless a shared-secret token matches `MMCP_PUSH_TOKEN`.
+//! ACL enforcement runs before any serve call. Reads (`git-upload-pack`,
+//! both the `info/refs` advertisement and the pack transfer itself)
+//! require a valid per-user bearer credential
+//! ([`crate::routes::bearer_auth::AuthenticatedUser`], the same
+//! credential the `/sync/*` control plane requires). Writes
+//! (`git-receive-pack`) reject unless a shared-secret token matches
+//! `MMCP_PUSH_TOKEN`. There is no per-group ACL yet on either path:
+//! any authenticated user may read any group, and the single global
+//! push token authorizes writes to every group.
 
 use std::path::{Path as StdPath, PathBuf};
 use std::str::FromStr;
@@ -37,6 +43,7 @@ use serde::Deserialize;
 use tokio_util::io::{ReaderStream, StreamReader, SyncIoBridge};
 use uuid::Uuid;
 
+use crate::routes::bearer_auth::{AuthenticatedUser, BearerAuthRejection, verify_bearer};
 use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
 
@@ -105,6 +112,14 @@ async fn info_refs(
     let repo_path = ensure_group(&state, uuid).await?;
     if query.service == "git-receive-pack" {
         enforce_write(&state, &headers, uuid)?;
+    } else if query.service == "git-upload-pack" {
+        // Read (clone/fetch) advertisement. Requires the same
+        // per-user bearer credential as the `/sync/*` control plane
+        // (`AuthenticatedUser`), not the shared-secret push token:
+        // an unauthenticated caller must not be able to enumerate a
+        // group's refs, the first step toward cloning its full bare
+        // repo content.
+        verify_bearer(&headers, &state).map_err(GitHttpError::BearerAuth)?;
     }
     let protocol_version = negotiated_protocol_version(&headers);
     let service = query.service.clone();
@@ -159,6 +174,12 @@ fn advertise_refs(
 async fn upload_pack(
     State(state): State<ServerState>,
     Path(group_id): Path<String>,
+    // Every request on this route is a clone/fetch of full group
+    // content: gated behind the same per-user bearer credential as
+    // the `/sync/*` control plane and `info_refs`'s `git-upload-pack`
+    // branch, unlike `git-receive-pack` which authorizes writes via
+    // the separate shared-secret push token.
+    _caller: AuthenticatedUser,
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, GitHttpError> {
@@ -402,6 +423,13 @@ enum GitHttpError {
     Internal(String),
     Unauthorized,
     Forbidden(&'static str),
+    /// A per-user bearer credential (`AuthenticatedUser`, verified via
+    /// [`verify_bearer`]) was missing or failed verification.
+    /// Delegates its response to [`BearerAuthRejection::into_response`]
+    /// so the read (upload-pack) path renders byte-identical status,
+    /// headers, and log lines to the `/sync/*` control plane instead
+    /// of a hand-rolled duplicate.
+    BearerAuth(BearerAuthRejection),
 }
 
 impl FromInternalError for GitHttpError {
@@ -434,6 +462,7 @@ impl IntoResponse for GitHttpError {
             GitHttpError::Forbidden(msg) => {
                 (StatusCode::FORBIDDEN, msg.to_string()).into_response()
             }
+            GitHttpError::BearerAuth(rejection) => rejection.into_response(),
         }
     }
 }
