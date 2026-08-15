@@ -66,19 +66,14 @@ export interface MemoryDescriptor {
   frontmatter: MemoryFrontmatter;
 }
 
-/** Wire mirror of the Rust `SkippedMemoryDto`: one memory `list_memory_descriptors`
- * could not resolve, read, decode, or parse, and why. */
-export interface SkippedMemoryDescriptor {
-  slug: string;
-  reason: string;
-}
-
 /** Wire mirror of the Rust `MemoryDescriptorListDto`, the `list_memory_descriptors`
  * response shape. `skipped` makes a partial listing observable instead of the
- * caller silently receiving a truncated `descriptors` array with no signal. */
+ * caller silently receiving a truncated `descriptors` array with no signal.
+ * Each skipped entry is a `Finding` (see below): the same skip/failure record
+ * shape shared with `PullReport`/`PushReport` and `DiagReport`. */
 export interface MemoryDescriptorList {
   descriptors: MemoryDescriptor[];
-  skipped: SkippedMemoryDescriptor[];
+  skipped: Finding[];
 }
 
 export interface SyncStatus {
@@ -86,21 +81,17 @@ export interface SyncStatus {
   server_url: string | null;
 }
 
-/** Wire mirror of the Rust `GroupSyncFailureDto`. */
-export interface SyncGroupFailure {
-  group_id: string;
-  message: string;
-}
-
 export interface PullReport {
   updated: number;
   new_groups: number;
-  failed: SyncGroupFailure[];
+  /** Groups whose own attempt errored, as `Finding`s (see below). */
+  failed: Finding[];
 }
 
 export interface PushReport {
   pushed: number;
-  failed: SyncGroupFailure[];
+  /** Groups whose own attempt errored, as `Finding`s (see below). */
+  failed: Finding[];
 }
 
 /** Raw severity string emitted by mmcp-store (`"error" | "warning" | "info"`).
@@ -136,7 +127,7 @@ export interface ReachabilityEvent {
   reason: string | null;
 }
 
-// Mirrors every `kind` string emitted by `Serialize for GuiError` in gui/src-tauri/src/error.rs.
+// Mirrors every `kind` string emitted by `Serialize for GuiError` in gui/src-tauri/src/error/gui.rs.
 // A missing variant is invisible to any `kind`-based branch here, so keep the union exhaustive.
 export interface GuiErrorPayload {
   kind:
@@ -148,6 +139,17 @@ export interface GuiErrorPayload {
     | 'archive'
     | 'dialog'
     | 'utf8'
+    | 'invalid_memory_kind'
+    | 'invalid_group_id'
+    | 'invalid_version'
+    | 'invalid_feature_status'
+    | 'invalid_issue_status'
+    | 'io'
+    | 'current_dir_unavailable'
+    | 'not_a_directory'
+    | 'tauri_path'
+    | 'settings_json'
+    | 'watcher'
     | 'other';
   message?: string;
 }

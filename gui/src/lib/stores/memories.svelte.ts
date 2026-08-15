@@ -1,6 +1,6 @@
 import { listMemoryDescriptors, loadMemory } from '$lib/api/memory';
 import { formatErr } from '$lib/utils/error';
-import type { MemoryDescriptor, MemoryFile, SkippedMemoryDescriptor } from '$lib/types';
+import type { Finding, MemoryDescriptor, MemoryFile } from '$lib/types';
 
 // Per-group slug lists + parsed MemoryFile cache. Background
 // refreshes land in `pendingBodies` when they'd clobber the
@@ -12,7 +12,7 @@ import type { MemoryDescriptor, MemoryFile, SkippedMemoryDescriptor } from '$lib
 class MemoriesStore {
   descriptors = $state<Record<string, MemoryDescriptor[]>>({});
   /** Memories `list_memory_descriptors` could not resolve/read/decode/parse, by group. See `types.ts`. */
-  skipped = $state<Record<string, SkippedMemoryDescriptor[]>>({});
+  skipped = $state<Record<string, Finding[]>>({});
   groupCommit = $state<Record<string, string>>({});
   bodies = $state<Record<string, MemoryFile>>({});
   pendingBodies = $state<Record<string, MemoryFile>>({});
@@ -30,7 +30,7 @@ class MemoriesStore {
     return result;
   }
 
-  private recordSkipped(groupId: string, skipped: SkippedMemoryDescriptor[]) {
+  private recordSkipped(groupId: string, skipped: Finding[]) {
     this.skipped[groupId] = skipped;
     if (skipped.length > 0) {
       console.warn(

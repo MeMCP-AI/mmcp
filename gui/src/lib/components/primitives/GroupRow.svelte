@@ -6,7 +6,7 @@
   import { AlertTriangle, Star } from '@lucide/svelte';
   import ScopeIcon from './ScopeIcon.svelte';
   import { SCOPE_META } from '$lib/utils/scope';
-  import type { GroupEntry, SkippedMemoryDescriptor } from '$lib/types';
+  import type { Finding, GroupEntry } from '$lib/types';
 
   interface Props {
     group: GroupEntry;
@@ -14,7 +14,7 @@
     /** Memories `list_memory_descriptors` could not resolve/read/decode/parse
      * for this group. Non-empty means the listing is truncated: render a
      * visible signal rather than silently showing a short list. */
-    skipped?: SkippedMemoryDescriptor[];
+    skipped?: Finding[];
     pinned?: boolean;
     showPinToggle?: boolean;
     /** Shown in smaller text below the name. Defaults to
@@ -71,7 +71,7 @@
       <span
         class="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-semibold text-amber-300 ring-1 ring-inset ring-amber-500/40"
         title={`${skipped.length} memory(ies) skipped: ${skipped
-          .map((s) => `${s.slug} (${s.reason})`)
+          .map((s) => `${s.slug} (${s.message})`)
           .join('; ')}`}
       >
         <AlertTriangle size={10} />

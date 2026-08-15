@@ -1,11 +1,11 @@
 import { syncPull, syncPush, syncStatus } from '$lib/api/sync';
 import { formatErr } from '$lib/utils/error';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { SyncGroupFailure } from '$lib/types';
+import type { Finding } from '$lib/types';
 
 // One-line summary of a report's `failed` list, e.g. "2 group(s) failed: <id>: <msg>; ...".
-function summarizeFailures(failed: SyncGroupFailure[]): string {
-  const details = failed.map((f) => `${f.group_id}: ${f.message}`).join('; ');
+function summarizeFailures(failed: Finding[]): string {
+  const details = failed.map((f) => `${f.group}: ${f.message}`).join('; ');
   return `${failed.length} group(s) failed: ${details}`;
 }
 
