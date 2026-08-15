@@ -80,6 +80,13 @@ pub struct LimitsConfig {
     /// bytes, the maximum accepted account password length. Same
     /// precedence cascade as [`LimitsConfig::min_password_length`].
     pub max_password_length: Option<usize>,
+
+    /// Overrides `mmcp_auth::backend::MAX_HANDLE_LENGTH`, in bytes,
+    /// the maximum accepted account handle length. Beaten by a CLI
+    /// `--max-handle-length` override or the `MMCP_MAX_HANDLE_LENGTH`
+    /// environment variable; wins over the compiled-in default when
+    /// neither of those is set.
+    pub max_handle_length: Option<usize>,
 }
 
 impl UserConfig {
@@ -125,6 +132,7 @@ group = "my-group"
 max_auto_slug_length = 80
 min_password_length = 10
 max_password_length = 128
+max_handle_length = 32
 "#;
         let cfg = UserConfig::from_toml(text).unwrap();
         assert_eq!(cfg.author.as_ref().unwrap().name.as_deref(), Some("Alice"));
@@ -140,6 +148,7 @@ max_password_length = 128
         assert_eq!(cfg.limits.as_ref().unwrap().max_auto_slug_length, Some(80));
         assert_eq!(cfg.limits.as_ref().unwrap().min_password_length, Some(10));
         assert_eq!(cfg.limits.as_ref().unwrap().max_password_length, Some(128));
+        assert_eq!(cfg.limits.as_ref().unwrap().max_handle_length, Some(32));
     }
 
     #[test]
@@ -148,6 +157,7 @@ max_password_length = 128
         let cfg = UserConfig::from_toml(text).unwrap();
         assert!(cfg.limits.as_ref().unwrap().min_password_length.is_none());
         assert!(cfg.limits.as_ref().unwrap().max_password_length.is_none());
+        assert!(cfg.limits.as_ref().unwrap().max_handle_length.is_none());
     }
 
     #[test]
