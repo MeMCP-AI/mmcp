@@ -35,6 +35,7 @@
 pub mod archive;
 pub mod cache;
 pub mod config;
+mod defaults;
 pub mod diagnostics;
 pub mod error;
 pub mod features;

@@ -22,15 +22,8 @@ use mmcp_git::{GitBackend, NativeBackend, RepoHandle};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+use crate::defaults::MAX_CONCURRENT_MANIFEST_SCANS;
 use crate::error::{FileOperation, StoreError};
-
-/// Cap on simultaneous `read_manifest` calls while scanning
-/// `repos_root`. Each candidate directory's manifest read is
-/// independent; bounding concurrency here avoids opening every local
-/// group repo's bare git handle at once on a mirror with hundreds of
-/// groups, while still running the scan far faster than one
-/// directory after another.
-const MAX_CONCURRENT_MANIFEST_SCANS: usize = 8;
 
 /// One entry in the [`GroupIndex`].
 #[derive(Debug, Clone)]
