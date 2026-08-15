@@ -63,48 +63,69 @@ pub fn is_group_adopted(slug: &str, cfg: &ProjectConfig) -> bool {
             .any(|lang| slug == format!("lang/{lang}"))
 }
 
-/// Environment variable carrying the bearer token for the `/sync/*`
-/// control plane, mirroring the server-side `MMCP_PUSH_TOKEN`
-/// convention for the git content plane.
+/// Environment variable carrying the control-plane bearer token for
+/// `/sync/*` requests: a per-user PASETO session token issued by the
+/// server's login flow and verified against `mmcp_auth::TokenVerifier`.
 pub const SYNC_TOKEN_ENV: &str = "MMCP_SYNC_TOKEN";
 
+/// Environment variable carrying the content-plane git push
+/// credential, compared by the server's git smart-HTTP endpoint by
+/// exact string equality against its own `MMCP_PUSH_TOKEN`. The two
+/// env var names differ because they read in different processes
+/// (this one client side, `MMCP_PUSH_TOKEN` server side); whoever
+/// configures both sides sets them to the same value.
+pub const SYNC_PUSH_TOKEN_ENV: &str = "MMCP_SYNC_PUSH_TOKEN";
+
 /// Remote sync configuration.
+///
+/// Carries no credential field: both the control-plane and
+/// content-plane tokens are env-only ([`SyncConfig::resolve_token`],
+/// [`SyncConfig::resolve_push_token`]), so a `.mmcp.toml` rewrite can
+/// never persist a secret to a file that convention tracks in git.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SyncConfig {
     /// URL of the mmcp server this project syncs against.
     pub server_url: String,
-
-    /// Bearer token authorizing `/sync/*` requests against
-    /// `server_url`, issued by the server's login flow.
-    /// [`SyncConfig::resolve_token`] is the effective accessor:
-    /// `MMCP_SYNC_TOKEN` overrides this field when set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token: Option<String>,
 }
 
 impl SyncConfig {
-    /// Effective bearer token for `/sync/*` requests, reading
-    /// `MMCP_SYNC_TOKEN` from the real process environment.
+    /// Effective control-plane bearer token for `/sync/*` requests,
+    /// reading `MMCP_SYNC_TOKEN` from the real process environment.
+    /// Env-only: no file-backed fallback exists, so this credential
+    /// never round-trips through `.mmcp.toml`.
     #[must_use]
     pub fn resolve_token(&self) -> Option<String> {
-        self.resolve_token_with(|key| std::env::var(key).ok())
+        Self::resolve_token_with(|key| std::env::var(key).ok())
     }
 
     /// Same resolution as [`SyncConfig::resolve_token`], with the
     /// env lookup injected so tests never touch `std::env`, which
-    /// would race under cargo's default parallel test runner.
-    ///
-    /// `MMCP_SYNC_TOKEN` overrides the config file value when set,
-    /// mirroring the env-over-file precedence already used server
-    /// side for password-length limits. An empty value from either
-    /// source is treated as absent, matching `SyncClient::git_credentials`'s
-    /// existing `Some(token) if !token.is_empty()` pattern in the
+    /// would race under cargo's default parallel test runner. An
+    /// empty env value is treated as absent, matching
+    /// `SyncClient::git_credentials`'s existing
+    /// `Some(token) if !token.is_empty()` pattern in the
     /// `mmcp-sync` crate.
-    fn resolve_token_with(&self, get: impl Fn(&str) -> Option<String>) -> Option<String> {
-        get(SYNC_TOKEN_ENV)
-            .filter(|token| !token.is_empty())
-            .or_else(|| self.token.clone().filter(|token| !token.is_empty()))
+    fn resolve_token_with(get: impl Fn(&str) -> Option<String>) -> Option<String> {
+        get(SYNC_TOKEN_ENV).filter(|token| !token.is_empty())
+    }
+
+    /// Effective content-plane git push credential, reading
+    /// `MMCP_SYNC_PUSH_TOKEN` from the real process environment.
+    /// Structurally a twin of [`SyncConfig::resolve_token`]: env-only,
+    /// same empty-value handling, distinct env var and distinct
+    /// destination (`SyncClient::with_push_credential`, never
+    /// `SyncClient::with_bearer`).
+    #[must_use]
+    pub fn resolve_push_token(&self) -> Option<String> {
+        Self::resolve_push_token_with(|key| std::env::var(key).ok())
+    }
+
+    /// Same resolution as [`SyncConfig::resolve_push_token`], with
+    /// the env lookup injected for the same race-avoidance reason as
+    /// [`SyncConfig::resolve_token_with`].
+    fn resolve_push_token_with(get: impl Fn(&str) -> Option<String>) -> Option<String> {
+        get(SYNC_PUSH_TOKEN_ENV).filter(|token| !token.is_empty())
     }
 }
 
@@ -202,7 +223,6 @@ project_slug = "team-acme"
 
 [sync]
 server_url = "https://mmcp.example.com"
-token = "s3cr3t-bearer"
 
 [subscriptions]
 no_default_global = false
@@ -216,7 +236,6 @@ tags = ["git", "testing"]
         assert_eq!(cfg.project_slug.as_deref(), Some("team-acme"));
         let sync = cfg.sync.as_ref().expect("sync present");
         assert_eq!(sync.server_url, "https://mmcp.example.com");
-        assert_eq!(sync.token.as_deref(), Some("s3cr3t-bearer"));
         assert_eq!(
             cfg.subscriptions.groups,
             vec!["team-acme/shared".to_string()]
@@ -237,49 +256,91 @@ tags = ["git", "testing"]
         assert_eq!(cfg, reparsed);
     }
 
-    /// Build a `SyncConfig` with the given config-file token, so
-    /// each `resolve_token_with` case only varies the env layer.
-    fn sync_config(token: Option<&str>) -> SyncConfig {
-        SyncConfig {
-            server_url: "https://mmcp.example.com".to_string(),
-            token: token.map(str::to_string),
-        }
+    /// `SyncConfig` carries no credential field: a `.mmcp.toml`
+    /// round trip must never emit a `token` key, regardless of what
+    /// environment variables are set on the process running the
+    /// test. Closes the credential-in-tracked-file regression this
+    /// struct used to carry.
+    #[test]
+    fn sync_config_round_trip_never_serializes_a_token_key() {
+        let cfg = ProjectConfig {
+            project_uuid: ProjectUuid::from_uuid(
+                uuid::Uuid::parse_str("018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91").unwrap(),
+            ),
+            project_slug: None,
+            sync: Some(SyncConfig {
+                server_url: "https://mmcp.example.com".to_string(),
+            }),
+            subscriptions: SubscriptionsConfig::default(),
+        };
+        let rendered = cfg.to_toml().expect("render");
+        assert!(
+            !rendered.contains("token"),
+            "SyncConfig must never serialize a credential field: {rendered}"
+        );
     }
 
     #[test]
-    fn resolve_token_with_prefers_env_over_config_file() {
-        let cfg = sync_config(Some("file-token"));
-        let resolved =
-            cfg.resolve_token_with(|key| (key == SYNC_TOKEN_ENV).then(|| "env-token".to_string()));
+    fn resolve_token_with_reads_the_env_value() {
+        let resolved = SyncConfig::resolve_token_with(|key| {
+            (key == SYNC_TOKEN_ENV).then(|| "env-token".to_string())
+        });
         assert_eq!(resolved.as_deref(), Some("env-token"));
     }
 
     #[test]
-    fn resolve_token_with_falls_back_to_config_file_when_env_absent() {
-        let cfg = sync_config(Some("file-token"));
-        let resolved = cfg.resolve_token_with(|_| None);
-        assert_eq!(resolved.as_deref(), Some("file-token"));
-    }
-
-    #[test]
-    fn resolve_token_with_is_none_when_both_sources_are_absent() {
-        let cfg = sync_config(None);
-        let resolved = cfg.resolve_token_with(|_| None);
+    fn resolve_token_with_is_none_when_env_absent() {
+        let resolved = SyncConfig::resolve_token_with(|_| None);
         assert!(resolved.is_none());
     }
 
     #[test]
-    fn resolve_token_with_treats_an_empty_env_value_as_absent_and_falls_back() {
-        let cfg = sync_config(Some("file-token"));
-        let resolved = cfg.resolve_token_with(|key| (key == SYNC_TOKEN_ENV).then(String::new));
-        assert_eq!(resolved.as_deref(), Some("file-token"));
+    fn resolve_token_with_treats_an_empty_env_value_as_absent() {
+        let resolved =
+            SyncConfig::resolve_token_with(|key| (key == SYNC_TOKEN_ENV).then(String::new));
+        assert!(resolved.is_none());
     }
 
     #[test]
-    fn resolve_token_with_treats_an_empty_config_file_value_as_absent() {
-        let cfg = sync_config(Some(""));
-        let resolved = cfg.resolve_token_with(|_| None);
+    fn resolve_push_token_with_reads_the_env_value() {
+        let resolved = SyncConfig::resolve_push_token_with(|key| {
+            (key == SYNC_PUSH_TOKEN_ENV).then(|| "env-push-token".to_string())
+        });
+        assert_eq!(resolved.as_deref(), Some("env-push-token"));
+    }
+
+    #[test]
+    fn resolve_push_token_with_is_none_when_env_absent() {
+        let resolved = SyncConfig::resolve_push_token_with(|_| None);
         assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn resolve_push_token_with_treats_an_empty_env_value_as_absent() {
+        let resolved = SyncConfig::resolve_push_token_with(|key| {
+            (key == SYNC_PUSH_TOKEN_ENV).then(String::new)
+        });
+        assert!(resolved.is_none());
+    }
+
+    /// The two resolvers read distinct env vars: setting one must
+    /// never leak into the other's result. Structural regression
+    /// test for the credential-plane split.
+    #[test]
+    fn resolve_token_and_resolve_push_token_read_distinct_env_vars() {
+        let get = |key: &str| match key {
+            k if k == SYNC_TOKEN_ENV => Some("control-plane-value".to_string()),
+            k if k == SYNC_PUSH_TOKEN_ENV => Some("content-plane-value".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            SyncConfig::resolve_token_with(get).as_deref(),
+            Some("control-plane-value")
+        );
+        assert_eq!(
+            SyncConfig::resolve_push_token_with(get).as_deref(),
+            Some("content-plane-value")
+        );
     }
 
     #[test]
