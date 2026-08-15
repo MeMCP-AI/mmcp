@@ -142,8 +142,9 @@
     tagsLoaded = true;
     try {
       availableTags = await localTags([]);
-    } catch {
-      // Autocomplete simply stays empty; not worth surfacing.
+    } catch (e) {
+      // Autocomplete simply stays empty; not worth surfacing in the UI.
+      console.warn('tag autocomplete load failed', formatErr(e));
       tagsLoaded = false;
     }
   }
