@@ -98,8 +98,26 @@ pub enum ScopeGuard {
 static REGISTRY: LazyLock<StdMutex<HashMap<LockScope, Arc<RwLock<()>>>>> =
     LazyLock::new(|| StdMutex::new(HashMap::new()));
 
+/// Look up (or install) the `Arc<RwLock<()>>` backing `scope`,
+/// pruning every other idle entry first.
+///
+/// Prune-on-lookup: before inserting or returning the requested
+/// entry, every OTHER entry whose `Arc::strong_count() == 1` is
+/// dropped from the map, all under this function's single lock
+/// acquisition. `strong_count() == 1` means only the registry's own
+/// reference survives: no caller currently holds or is awaiting that
+/// scope's guard, because every caller that intends to use a scope's
+/// lock has already cloned its `Arc` (bumping the count) via this
+/// same function, under this same mutex, before releasing it. That
+/// ordering is what makes the check race-free: a concurrent acquirer
+/// either already holds its clone (count > 1, survives) or has not
+/// yet reached this function at all (nothing to race). Keeps
+/// `REGISTRY` from growing without bound across the process lifetime
+/// (every distinct `Group`/`Memory` UUID ever touched would otherwise
+/// leak its entry forever).
 fn lookup_or_install(scope: LockScope) -> Arc<RwLock<()>> {
     let mut registry = REGISTRY.lock().expect("lock-scope registry mutex poisoned");
+    registry.retain(|_, lock| Arc::strong_count(lock) > 1);
     registry
         .entry(scope)
         .or_insert_with(|| Arc::new(RwLock::new(())))
@@ -336,6 +354,66 @@ mod tests {
     fn coarsen_process_chain_is_exclusive_process_only() {
         let chain = coarsen_process_chain();
         assert_eq!(chain, vec![(process_root(), LockMode::Exclusive)]);
+    }
+
+    /// Falsification test for prune-on-lookup (Concern 3, highest
+    /// risk: dropping a live lock silently disables mutual exclusion).
+    /// A held scope's entry must survive a burst of OTHER scope
+    /// lookups that each run the prune sweep, proven not by inspecting
+    /// the registry directly (private, and inspecting it wouldn't
+    /// prove the LOCK still works) but by confirming a second acquire
+    /// attempt on the SAME scope from a different task still correctly
+    /// blocks: if prune-on-lookup had wrongly evicted the held scope's
+    /// entry, a fresh `lookup_or_install` would mint a brand-new,
+    /// independent `Arc<RwLock<()>>` and the second attempt would
+    /// silently succeed against a different lock instance instead of
+    /// waiting on the real one.
+    #[tokio::test]
+    async fn prune_on_lookup_never_evicts_a_held_scope() {
+        let held_group = Uuid::now_v7();
+        let held = acquire(group_scope(held_group), LockMode::Exclusive).await;
+
+        // Simulate the holder awaiting other work while it keeps the
+        // guard alive, and concurrently hammer lookup_or_install with
+        // many OTHER scopes so the prune sweep runs repeatedly while
+        // `held_group`'s entry sits at strong_count == 2 (registry +
+        // this held guard).
+        let mut other_lookups = Vec::new();
+        for _ in 0..64u32 {
+            other_lookups.push(tokio::spawn(async move {
+                let other = Uuid::now_v7();
+                let _g = acquire(group_scope(other), LockMode::Exclusive).await;
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }));
+        }
+        for h in other_lookups {
+            h.await.expect("other-scope task ok");
+        }
+
+        // A second acquire attempt on the SAME scope, from a different
+        // task, must still correctly block on the live guard rather
+        // than silently succeeding against a fresh, evicted-and-recreated
+        // lock instance.
+        let second_attempt = tokio::time::timeout(
+            Duration::from_millis(100),
+            acquire(group_scope(held_group), LockMode::Exclusive),
+        )
+        .await;
+        assert!(
+            second_attempt.is_err(),
+            "a held scope's lock must still be the live one after concurrent prune sweeps"
+        );
+
+        drop(held);
+        let third_attempt = tokio::time::timeout(
+            Duration::from_millis(100),
+            acquire(group_scope(held_group), LockMode::Exclusive),
+        )
+        .await;
+        assert!(
+            third_attempt.is_ok(),
+            "after the original holder drops, the same scope must be acquirable"
+        );
     }
 
     /// End-to-end: a coarsening rename (Exclusive Group) blocks a
