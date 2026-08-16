@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Integration tests for the `/mcp/tool` HTTP dispatch route.
 //!
 //! Covers the three server-backed tools (`list_memories`,

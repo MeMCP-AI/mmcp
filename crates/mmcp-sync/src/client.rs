@@ -277,6 +277,7 @@ async fn remote_error(status: StatusCode, response: reqwest::Response) -> SyncEr
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     /// `git_url_for` must produce `{base_url}/git/{uuid}.git`

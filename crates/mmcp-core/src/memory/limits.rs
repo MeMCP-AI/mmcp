@@ -171,6 +171,7 @@ pub fn validate_message_length(message: &str) -> Result<(), FieldLengthError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::memory::MemoryKind;
 

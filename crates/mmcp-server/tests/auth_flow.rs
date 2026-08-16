@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Integration test: register + login flow.
 
 use std::net::SocketAddr;

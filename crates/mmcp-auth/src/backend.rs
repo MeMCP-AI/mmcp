@@ -340,6 +340,7 @@ pub type AuthSession = axum_login::AuthSession<MmcpAuthBackend>;
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

@@ -124,6 +124,11 @@ pub fn bytes_to_vector(bytes: &[u8]) -> Vec<f32> {
     bytes
         .chunks_exact(size_of::<f32>())
         .map(|chunk| {
+            // SAFETY: `chunks_exact(size_of::<f32>())`'s own contract
+            // guarantees every yielded chunk has exactly that length,
+            // so this `try_into::<[u8; 4]>()` can never observe a
+            // length mismatch.
+            #[allow(clippy::expect_used)]
             f32::from_le_bytes(
                 chunk
                     .try_into()
@@ -135,6 +140,7 @@ pub fn bytes_to_vector(bytes: &[u8]) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

@@ -605,7 +605,7 @@ pub async fn update_feature(
         ),
     ])
     .await;
-    let resolved = crate::memory::resolve_memory(backend, &entry.handle, Some(slug), None)
+    let resolved = resolve_memory(backend, &entry.handle, Some(slug), None)
         .await
         .map_err(FeatureError::Memory)?;
     let _leaf = crate::lock::acquire(
@@ -844,7 +844,7 @@ pub async fn delete_feature(
         ),
     ])
     .await;
-    let resolved = crate::memory::resolve_memory(backend, &entry.handle, Some(slug), None)
+    let resolved = resolve_memory(backend, &entry.handle, Some(slug), None)
         .await
         .map_err(FeatureError::Memory)?;
     let _leaf = crate::lock::acquire(
@@ -1114,6 +1114,7 @@ fn record_from_file(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::testing::ScratchHome;
     use mmcp_core::conventions::memory_path;

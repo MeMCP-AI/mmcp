@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! [`mmcp_store::cache::init_from_home`] must stay a no-op on a
 //! repeat call naming the SAME home, but reject a repeat call naming
 //! a DIFFERENT one instead of silently keeping the first home's pool

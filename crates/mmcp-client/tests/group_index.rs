@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Integration tests for `GroupIndex`.
 //!
 //! These exercise the on-disk walk that turns every bare

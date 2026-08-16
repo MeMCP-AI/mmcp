@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Integration tests for the `/sync/*` control-plane routes.
 //!
 //! Covers the happy paths of `GET /sync/manifest`, `GET /sync/refs/{group}`, and `POST /sync/push`.

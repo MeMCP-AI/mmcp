@@ -440,6 +440,7 @@ impl IntoResponse for GitHttpError {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use axum::http::HeaderValue;
 
     use super::*;

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Integration tests for `ServerState` helpers that are easier to
 //! verify against a real initialized state than through a mock.
 

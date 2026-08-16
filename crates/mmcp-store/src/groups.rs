@@ -252,6 +252,7 @@ async fn scan_repos_root(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use mmcp_core::id::UserId;
     use tempfile::TempDir;

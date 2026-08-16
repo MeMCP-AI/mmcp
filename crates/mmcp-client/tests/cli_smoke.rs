@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! CLI smoke tests via `assert_cmd`.
 //!
 //! These tests invoke the compiled `mmcp` binary and assert on its

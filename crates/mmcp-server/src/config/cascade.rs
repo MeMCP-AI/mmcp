@@ -218,6 +218,7 @@ pub(crate) fn load_user_limits() -> Option<mmcp_core::config::LimitsConfig> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::config::test_support::WarnCounter;
 

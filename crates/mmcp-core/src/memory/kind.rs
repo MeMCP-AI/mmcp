@@ -179,6 +179,7 @@ const GENERATED_TS_RELATIVE_PATH: &str = "../../gui/src/lib/utils/memory_kind.ge
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

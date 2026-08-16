@@ -59,7 +59,7 @@ pub enum ImportError {
     Parse(#[from] mmcp_core::memory::MemoryParseError),
 
     #[error("git error: {0}")]
-    Git(#[from] mmcp_git::GitError),
+    Git(#[from] GitError),
 
     #[error("render error: {0}")]
     Render(String),
@@ -1374,6 +1374,7 @@ pub async fn resolve_group(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use mmcp_core::manifest::GroupManifest;
     use std::sync::Arc;
@@ -1530,7 +1531,7 @@ mod tests {
     /// Minimal `tracing::Subscriber` counting `WARN`-level events, so
     /// a rejected auto-slug-length tier can be asserted to actually
     /// log instead of silently discarding the bad value.
-    struct WarnCounter(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    struct WarnCounter(Arc<std::sync::atomic::AtomicUsize>);
 
     impl tracing::Subscriber for WarnCounter {
         fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
@@ -1552,7 +1553,7 @@ mod tests {
 
     #[test]
     fn resolve_from_tiers_warns_for_the_config_tier_only_when_actually_reached() {
-        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let subscriber = WarnCounter(count.clone());
 
         // The config tier is Some(0) in both calls below, but the
@@ -1568,7 +1569,7 @@ mod tests {
             "the zero config tier was never consulted, so it must not warn"
         );
 
-        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let subscriber = WarnCounter(count.clone());
         tracing::subscriber::with_default(subscriber, || {
             assert_eq!(
@@ -1585,7 +1586,7 @@ mod tests {
 
     #[test]
     fn resolve_from_tiers_warns_when_the_override_tier_is_zero() {
-        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let subscriber = WarnCounter(count.clone());
 
         tracing::subscriber::with_default(subscriber, || {
@@ -1604,7 +1605,7 @@ mod tests {
 
     #[test]
     fn resolve_from_tiers_warns_when_the_env_tier_is_zero() {
-        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let subscriber = WarnCounter(count.clone());
 
         tracing::subscriber::with_default(subscriber, || {
@@ -1623,7 +1624,7 @@ mod tests {
 
     #[test]
     fn parse_env_auto_slug_length_warns_on_malformed_value() {
-        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let subscriber = WarnCounter(count.clone());
 
         let result = tracing::subscriber::with_default(subscriber, || {
@@ -1643,7 +1644,7 @@ mod tests {
 
     #[test]
     fn parse_env_auto_slug_length_accepts_a_valid_value_without_warning() {
-        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let subscriber = WarnCounter(count.clone());
 
         let result = tracing::subscriber::with_default(subscriber, || {
@@ -2165,11 +2166,7 @@ mod tests {
             .await
             .expect("resolve imported slug");
         let bytes = backend
-            .read_file(
-                &handle,
-                &resolved.path,
-                &mmcp_git::Rev::Branch("main".to_string()),
-            )
+            .read_file(&handle, &resolved.path, &Rev::Branch("main".to_string()))
             .await
             .expect("read back");
         let text = std::str::from_utf8(&bytes).expect("utf8");

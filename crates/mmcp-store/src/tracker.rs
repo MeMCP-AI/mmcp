@@ -274,6 +274,7 @@ pub(crate) async fn count_slug_entries(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::memory::import_memory;
     use crate::testing::ScratchHome;

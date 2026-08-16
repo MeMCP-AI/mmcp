@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Exercises the cache's pull-trigger hook,
 //! [`mmcp_store::cache::notify_pull`], end-to-end.
 //!

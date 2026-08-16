@@ -30,6 +30,7 @@ pub struct ReadMemoryResponse {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use uuid::Uuid;
 
@@ -48,7 +49,7 @@ mod tests {
             },
             version: "1.0.0".into(),
             body: "# Body\n".into(),
-            notes: vec![crate::notes::Note::warn(
+            notes: vec![Note::warn(
                 "first_read_this_session",
                 "first read this session",
             )],

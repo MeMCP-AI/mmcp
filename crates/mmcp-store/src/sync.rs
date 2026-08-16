@@ -111,6 +111,7 @@ impl ScopeIndex for IndexResolver {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::home::MmcpHome;
     use mmcp_core::id::{GroupId, UserId};

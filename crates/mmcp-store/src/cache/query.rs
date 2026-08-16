@@ -194,6 +194,7 @@ fn invalid_uuid(source: uuid::Error) -> CacheError {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::memory::WriteFileOptions;
     use crate::testing::ScratchHome;

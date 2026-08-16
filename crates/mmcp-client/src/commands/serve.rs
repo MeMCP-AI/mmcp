@@ -2825,7 +2825,7 @@ impl McpServer {
             &self.state.backend,
             &selected,
             &options,
-            std::path::Path::new(&args.output),
+            Path::new(&args.output),
         )
         .await
         .map_err(map_archive_error_to_mcp)?;
@@ -2961,7 +2961,7 @@ impl McpServer {
             .await
             .map_err(git_error)?;
         let text = String::from_utf8_lossy(&bytes).into_owned();
-        let mut file = mmcp_core::memory::MemoryFile::parse(&text).map_err(|e| {
+        let mut file = MemoryFile::parse(&text).map_err(|e| {
             McpError::internal_error(Cow::Owned(format!("parsing existing memory: {e}")), None)
         })?;
 
@@ -3246,7 +3246,7 @@ impl McpServer {
             .await
             .map_err(git_error)?;
         let text = String::from_utf8_lossy(&bytes).into_owned();
-        let file = mmcp_core::memory::MemoryFile::parse(&text).map_err(|e| {
+        let file = MemoryFile::parse(&text).map_err(|e| {
             McpError::internal_error(Cow::Owned(format!("parsing existing memory: {e}")), None)
         })?;
         let sections = mmcp_core::memory::parse_sections(&file.body).map_err(|e| {
@@ -3312,7 +3312,7 @@ impl McpServer {
             .await
             .map_err(git_error)?;
         let text = String::from_utf8_lossy(&bytes).into_owned();
-        let mut file = mmcp_core::memory::MemoryFile::parse(&text).map_err(|e| {
+        let mut file = MemoryFile::parse(&text).map_err(|e| {
             McpError::internal_error(Cow::Owned(format!("parsing existing memory: {e}")), None)
         })?;
 
@@ -3741,8 +3741,8 @@ impl McpServer {
                 (Some(*entry.manifest.group_id.as_uuid()), None, None)
             }
             None => {
-                let starting_dir: Option<std::path::PathBuf> = match args.path.as_deref() {
-                    Some(p) => Some(std::path::PathBuf::from(p)),
+                let starting_dir: Option<PathBuf> = match args.path.as_deref() {
+                    Some(p) => Some(PathBuf::from(p)),
                     None => std::env::current_dir().ok(),
                 };
                 let project_root = starting_dir.and_then(|dir| find_project_root(&dir));
@@ -3878,8 +3878,8 @@ impl McpServer {
         let path = args
             .path
             .as_deref()
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from("CLAUDE.md"));
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("CLAUDE.md"));
         let state = crate::commands::claude::inspect(&path);
         let args = if state.is_conflict() && args.on_conflict.is_none() {
             let choice = elicit_claude_conflict_choice(&peer, state).await?;
@@ -3916,8 +3916,8 @@ impl McpServer {
         let path = args
             .path
             .as_deref()
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from("CLAUDE.md"));
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("CLAUDE.md"));
         let state = crate::commands::claude::inspect(&path);
 
         // Convert/append need an existing file; override may write from
@@ -4164,8 +4164,7 @@ impl McpServer {
             .pull(filter, &resolver, &resolver)
             .await
             .map_err(map_sync_error_to_mcp)?;
-        let updated_group_ids: Vec<uuid::Uuid> =
-            report.updated.iter().map(|g| g.group_id).collect();
+        let updated_group_ids: Vec<Uuid> = report.updated.iter().map(|g| g.group_id).collect();
         mmcp_store::cache::notify_pull(&self.state.backend, &self.state.groups, &updated_group_ids)
             .await;
         let notes = sync_group_failure_notes(&report.failed, "pull", &server_url);
@@ -4282,7 +4281,7 @@ impl McpServer {
             .sync(filter, &resolver, &resolver)
             .await
             .map_err(map_sync_error_to_mcp)?;
-        let updated_group_ids: Vec<uuid::Uuid> =
+        let updated_group_ids: Vec<Uuid> =
             report.pulled.updated.iter().map(|g| g.group_id).collect();
         mmcp_store::cache::notify_pull(&self.state.backend, &self.state.groups, &updated_group_ids)
             .await;
@@ -5568,7 +5567,7 @@ impl McpServer {
 /// (which needs access to the async backend) and this function
 /// handles the synchronous project-root + sync-config lookup.
 fn compose_status(
-    cwd: &std::path::Path,
+    cwd: &Path,
     groups: Vec<serde_json::Value>,
 ) -> Result<serde_json::Value, McpError> {
     let Some(root) = find_project_root(cwd) else {
@@ -5818,9 +5817,7 @@ impl McpServer {
 /// `current_dir`. The three error branches are stable wire contracts:
 /// `project_not_found`, `project_config_load_failed`, and
 /// `sync_not_configured`.
-fn resolve_sync_config(
-    cwd: &std::path::Path,
-) -> Result<(mmcp_core::config::ProjectConfig, String), McpError> {
+fn resolve_sync_config(cwd: &Path) -> Result<(mmcp_core::config::ProjectConfig, String), McpError> {
     let root = find_project_root(cwd).ok_or_else(|| {
         McpError::invalid_params(
             "no mmcp project found in current directory or any parent",
@@ -5949,7 +5946,7 @@ fn sync_failures_to_json(failed: &[mmcp_sync::GroupSyncFailure]) -> Vec<serde_js
 /// reject bare calls simultaneously.
 async fn resolve_sync_filter(
     args: &SyncToolArgs,
-    groups: &mmcp_store::GroupIndex,
+    groups: &GroupIndex,
 ) -> Result<mmcp_sync::SyncFilter, McpError> {
     let all_flag = args.all.unwrap_or(false);
     let provided: Vec<&str> = [
@@ -6005,7 +6002,7 @@ async fn resolve_sync_filter(
 /// surfaces the failure identically. Factored out because five
 /// tools share it and an inline expression would drift between
 /// variants.
-fn current_dir_for_mcp() -> Result<std::path::PathBuf, McpError> {
+fn current_dir_for_mcp() -> Result<PathBuf, McpError> {
     std::env::current_dir()
         .map_err(|e| McpError::internal_error(format!("cannot read working directory: {e}"), None))
 }
@@ -6121,6 +6118,13 @@ fn parse_single_wire_ref(
     arg: MemoryRefArg,
     field: &'static str,
 ) -> Result<mmcp_core::memory::MemoryRef, McpError> {
+    // SAFETY: `parse_wire_refs` funnels through
+    // `mmcp_core::memory::xrefs::parse_memory_refs`, a plain
+    // `.iter().map(..).collect::<Result<Vec<_>,_>>()` over the input
+    // slice; that combinator preserves cardinality 1:1 on the `Ok`
+    // path, so a one-element input always yields a one-element `Ok`
+    // vec here.
+    #[allow(clippy::expect_used)]
     Ok(parse_wire_refs(vec![arg], field)?
         .into_iter()
         .next()
@@ -7379,7 +7383,7 @@ const CLAUDE_MD_BLOCK_VERSION: &str = "v1";
 /// hints alongside every other signal. An empty vector means either
 /// no project root was resolved (nothing to diagnose) or the file is
 /// already healthy.
-fn claude_md_notes(project_root: Option<&std::path::Path>) -> Vec<mmcp_proto::Note> {
+fn claude_md_notes(project_root: Option<&Path>) -> Vec<mmcp_proto::Note> {
     let Some(root) = project_root else {
         return Vec::new();
     };
@@ -7513,6 +7517,7 @@ fn ok_json_with_notes(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use mmcp_core::id::{GroupId, MemoryId, UserId};
     use mmcp_core::manifest::GroupManifest;
@@ -9423,7 +9428,7 @@ mod tests {
     /// fully-subscribed regardless of the project's own uuid, so no
     /// `subscriptions.groups` entry is needed to exercise the
     /// collapse itself.
-    fn write_minimal_project_toml(root: &std::path::Path, subscriptions_block: &str) {
+    fn write_minimal_project_toml(root: &Path, subscriptions_block: &str) {
         std::fs::create_dir_all(root).expect("mkdir project root");
         let toml_body = format!(
             "project_uuid = \"{}\"\n{subscriptions_block}",
@@ -10249,7 +10254,7 @@ mod tests {
     /// instead of one shared `cache_unavailable`.
     #[test]
     fn milestone_cache_error_mapping_never_leaks_raw_cache_detail() {
-        let raw_path = std::path::PathBuf::from("/var/secret/mmcp-home/cache/index.sqlite3");
+        let raw_path = PathBuf::from("/var/secret/mmcp-home/cache/index.sqlite3");
         let raw_sql_detail =
             "near \"SELEC\": syntax error while scanning table memories column body";
 
@@ -10299,7 +10304,7 @@ mod tests {
     // ── sync tool helpers ──────────────────────────────────────────────
 
     /// Write a deterministic `.mmcp.toml` at `path`.
-    fn write_project_config(root: &std::path::Path, body: &str) {
+    fn write_project_config(root: &Path, body: &str) {
         std::fs::write(root.join(PROJECT_MANIFEST), body).expect("write .mmcp.toml");
     }
 
@@ -11504,7 +11509,7 @@ mod tests {
         .expect("resolve imported memory");
         let raw = state
             .backend
-            .read_file(&entry.handle, &resolved.path, &mmcp_git::Rev::head())
+            .read_file(&entry.handle, &resolved.path, &Rev::head())
             .await
             .expect("read stored memory");
         let text = std::str::from_utf8(&raw).expect("utf8");

@@ -264,6 +264,7 @@ mod handlers {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     /// Contrived value whose `Serialize` impl always fails, so the
@@ -310,13 +311,11 @@ mod tests {
     async fn group_info_returns_the_typed_not_found_variant() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let cfg = crate::config::test_support::minimal_server_config(tmp.path().to_path_buf());
-        let state = crate::state::ServerState::initialize(&cfg)
-            .await
-            .expect("state init");
+        let state = ServerState::initialize(&cfg).await.expect("state init");
 
         let err = handlers::group_info(
             &state,
-            mmcp_proto::GroupInfoRequest {
+            GroupInfoRequest {
                 group: uuid::Uuid::now_v7(),
             },
         )

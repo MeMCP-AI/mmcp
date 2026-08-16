@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Integration test: every client primitive works without a remote.
 //!
 //! Documents and protects the "remoteless standalone" client mode:

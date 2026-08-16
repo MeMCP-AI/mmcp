@@ -229,6 +229,7 @@ pub enum IssueSupersedeInvariantError {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     fn forty_char_hex() -> &'static str {

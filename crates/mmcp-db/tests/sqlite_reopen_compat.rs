@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! On-disk SQLite file-reopen compatibility test.
 //!
 //! Every other integration test in this crate uses `sqlite::memory:`,

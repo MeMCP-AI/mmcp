@@ -306,6 +306,7 @@ pub fn malformed_frontmatter_notes(slug: &str, filename_id: Uuid, file: &MemoryF
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

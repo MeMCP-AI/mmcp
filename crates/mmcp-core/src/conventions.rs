@@ -98,6 +98,7 @@ pub fn slug_matches_filter(slug: &str, prefix: Option<&str>, recursion: SlugRecu
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

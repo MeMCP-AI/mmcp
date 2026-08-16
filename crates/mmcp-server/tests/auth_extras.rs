@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Error-branch coverage for `/auth/*` routes.
 //!
 //! `auth_flow.rs` covers the password happy path and the wrong-password/duplicate-handle 4xx cases.

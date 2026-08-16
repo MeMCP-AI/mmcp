@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Integration tests for the native git backend.
 
 use mmcp_core::id::{GroupId, UserId};

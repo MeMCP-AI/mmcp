@@ -345,6 +345,7 @@ fn parse_bump(value: &BumpIntent) -> BumpIntent {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::config::test_support::{WarnCounter, minimal_server_config};
     use mmcp_db::entities::group::OwnerKind;

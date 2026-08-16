@@ -56,6 +56,7 @@ pub(crate) fn shared_output_schema() -> std::sync::Arc<rmcp::model::JsonObject> 
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     /// The schema is shared (same `Arc`) across all tools so

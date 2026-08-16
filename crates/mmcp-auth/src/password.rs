@@ -94,6 +94,7 @@ pub fn verify_password(plaintext: &str, stored_hash: &str) -> Result<(), AuthErr
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

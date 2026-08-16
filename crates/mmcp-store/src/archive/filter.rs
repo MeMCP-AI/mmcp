@@ -131,6 +131,7 @@ pub fn parse_memory_kind(value: &str) -> Option<MemoryKind> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     fn fm(name: &str, kind: MemoryKind, tags: &[&str], mandatory: bool) -> MemoryFrontmatter {

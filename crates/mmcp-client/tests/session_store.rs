@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Integration tests for `SessionStore`.
 //!
 //! Cover the flat per-session TOML store owned by the client.

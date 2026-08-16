@@ -830,6 +830,7 @@ fn print_report(report: &ClaudeReport) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     fn default_args() -> ClaudeArgs {

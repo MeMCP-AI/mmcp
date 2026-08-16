@@ -123,6 +123,7 @@ impl StoreError {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use std::error::Error as _;
     use std::path::PathBuf;
 

@@ -65,6 +65,7 @@ pub fn resolve_effective_role(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::id::{GroupId, OrgId, UserId};
     use crate::identity::{Group, GroupOwner, Membership, Principal, Role};

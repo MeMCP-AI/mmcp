@@ -125,6 +125,11 @@ impl ServerConfig {
                     error = %err,
                     "MMCP_BIND is not a valid socket address; falling back to the default bind {DEFAULT_BIND}"
                 );
+                // SAFETY: `DEFAULT_BIND` is a hardcoded string literal
+                // owned by this crate, never user input, so its parse
+                // outcome is fixed at compile time and covered by the
+                // crate's own test suite; it cannot fail at runtime.
+                #[allow(clippy::expect_used)]
                 DEFAULT_BIND
                     .parse()
                     .expect("DEFAULT_BIND is a hardcoded, always-valid SocketAddr literal")
@@ -215,6 +220,7 @@ fn random_key() -> Result<[u8; mmcp_auth::token::V4_LOCAL_KEY_BYTES], ConfigErro
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::config::test_support::WarnCounter;
     use crate::config::{MAX_HANDLE_LENGTH_ENV, MIN_PASSWORD_LENGTH_ENV};

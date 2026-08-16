@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Exercises the cache's process-global write-trigger hook
 //! end-to-end: [`mmcp_store::cache::init_from_home`] followed by a
 //! real memory write through [`mmcp_store::memory::write_file_at_path`]

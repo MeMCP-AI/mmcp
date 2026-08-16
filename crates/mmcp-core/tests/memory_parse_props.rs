@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Property-based tests for `MemoryFile::parse` and its renderers.
 //!
 //! The parser feeds `gray_matter` plus three deserializers (TOML,

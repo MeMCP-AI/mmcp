@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Property-based tests that the TOML parsers used by mmcp-core
 //! never panic on arbitrary input.
 //!

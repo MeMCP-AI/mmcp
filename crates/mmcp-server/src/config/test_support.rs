@@ -8,6 +8,8 @@
 //! `ServerConfig` fixture instead of each restating the struct
 //! literal.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 

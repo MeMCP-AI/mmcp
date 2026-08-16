@@ -260,6 +260,7 @@ pub(crate) fn meta_for_tool(name: &str) -> Option<rmcp::model::MetaObject> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     /// The patching seam decorates each tool with its

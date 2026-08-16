@@ -53,6 +53,7 @@ pub(crate) fn icons_for_category(cat: ToolIconCategory) -> Vec<rmcp::model::Icon
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     /// Spot-check that category routing covers the obvious

@@ -397,6 +397,7 @@ fn record_from_file(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::cache::open_pool;
     use crate::testing::ScratchHome;
@@ -633,7 +634,7 @@ mod tests {
                 body: "x".into(),
                 status: mmcp_core::memory::FeatureStatus::Completed,
                 milestone: Some(
-                    crate::memory::resolve_memory(
+                    resolve_memory(
                         scratch.backend(),
                         &entry.handle,
                         Some("done-milestone"),
@@ -716,7 +717,7 @@ mod tests {
         )
         .await
         .expect("seed milestone");
-        let milestone_id = crate::memory::resolve_memory(
+        let milestone_id = resolve_memory(
             scratch.backend(),
             &milestone_entry.handle,
             Some("cross-group-milestone"),
@@ -793,7 +794,7 @@ mod tests {
         )
         .await
         .expect("seed milestone");
-        let milestone_id = crate::memory::resolve_memory(
+        let milestone_id = resolve_memory(
             scratch.backend(),
             &milestone_entry.handle,
             Some("gate-milestone"),

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! End-to-end smart-HTTP test against stock `git`.
 //!
 //! Spins up the real axum server on an ephemeral port, seeds one

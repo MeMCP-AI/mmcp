@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! End-to-end smoke test against an in-memory SQLite database.
 
 use mmcp_db::entities::group::OwnerKind;

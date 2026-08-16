@@ -403,6 +403,10 @@ fn strip_linkgit_macros(line: &str) -> String {
             }
         }
         // Push one UTF-8 char at a time so we don't slice mid-codepoint.
+        // SAFETY: the enclosing `while i < bytes.len()` guard, plus `i`
+        // only ever advancing by a prior char's `len_utf8()`, guarantees
+        // `line[i..]` is a valid, non-empty UTF-8 slice here.
+        #[allow(clippy::expect_used)]
         let ch = line[i..].chars().next().expect("non-empty slice");
         out.push(ch);
         i += ch.len_utf8();
@@ -467,6 +471,7 @@ fn collapse_blank_lines(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

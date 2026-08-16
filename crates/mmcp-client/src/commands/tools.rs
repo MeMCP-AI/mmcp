@@ -160,6 +160,7 @@ fn bool_cell(value: Option<bool>) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     /// `build_rows` on a synthetic list still wires up the

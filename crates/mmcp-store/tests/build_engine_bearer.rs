@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Proves `build_engine` wires its `token` argument to the
 //! `/sync/*` `Authorization` header and its `push_token` argument to
 //! the git content-plane credential, and that the two never leak

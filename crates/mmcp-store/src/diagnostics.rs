@@ -1076,6 +1076,7 @@ fn tokens_overlap(a: &str, b: &str) -> bool {
 
 #[cfg(test)]
 mod milestone_reference_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::testing::ScratchHome;
 

@@ -5,6 +5,8 @@
 //! this module is pulled in via `mod common;` (never a peer `use`)
 //! in every file that needs it.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::path::PathBuf;
 
 use mmcp_server::config::test_support::minimal_server_config;

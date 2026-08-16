@@ -90,6 +90,7 @@ fn push_unique(groups: &mut Vec<GroupRef>, candidate: GroupRef) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::config::{ProjectConfig, SubscriptionsConfig, SyncConfig};
     use crate::id::ProjectUuid;

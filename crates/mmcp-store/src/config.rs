@@ -70,6 +70,7 @@ pub fn save(root: &Path, config: &ProjectConfig) -> Result<(), StoreError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     /// A malformed `.mmcp.toml` surfaces as `StoreError::TomlParse` naming the failing path.

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Integration tests for `SyncEngine` against a wiremock-fronted
 //! `mmcp-server` and a real in-process native git backend.
 //!
@@ -143,7 +144,7 @@ fn ensure_tracing_interest_cache_stays_open() {
     INIT.call_once(|| {
         let subscriber = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::TRACE)
-            .with_writer(std::io::sink)
+            .with_writer(io::sink)
             .finish();
         let _ = tracing::subscriber::set_global_default(subscriber);
     });

@@ -688,7 +688,7 @@ async fn protected_precheck(
 
 /// Whether an archived group is in scope for this import.
 /// An empty selection imports every group; otherwise a group matches by its uuid string or its slug.
-fn group_selected(select: &[String], group_meta: &super::manifest::ArchivedGroupMeta) -> bool {
+fn group_selected(select: &[String], group_meta: &ArchivedGroupMeta) -> bool {
     select.is_empty()
         || select
             .iter()
@@ -807,6 +807,7 @@ fn normalize(content: &str) -> Result<String, ArchiveError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::super::manifest::{ArchiveMode, ArchivedGroupMeta};
     use super::*;
     use crate::testing::ScratchHome;

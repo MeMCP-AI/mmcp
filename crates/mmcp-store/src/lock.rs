@@ -184,6 +184,7 @@ pub fn coarsen_process_chain() -> Vec<(LockScope, LockMode)> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
