@@ -1,14 +1,12 @@
 //! Per-provider `oauth2` client construction.
 //!
 //! [`crate::state::ServerState::initialize`] builds one [`OauthClient`]
-//! per configured [`OAuthProviderConfig`], replacing the hand-rolled
-//! authorize-URL `format!`/`urlencoding::encode` and the hand-rolled
-//! `reqwest::Client::new().post(&cfg.token_url).form(&[...])` token
-//! exchange that used to live in `crate::routes::auth`. Everything
-//! else in that module (session storage of the CSRF state and PKCE
-//! verifier, the `OAuthStateRejection` cause taxonomy, the provider
-//! registry, and the GitHub-specific userinfo fetch) stays hand-rolled:
-//! `oauth2` has no opinion on any of it.
+//! per configured [`OAuthProviderConfig`], handling the authorize-URL
+//! construction and the token exchange through the `oauth2` crate.
+//! Everything else in `crate::routes::auth` (session storage of the
+//! CSRF state and PKCE verifier, the `OAuthStateRejection` cause
+//! taxonomy, the provider registry, and the GitHub-specific userinfo
+//! fetch) stays hand-rolled: `oauth2` has no opinion on any of it.
 
 use anyhow::{Context, Result};
 use oauth2::basic::BasicClient;
@@ -40,11 +38,9 @@ pub fn build_oauth_client(cfg: &OAuthProviderConfig, origin: &str) -> Result<Oau
         .set_client_secret(ClientSecret::new(cfg.client_secret.clone()))
         // oauth2 defaults to `AuthType::BasicAuth` (client_id/secret
         // in an `Authorization: Basic` header) once a client secret
-        // is set. The pre-migration hand-rolled exchange sent both
-        // as form-body fields instead; `RequestBody` here keeps that
-        // exact, already-proven-working wire format for every
-        // configured provider rather than switching credential
-        // transport as a side effect of this migration.
+        // is set. `RequestBody` sends both as form-body fields
+        // instead, the wire format every configured provider's
+        // token endpoint expects.
         .set_auth_type(oauth2::AuthType::RequestBody)
         .set_auth_uri(
             AuthUrl::new(cfg.auth_url.clone())
@@ -79,7 +75,7 @@ pub fn build_oauth_client(cfg: &OAuthProviderConfig, origin: &str) -> Result<Oau
 /// client secret and authorization code would replay both to
 /// whatever the response's `Location` pointed at.
 pub fn build_oauth_exchange_http_client() -> oauth2::reqwest::Client {
-    // SAFETY: this builder carries no I/O and no proxy/TLS override,
+    // NOTE: this builder carries no I/O and no proxy/TLS override,
     // the one class of configuration that can make `build()` fail;
     // see the justification string below for the full argument.
     #[allow(clippy::expect_used)]
@@ -112,6 +108,10 @@ mod tests {
         assert_eq!(
             client.token_uri().url().as_str(),
             "https://github.com/login/oauth/access_token"
+        );
+        assert_eq!(
+            client.redirect_uri().map(|url| url.url().as_str()),
+            Some("https://mmcp.example/auth/oauth/github/callback")
         );
     }
 
