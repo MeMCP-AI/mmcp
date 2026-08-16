@@ -38,6 +38,14 @@ pub fn build_oauth_client(cfg: &OAuthProviderConfig, origin: &str) -> Result<Oau
     let redirect_url = format!("{origin}/auth/oauth/{}/callback", cfg.slug);
     Ok(BasicClient::new(ClientId::new(cfg.client_id.clone()))
         .set_client_secret(ClientSecret::new(cfg.client_secret.clone()))
+        // oauth2 defaults to `AuthType::BasicAuth` (client_id/secret
+        // in an `Authorization: Basic` header) once a client secret
+        // is set. The pre-migration hand-rolled exchange sent both
+        // as form-body fields instead; `RequestBody` here keeps that
+        // exact, already-proven-working wire format for every
+        // configured provider rather than switching credential
+        // transport as a side effect of this migration.
+        .set_auth_type(oauth2::AuthType::RequestBody)
         .set_auth_uri(
             AuthUrl::new(cfg.auth_url.clone())
                 .with_context(|| format!("provider '{}': invalid OAuth authorize URL", cfg.slug))?,

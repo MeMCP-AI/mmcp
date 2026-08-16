@@ -133,33 +133,52 @@ fn extract_state_param(location: &str) -> String {
         .to_string()
 }
 
+/// Form fields [`start_fake_oauth_provider`]'s `/token` route observed on
+/// the exchange request, so callers can assert on the actual wire request
+/// `oauth2` sent rather than only on whether the exchange succeeded.
+#[derive(Clone, Default)]
+struct FakeTokenExchangeProbes {
+    /// Set once a non-empty `code_verifier` form field is seen (PKCE).
+    code_verifier_received: Arc<AtomicBool>,
+    /// Set once a non-empty `client_id` form field is seen: proves the
+    /// client authenticates via `AuthType::RequestBody` (matching the
+    /// pre-migration hand-rolled exchange), not the header-based
+    /// `AuthType::BasicAuth` `oauth2` defaults to once a client secret
+    /// is set.
+    client_id_in_body_received: Arc<AtomicBool>,
+}
+
 /// Spins up a minimal fake OAuth provider (token exchange + userinfo) on an
 /// ephemeral loopback port, so the callback happy path can be proven end to
 /// end without a live GitHub dependency. Returns the provider's address
-/// alongside a flag the `/token` route sets to `true` the moment it observes
-/// a non-empty `code_verifier` form field, so callers can assert `oauth2`
-/// actually transmitted the PKCE verifier on the exchange, not merely that
-/// the exchange succeeded.
-async fn start_fake_oauth_provider() -> (SocketAddr, Arc<AtomicBool>) {
-    let code_verifier_received = Arc::new(AtomicBool::new(false));
-    let token_route_flag = code_verifier_received.clone();
+/// alongside the [`FakeTokenExchangeProbes`] its `/token` route fills in.
+async fn start_fake_oauth_provider() -> (SocketAddr, FakeTokenExchangeProbes) {
+    let probes = FakeTokenExchangeProbes::default();
+    let token_route_probes = probes.clone();
     let app = Router::new()
         .route(
             "/token",
             post(move |body: Bytes| {
-                let flag = token_route_flag.clone();
+                let probes = token_route_probes.clone();
                 async move {
                     // A hand-rolled check, not a URL-decoding library, is
-                    // enough here: PKCE code verifiers are base64url
-                    // (RFC 7636), which `application/x-www-form-urlencoded`
-                    // never percent-encodes, so a raw substring search on
-                    // `key=value` pairs sees the verifier exactly as sent.
+                    // enough here: PKCE code verifiers and OAuth client ids
+                    // are both restricted to characters
+                    // `application/x-www-form-urlencoded` never
+                    // percent-encodes, so a raw substring search on
+                    // `key=value` pairs sees each value exactly as sent.
                     let form_body = String::from_utf8_lossy(&body);
-                    let carries_code_verifier = form_body.split('&').any(|pair| {
-                        pair.strip_prefix("code_verifier=")
-                            .is_some_and(|value| !value.is_empty())
-                    });
-                    flag.store(carries_code_verifier, Ordering::SeqCst);
+                    let field_present = |field: &str| {
+                        form_body
+                            .split('&')
+                            .any(|pair| pair.strip_prefix(field).is_some_and(|v| !v.is_empty()))
+                    };
+                    probes
+                        .code_verifier_received
+                        .store(field_present("code_verifier="), Ordering::SeqCst);
+                    probes
+                        .client_id_in_body_received
+                        .store(field_present("client_id="), Ordering::SeqCst);
                     // `token_type` is mandatory for `oauth2`'s
                     // `StandardTokenResponse` deserialization (RFC 6749
                     // section 5.1); omitting it 500s the exchange instead
@@ -183,7 +202,7 @@ async fn start_fake_oauth_provider() -> (SocketAddr, Arc<AtomicBool>) {
             .await
             .unwrap();
     });
-    (addr, code_verifier_received)
+    (addr, probes)
 }
 
 #[tokio::test]
@@ -215,7 +234,7 @@ async fn oauth_authorize_redirect_includes_a_nonempty_state_parameter() {
 
 #[tokio::test]
 async fn oauth_callback_with_matching_state_completes_the_login() {
-    let (fake_addr, code_verifier_received) = start_fake_oauth_provider().await;
+    let (fake_addr, probes) = start_fake_oauth_provider().await;
     let provider = OAuthProviderConfig {
         slug: "github".to_string(),
         client_id: "client-abc".to_string(),
@@ -261,8 +280,14 @@ async fn oauth_callback_with_matching_state_completes_the_login() {
     );
     assert!(body.contains("OAuth login successful"));
     assert!(
-        code_verifier_received.load(Ordering::SeqCst),
+        probes.code_verifier_received.load(Ordering::SeqCst),
         "oauth2's token exchange must present the PKCE code_verifier stored at authorize time"
+    );
+    assert!(
+        probes.client_id_in_body_received.load(Ordering::SeqCst),
+        "the token exchange must authenticate via AuthType::RequestBody (client_id in the \
+         form body), matching the pre-migration wire format, not the header-based BasicAuth \
+         oauth2 defaults to once a client secret is set"
     );
 }
 
@@ -508,7 +533,7 @@ async fn oauth_callback_with_same_length_but_wrong_value_state_is_rejected() {
 
 #[tokio::test]
 async fn oauth_state_is_single_use_a_replayed_valid_callback_is_rejected_the_second_time() {
-    let (fake_addr, _code_verifier_received) = start_fake_oauth_provider().await;
+    let (fake_addr, _probes) = start_fake_oauth_provider().await;
     let provider = OAuthProviderConfig {
         slug: "github".to_string(),
         client_id: "client-abc".to_string(),
