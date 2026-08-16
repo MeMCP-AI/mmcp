@@ -13,18 +13,29 @@
 /// a validation bypass.
 pub(crate) const AUTH_REQUEST_BODY_LIMIT_BYTES: usize = 16 * 1024;
 
-/// Byte length of the OS-CSPRNG-derived OAuth CSRF `state` token before hex encoding.
+/// Byte length of the random OAuth CSRF `state` token
+/// [`oauth2::CsrfToken::new_random_len`] mints, before base64url
+/// (no-padding) encoding.
 pub(crate) const OAUTH_STATE_TOKEN_BYTES: usize = 32;
 
-/// Hex-encoded length of the OAuth CSRF `state` token.
-/// Each byte of [`OAUTH_STATE_TOKEN_BYTES`] renders as exactly two hex digits.
+/// Encoded length of the OAuth CSRF `state` token `oauth2` produces.
+/// `CsrfToken::new_random_len` base64url-encodes (no padding) the
+/// raw [`OAUTH_STATE_TOKEN_BYTES`]: every 3 raw bytes become 4
+/// characters, with the trailing partial group rounded up.
 /// The callback handler rejects a mismatched length before comparing values.
-pub(crate) const OAUTH_STATE_HEX_LENGTH: usize = OAUTH_STATE_TOKEN_BYTES * 2;
+pub(crate) const OAUTH_STATE_TOKEN_LENGTH: usize = (OAUTH_STATE_TOKEN_BYTES * 4).div_ceil(3);
 
 /// Per-provider session key prefix for the OAuth CSRF `state` token
 /// [`crate::routes::auth`]'s authorize and callback handlers exchange
 /// through the session store.
 pub(crate) const OAUTH_STATE_SESSION_KEY_PREFIX: &str = "oauth_csrf_state:";
+
+/// Per-provider session key prefix for the OAuth PKCE code verifier
+/// [`crate::routes::auth`]'s authorize and callback handlers exchange
+/// through the session store, mirroring
+/// [`OAUTH_STATE_SESSION_KEY_PREFIX`] but under its own namespace so
+/// the two values never collide.
+pub(crate) const OAUTH_PKCE_VERIFIER_SESSION_KEY_PREFIX: &str = "oauth_pkce_verifier:";
 
 /// Challenge header value advertised on every bearer-auth rejection,
 /// matching the scheme `crate::routes::bearer_auth`'s extractor

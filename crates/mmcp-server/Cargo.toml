@@ -53,7 +53,6 @@ webauthn-rs = { workspace = true }
 time = { workspace = true }
 reqwest = { workspace = true }
 oauth2 = { workspace = true }
-urlencoding = "2"
 
 # Direct gix dep so the smart-HTTP routes can drive
 # `Repository::serve_*` in-process, without a `git` binary on the server.

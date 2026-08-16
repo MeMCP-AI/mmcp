@@ -14,6 +14,7 @@ use uuid::Uuid;
 use webauthn_rs::prelude::*;
 
 use crate::config::{OAuthProviderConfig, ServerConfig};
+use crate::oauth_client::{OauthClient, build_oauth_client, build_oauth_exchange_http_client};
 
 /// Everything a request handler needs from the server.
 #[derive(Clone)]
@@ -28,6 +29,15 @@ pub struct ServerStateInner {
     pub auth_backend: MmcpAuthBackend,
     pub webauthn: Arc<Webauthn>,
     pub oauth_providers: HashMap<String, OAuthProviderConfig>,
+    /// One `oauth2` client per entry of [`ServerStateInner::oauth_providers`],
+    /// built once at [`ServerState::initialize`] from that same config; see
+    /// [`crate::oauth_client::build_oauth_client`].
+    pub oauth_clients: HashMap<String, OauthClient>,
+    /// Dedicated async HTTP client for the `oauth2` token exchange;
+    /// see [`crate::oauth_client::build_oauth_exchange_http_client`]
+    /// for why it is a separate client from every other HTTP call in
+    /// this crate.
+    pub oauth_exchange_http_client: oauth2::reqwest::Client,
     pub origin: String,
 
     /// Shared-secret bearer token that authorizes `git-receive-pack`
@@ -82,6 +92,11 @@ impl ServerState {
             .iter()
             .map(|p| (p.slug.clone(), p.clone()))
             .collect();
+        let oauth_clients: HashMap<String, OauthClient> = cfg
+            .oauth_providers
+            .iter()
+            .map(|p| Ok((p.slug.clone(), build_oauth_client(p, &cfg.origin)?)))
+            .collect::<Result<_>>()?;
 
         Ok(Self(Arc::new(ServerStateInner {
             database,
@@ -92,6 +107,8 @@ impl ServerState {
             auth_backend,
             webauthn,
             oauth_providers,
+            oauth_clients,
+            oauth_exchange_http_client: build_oauth_exchange_http_client(),
             origin: cfg.origin.clone(),
             push_token: cfg.push_token.clone(),
             min_password_length: cfg.min_password_length,

@@ -29,6 +29,9 @@ use axum::{
 use jiff::Timestamp;
 use mmcp_auth::{AuthSession, Credentials, hash_password, validate_password_policy};
 use mmcp_db::repository::{passkey_repo, user_repo};
+use oauth2::{
+    AuthorizationCode, CsrfToken, PkceCodeChallenge, PkceCodeVerifier, Scope, TokenResponse,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -37,8 +40,8 @@ use webauthn_rs::prelude::*;
 
 use crate::routes::defaults::{
     AUTH_REQUEST_BODY_LIMIT_BYTES, MAX_DISPLAY_NAME_LENGTH, MAX_EMAIL_LENGTH,
-    OAUTH_STATE_HEX_LENGTH, OAUTH_STATE_SESSION_KEY_PREFIX, OAUTH_STATE_TOKEN_BYTES,
-    PASSKEY_CEREMONY_TTL,
+    OAUTH_PKCE_VERIFIER_SESSION_KEY_PREFIX, OAUTH_STATE_SESSION_KEY_PREFIX,
+    OAUTH_STATE_TOKEN_BYTES, OAUTH_STATE_TOKEN_LENGTH, PASSKEY_CEREMONY_TTL,
 };
 use crate::routes::registration_limits::RegistrationLimits;
 use crate::routes::response::{self, FromInternalError, into_generic_response};
@@ -231,6 +234,15 @@ async fn login(
 }
 
 // ── OAuth ───────────────────────────────────────────────────────
+//
+// Authorize-URL construction, CSRF `state` minting, PKCE, and the
+// authorization-code token exchange are all delegated to the `oauth2`
+// crate (see [`crate::oauth_client`] for the per-provider client it
+// builds). What stays hand-rolled here: the session storage of the
+// CSRF state and PKCE verifier, `OAuthStateRejection`'s per-cause
+// taxonomy and logging, the provider registry lookup, and the
+// GitHub-specific userinfo fetch (`oauth2` has no generic userinfo
+// step).
 
 /// Builds the per-provider session key from [`OAUTH_STATE_SESSION_KEY_PREFIX`].
 /// Concurrent flows against different providers get distinct keys,
@@ -239,12 +251,10 @@ fn oauth_state_session_key(provider: &str) -> String {
     format!("{OAUTH_STATE_SESSION_KEY_PREFIX}{provider}")
 }
 
-/// Mints a fresh OAuth CSRF `state` token from the OS CSPRNG, hex-encoded.
-/// Hex encoding needs no extra escaping under [`oauth_authorize`]'s percent-encoding of the whole value.
-fn generate_oauth_state() -> Result<String, AuthHttpError> {
-    let mut bytes = [0u8; OAUTH_STATE_TOKEN_BYTES];
-    getrandom::fill(&mut bytes).map_err(into_generic_response)?;
-    Ok(hex::encode(bytes))
+/// Builds the per-provider session key from [`OAUTH_PKCE_VERIFIER_SESSION_KEY_PREFIX`],
+/// mirroring [`oauth_state_session_key`] under its own namespace.
+fn oauth_pkce_verifier_session_key(provider: &str) -> String {
+    format!("{OAUTH_PKCE_VERIFIER_SESSION_KEY_PREFIX}{provider}")
 }
 
 #[derive(Deserialize)]
@@ -260,31 +270,38 @@ async fn oauth_authorize(
     State(state): State<ServerState>,
     Path(provider): Path<String>,
 ) -> Result<Redirect, AuthHttpError> {
-    let cfg = state
-        .oauth_providers
+    let oauth_client = state
+        .oauth_clients
         .get(&provider)
         .ok_or(AuthHttpError::NotFound("unknown OAuth provider"))?;
 
-    let csrf_state = generate_oauth_state()?;
+    let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
+
+    let (authorize_url, csrf_state) = oauth_client
+        .authorize_url(|| CsrfToken::new_random_len(OAUTH_STATE_TOKEN_BYTES as u32))
+        .add_scope(Scope::new("user:email".to_string()))
+        .set_pkce_challenge(pkce_challenge)
+        .url();
+
     auth_session
         .session
-        .insert(&oauth_state_session_key(&provider), &csrf_state)
+        .insert(&oauth_state_session_key(&provider), csrf_state.secret())
+        .await
+        .map_err(into_generic_response)?;
+    auth_session
+        .session
+        .insert(
+            &oauth_pkce_verifier_session_key(&provider),
+            pkce_verifier.secret(),
+        )
         .await
         .map_err(into_generic_response)?;
 
-    let callback_url = format!("{}/auth/oauth/{}/callback", state.origin, provider);
-    let authorize_url = format!(
-        "{}?client_id={}&redirect_uri={}&scope=user:email&state={}",
-        cfg.auth_url,
-        cfg.client_id,
-        urlencoding::encode(&callback_url),
-        urlencoding::encode(&csrf_state),
-    );
-    Ok(Redirect::temporary(&authorize_url))
+    Ok(Redirect::temporary(authorize_url.as_str()))
 }
 
-/// Why an OAuth callback's `state` failed validation against the
-/// stored CSRF token.
+/// Why an OAuth callback failed to validate against the state the
+/// matching [`oauth_authorize`] call stored in the session.
 ///
 /// Every variant maps to the same uniform external
 /// [`AuthHttpError::InvalidOAuthState`] 400 response; [`oauth_callback`]
@@ -299,7 +316,7 @@ enum OAuthStateRejection {
     /// withheld).
     #[error("no stored csrf state found in the session")]
     NoStoredState,
-    /// The received `state` is not exactly [`OAUTH_STATE_HEX_LENGTH`]
+    /// The received `state` is not exactly [`OAUTH_STATE_TOKEN_LENGTH`]
     /// characters, rejected before the equality comparison below.
     #[error("state length {received_len} does not match the expected {expected_len}")]
     LengthMismatch {
@@ -310,6 +327,14 @@ enum OAuthStateRejection {
     /// the value stored at authorize time.
     #[error("state does not match the value issued at authorize time")]
     ValueMismatch,
+    /// The `state` matched, but no PKCE code verifier was found
+    /// stored in the session under this provider's key: the
+    /// authorize step that mints and stores it never ran for this
+    /// session (a forged callback skipping straight to the callback
+    /// endpoint, or the session losing the entry), so the exchange
+    /// has no `code_verifier` to present and must not proceed.
+    #[error("no stored pkce verifier found in the session")]
+    MissingPkceVerifier,
 }
 
 /// Validate an OAuth callback's `state` against the session's stored
@@ -324,16 +349,31 @@ fn validate_oauth_state(
 ) -> Result<(), OAuthStateRejection> {
     let received = received.ok_or(OAuthStateRejection::MissingFromQuery)?;
     let expected = expected.ok_or(OAuthStateRejection::NoStoredState)?;
-    if received.len() != OAUTH_STATE_HEX_LENGTH {
+    if received.len() != OAUTH_STATE_TOKEN_LENGTH {
         return Err(OAuthStateRejection::LengthMismatch {
             received_len: received.len(),
-            expected_len: OAUTH_STATE_HEX_LENGTH,
+            expected_len: OAUTH_STATE_TOKEN_LENGTH,
         });
     }
     if received != expected {
         return Err(OAuthStateRejection::ValueMismatch);
     }
     Ok(())
+}
+
+/// Confirm a PKCE code verifier was stored in the session for this
+/// callback, returning it ready for
+/// [`oauth2::CodeTokenRequest::set_pkce_verifier`].
+///
+/// Pure and side-effect-free like [`validate_oauth_state`], for the
+/// same reason: independently unit-testable without a running
+/// server, and kept as its own function (rather than folded into
+/// `validate_oauth_state`) so that function's existing state-only
+/// test coverage stays untouched by the PKCE addition.
+fn require_pkce_verifier(expected: Option<&str>) -> Result<PkceCodeVerifier, OAuthStateRejection> {
+    expected
+        .map(|verifier| PkceCodeVerifier::new(verifier.to_string()))
+        .ok_or(OAuthStateRejection::MissingPkceVerifier)
 }
 
 /// GitHub user info response (partial).
@@ -354,12 +394,22 @@ async fn oauth_callback(
         .oauth_providers
         .get(&provider)
         .ok_or(AuthHttpError::NotFound("unknown OAuth provider"))?;
+    let oauth_client = state
+        .oauth_clients
+        .get(&provider)
+        .ok_or(AuthHttpError::NotFound("unknown OAuth provider"))?;
 
-    // Consume the stored state before comparing.
-    // A token is usable for at most one callback, regardless of whether the comparison below passes.
+    // Consume the stored state and PKCE verifier before comparing.
+    // Both are usable for at most one callback, regardless of
+    // whether the checks below pass.
     let expected_state: Option<String> = auth_session
         .session
         .remove(&oauth_state_session_key(&provider))
+        .await
+        .map_err(into_generic_response)?;
+    let expected_verifier: Option<String> = auth_session
+        .session
+        .remove(&oauth_pkce_verifier_session_key(&provider))
         .await
         .map_err(into_generic_response)?;
 
@@ -379,42 +429,40 @@ async fn oauth_callback(
             }
             OAuthStateRejection::NoStoredState
             | OAuthStateRejection::LengthMismatch { .. }
-            | OAuthStateRejection::ValueMismatch => {
+            | OAuthStateRejection::ValueMismatch
+            | OAuthStateRejection::MissingPkceVerifier => {
                 tracing::warn!(provider = %provider, error = %rejection, "oauth callback rejected");
             }
         }
         return Err(AuthHttpError::InvalidOAuthState);
     }
+    let pkce_verifier = match require_pkce_verifier(expected_verifier.as_deref()) {
+        Ok(verifier) => verifier,
+        Err(rejection) => {
+            tracing::warn!(provider = %provider, error = %rejection, "oauth callback rejected");
+            return Err(AuthHttpError::InvalidOAuthState);
+        }
+    };
 
-    let callback_url = format!("{}/auth/oauth/{}/callback", state.origin, provider);
-
-    // Exchange the authorization code for an access token.
-    let http = reqwest::Client::new();
-    let token_resp = http
-        .post(&cfg.token_url)
-        .header("Accept", "application/json")
-        .form(&[
-            ("client_id", cfg.client_id.as_str()),
-            ("client_secret", cfg.client_secret.as_str()),
-            ("code", query.code.as_str()),
-            ("redirect_uri", callback_url.as_str()),
-        ])
-        .send()
+    // Exchange the authorization code for an access token. The
+    // redirect URL was already set on `oauth_client` at
+    // `ServerState::initialize` time, so `oauth2` attaches it to this
+    // request automatically; see `crate::oauth_client::build_oauth_client`.
+    let token = oauth_client
+        .exchange_code(AuthorizationCode::new(query.code))
+        .set_pkce_verifier(pkce_verifier)
+        .request_async(&state.oauth_exchange_http_client)
         .await
         .map_err(into_generic_response)?;
+    let access_token = token.access_token().secret().clone();
 
-    #[derive(Deserialize)]
-    struct TokenResponse {
-        access_token: String,
-        #[allow(dead_code)]
-        token_type: Option<String>,
-    }
-    let tokens: TokenResponse = token_resp.json().await.map_err(into_generic_response)?;
-
-    // Fetch user info from the provider.
-    let userinfo_resp = http
+    // Fetch user info from the provider. `oauth2` has no generic
+    // userinfo step, so this stays a hand-rolled REST call specific
+    // to GitHub, on this crate's own (workspace) `reqwest` client
+    // rather than the dedicated exchange client above.
+    let userinfo_resp = reqwest::Client::new()
         .get(&cfg.userinfo_url)
-        .header("Authorization", format!("Bearer {}", tokens.access_token))
+        .header("Authorization", format!("Bearer {access_token}"))
         .header("User-Agent", "mmcp-server")
         .send()
         .await
@@ -426,7 +474,7 @@ async fn oauth_callback(
             provider,
             provider_user_id: gh_user.id.to_string(),
             email: gh_user.email.or(Some(format!("{}@github", gh_user.login))),
-            access_token: Some(tokens.access_token),
+            access_token: Some(access_token),
             refresh_token: None,
         })
         .await
@@ -805,7 +853,7 @@ mod tests {
 
     #[test]
     fn validate_oauth_state_rejects_when_nothing_was_stored() {
-        let received = "a".repeat(OAUTH_STATE_HEX_LENGTH);
+        let received = "a".repeat(OAUTH_STATE_TOKEN_LENGTH);
         assert_eq!(
             validate_oauth_state(Some(&received), None),
             Err(OAuthStateRejection::NoStoredState)
@@ -814,26 +862,26 @@ mod tests {
 
     #[test]
     fn validate_oauth_state_rejects_a_length_mismatch_before_any_equality_comparison() {
-        let received = "a".repeat(OAUTH_STATE_HEX_LENGTH - 1);
+        let received = "a".repeat(OAUTH_STATE_TOKEN_LENGTH - 1);
         // `expected` deliberately differs too, so a value-equality
         // check would ALSO reject this input: asserting the exact
         // `LengthMismatch` variant (not just "some error") proves the
         // length guard is what actually fires, not equality doing
         // double duty.
-        let expected = "b".repeat(OAUTH_STATE_HEX_LENGTH);
+        let expected = "b".repeat(OAUTH_STATE_TOKEN_LENGTH);
         assert_eq!(
             validate_oauth_state(Some(&received), Some(&expected)),
             Err(OAuthStateRejection::LengthMismatch {
-                received_len: OAUTH_STATE_HEX_LENGTH - 1,
-                expected_len: OAUTH_STATE_HEX_LENGTH,
+                received_len: OAUTH_STATE_TOKEN_LENGTH - 1,
+                expected_len: OAUTH_STATE_TOKEN_LENGTH,
             })
         );
     }
 
     #[test]
     fn validate_oauth_state_rejects_a_same_length_value_mismatch() {
-        let received = "a".repeat(OAUTH_STATE_HEX_LENGTH);
-        let expected = "b".repeat(OAUTH_STATE_HEX_LENGTH);
+        let received = "a".repeat(OAUTH_STATE_TOKEN_LENGTH);
+        let expected = "b".repeat(OAUTH_STATE_TOKEN_LENGTH);
         assert_eq!(
             validate_oauth_state(Some(&received), Some(&expected)),
             Err(OAuthStateRejection::ValueMismatch)
@@ -842,8 +890,30 @@ mod tests {
 
     #[test]
     fn validate_oauth_state_accepts_a_matching_value() {
-        let value = "a".repeat(OAUTH_STATE_HEX_LENGTH);
+        let value = "a".repeat(OAUTH_STATE_TOKEN_LENGTH);
         assert_eq!(validate_oauth_state(Some(&value), Some(&value)), Ok(()));
+    }
+
+    // ── require_pkce_verifier: presence gates the token exchange ───
+
+    #[test]
+    fn require_pkce_verifier_rejects_a_missing_verifier() {
+        // `PkceCodeVerifier` (the `Ok` side) does not implement
+        // `PartialEq` (oauth2 deliberately omits it for its secret
+        // types outside the `timing-resistant-secret-traits`
+        // feature), so the rejection cause is compared directly
+        // instead of the whole `Result`.
+        assert_eq!(
+            require_pkce_verifier(None).unwrap_err(),
+            OAuthStateRejection::MissingPkceVerifier
+        );
+    }
+
+    #[test]
+    fn require_pkce_verifier_accepts_a_stored_verifier() {
+        let verifier =
+            require_pkce_verifier(Some("stored-verifier")).expect("a stored verifier must pass");
+        assert_eq!(verifier.secret(), "stored-verifier");
     }
 
     fn valid_request() -> RegisterRequest {
