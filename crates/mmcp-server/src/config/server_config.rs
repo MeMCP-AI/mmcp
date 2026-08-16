@@ -147,7 +147,7 @@ impl ServerConfig {
                     error = %err,
                     "MMCP_BIND is not a valid socket address; falling back to the default bind {DEFAULT_BIND}"
                 );
-                // SAFETY: `DEFAULT_BIND` is a hardcoded string literal
+                // NOTE: `DEFAULT_BIND` is a hardcoded string literal
                 // owned by this crate, never user input, so its parse
                 // outcome is fixed at compile time and covered by the
                 // crate's own test suite; it cannot fail at runtime.
@@ -667,7 +667,7 @@ mod tests {
         );
     }
 
-    // ── allow_self_registration: defaults closed (issue #247) ───────
+    // allow_self_registration: defaults closed.
 
     #[test]
     fn allow_self_registration_defaults_to_false_when_unset() {
