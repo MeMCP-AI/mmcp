@@ -17,7 +17,7 @@ use std::str::FromStr;
 use axum::{
     Json, Router,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -36,7 +36,8 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::routes::bearer_auth::AuthenticatedUser;
-use crate::routes::defaults::MAX_CONCURRENT_MANIFEST_LOOKUPS;
+use crate::routes::defaults::{MAX_CONCURRENT_MANIFEST_LOOKUPS, PUSH_TOKEN_HEADER};
+use crate::routes::git_http::{self, GitHttpError};
 use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
 
@@ -81,6 +82,58 @@ fn invalid_request(msg: impl Into<String>) -> SyncErrorResponse {
     SyncErrorResponse {
         status: StatusCode::BAD_REQUEST,
         error: ProtoError::InvalidRequest(msg.into()),
+    }
+}
+
+/// The caller is authenticated but not permitted to perform the
+/// requested write, distinct from [`not_found`] (the target does not
+/// exist at all) and from an authentication failure (the caller has
+/// no valid credential whatsoever). Used for the cross-tenant
+/// group/memory mismatch closed by mmcp issue #283: the message
+/// carries no detail about the memory's actual owning group, per
+/// `global-security-rules`'s error-message hygiene; the real
+/// mismatch is logged server-side by the caller of this helper.
+fn forbidden(msg: impl Into<String>) -> SyncErrorResponse {
+    SyncErrorResponse {
+        status: StatusCode::FORBIDDEN,
+        error: ProtoError::Forbidden(msg.into()),
+    }
+}
+
+/// Convert a push-token rejection from
+/// [`git_http::enforce_push_token`] into this module's own
+/// [`SyncErrorResponse`] shape. A boundary conversion only:
+/// [`GitHttpError`] never appears in this module's public response
+/// type, so `/sync/*` responses stay entirely within the
+/// [`ProtoError`] wire contract the `mmcp-sync` client shares with
+/// every other route.
+///
+/// `enforce_push_token` itself only ever returns `Forbidden` (no
+/// token configured) or `Unauthorized` (token configured but
+/// missing/mismatched); the remaining `GitHttpError` variants exist
+/// for its sibling caller in `git_http.rs` (`receive_pack`,
+/// `info_refs`) and are unreachable from this call site, but the
+/// match stays exhaustive rather than assuming that invariant
+/// silently.
+fn from_push_token_rejection(err: GitHttpError) -> SyncErrorResponse {
+    match err {
+        GitHttpError::Unauthorized => SyncErrorResponse {
+            status: StatusCode::UNAUTHORIZED,
+            error: ProtoError::Unauthenticated("missing or invalid push token".to_string()),
+        },
+        GitHttpError::Forbidden(msg) => SyncErrorResponse {
+            status: StatusCode::FORBIDDEN,
+            error: ProtoError::Forbidden(msg.to_string()),
+        },
+        GitHttpError::NotFound(msg) => not_found(msg),
+        GitHttpError::Internal(msg) => SyncErrorResponse {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            error: ProtoError::Internal(msg),
+        },
+        GitHttpError::BearerAuth(_) => SyncErrorResponse {
+            status: StatusCode::UNAUTHORIZED,
+            error: ProtoError::Unauthenticated("bearer authentication failed".to_string()),
+        },
     }
 }
 
@@ -240,7 +293,13 @@ async fn get_refs(
 /// The request body is exactly the shape the sync engine sends
 /// via `SyncClient::push_version`. The handler:
 ///
-/// 1. Validates that the group and memory exist.
+/// 0. Enforces the same shared push-token credential
+///    `git-receive-pack` requires (mmcp issue #190), presented via
+///    [`PUSH_TOKEN_HEADER`], before any other work: a plain
+///    per-user bearer token is not sufficient for this write.
+/// 1. Validates that the group and memory exist, and that an
+///    existing memory actually belongs to the requested group
+///    (mmcp issue #283) before writing anything.
 /// 2. Reads the memory's current `latest_version` from the
 ///    database and computes the next version via
 ///    `mmcp_sync::negotiate_next_version`.
@@ -252,8 +311,15 @@ async fn get_refs(
 async fn post_push(
     State(state): State<ServerState>,
     caller: AuthenticatedUser,
+    headers: HeaderMap,
     Json(req): Json<PushRequest>,
 ) -> Result<Json<PushResponse>, SyncErrorResponse> {
+    let push_token = headers
+        .get(PUSH_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok());
+    git_http::enforce_push_token(&state, push_token, req.group_id)
+        .map_err(from_push_token_rejection)?;
+
     let conn = state.database.connection();
     let group = group_repo::find_by_id(conn, req.group_id)
         .await
@@ -267,7 +333,26 @@ async fn post_push(
         .await
         .map_err(into_generic_response)?
     {
-        Some(m) => m,
+        Some(m) if m.group_id == group.id => m,
+        Some(m) => {
+            // The memory row exists but belongs to a DIFFERENT
+            // group than the one this request named. Reject before
+            // any write: no version row, no `latest_version`
+            // update, no tag. Closes the cross-tenant corruption
+            // path (mmcp issue #283) where `memory_repo::find_by_id`
+            // resolves `memory_id` independently of `group_id`, so
+            // an authenticated caller naming their own group
+            // alongside another tenant's memory id could otherwise
+            // overwrite that tenant's version ledger.
+            tracing::warn!(
+                requested_group = %group.id,
+                memory_id = %m.id,
+                actual_group = %m.group_id,
+                "sync push rejected: memory belongs to a different group than the requested \
+                 group_id",
+            );
+            return Err(forbidden("memory does not belong to the requested group"));
+        }
         None => {
             let now = Timestamp::now().as_millisecond();
             memory_repo::create(
