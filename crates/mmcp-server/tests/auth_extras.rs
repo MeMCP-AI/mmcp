@@ -48,6 +48,34 @@ fn github_provider() -> OAuthProviderConfig {
     OAuthProviderConfig::github("client-abc", "secret-xyz")
 }
 
+/// Mirrors [`start_server_with_oauth`] but with
+/// `allow_self_registration` explicitly closed, for the OAuth
+/// JIT-provisioning gate falsification below. A dedicated helper
+/// (rather than widening [`start_server_with_oauth`]'s own signature)
+/// keeps every existing call site untouched.
+async fn start_server_with_oauth_and_self_registration_disabled(
+    providers: Vec<OAuthProviderConfig>,
+) -> (SocketAddr, TempDir) {
+    let tmp = TempDir::new().expect("tempdir");
+    let cfg = common::TestServerConfigBuilder::new(tmp.path().to_path_buf())
+        .token_key([9u8; 32])
+        .oauth_providers(providers)
+        .allow_self_registration(false)
+        .build();
+    let state = ServerState::initialize(&cfg).await.expect("state init");
+    let app = mmcp_server::app::build_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+    (addr, tmp)
+}
+
 // ── Password: unknown handle ────────────────────────────────────────
 
 #[tokio::test]
@@ -288,6 +316,73 @@ async fn oauth_callback_with_matching_state_completes_the_login() {
         "the token exchange must authenticate via AuthType::RequestBody (client_id in the \
          form body), matching the pre-migration wire format, not the header-based BasicAuth \
          oauth2 defaults to once a client secret is set"
+    );
+}
+
+/// Falsification for the OAuth JIT self-registration gate: with
+/// `allow_self_registration` explicitly closed, a first-time login
+/// from a brand-new provider identity (no existing linked account)
+/// must be rejected before any account is created, never silently
+/// auto-provisioned. Before the fix, `MmcpAuthBackend`'s OAuth branch
+/// called `user_repo::create` unconditionally, ignoring this same
+/// flag `POST /auth/register` already gates on.
+///
+/// The allow=true side of this gate (a first-time OAuth login
+/// actually succeeding) is already covered end to end by
+/// `oauth_callback_with_matching_state_completes_the_login`, which
+/// runs against the test-default `allow_self_registration = true`
+/// and logs in a brand-new provider identity (id 42): that IS the
+/// JIT-provisioning path, so it is not duplicated here.
+#[tokio::test]
+async fn oauth_callback_first_time_login_is_rejected_when_self_registration_is_disabled() {
+    let (fake_addr, _probes) = start_fake_oauth_provider().await;
+    let provider = OAuthProviderConfig {
+        slug: "github".to_string(),
+        client_id: "client-abc".to_string(),
+        client_secret: "secret-xyz".to_string(),
+        auth_url: format!("http://{fake_addr}/authorize"),
+        token_url: format!("http://{fake_addr}/token"),
+        userinfo_url: format!("http://{fake_addr}/userinfo"),
+    };
+    let (addr, _tmp) = start_server_with_oauth_and_self_registration_disabled(vec![provider]).await;
+    let client = reqwest::Client::builder()
+        .cookie_store(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+
+    let authorize_resp = client
+        .get(format!("http://{addr}/auth/oauth/github/authorize"))
+        .send()
+        .await
+        .expect("oauth authorize");
+    let location = authorize_resp
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .expect("Location header")
+        .to_str()
+        .expect("utf-8")
+        .to_string();
+    let state = extract_state_param(&location);
+
+    let callback_resp = client
+        .get(format!(
+            "http://{addr}/auth/oauth/github/callback?code=fake-code&state={state}"
+        ))
+        .send()
+        .await
+        .expect("oauth callback");
+
+    let status = callback_resp.status();
+    let body = callback_resp.text().await.unwrap_or_default();
+    assert_eq!(
+        status, 403,
+        "a first-time OAuth login must be rejected while self-registration is disabled, \
+         got body: {body}"
+    );
+    assert!(
+        !body.contains("OAuth login successful"),
+        "the rejected callback must not report a successful login, got body: {body}"
     );
 }
 
@@ -690,8 +785,18 @@ async fn passkey_register_finish_without_pending_state_returns_400() {
     );
 }
 
+// ── Passkey login start/finish: no account-existence oracle ────────
+//
+// `passkey_login_start` and `passkey_login_finish` used to return
+// distinguishable responses (404 for an unknown handle, 400 for a
+// known handle with zero passkeys registered), letting an
+// unauthenticated caller enumerate which handles exist. Both routes
+// now collapse every such cause into the exact same uniform response
+// `login` already uses for a bad password: 401
+// `AuthHttpError::Unauthorized("invalid credentials")`.
+
 #[tokio::test]
-async fn passkey_login_start_unknown_handle_returns_404() {
+async fn passkey_login_start_unknown_handle_returns_401_uniform_response() {
     let (addr, _tmp) = start_server_with_oauth(vec![]).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/auth/passkey/login/start"))
@@ -699,14 +804,15 @@ async fn passkey_login_start_unknown_handle_returns_404() {
         .send()
         .await
         .expect("passkey login start");
-    assert_eq!(resp.status(), 404);
+    assert_eq!(resp.status(), 401);
 }
 
 #[tokio::test]
-async fn passkey_login_start_user_without_credentials_returns_400() {
+async fn passkey_login_start_user_without_credentials_returns_401_uniform_response() {
     let (addr, _tmp) = start_server_with_oauth(vec![]).await;
     // Register a user via password so a user row exists, but skip
-    // passkey enrollment; the start handler must return 400.
+    // passkey enrollment; the start handler must return the same 401
+    // an unknown handle gets.
     register_test_user(addr, "alice", "hunter22").await;
 
     let resp = reqwest::Client::new()
@@ -715,7 +821,99 @@ async fn passkey_login_start_user_without_credentials_returns_400() {
         .send()
         .await
         .expect("passkey login start");
-    assert_eq!(resp.status(), 400);
+    assert_eq!(resp.status(), 401);
+}
+
+/// Falsification for issue #284: fires both requests against the same
+/// server and asserts the two responses are identical to EACH OTHER
+/// (status and body), not just independently equal to some expected
+/// value. Before the fix, the unknown-handle case returned 404 "user
+/// not found" and the zero-passkeys case returned 400 "no passkeys
+/// registered": an attacker probing `/auth/passkey/login/start` with
+/// candidate handles could distinguish "does not exist" from "exists,
+/// no passkey enrolled" purely from the response shape.
+#[tokio::test]
+async fn passkey_login_start_unknown_handle_and_zero_passkeys_are_indistinguishable() {
+    let (addr, _tmp) = start_server_with_oauth(vec![]).await;
+    register_test_user(addr, "alice", "hunter22").await;
+
+    let unknown_resp = reqwest::Client::new()
+        .post(format!("http://{addr}/auth/passkey/login/start"))
+        .json(&json!({ "handle": "ghost" }))
+        .send()
+        .await
+        .expect("passkey login start (unknown handle)");
+    let unknown_status = unknown_resp.status();
+    let unknown_body = unknown_resp.text().await.expect("unknown-handle body");
+
+    let known_resp = reqwest::Client::new()
+        .post(format!("http://{addr}/auth/passkey/login/start"))
+        .json(&json!({ "handle": "alice" }))
+        .send()
+        .await
+        .expect("passkey login start (zero passkeys)");
+    let known_status = known_resp.status();
+    let known_body = known_resp.text().await.expect("zero-passkeys body");
+
+    assert_eq!(
+        unknown_status, known_status,
+        "an unknown handle and a known handle with zero passkeys must return the same status"
+    );
+    assert_eq!(
+        unknown_body, known_body,
+        "an unknown handle and a known handle with zero passkeys must return the same body"
+    );
+}
+
+/// Mirrors the start-side falsification above for
+/// `passkey_login_finish`: an unknown handle and a known handle with
+/// no pending ceremony (the `finish` equivalent of "no passkeys
+/// registered", reachable without ever calling `start`) must also be
+/// indistinguishable. Needs no real WebAuthn client since both
+/// requests are rejected before the assertion is ever parsed.
+#[tokio::test]
+async fn passkey_login_finish_unknown_handle_and_no_pending_ceremony_are_indistinguishable() {
+    let (addr, _tmp) = start_server_with_oauth(vec![]).await;
+    register_test_user(addr, "alice", "hunter22").await;
+
+    let placeholder_response = json!({
+        "id": "AAAA",
+        "rawId": "AAAA",
+        "type": "public-key",
+        "response": {
+            "authenticatorData": "AAAA",
+            "clientDataJSON": "AAAA",
+            "signature": "AAAA"
+        }
+    });
+
+    let unknown_resp = reqwest::Client::new()
+        .post(format!("http://{addr}/auth/passkey/login/finish"))
+        .json(&json!({ "handle": "ghost", "response": placeholder_response }))
+        .send()
+        .await
+        .expect("passkey login finish (unknown handle)");
+    let unknown_status = unknown_resp.status();
+    let unknown_body = unknown_resp.text().await.expect("unknown-handle body");
+
+    let known_resp = reqwest::Client::new()
+        .post(format!("http://{addr}/auth/passkey/login/finish"))
+        .json(&json!({ "handle": "alice", "response": placeholder_response }))
+        .send()
+        .await
+        .expect("passkey login finish (no pending ceremony)");
+    let known_status = known_resp.status();
+    let known_body = known_resp.text().await.expect("no-pending-ceremony body");
+
+    assert_eq!(unknown_status, 401);
+    assert_eq!(
+        unknown_status, known_status,
+        "an unknown handle and a known handle with no pending ceremony must return the same status"
+    );
+    assert_eq!(
+        unknown_body, known_body,
+        "an unknown handle and a known handle with no pending ceremony must return the same body"
+    );
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
