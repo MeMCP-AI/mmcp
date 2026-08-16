@@ -13,6 +13,8 @@ use mmcp_core::id::{GroupId, MemoryId, UserId};
 use mmcp_core::manifest::GroupManifest;
 use mmcp_core::memory::BumpIntent;
 use mmcp_db::entities::group::OwnerKind;
+use mmcp_db::entities::memory::MemoryKind;
+use mmcp_db::entities::memory_version;
 use mmcp_db::repository::{group_repo, memory_repo, user_repo};
 use mmcp_git::{CommitSpec, GitBackend};
 use mmcp_sync::{ManifestResponse, PushRequest, PushResponse, RefsResponse};
@@ -28,14 +30,41 @@ const TEST_TOKEN_LIFETIME_SECS: i64 = 3600;
 /// expired without needing to sleep past a real deadline.
 const EXPIRED_TOKEN_BACKDATE_SECS: i64 = 100;
 
+/// Shared push-token value for tests that must present the mmcp
+/// issue #190 credential `POST /sync/push` now requires. The literal
+/// value is arbitrary; only equality with the server's own configured
+/// `push_token` matters.
+const TEST_PUSH_TOKEN: &str = "sync-push-test-token";
+
+/// HTTP header carrying [`TEST_PUSH_TOKEN`], matching
+/// `mmcp_server::routes::defaults::PUSH_TOKEN_HEADER` (private to the
+/// server crate, so pinned here as a literal like every other header
+/// name in this file, e.g. `"www-authenticate"` below).
+const PUSH_TOKEN_HEADER: &str = "x-mmcp-push-token";
+
 mod common;
 
 /// Spin up the real axum router on an ephemeral port so the tests
 /// exercise handlers through the full HTTP stack, matching what a
-/// real `mmcp-sync` client would send.
+/// real `mmcp-sync` client would send. No push token is configured;
+/// use [`start_server_with_push_token`] for a test that needs
+/// `POST /sync/push` to succeed.
 async fn start_server() -> (SocketAddr, mmcp_server::state::ServerState, TempDir) {
+    start_server_with_push_token(None).await
+}
+
+/// Same as [`start_server`], with the server's shared push-token
+/// credential (`ServerConfig::push_token`) set to `push_token` when
+/// `Some`.
+async fn start_server_with_push_token(
+    push_token: Option<&str>,
+) -> (SocketAddr, mmcp_server::state::ServerState, TempDir) {
     let tmp = TempDir::new().expect("tempdir");
-    let cfg = common::TestServerConfigBuilder::new(tmp.path().to_path_buf()).build();
+    let mut builder = common::TestServerConfigBuilder::new(tmp.path().to_path_buf());
+    if let Some(push_token) = push_token {
+        builder = builder.push_token(push_token);
+    }
+    let cfg = builder.build();
     let state = mmcp_server::state::ServerState::initialize(&cfg)
         .await
         .expect("server init");
@@ -132,6 +161,59 @@ async fn seed_authenticated_user(
         SessionClaims::new_with_lifetime(user_id, Uuid::now_v7(), now, TEST_TOKEN_LIFETIME_SECS);
     let token = state.token_issuer.issue(&claims).expect("issue token");
     (user_id, token)
+}
+
+/// Seed a memory row directly under `owning_group`, with one already
+/// recorded version, so a test can assert a rejected push left a
+/// KNOWN prior state byte-identical, not just "still exists".
+/// `author_id` on the seeded `memory_versions` row is a real user row
+/// id (an FK, `RESTRICT`), same constraint the handler itself is
+/// bound by. Returns the memory id.
+async fn seed_memory_with_version(
+    state: &mmcp_server::state::ServerState,
+    owning_group: Uuid,
+    author_id: Uuid,
+    version: &str,
+) -> Uuid {
+    let memory_id = Uuid::now_v7();
+    let now = jiff::Timestamp::now().as_millisecond();
+    memory_repo::create(
+        state.database.connection(),
+        memory_repo::NewMemory {
+            id: memory_id,
+            group_id: owning_group,
+            slug: memory_id.to_string(),
+            kind: MemoryKind::Rule,
+            mandatory: false,
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await
+    .expect("insert memory row");
+
+    let version_row = memory_version::Model {
+        id: Uuid::now_v7(),
+        memory_id,
+        version: version.to_string(),
+        commit: "0".repeat(40),
+        author_id,
+        published_at: now,
+        summary: None,
+    };
+    memory_repo::record_version(state.database.connection(), version_row)
+        .await
+        .expect("record initial version");
+    memory_repo::set_latest_version(
+        state.database.connection(),
+        memory_id,
+        version.to_string(),
+        now,
+    )
+    .await
+    .expect("set initial latest_version");
+
+    memory_id
 }
 
 /// `global-security-rules` forbids HTTP error responses from
@@ -367,9 +449,13 @@ async fn sync_refs_returns_400_for_invalid_uuid() {
     assert_eq!(resp.status(), 400);
 }
 
+/// Also covers mmcp issue #190's positive path: `POST /sync/push`
+/// now requires the shared push-token credential ALONGSIDE the
+/// caller's per-user bearer, and this is the happy-path proof that
+/// presenting both together still succeeds.
 #[tokio::test]
 async fn sync_push_first_publish_assigns_0_1_0_and_records_tag() {
-    let (addr, state, _tmp) = start_server().await;
+    let (addr, state, _tmp) = start_server_with_push_token(Some(TEST_PUSH_TOKEN)).await;
     let group = seed_group(&state, "team-rust").await;
 
     // Use a real commit from the bare repo so the server's tag
@@ -413,6 +499,7 @@ async fn sync_push_first_publish_assigns_0_1_0_and_records_tag() {
     let raw = reqwest::Client::new()
         .post(format!("http://{addr}/sync/push"))
         .bearer_auth(&token)
+        .header(PUSH_TOKEN_HEADER, TEST_PUSH_TOKEN)
         .json(&req)
         .send()
         .await
@@ -443,12 +530,47 @@ async fn sync_push_first_publish_assigns_0_1_0_and_records_tag() {
     );
 }
 
+/// The push token is presented so this test still isolates the
+/// unknown-group 404 path: without it, an unknown group_id would be
+/// rejected 403 by the push-token gate (mmcp issue #190) before the
+/// group lookup ever runs, testing the wrong thing.
 #[tokio::test]
 async fn sync_push_returns_404_for_unknown_group() {
-    let (addr, state, _tmp) = start_server().await;
+    let (addr, state, _tmp) = start_server_with_push_token(Some(TEST_PUSH_TOKEN)).await;
     let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
     let req = PushRequest {
         group_id: Uuid::now_v7(),
+        memory_id: Uuid::now_v7(),
+        commit: "0".repeat(40),
+        bump: BumpIntent::Patch,
+        message: None,
+    };
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/sync/push"))
+        .bearer_auth(&token)
+        .header(PUSH_TOKEN_HEADER, TEST_PUSH_TOKEN)
+        .json(&req)
+        .send()
+        .await
+        .expect("POST push");
+    assert_eq!(resp.status(), 404);
+}
+
+/// Falsification for mmcp issue #190: a valid per-user bearer token
+/// alone must not authorize `POST /sync/push`; the shared push-token
+/// credential `git-receive-pack`'s `enforce_write` already requires
+/// is now required here too, for the same write capability
+/// (`memory_versions` row + git tag). Status matches
+/// `enforce_write`'s own semantics for "token configured, none
+/// presented": 401, not 403 (403 is reserved for "no token
+/// configured at all").
+#[tokio::test]
+async fn sync_push_without_push_token_header_returns_401() {
+    let (addr, state, _tmp) = start_server_with_push_token(Some(TEST_PUSH_TOKEN)).await;
+    let group = seed_group(&state, "team-rust").await;
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
+    let req = PushRequest {
+        group_id: group,
         memory_id: Uuid::now_v7(),
         commit: "0".repeat(40),
         bump: BumpIntent::Patch,
@@ -461,7 +583,79 @@ async fn sync_push_returns_404_for_unknown_group() {
         .send()
         .await
         .expect("POST push");
-    assert_eq!(resp.status(), 404);
+    assert_eq!(
+        resp.status(),
+        401,
+        "a valid per-user bearer without the push token must not authorize the write"
+    );
+}
+
+/// Falsification for mmcp issue #283: `memory_repo::find_by_id`
+/// resolves `memory_id` independently of `group_id`, so `post_push`
+/// must itself reject a push that names a real `memory_id` alongside
+/// a `group_id` the memory does not belong to, BEFORE writing
+/// anything. Confirms zero mutation of the victim's version ledger,
+/// not just the rejected status code.
+#[tokio::test]
+async fn sync_push_rejects_a_memory_owned_by_a_different_group_without_mutating_it() {
+    let (addr, state, _tmp) = start_server_with_push_token(Some(TEST_PUSH_TOKEN)).await;
+
+    let victim_group = seed_group(&state, "victim-group").await;
+    let attacker_group = seed_group(&state, "attacker-group").await;
+    let (owner_id, _owner_token) = seed_authenticated_user(&state, "victim-owner").await;
+    let memory_id = seed_memory_with_version(&state, victim_group, owner_id, "0.1.0").await;
+    let (_attacker_id, attacker_token) = seed_authenticated_user(&state, "attacker").await;
+
+    let req = PushRequest {
+        group_id: attacker_group,
+        memory_id,
+        commit: "1".repeat(40),
+        bump: BumpIntent::Major,
+        message: Some("hostile takeover".into()),
+    };
+
+    let raw = reqwest::Client::new()
+        .post(format!("http://{addr}/sync/push"))
+        .bearer_auth(&attacker_token)
+        .header(PUSH_TOKEN_HEADER, TEST_PUSH_TOKEN)
+        .json(&req)
+        .send()
+        .await
+        .expect("POST push");
+    let status = raw.status();
+    let text = raw.text().await.expect("read body");
+    assert_eq!(
+        status, 403,
+        "a memory owned by a different group must be rejected, got {status}: {text}"
+    );
+    assert!(
+        !text.contains(&victim_group.to_string()),
+        "the rejection must not leak the memory's real owning group id, got: {text}"
+    );
+
+    // Zero-mutation: the victim's version ledger is byte-identical to
+    // before the rejected push.
+    let memory = memory_repo::find_by_id(state.database.connection(), memory_id)
+        .await
+        .expect("query memory")
+        .expect("memory row still exists");
+    assert_eq!(
+        memory.latest_version.as_deref(),
+        Some("0.1.0"),
+        "latest_version must be untouched by the rejected cross-tenant push"
+    );
+    assert_eq!(
+        memory.group_id, victim_group,
+        "the memory's owning group must not change either"
+    );
+    let versions = memory_repo::list_versions(state.database.connection(), memory_id)
+        .await
+        .expect("list versions");
+    assert_eq!(
+        versions.len(),
+        1,
+        "no new memory_versions row must be written by the rejected push"
+    );
 }
 
 /// Falsification: an unauthenticated `POST /sync/push` must be

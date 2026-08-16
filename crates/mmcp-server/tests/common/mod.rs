@@ -68,6 +68,18 @@ impl TestServerConfigBuilder {
         self
     }
 
+    /// Overrides the shared push-token credential
+    /// (`ServerConfig::push_token`, env `MMCP_PUSH_TOKEN`).
+    /// [`minimal_server_config`] defaults this to `None` (push
+    /// disabled); a test covering `POST /sync/push` or
+    /// `git-receive-pack`'s write-enforcement path sets a real value
+    /// here.
+    #[allow(dead_code)] // Live in sibling test binaries; each tests/*.rs compiles common as its own crate.
+    pub fn push_token(mut self, push_token: impl Into<String>) -> Self {
+        self.config.push_token = Some(push_token.into());
+        self
+    }
+
     /// Finishes the builder, returning the built `ServerConfig`.
     pub fn build(self) -> ServerConfig {
         self.config
