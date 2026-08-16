@@ -15,8 +15,7 @@ use strum_macros::{IntoStaticStr, VariantArray};
 ///
 /// [`VariantArray`] derives [`Self::VARIANTS`] (every variant, in
 /// declaration order) and [`IntoStaticStr`] derives the wire-name
-/// conversion (`self.into(): &'static str`), replacing the hand-rolled
-/// `define_memory_kind!` macro's `ALL`/`as_str` mirrors. `FromStr` and
+/// conversion (`self.into(): &'static str`). `FromStr` and
 /// [`MemoryKindParseError`] stay hand-written below: the error message
 /// joins [`MemoryKind::VARIANTS`]'s wire strings at runtime, which
 /// strum's derived `EnumString`/parse-error type cannot reproduce.

@@ -141,7 +141,7 @@ async fn oauth_authorize_known_provider_redirects_to_provider_authorize_url() {
     assert!(location.contains("redirect_uri="));
     assert!(location.contains("scope=user%3Aemail"));
     // PKCE: `oauth_authorize` sets a challenge on every authorize
-    // request now, so its query parameters are always present.
+    // request, so its query parameters are always present.
     assert!(location.contains("code_challenge="));
     assert!(location.contains("code_challenge_method=S256"));
 }
@@ -169,10 +169,9 @@ struct FakeTokenExchangeProbes {
     /// Set once a non-empty `code_verifier` form field is seen (PKCE).
     code_verifier_received: Arc<AtomicBool>,
     /// Set once a non-empty `client_id` form field is seen: proves the
-    /// client authenticates via `AuthType::RequestBody` (matching the
-    /// pre-migration hand-rolled exchange), not the header-based
-    /// `AuthType::BasicAuth` `oauth2` defaults to once a client secret
-    /// is set.
+    /// client authenticates via `AuthType::RequestBody` (client_id in
+    /// the form body), not the header-based `AuthType::BasicAuth`
+    /// `oauth2` defaults to once a client secret is set.
     client_id_in_body_received: Arc<AtomicBool>,
 }
 
@@ -314,8 +313,8 @@ async fn oauth_callback_with_matching_state_completes_the_login() {
     assert!(
         probes.client_id_in_body_received.load(Ordering::SeqCst),
         "the token exchange must authenticate via AuthType::RequestBody (client_id in the \
-         form body), matching the pre-migration wire format, not the header-based BasicAuth \
-         oauth2 defaults to once a client secret is set"
+         form body), not the header-based BasicAuth oauth2 defaults to once a client secret \
+         is set"
     );
 }
 

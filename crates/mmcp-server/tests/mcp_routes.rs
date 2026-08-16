@@ -413,12 +413,9 @@ async fn mcp_tool_rejects_envelope_without_tool_name() {
     );
 }
 
-/// Falsification for issue #242
-/// (`post-mcp-tool-dispatcher-reaches-the-same-group-memory-data-the`):
-/// an unauthenticated `POST /mcp/tool` calling `list_memories` must
-/// return 401, never the group's memory listing. Before the fix,
-/// `dispatch` took no auth extractor at all and this exact request
-/// returned 200 with the seeded group's contents.
+/// An unauthenticated `POST /mcp/tool` calling `list_memories` must
+/// return 401, never the group's memory listing: `dispatch` reaches
+/// the same group/memory data the `/sync/*` control plane protects.
 #[tokio::test]
 async fn mcp_tool_list_memories_without_bearer_token_returns_401() {
     let (addr, state, _tmp) = start_server().await;
@@ -443,9 +440,8 @@ async fn mcp_tool_list_memories_without_bearer_token_returns_401() {
     );
 }
 
-/// Falsification for issue #242, covering `group_info`
-/// specifically (owner id, display name, memory count): an
-/// unauthenticated caller must not reach it either.
+/// Covers `group_info` specifically (owner id, display name, memory
+/// count): an unauthenticated caller must not reach it either.
 #[tokio::test]
 async fn mcp_tool_group_info_without_bearer_token_returns_401() {
     let (addr, state, _tmp) = start_server().await;
@@ -463,9 +459,8 @@ async fn mcp_tool_group_info_without_bearer_token_returns_401() {
     assert_eq!(resp.status(), 401);
 }
 
-/// Falsification for issue #242, covering `list_versions` (version
-/// history including `author_id`): an unauthenticated caller must not
-/// reach it either.
+/// Covers `list_versions` (version history including `author_id`):
+/// an unauthenticated caller must not reach it either.
 #[tokio::test]
 async fn mcp_tool_list_versions_without_bearer_token_returns_401() {
     let (addr, state, _tmp) = start_server().await;

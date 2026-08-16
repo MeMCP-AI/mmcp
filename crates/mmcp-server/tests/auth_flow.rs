@@ -221,15 +221,14 @@ async fn register_with_over_length_handle_returns_400() {
     assert_eq!(resp.status(), 400);
 }
 
-/// Falsification for issue #247
-/// (`open-self-registration-converts-the-sync-plane-acl-gap-into-an`):
-/// with `allow_self_registration` explicitly closed, `POST
+/// With `allow_self_registration` explicitly closed, `POST
 /// /auth/register` must be rejected with 403 before any validation,
-/// hashing, or database work, never a 201. Before the fix, there was
-/// no gate at all: the same request here would have returned 201 and
-/// created a live account, the first of the three HTTP calls
-/// (register, login, push) issue #247 documents as reachable by any
-/// anonymous caller.
+/// hashing, or database work, never a 201.
+/// An open registration endpoint on top of `post_push`'s
+/// group/memory ids taken straight from the request body with no
+/// membership check turns registration into a live anonymous
+/// write/read capability in three HTTP calls (register, login, push),
+/// so the closed default must hold here unconditionally.
 #[tokio::test]
 async fn register_with_self_registration_disabled_returns_403() {
     let addr = start_server_with_config(

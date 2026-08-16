@@ -213,13 +213,11 @@ async fn stock_git_clones_from_smart_http_route() {
     );
 }
 
-/// Falsification for issue #241 (`critical-git-upload-pack-and-info-refs-serve-full-repo-content`):
-/// a stock `git clone`, driven exactly like the happy-path test above
+/// A stock `git clone`, driven exactly like the happy-path test above
 /// but WITHOUT the bearer header, must fail end to end against the
 /// real `git` binary rather than silently succeeding in cloning the
-/// full repo content. Before the fix, `info_refs`'s `git-upload-pack`
-/// branch and the whole `upload_pack` handler had no guard at all, so
-/// this exact clone would succeed with exit code 0.
+/// full repo content: both `info_refs`'s `git-upload-pack` branch and
+/// the whole `upload_pack` handler require a valid bearer credential.
 #[tokio::test]
 async fn stock_git_clone_without_bearer_token_fails() {
     let git_bin = std::env::var_os("MMCP_GIT_BIN").unwrap_or_else(|| "git".into());
@@ -257,11 +255,11 @@ async fn stock_git_clone_without_bearer_token_fails() {
     );
 }
 
-/// Falsification for issue #241, isolating the `info_refs` branch
-/// directly (below stock `git`'s own retry/credential-helper layer):
-/// an unauthenticated `GET .../info/refs?service=git-upload-pack`
-/// must return 401 with the same Bearer challenge the `/sync/*`
-/// control plane advertises, never the ref advertisement body.
+/// Isolates the `info_refs` branch directly (below stock `git`'s own
+/// retry/credential-helper layer): an unauthenticated `GET
+/// .../info/refs?service=git-upload-pack` must return 401 with the
+/// same Bearer challenge the `/sync/*` control plane advertises,
+/// never the ref advertisement body.
 #[tokio::test]
 async fn info_refs_git_upload_pack_without_bearer_token_returns_401() {
     let repo_tmp = TempDir::new().expect("repo tmp");
@@ -289,9 +287,9 @@ async fn info_refs_git_upload_pack_without_bearer_token_returns_401() {
     );
 }
 
-/// Falsification for issue #241, isolating the `upload_pack` handler
-/// directly: an unauthenticated `POST .../git-upload-pack` must
-/// return 401, never dispatch into the gix pack-serve state machine.
+/// Isolates the `upload_pack` handler directly: an unauthenticated
+/// `POST .../git-upload-pack` must return 401, never dispatch into
+/// the gix pack-serve state machine.
 #[tokio::test]
 async fn upload_pack_post_without_bearer_token_returns_401() {
     let repo_tmp = TempDir::new().expect("repo tmp");
@@ -313,10 +311,10 @@ async fn upload_pack_post_without_bearer_token_returns_401() {
     assert_eq!(resp.status(), 401);
 }
 
-/// The `git-receive-pack` advertisement branch must keep using the
-/// shared-secret push-token mechanism (`enforce_write`), not the new
-/// per-user bearer gate: this pins that the two mechanisms stay
-/// distinct rather than the fix accidentally collapsing them.
+/// The `git-receive-pack` advertisement branch must use the
+/// shared-secret push-token mechanism (`enforce_write`), never the
+/// per-user bearer gate: this pins that the two authorization
+/// mechanisms stay distinct.
 #[tokio::test]
 async fn info_refs_git_receive_pack_without_push_token_returns_403_not_401() {
     let repo_tmp = TempDir::new().expect("repo tmp");
@@ -341,29 +339,24 @@ async fn info_refs_git_receive_pack_without_push_token_returns_403_not_401() {
     assert_eq!(resp.status(), 403);
 }
 
-/// Falsification for the post-integration review finding: `info_refs`
-/// must reject an unauthenticated/wrongly-authenticated caller
-/// identically whether the requested group exists or not, for EVERY
-/// `service` value, not only the two gated ones. Before the first
-/// fix, `ensure_group`'s database lookup ran before the per-service
-/// auth check, so an existing group's request failed authentication
-/// (401 for `git-upload-pack`, 403 for `git-receive-pack` with no push
-/// token configured) while a nonexistent group's request failed one
-/// step earlier at the lookup itself (404) - an existence oracle a
-/// caller could probe with zero valid credentials, exactly what this
-/// route's own doc comment says must never happen.
+/// `info_refs` must reject an unauthenticated/wrongly-authenticated
+/// caller identically whether the requested group exists or not, for
+/// EVERY `service` value, not only the two gated ones: the
+/// per-service auth check runs before `ensure_group`'s database
+/// lookup, so a caller with zero valid credentials can never use
+/// `info_refs`'s response to probe whether a group exists, exactly
+/// what this route's own doc comment requires.
 ///
 /// The third case in the loop below, an unrecognized `service` value,
-/// falsifies a second, narrower gap in that same first fix: an
-/// `if`/`else if` that only matches the two known literals silently
-/// falls through BOTH auth branches for anything else and still
-/// reaches `ensure_group` unauthenticated. Before the second fix, that
-/// path's two outcomes had the same STATUS (404 either way) but
-/// different BODIES (`ensure_group`'s "group not found" for a missing
-/// group vs. `advertise_refs`'s catch-all "unknown git service" for an
-/// existing one), so a status-only assertion would have passed while
-/// the oracle survived through the body text; the body comparison
-/// below is what actually pins that closed.
+/// covers a narrower invariant: an `if`/`else if` that only matches
+/// the two known literals must not silently fall through both auth
+/// branches and reach `ensure_group` unauthenticated. Both the STATUS
+/// and the BODY of the response must match between an existing and a
+/// nonexistent group for this case, since a status-only assertion
+/// cannot distinguish `ensure_group`'s "group not found" body from
+/// `advertise_refs`'s catch-all "unknown git service" body when both
+/// happen to share a status; the body comparison below is what
+/// actually pins that invariant.
 #[tokio::test]
 async fn info_refs_status_is_identical_for_existing_and_nonexistent_group_without_credentials() {
     let repo_tmp = TempDir::new().expect("repo tmp");
@@ -427,9 +420,7 @@ async fn info_refs_status_is_identical_for_existing_and_nonexistent_group_withou
     }
 }
 
-/// Auth-posture regression for the two upload-pack content routes (the
-/// explicit ask of issue #241,
-/// `critical-git-upload-pack-and-info-refs-serve-full-repo-content`):
+/// Auth-posture regression for the two upload-pack content routes:
 /// pins that the two hardcoded `git-upload-pack` routes below
 /// (mirrored from `crate::routes::git_http`'s own doc comment listing
 /// the four routes) both reject an unauthenticated caller.
@@ -440,10 +431,7 @@ async fn info_refs_status_is_identical_for_existing_and_nonexistent_group_withou
 /// automatically caught here and needs its own new entry (or its own
 /// new test, as
 /// `info_refs_status_is_identical_for_existing_and_nonexistent_group_without_credentials`
-/// above does for unknown `info_refs` service values specifically) -
-/// a prior version of this comment claimed a "catch-all" property this
-/// test never had, which is exactly how the unknown-service gap that
-/// test now covers shipped unseen.
+/// above does for unknown `info_refs` service values specifically).
 ///
 /// `git-receive-pack` is deliberately excluded from this table: it is
 /// gated by the separate shared-secret push-token mechanism

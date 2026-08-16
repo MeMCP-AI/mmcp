@@ -307,13 +307,10 @@ async fn sync_manifest_lists_seeded_groups_with_head_commits() {
     );
 }
 
-/// Falsification for the tip-resolution fix: `/sync/manifest` must
-/// report the branch's true tip, not the last commit that happened
-/// to touch `.mmcp.toml`. A second commit that edits a memory file
-/// without touching the manifest advances `main` past the manifest
-/// commit; the old `walk_history(".mmcp.toml").next()` lookup would
-/// still report the manifest commit here, one commit behind the
-/// real tip.
+/// `/sync/manifest` must report the branch's true tip, not the last
+/// commit that happened to touch `.mmcp.toml`. A second commit that
+/// edits a memory file without touching the manifest advances `main`
+/// past the manifest commit, and the reported head must follow it.
 #[tokio::test]
 async fn sync_manifest_reports_true_tip_past_the_last_manifest_touching_commit() {
     let (addr, state, _tmp) = start_server().await;
