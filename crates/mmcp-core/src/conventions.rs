@@ -34,6 +34,23 @@ pub const MMCP_AUTHOR_EMAIL: &str = "mmcp@mmcp.invalid";
 /// The 40-character zero hash used to represent "no commit yet".
 pub const ZERO_COMMIT: &str = "0000000000000000000000000000000000000000";
 
+/// Header carrying the shared push-token credential `POST /sync/push`
+/// requires in addition to the caller's own per-user bearer session
+/// token (mmcp issue #190). Deliberately distinct from
+/// `Authorization`, which the server's `AuthenticatedUser` extractor
+/// already owns for per-user session verification on this same
+/// route: reusing `Authorization` for the push token would make it
+/// collide with the session token on the one header a request
+/// carries.
+///
+/// Single source of truth for both ends of the request: the server
+/// side re-exports this from `mmcp_server::routes::defaults` instead
+/// of restating the literal, and the client side attaches it in
+/// `mmcp_sync::client::SyncClient::push_version`. Both crates already
+/// depend on `mmcp-core`, so the literal can never drift between the
+/// header the client sends and the header the server checks.
+pub const PUSH_TOKEN_HEADER: &str = "x-mmcp-push-token";
+
 /// Build the in-repo path for a memory file: `memories/<slug>/<uuid>.md`.
 /// The UUID is the canonical filename so duplicate slugs coexist as
 /// sibling files under the shared slug directory.
