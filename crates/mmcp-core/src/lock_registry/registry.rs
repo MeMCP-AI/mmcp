@@ -49,6 +49,13 @@ where
     /// idle going in; the returned handle is correct either way.
     #[must_use]
     pub fn get_or_install(&self, key: K) -> Arc<P> {
+        // SAFETY: poison only happens if another thread panicked while
+        // holding this mutex, leaving `entries` in a possibly
+        // inconsistent state. That is an unrecoverable invariant
+        // break, not a recoverable condition to route through
+        // `Result`, so propagating the panic here is correct per the
+        // project's least-blocking-runtime rule.
+        #[allow(clippy::expect_used)]
         let mut entries = self.entries.lock().expect(
             "keyed lock registry mutex poisoned: another thread panicked while holding it, \
              leaving the map in a possibly inconsistent state that must not be silently \
@@ -70,6 +77,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;

@@ -79,6 +79,10 @@ pub fn build_oauth_client(cfg: &OAuthProviderConfig, origin: &str) -> Result<Oau
 /// client secret and authorization code would replay both to
 /// whatever the response's `Location` pointed at.
 pub fn build_oauth_exchange_http_client() -> oauth2::reqwest::Client {
+    // SAFETY: this builder carries no I/O and no proxy/TLS override,
+    // the one class of configuration that can make `build()` fail;
+    // see the justification string below for the full argument.
+    #[allow(clippy::expect_used)]
     oauth2::reqwest::Client::builder()
         .redirect(oauth2::reqwest::redirect::Policy::none())
         .build()
@@ -92,6 +96,7 @@ pub fn build_oauth_exchange_http_client() -> oauth2::reqwest::Client {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::config::OAuthProviderConfig;
 
