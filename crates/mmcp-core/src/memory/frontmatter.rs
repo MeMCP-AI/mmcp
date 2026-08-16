@@ -142,14 +142,14 @@ impl MemoryFrontmatter {
     /// "filed by an agent acting on behalf of group X"; use a
     /// memory UUID to chain a promoted copy back to its source.
     #[must_use]
-    pub fn with_source(mut self, source: Option<uuid::Uuid>) -> Self {
+    pub fn with_source(mut self, source: Option<Uuid>) -> Self {
         self.source = source;
         self
     }
 
     /// Pin the canonical UUIDv7 primary key.
     #[must_use]
-    pub fn with_id(mut self, id: uuid::Uuid) -> Self {
+    pub fn with_id(mut self, id: Uuid) -> Self {
         self.id = Some(id);
         self
     }

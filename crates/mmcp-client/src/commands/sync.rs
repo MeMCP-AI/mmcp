@@ -174,7 +174,7 @@ async fn prepare(
     String,
     mmcp_sync::SyncEngine,
     mmcp_store::sync::IndexResolver,
-    mmcp_sync::SyncFilter,
+    SyncFilter,
     std::sync::Arc<mmcp_git::NativeBackend>,
 )> {
     let cwd = std::env::current_dir().context("reading current working directory")?;

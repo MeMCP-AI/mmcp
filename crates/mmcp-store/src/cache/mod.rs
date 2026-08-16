@@ -251,8 +251,8 @@ pub async fn notify_write(
             return;
         }
     };
-    let record = index::build_record(group_id, id, slug, path, commit_id, &memory_file);
-    if let Err(err) = index::upsert_record(&pool, &record).await {
+    let record = build_record(group_id, id, slug, path, commit_id, &memory_file);
+    if let Err(err) = upsert_record(&pool, &record).await {
         tracing::warn!(%group_id, %id, %path, error = %err, "cache write-trigger: failed to upsert index row");
     }
 }
@@ -269,7 +269,7 @@ pub async fn notify_pull(
     let Some(pool) = active_pool() else {
         return;
     };
-    if let Err(err) = index::rebuild_groups(&pool, backend, groups, updated_group_ids).await {
+    if let Err(err) = rebuild_groups(&pool, backend, groups, updated_group_ids).await {
         tracing::warn!(error = %err, "cache pull-trigger: failed to re-index pulled groups");
     }
 }
