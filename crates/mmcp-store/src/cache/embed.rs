@@ -124,7 +124,7 @@ pub fn bytes_to_vector(bytes: &[u8]) -> Vec<f32> {
     bytes
         .chunks_exact(size_of::<f32>())
         .map(|chunk| {
-            // SAFETY: `chunks_exact(size_of::<f32>())`'s own contract
+            // NOTE: `chunks_exact(size_of::<f32>())`'s own contract
             // guarantees every yielded chunk has exactly that length,
             // so this `try_into::<[u8; 4]>()` can never observe a
             // length mismatch.

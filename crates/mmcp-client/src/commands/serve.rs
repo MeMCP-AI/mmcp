@@ -6118,7 +6118,7 @@ fn parse_single_wire_ref(
     arg: MemoryRefArg,
     field: &'static str,
 ) -> Result<mmcp_core::memory::MemoryRef, McpError> {
-    // SAFETY: `parse_wire_refs` funnels through
+    // NOTE: `parse_wire_refs` funnels through
     // `mmcp_core::memory::xrefs::parse_memory_refs`, a plain
     // `.iter().map(..).collect::<Result<Vec<_>,_>>()` over the input
     // slice; that combinator preserves cardinality 1:1 on the `Ok`

@@ -49,7 +49,7 @@ where
     /// idle going in; the returned handle is correct either way.
     #[must_use]
     pub fn get_or_install(&self, key: K) -> Arc<P> {
-        // SAFETY: poison only happens if another thread panicked while
+        // NOTE: poison only happens if another thread panicked while
         // holding this mutex, leaving `entries` in a possibly
         // inconsistent state. That is an unrecoverable invariant
         // break, not a recoverable condition to route through

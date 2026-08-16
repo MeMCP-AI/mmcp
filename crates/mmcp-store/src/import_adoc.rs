@@ -403,7 +403,7 @@ fn strip_linkgit_macros(line: &str) -> String {
             }
         }
         // Push one UTF-8 char at a time so we don't slice mid-codepoint.
-        // SAFETY: the enclosing `while i < bytes.len()` guard, plus `i`
+        // NOTE: the enclosing `while i < bytes.len()` guard, plus `i`
         // only ever advancing by a prior char's `len_utf8()`, guarantees
         // `line[i..]` is a valid, non-empty UTF-8 slice here.
         #[allow(clippy::expect_used)]
