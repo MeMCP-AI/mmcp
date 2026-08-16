@@ -11,17 +11,14 @@ use mmcp_git::types::CommitSpec;
 use mmcp_git::{GitBackend, NativeBackend};
 
 #[tokio::main]
-async fn main() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let backend = NativeBackend::new(tmp.path()).expect("init repos root");
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = tempfile::tempdir()?;
+    let backend = NativeBackend::new(tmp.path())?;
 
     let group_id = GroupId::new();
     let owner = UserId::new();
     let manifest = GroupManifest::new_user_owned(group_id, "test-offline", owner);
-    let handle = backend
-        .create_group_repo(&manifest)
-        .await
-        .expect("create group");
+    let handle = backend.create_group_repo(&manifest).await?;
     println!("Created group: {} (slug: test-offline)", group_id.as_uuid());
     println!("Temp dir: {}", tmp.path().display());
 
@@ -50,8 +47,7 @@ library code - reserve it for tests and examples.
                 )],
             },
         )
-        .await
-        .expect("write memory 1");
+        .await?;
     println!("Wrote memory: always-use-result");
 
     let mem2_content = r#"+++
@@ -79,10 +75,10 @@ It verifies that the mmcp MCP tools can read real content from git.
                 )],
             },
         )
-        .await
-        .expect("write memory 2");
+        .await?;
     println!("Wrote memory: offline-test-note");
 
     println!("\nDone. Temp dir will be cleaned up on exit.");
     println!("To inspect: run before this process exits, or use --nocapture.");
+    Ok(())
 }
