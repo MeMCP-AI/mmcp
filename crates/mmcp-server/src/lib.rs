@@ -6,5 +6,6 @@
 pub mod app;
 pub mod config;
 mod defaults;
+mod oauth_client;
 pub mod routes;
 pub mod state;
