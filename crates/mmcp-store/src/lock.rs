@@ -89,7 +89,7 @@ pub enum LockMode {
 /// Drop to release.
 /// Read and write variants share a single drop point,
 /// so callers can hold a `Vec<ScopeGuard>` (the typical hierarchy stack) without branching on the mode.
-#[allow(dead_code, clippy::large_enum_variant)]
+#[allow(clippy::large_enum_variant)]
 pub enum ScopeGuard {
     Read(OwnedRwLockReadGuard<()>),
     Write(OwnedRwLockWriteGuard<()>),
@@ -153,15 +153,26 @@ pub fn memory_chain(group: Uuid, memory: Uuid, leaf_mode: LockMode) -> Vec<(Lock
     ]
 }
 
+/// Shared chain shape for one `Exclusive Group(group)` under a `Shared Process` root.
+///
+/// [`create_chain`] and [`coarsen_group_chain`] both resolve to this shape today by coincidence:
+/// a create needs a stable view of every existing memory, a rename needs to block every narrower op,
+/// and both happen to be satisfied by the same lock pair.
+/// The two callers may diverge if either operation's locking needs change independently later,
+/// so they stay distinct public functions over this one shared body.
+fn exclusive_group_chain(group: Uuid) -> Vec<(LockScope, LockMode)> {
+    vec![
+        (LockScope::Process, LockMode::Shared),
+        (LockScope::Group(group), LockMode::Exclusive),
+    ]
+}
+
 /// Convenience: chain for a group-level create.
 /// The leaf is `Exclusive Group(g)` because the create needs a stable view of every existing memory,
 /// to mint the next monotonic ticket number and to enforce slug uniqueness without racing a sibling write.
 #[must_use]
 pub fn create_chain(group: Uuid) -> Vec<(LockScope, LockMode)> {
-    vec![
-        (LockScope::Process, LockMode::Shared),
-        (LockScope::Group(group), LockMode::Exclusive),
-    ]
+    exclusive_group_chain(group)
 }
 
 /// Convenience: chain for a group-coarsening write (rename).
@@ -169,10 +180,7 @@ pub fn create_chain(group: Uuid) -> Vec<(LockScope, LockMode)> {
 /// so it waits for every narrower in-flight op via the ancestor-prefix and blocks every new one.
 #[must_use]
 pub fn coarsen_group_chain(group: Uuid) -> Vec<(LockScope, LockMode)> {
-    vec![
-        (LockScope::Process, LockMode::Shared),
-        (LockScope::Group(group), LockMode::Exclusive),
-    ]
+    exclusive_group_chain(group)
 }
 
 /// Convenience: chain for a process-coarsening write (`create_group`, `init_project`).
