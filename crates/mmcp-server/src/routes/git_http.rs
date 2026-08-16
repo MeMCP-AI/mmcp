@@ -44,6 +44,7 @@ use tokio_util::io::{ReaderStream, StreamReader, SyncIoBridge};
 use uuid::Uuid;
 
 use crate::routes::bearer_auth::{AuthenticatedUser, BearerAuthRejection, verify_bearer};
+use crate::routes::defaults::WWW_AUTHENTICATE_BEARER;
 use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
 
@@ -494,7 +495,7 @@ impl IntoResponse for GitHttpError {
                 // credential-helper retry fail by construction.
                 (
                     StatusCode::UNAUTHORIZED,
-                    [("WWW-Authenticate", r#"Bearer realm="mmcp""#)],
+                    [("WWW-Authenticate", WWW_AUTHENTICATE_BEARER)],
                     "missing or invalid token".to_string(),
                 )
                     .into_response()
