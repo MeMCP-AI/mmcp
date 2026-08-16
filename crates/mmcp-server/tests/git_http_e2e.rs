@@ -427,8 +427,9 @@ async fn info_refs_status_is_identical_for_existing_and_nonexistent_group_withou
     }
 }
 
-/// Router-wide auth-posture regression test (the explicit ask of
-/// issue #241, `critical-git-upload-pack-and-info-refs-serve-full-repo-content`):
+/// Auth-posture regression for the two upload-pack content routes (the
+/// explicit ask of issue #241,
+/// `critical-git-upload-pack-and-info-refs-serve-full-repo-content`):
 /// pins that the two hardcoded `git-upload-pack` routes below
 /// (mirrored from `crate::routes::git_http`'s own doc comment listing
 /// the four routes) both reject an unauthenticated caller.
@@ -450,7 +451,7 @@ async fn info_refs_status_is_identical_for_existing_and_nonexistent_group_withou
 /// `crate::routes::git_http`'s in-crate `enforce_write` unit tests,
 /// not by `AuthenticatedUser`.
 #[tokio::test]
-async fn every_upload_pack_route_rejects_an_unauthenticated_caller_router_wide() {
+async fn both_upload_pack_routes_reject_an_unauthenticated_caller() {
     let repo_tmp = TempDir::new().expect("repo tmp");
     let (addr, state) = start_server(repo_tmp.path()).await;
     let group_id = seed_group_with_memory(
