@@ -25,6 +25,32 @@ mod common;
 /// long enough that no test run can plausibly cross it.
 const TEST_TOKEN_LIFETIME_SECS: i64 = 3600;
 
+/// Build a stock `git` invocation with every interactive-credential
+/// fallback suppressed: the terminal prompt, `GIT_ASKPASS`, and any
+/// configured `credential.helper` (on Windows, typically Git
+/// Credential Manager, which pops a real desktop dialog). Several
+/// tests below intentionally drive a real `git` binary against an
+/// endpoint that rejects the request (a missing or invalid bearer
+/// token); without this, stock git's default reaction to that 401 is
+/// to fall back to the ambient interactive credential machinery,
+/// which blocks on (or pops) a real prompt with no human present to
+/// answer it in an automated test/CI run.
+///
+/// Unconditional suppression is safe here specifically because
+/// nothing in a test process is ever a legitimate interactive CLI
+/// session; contrast `mmcp_git::native::repo_ops`'s own
+/// `apply_credentials`, which suppresses these same three things only
+/// for its `BearerHttp`/`SshCommand` arms and deliberately leaves
+/// `Credentials::None` untouched so production interactive use still
+/// works.
+fn suppressed_git_command(git_bin: &std::ffi::OsStr) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(git_bin);
+    cmd.arg("-c").arg("credential.helper=");
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GIT_ASKPASS", "");
+    cmd
+}
+
 /// Seed a real user row and mint a valid bearer token for it, the way
 /// `routes::auth::login` does for a real client. Every `git-upload-pack`
 /// read (both the `info/refs` advertisement and the pack transfer
@@ -155,7 +181,7 @@ async fn stock_git_clones_from_smart_http_route() {
     let clone_dst = clone_tmp.path().join("clone");
     let url = format!("http://{addr}/git/{group_id}.git");
 
-    let output = tokio::process::Command::new(&git_bin)
+    let output = suppressed_git_command(&git_bin)
         .arg("-c")
         .arg(format!("http.extraHeader=Authorization: Bearer {token}"))
         .arg("clone")
@@ -212,7 +238,7 @@ async fn stock_git_clone_without_bearer_token_fails() {
     let clone_dst = clone_tmp.path().join("clone");
     let url = format!("http://{addr}/git/{group_id}.git");
 
-    let output = tokio::process::Command::new(&git_bin)
+    let output = suppressed_git_command(&git_bin)
         .arg("clone")
         .arg(&url)
         .arg(&clone_dst)
