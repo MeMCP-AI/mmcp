@@ -409,9 +409,40 @@ fn service_announcement(service: &str) -> Vec<u8> {
 /// wrong token returns 403/401. Real per-group role-based
 /// enforcement replaces this once there's a real authenticated user
 /// and a per-group token store.
+///
+/// Thin wrapper over [`enforce_push_token`]: extracts the `Bearer `
+/// credential from the request's own `Authorization` header, the
+/// only credential slot `git-receive-pack` requests carry.
 fn enforce_write(
     state: &ServerState,
     headers: &HeaderMap,
+    group_id: Uuid,
+) -> Result<(), GitHttpError> {
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    let presented = auth.strip_prefix("Bearer ");
+    enforce_push_token(state, presented, group_id)
+}
+
+/// Core shared-secret push-token comparison, shared by
+/// [`enforce_write`] (git smart-HTTP `receive-pack`) and
+/// `crate::routes::sync::post_push` (mmcp issue #190: `post_push`
+/// previously accepted a plain per-user bearer token for a write
+/// capability equivalent to `receive-pack`, a materially weaker
+/// credential than this shared secret). One comparison, two callers,
+/// so the two write paths can never drift apart on what counts as a
+/// valid push credential.
+///
+/// `presented` is the caller's candidate token, already stripped of
+/// any transport-specific framing (e.g. a `Bearer ` prefix) by the
+/// caller; `None` covers both a missing credential and one that
+/// doesn't match the expected framing, so it never partially matches
+/// a configured token by accident.
+pub(crate) fn enforce_push_token(
+    state: &ServerState,
+    presented: Option<&str>,
     group_id: Uuid,
 ) -> Result<(), GitHttpError> {
     let Some(expected) = state.push_token.as_deref() else {
@@ -419,20 +450,15 @@ fn enforce_write(
             "push disabled: set MMCP_PUSH_TOKEN",
         ));
     };
-    let auth = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
-    let presented = auth.strip_prefix("Bearer ").unwrap_or("");
-    if presented != expected {
-        tracing::warn!(group = %group_id, "push rejected: invalid or missing bearer token");
+    if presented != Some(expected) {
+        tracing::warn!(group = %group_id, "push rejected: invalid or missing push token");
         return Err(GitHttpError::Unauthorized);
     }
     Ok(())
 }
 
 #[derive(Debug)]
-enum GitHttpError {
+pub(crate) enum GitHttpError {
     NotFound(&'static str),
     Internal(String),
     Unauthorized,

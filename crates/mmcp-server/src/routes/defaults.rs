@@ -66,6 +66,15 @@ pub(crate) const MAX_EMAIL_LENGTH: usize = 254;
 /// name while bounding pathological input.
 pub(crate) const MAX_DISPLAY_NAME_LENGTH: usize = 128;
 
+/// Header carrying the shared push-token credential `POST /sync/push`
+/// requires in addition to the caller's own per-user bearer session
+/// token (mmcp issue #190). Deliberately distinct from
+/// `Authorization`, which `AuthenticatedUser` already owns for
+/// per-user session verification on this same route: reusing
+/// `Authorization` for the push token would make it collide with the
+/// session token on the one header a request carries.
+pub(crate) const PUSH_TOKEN_HEADER: &str = "x-mmcp-push-token";
+
 /// Passkey ceremonies (registration or authentication) must complete
 /// within this window; a real browser round-trip takes seconds, not
 /// minutes. An entry older than this is stale and is purged on the
