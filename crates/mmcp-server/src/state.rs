@@ -74,8 +74,11 @@ impl ServerState {
         let git = NativeBackend::new(&cfg.repo_root)?;
         let token_issuer = TokenIssuer::from_key(&cfg.token_key);
         let token_verifier = TokenVerifier::from_key(&cfg.token_key);
-        let auth_backend =
-            MmcpAuthBackend::new(database.connection().clone(), cfg.max_handle_length);
+        let auth_backend = MmcpAuthBackend::new(
+            database.connection().clone(),
+            cfg.max_handle_length,
+            cfg.allow_self_registration,
+        );
 
         // WebAuthn relying party derived from the origin.
         let origin_url = Url::parse(&cfg.origin)?;

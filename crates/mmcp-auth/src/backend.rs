@@ -6,7 +6,10 @@
 //!
 //! - **Password**: traditional handle + password login.
 //! - **OAuth**: provider callback carrying the provider slug and
-//!   the external user ID resolved from the token exchange.
+//!   the external user ID resolved from the token exchange. The
+//!   backend either finds the linked account or, when
+//!   self-registration is allowed, JIT-provisions a new user (see
+//!   [`MmcpAuthBackend::new`]'s `allow_self_registration` parameter).
 //! - **Passkey**: WebAuthn assertion result carrying the credential
 //!   ID and the authenticator data.
 //!
@@ -83,7 +86,12 @@ pub enum Credentials {
 
     /// OAuth callback: the token exchange already happened and the
     /// handler resolved the provider-side user ID. The backend
-    /// either finds the linked account or creates a new user.
+    /// either finds the linked account or, when
+    /// [`MmcpAuthBackend::new`]'s `allow_self_registration` is
+    /// `true`, JIT-provisions a new user; a first-time login while it
+    /// is `false` fails with
+    /// [`AuthError::SelfRegistrationDisabled`](crate::error::AuthError::SelfRegistrationDisabled)
+    /// instead of silently creating an account.
     OAuth {
         provider: String,
         provider_user_id: String,
@@ -108,6 +116,13 @@ pub struct MmcpAuthBackend {
     /// `AuthnBackend::authenticate`'s signature is fixed by the trait.
     /// This field is the only route by which the bound reaches [`provision_oauth_handle`].
     max_handle_length: usize,
+    /// Whether a first-time OAuth login may auto-provision (JIT
+    /// create) a new account. Captured at construction for the same
+    /// reason as `max_handle_length`: `AuthnBackend::authenticate`'s
+    /// signature is fixed by the trait, so this is the only route by
+    /// which `POST /auth/register`'s self-registration gate also
+    /// reaches the OAuth JIT-provisioning branch below.
+    allow_self_registration: bool,
 }
 
 impl fmt::Debug for MmcpAuthBackend {
@@ -118,12 +133,17 @@ impl fmt::Debug for MmcpAuthBackend {
 
 impl MmcpAuthBackend {
     /// Build the backend, capturing the caller's already-resolved
-    /// effective `max_handle_length` for use by the OAuth
-    /// JIT-provisioning path.
-    pub fn new(conn: DatabaseConnection, max_handle_length: usize) -> Self {
+    /// effective `max_handle_length` and `allow_self_registration`
+    /// for use by the OAuth JIT-provisioning path.
+    pub fn new(
+        conn: DatabaseConnection,
+        max_handle_length: usize,
+        allow_self_registration: bool,
+    ) -> Self {
         Self {
             conn,
             max_handle_length,
+            allow_self_registration,
         }
     }
 }
@@ -189,7 +209,15 @@ impl AuthnBackend for MmcpAuthBackend {
                     return Ok(user.map(MmcpUser::from_db));
                 }
 
-                // First-time OAuth: auto-create user + link.
+                // First-time OAuth: auto-create user + link, gated by
+                // the same self-registration policy `POST
+                // /auth/register` enforces, checked before any
+                // handle-provisioning lookup or database write so a
+                // rejected first-time login never leaves a partial
+                // account behind.
+                if !self.allow_self_registration {
+                    return Err(AuthError::SelfRegistrationDisabled);
+                }
                 let now = jiff::Timestamp::now().as_millisecond();
                 let user_id = Uuid::now_v7();
                 let handle = provision_oauth_handle(
