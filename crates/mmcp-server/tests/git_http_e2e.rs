@@ -341,6 +341,59 @@ async fn info_refs_git_receive_pack_without_push_token_returns_403_not_401() {
     assert_eq!(resp.status(), 403);
 }
 
+/// Falsification for the post-integration review finding: `info_refs`
+/// must reject an unauthenticated/wrongly-authenticated caller
+/// identically whether the requested group exists or not. Before the
+/// fix, `ensure_group`'s database lookup ran before the per-service
+/// auth check, so an existing group's request failed authentication
+/// (401 for `git-upload-pack`, 403 for `git-receive-pack` with no push
+/// token configured) while a nonexistent group's request failed one
+/// step earlier at the lookup itself (404) - an existence oracle a
+/// caller could probe with zero valid credentials, exactly what this
+/// route's own doc comment says must never happen.
+#[tokio::test]
+async fn info_refs_status_is_identical_for_existing_and_nonexistent_group_without_credentials() {
+    let repo_tmp = TempDir::new().expect("repo tmp");
+    let (addr, state) = start_server(repo_tmp.path()).await;
+    let existing_group_id = seed_group_with_memory(
+        &state,
+        "team-rust",
+        "memories/hello.md",
+        "content from server",
+    )
+    .await;
+    let nonexistent_group_id = Uuid::now_v7();
+
+    for service in ["git-upload-pack", "git-receive-pack"] {
+        let existing_resp = reqwest::get(format!(
+            "http://{addr}/git/{existing_group_id}.git/info/refs?service={service}"
+        ))
+        .await
+        .expect("GET info/refs for existing group");
+        let nonexistent_resp = reqwest::get(format!(
+            "http://{addr}/git/{nonexistent_group_id}.git/info/refs?service={service}"
+        ))
+        .await
+        .expect("GET info/refs for nonexistent group");
+
+        assert_eq!(
+            existing_resp.status(),
+            nonexistent_resp.status(),
+            "service={service}: an unauthenticated caller must not be able to \
+             distinguish an existing group (status {}) from a nonexistent one \
+             (status {}) via the info/refs response",
+            existing_resp.status(),
+            nonexistent_resp.status(),
+        );
+        assert_ne!(
+            existing_resp.status(),
+            reqwest::StatusCode::OK,
+            "service={service}: the existing-group request must still be \
+             rejected, not accidentally authorized"
+        );
+    }
+}
+
 /// Router-wide auth-posture regression test (the explicit ask of
 /// issue #241, `critical-git-upload-pack-and-info-refs-serve-full-repo-content`):
 /// every CONTENT-plane route `crate::routes::git_http::router()` (mirrored

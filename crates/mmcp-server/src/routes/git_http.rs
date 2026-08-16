@@ -109,7 +109,12 @@ async fn info_refs(
     headers: HeaderMap,
 ) -> Result<Response, GitHttpError> {
     let uuid = parse_group_path(&group_id)?;
-    let repo_path = ensure_group(&state, uuid).await?;
+    // Auth runs BEFORE the `ensure_group` database lookup below: an
+    // unauthenticated or wrongly-authenticated caller must be
+    // rejected identically whether the requested group exists or
+    // not. `ensure_group`'s own 404 is reachable only past a passing
+    // credential; otherwise its distinct status from an auth
+    // rejection becomes an existence oracle for every group UUID.
     if query.service == "git-receive-pack" {
         enforce_write(&state, &headers, uuid)?;
     } else if query.service == "git-upload-pack" {
@@ -121,6 +126,7 @@ async fn info_refs(
         // repo content.
         verify_bearer(&headers, &state).map_err(GitHttpError::BearerAuth)?;
     }
+    let repo_path = ensure_group(&state, uuid).await?;
     let protocol_version = negotiated_protocol_version(&headers);
     let service = query.service.clone();
     let content_type = format!("application/x-{service}-advertisement");
