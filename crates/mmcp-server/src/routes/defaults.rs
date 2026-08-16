@@ -73,7 +73,12 @@ pub(crate) const MAX_DISPLAY_NAME_LENGTH: usize = 128;
 /// per-user session verification on this same route: reusing
 /// `Authorization` for the push token would make it collide with the
 /// session token on the one header a request carries.
-pub(crate) const PUSH_TOKEN_HEADER: &str = "x-mmcp-push-token";
+///
+/// SSOT lives in [`mmcp_core::conventions::PUSH_TOKEN_HEADER`]: the
+/// client side (`mmcp_sync::client::SyncClient::push_version`) needs
+/// the identical literal, so re-exporting here instead of restating
+/// it keeps both ends of the request in sync by construction.
+pub(crate) use mmcp_core::conventions::PUSH_TOKEN_HEADER;
 
 /// Passkey ceremonies (registration or authentication) must complete
 /// within this window; a real browser round-trip takes seconds, not
