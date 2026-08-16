@@ -67,4 +67,15 @@ pub enum AuthError {
         #[source]
         source: DbError,
     },
+
+    /// A first-time OAuth login attempted to auto-provision a new
+    /// account while [`crate::backend::MmcpAuthBackend`] was
+    /// constructed with self-registration disabled. Mirrors
+    /// `POST /auth/register`'s `allow_self_registration` gate, but
+    /// for the OAuth JIT-provisioning branch of
+    /// [`crate::backend::MmcpAuthBackend::authenticate`]: an existing
+    /// linked account still authenticates normally, only the
+    /// auto-create-on-first-login path is rejected.
+    #[error("self-registration is disabled; cannot auto-provision a new OAuth account")]
+    SelfRegistrationDisabled,
 }
