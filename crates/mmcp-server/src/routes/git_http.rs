@@ -109,22 +109,30 @@ async fn info_refs(
     headers: HeaderMap,
 ) -> Result<Response, GitHttpError> {
     let uuid = parse_group_path(&group_id)?;
-    // Auth runs BEFORE the `ensure_group` database lookup below: an
-    // unauthenticated or wrongly-authenticated caller must be
-    // rejected identically whether the requested group exists or
-    // not. `ensure_group`'s own 404 is reachable only past a passing
-    // credential; otherwise its distinct status from an auth
-    // rejection becomes an existence oracle for every group UUID.
-    if query.service == "git-receive-pack" {
-        enforce_write(&state, &headers, uuid)?;
-    } else if query.service == "git-upload-pack" {
-        // Read (clone/fetch) advertisement. Requires the same
-        // per-user bearer credential as the `/sync/*` control plane
-        // (`AuthenticatedUser`), not the shared-secret push token:
-        // an unauthenticated caller must not be able to enumerate a
-        // group's refs, the first step toward cloning its full bare
-        // repo content.
-        verify_bearer(&headers, &state).map_err(GitHttpError::BearerAuth)?;
+    // Validate the service and run its auth check BEFORE the
+    // `ensure_group` database lookup below: an unauthenticated or
+    // wrongly-authenticated caller must be rejected identically
+    // whether the requested group exists or not. `ensure_group`'s own
+    // 404 is reachable only past a passing credential for a known
+    // service; otherwise its distinct status/body from an auth
+    // rejection, OR from the unknown-service rejection below, becomes
+    // an existence oracle for every group UUID. The `match` (rather
+    // than an `if`/`else if` that silently falls through) is what
+    // closes that third path: an unrecognized `service` value is
+    // rejected here, uniformly, before any group lookup runs, instead
+    // of reaching `ensure_group` unauthenticated.
+    match query.service.as_str() {
+        "git-receive-pack" => enforce_write(&state, &headers, uuid)?,
+        "git-upload-pack" => {
+            // Read (clone/fetch) advertisement. Requires the same
+            // per-user bearer credential as the `/sync/*` control
+            // plane (`AuthenticatedUser`), not the shared-secret push
+            // token: an unauthenticated caller must not be able to
+            // enumerate a group's refs, the first step toward cloning
+            // its full bare repo content.
+            verify_bearer(&headers, &state).map_err(GitHttpError::BearerAuth)?;
+        }
+        _ => return Err(GitHttpError::NotFound("unknown git service")),
     }
     let repo_path = ensure_group(&state, uuid).await?;
     let protocol_version = negotiated_protocol_version(&headers);

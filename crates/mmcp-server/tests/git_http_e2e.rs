@@ -343,7 +343,8 @@ async fn info_refs_git_receive_pack_without_push_token_returns_403_not_401() {
 
 /// Falsification for the post-integration review finding: `info_refs`
 /// must reject an unauthenticated/wrongly-authenticated caller
-/// identically whether the requested group exists or not. Before the
+/// identically whether the requested group exists or not, for EVERY
+/// `service` value, not only the two gated ones. Before the first
 /// fix, `ensure_group`'s database lookup ran before the per-service
 /// auth check, so an existing group's request failed authentication
 /// (401 for `git-upload-pack`, 403 for `git-receive-pack` with no push
@@ -351,6 +352,18 @@ async fn info_refs_git_receive_pack_without_push_token_returns_403_not_401() {
 /// step earlier at the lookup itself (404) - an existence oracle a
 /// caller could probe with zero valid credentials, exactly what this
 /// route's own doc comment says must never happen.
+///
+/// The third case in the loop below, an unrecognized `service` value,
+/// falsifies a second, narrower gap in that same first fix: an
+/// `if`/`else if` that only matches the two known literals silently
+/// falls through BOTH auth branches for anything else and still
+/// reaches `ensure_group` unauthenticated. Before the second fix, that
+/// path's two outcomes had the same STATUS (404 either way) but
+/// different BODIES (`ensure_group`'s "group not found" for a missing
+/// group vs. `advertise_refs`'s catch-all "unknown git service" for an
+/// existing one), so a status-only assertion would have passed while
+/// the oracle survived through the body text; the body comparison
+/// below is what actually pins that closed.
 #[tokio::test]
 async fn info_refs_status_is_identical_for_existing_and_nonexistent_group_without_credentials() {
     let repo_tmp = TempDir::new().expect("repo tmp");
@@ -364,29 +377,49 @@ async fn info_refs_status_is_identical_for_existing_and_nonexistent_group_withou
     .await;
     let nonexistent_group_id = Uuid::now_v7();
 
-    for service in ["git-upload-pack", "git-receive-pack"] {
+    for service in [
+        "git-upload-pack",
+        "git-receive-pack",
+        "not-a-real-git-service",
+    ] {
         let existing_resp = reqwest::get(format!(
             "http://{addr}/git/{existing_group_id}.git/info/refs?service={service}"
         ))
         .await
         .expect("GET info/refs for existing group");
+        let existing_status = existing_resp.status();
+        let existing_body = existing_resp
+            .text()
+            .await
+            .expect("existing-group response body");
+
         let nonexistent_resp = reqwest::get(format!(
             "http://{addr}/git/{nonexistent_group_id}.git/info/refs?service={service}"
         ))
         .await
         .expect("GET info/refs for nonexistent group");
+        let nonexistent_status = nonexistent_resp.status();
+        let nonexistent_body = nonexistent_resp
+            .text()
+            .await
+            .expect("nonexistent-group response body");
 
         assert_eq!(
-            existing_resp.status(),
-            nonexistent_resp.status(),
+            existing_status, nonexistent_status,
             "service={service}: an unauthenticated caller must not be able to \
-             distinguish an existing group (status {}) from a nonexistent one \
-             (status {}) via the info/refs response",
-            existing_resp.status(),
-            nonexistent_resp.status(),
+             distinguish an existing group (status {existing_status}) from a \
+             nonexistent one (status {nonexistent_status}) via the info/refs \
+             response status"
+        );
+        assert_eq!(
+            existing_body, nonexistent_body,
+            "service={service}: an unauthenticated caller must not be able to \
+             distinguish an existing group from a nonexistent one via the \
+             info/refs response body, even when the status matches \
+             (existing body: {existing_body:?}, nonexistent body: {nonexistent_body:?})"
         );
         assert_ne!(
-            existing_resp.status(),
+            existing_status,
             reqwest::StatusCode::OK,
             "service={service}: the existing-group request must still be \
              rejected, not accidentally authorized"
@@ -396,14 +429,20 @@ async fn info_refs_status_is_identical_for_existing_and_nonexistent_group_withou
 
 /// Router-wide auth-posture regression test (the explicit ask of
 /// issue #241, `critical-git-upload-pack-and-info-refs-serve-full-repo-content`):
-/// every CONTENT-plane route `crate::routes::git_http::router()` (mirrored
-/// here from that module's own doc comment listing the four routes)
-/// must reject an unauthenticated caller. A future change that adds a
-/// new git-HTTP route, or a new service branch on `info_refs`, and
-/// forgets to gate it must fail this test by falling through the
-/// catch-all "every entry rejected" assertion below rather than
-/// silently shipping an open content-plane sibling next to a gated
-/// control-plane route, exactly the asymmetry #241 found.
+/// pins that the two hardcoded `git-upload-pack` routes below
+/// (mirrored from `crate::routes::git_http`'s own doc comment listing
+/// the four routes) both reject an unauthenticated caller.
+///
+/// This table is NOT router-derived and is NOT a catch-all: it lists
+/// exactly two literal URLs, nothing more. A future change that adds
+/// a new git-HTTP route, or a new `info_refs` service branch, is NOT
+/// automatically caught here and needs its own new entry (or its own
+/// new test, as
+/// `info_refs_status_is_identical_for_existing_and_nonexistent_group_without_credentials`
+/// above does for unknown `info_refs` service values specifically) -
+/// a prior version of this comment claimed a "catch-all" property this
+/// test never had, which is exactly how the unknown-service gap that
+/// test now covers shipped unseen.
 ///
 /// `git-receive-pack` is deliberately excluded from this table: it is
 /// gated by the separate shared-secret push-token mechanism
