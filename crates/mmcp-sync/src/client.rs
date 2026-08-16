@@ -10,6 +10,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use mmcp_core::conventions::PUSH_TOKEN_HEADER;
 use mmcp_core::memory::BumpIntent;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -219,12 +220,29 @@ impl SyncClient {
 
     /// Register a version bump for a pending local edit.
     ///
+    /// When a push credential is configured via
+    /// [`SyncClient::with_push_credential`], it is also attached as
+    /// the [`PUSH_TOKEN_HEADER`] header: the server's `POST
+    /// /sync/push` handler requires this header in addition to the
+    /// control-plane bearer token (mmcp issue #190). The credential
+    /// is omitted, rather than sent empty, when unset or empty,
+    /// mirroring [`SyncClient::git_credentials`]'s own
+    /// empty-string guard. `get_manifest` and `get_refs` are reads
+    /// and never attach this header: only this write path is gated
+    /// on the server side.
+    ///
     /// A 409 response is translated into a structured
     /// [`SyncError::Conflict`] so callers can branch on it without
     /// parsing free text.
     pub async fn push_version(&self, req: &PushRequest) -> Result<PushResponse, SyncError> {
-        let response = self
-            .request_builder(reqwest::Method::POST, "/sync/push")
+        let mut builder = self.request_builder(reqwest::Method::POST, "/sync/push");
+        if let Some(token) = self.inner.push_credential.as_deref()
+            && !token.is_empty()
+        {
+            builder = builder.header(PUSH_TOKEN_HEADER, token);
+        }
+
+        let response = builder
             .json(req)
             .send()
             .await
@@ -368,5 +386,126 @@ mod tests {
             .expect("build client")
             .with_push_credential("");
         assert_eq!(client.git_credentials(), mmcp_git::Credentials::None);
+    }
+
+    /// Minimal but realistic [`PushRequest`]/[`PushResponse`] pair
+    /// for the wiremock tests below: field values are arbitrary,
+    /// only their round-trip through the mocked `/sync/push`
+    /// endpoint matters.
+    fn sample_push_request() -> PushRequest {
+        PushRequest {
+            group_id: Uuid::parse_str("00000000-0000-0000-0000-000000000010").unwrap(),
+            memory_id: Uuid::parse_str("00000000-0000-0000-0000-000000000011").unwrap(),
+            commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+            bump: BumpIntent::Minor,
+            message: None,
+        }
+    }
+
+    fn sample_push_response(req: &PushRequest) -> PushResponse {
+        PushResponse {
+            group_id: req.group_id,
+            memory_id: req.memory_id,
+            assigned_version: "0.2.0".to_string(),
+            tag: "v0.2.0".to_string(),
+        }
+    }
+
+    /// Matches a request carrying no `x-mmcp-push-token` header at
+    /// all. Mirrors `mmcp-store`'s `NoAuthorizationHeader` pattern
+    /// (`crates/mmcp-store/tests/build_engine_bearer.rs`): wiremock
+    /// ships matchers for an exact or present header, but none for
+    /// absence.
+    struct NoPushTokenHeader;
+
+    impl wiremock::Match for NoPushTokenHeader {
+        fn matches(&self, request: &wiremock::Request) -> bool {
+            !request.headers.contains_key(PUSH_TOKEN_HEADER)
+        }
+    }
+
+    /// `push_version` must attach the configured push credential as
+    /// the literal `x-mmcp-push-token` header (asserted as a raw
+    /// string, not via [`PUSH_TOKEN_HEADER`], so a drift between the
+    /// constant's value and the server's own literal would still
+    /// fail this test rather than agreeing with itself).
+    #[tokio::test]
+    async fn push_version_sends_push_token_header_when_configured() {
+        let server = wiremock::MockServer::start().await;
+        let req = sample_push_request();
+        let resp = sample_push_response(&req);
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/sync/push"))
+            .and(wiremock::matchers::header(
+                "x-mmcp-push-token",
+                "push-secret-token",
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(&resp))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = SyncClient::new(server.uri())
+            .expect("build client")
+            .with_push_credential("push-secret-token");
+
+        let result = client
+            .push_version(&req)
+            .await
+            .expect("push_version must succeed");
+        assert_eq!(result.assigned_version, resp.assigned_version);
+    }
+
+    /// No push credential configured must mean no header at all:
+    /// the mock only accepts a request with the header absent, so a
+    /// regression that always attaches it (even empty) fails this
+    /// test.
+    #[tokio::test]
+    async fn push_version_omits_push_token_header_when_not_configured() {
+        let server = wiremock::MockServer::start().await;
+        let req = sample_push_request();
+        let resp = sample_push_response(&req);
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/sync/push"))
+            .and(NoPushTokenHeader)
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(&resp))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = SyncClient::new(server.uri()).expect("build client");
+
+        client
+            .push_version(&req)
+            .await
+            .expect("push_version must succeed");
+    }
+
+    /// An empty push credential must behave like no credential at
+    /// all: the `!token.is_empty()` guard in `push_version` mirrors
+    /// `git_credentials_with_empty_push_credential_falls_back_to_none`
+    /// above, and mutation testing flagged this exact predicate as
+    /// escaping there.
+    #[tokio::test]
+    async fn push_version_omits_push_token_header_when_credential_is_empty() {
+        let server = wiremock::MockServer::start().await;
+        let req = sample_push_request();
+        let resp = sample_push_response(&req);
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/sync/push"))
+            .and(NoPushTokenHeader)
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(&resp))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = SyncClient::new(server.uri())
+            .expect("build client")
+            .with_push_credential("");
+
+        client
+            .push_version(&req)
+            .await
+            .expect("push_version must succeed");
     }
 }
