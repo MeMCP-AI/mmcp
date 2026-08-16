@@ -39,8 +39,8 @@ use uuid::Uuid;
 use webauthn_rs::prelude::*;
 
 use crate::routes::defaults::{
-    AUTH_REQUEST_BODY_LIMIT_BYTES, MAX_DISPLAY_NAME_LENGTH, MAX_EMAIL_LENGTH,
-    OAUTH_PKCE_VERIFIER_SESSION_KEY_PREFIX, OAUTH_STATE_SESSION_KEY_PREFIX,
+    AUTH_REQUEST_BODY_LIMIT_BYTES, BEARER_TOKEN_LIFETIME_SECS, MAX_DISPLAY_NAME_LENGTH,
+    MAX_EMAIL_LENGTH, OAUTH_PKCE_VERIFIER_SESSION_KEY_PREFIX, OAUTH_STATE_SESSION_KEY_PREFIX,
     OAUTH_STATE_TOKEN_BYTES, OAUTH_STATE_TOKEN_LENGTH, PASSKEY_CEREMONY_TTL,
 };
 use crate::routes::registration_limits::RegistrationLimits;
@@ -169,7 +169,15 @@ async fn register(
         },
     )
     .await
-    .map_err(|_| AuthHttpError::Conflict("handle already taken"))?;
+    .map_err(|e| {
+        // The real cause (a genuine handle collision, or an
+        // unrelated database failure such as a lost connection)
+        // is logged server-side; the caller only ever sees the
+        // generic conflict message, per `global-security-rules`'s
+        // error-message hygiene.
+        tracing::warn!(error = %e, "user_repo::create failed while registering a handle");
+        AuthHttpError::Conflict("handle already taken")
+    })?;
     Ok((StatusCode::CREATED, Json(RegisterResponse { user_id })))
 }
 
@@ -221,7 +229,12 @@ async fn login(
         .map_err(into_generic_response)?;
 
     let now = Timestamp::now().as_second();
-    let claims = mmcp_auth::SessionClaims::new_with_lifetime(user.id, Uuid::now_v7(), now, 3600);
+    let claims = mmcp_auth::SessionClaims::new_with_lifetime(
+        user.id,
+        Uuid::now_v7(),
+        now,
+        BEARER_TOKEN_LIFETIME_SECS,
+    );
     let token = state
         .token_issuer
         .issue(&claims)
@@ -469,17 +482,32 @@ async fn oauth_callback(
         .map_err(into_generic_response)?;
     let gh_user: GitHubUser = userinfo_resp.json().await.map_err(into_generic_response)?;
 
-    let user = auth_session
+    let user = match auth_session
         .authenticate(Credentials::OAuth {
-            provider,
+            provider: provider.clone(),
             provider_user_id: gh_user.id.to_string(),
             email: gh_user.email.or(Some(format!("{}@github", gh_user.login))),
             access_token: Some(access_token),
             refresh_token: None,
         })
         .await
-        .map_err(into_generic_response)?
-        .ok_or(AuthHttpError::Unauthorized("oauth authentication failed"))?;
+    {
+        Ok(Some(user)) => user,
+        Ok(None) => return Err(AuthHttpError::Unauthorized("oauth authentication failed")),
+        // The OAuth JIT-provisioning gate rejects a first-time login
+        // for this provider identity while self-registration is
+        // disabled; distinct from every other backend failure so it
+        // maps to its own 403, not the generic 500
+        // `into_generic_response` produces below.
+        Err(axum_login::Error::Backend(mmcp_auth::AuthError::SelfRegistrationDisabled)) => {
+            tracing::warn!(
+                provider = %provider,
+                "oauth callback rejected: self-registration disabled, no linked account exists"
+            );
+            return Err(AuthHttpError::OAuthSelfRegistrationDisabled);
+        }
+        Err(other) => return Err(into_generic_response(other)),
+    };
 
     auth_session
         .login(&user)
@@ -646,6 +674,29 @@ struct PasskeyLoginStartRequest {
     handle: String,
 }
 
+/// Resolve `handle`'s registered passkeys, returning `None` when
+/// either the handle does not resolve to a user or the user has zero
+/// passkeys registered. Both causes are collapsed into the same
+/// `None` on purpose: see [`passkey_login_start`] and
+/// [`passkey_login_finish`]'s uniform-response guard.
+async fn resolve_login_passkeys(
+    conn: &sea_orm::DatabaseConnection,
+    user: &mmcp_db::entities::user::Model,
+) -> Result<Option<Vec<Passkey>>, AuthHttpError> {
+    let creds = passkey_repo::find_by_user(conn, user.id)
+        .await
+        .map_err(into_generic_response)?;
+    let passkeys: Vec<Passkey> = creds
+        .iter()
+        .filter_map(|c| serde_json::from_str(&c.credential_json).ok())
+        .collect();
+    if passkeys.is_empty() {
+        tracing::debug!(user_id = %user.id, "passkey login: no passkeys registered");
+        return Ok(None);
+    }
+    Ok(Some(passkeys))
+}
+
 async fn passkey_login_start(
     State(state): State<ServerState>,
     Json(req): Json<PasskeyLoginStartRequest>,
@@ -653,19 +704,26 @@ async fn passkey_login_start(
     let conn = state.database.connection();
     let user = user_repo::find_by_handle(conn, &req.handle)
         .await
-        .map_err(into_generic_response)?
-        .ok_or(AuthHttpError::NotFound("user not found"))?;
-
-    let creds = passkey_repo::find_by_user(conn, user.id)
-        .await
         .map_err(into_generic_response)?;
-    if creds.is_empty() {
-        return Err(AuthHttpError::BadRequest("no passkeys registered"));
-    }
-    let passkeys: Vec<Passkey> = creds
-        .iter()
-        .filter_map(|c| serde_json::from_str(&c.credential_json).ok())
-        .collect();
+
+    // Uniform-response guard: an unknown handle and a known handle
+    // with zero passkeys registered must be indistinguishable to the
+    // caller (otherwise the response itself is an account-existence
+    // oracle), mirroring `login`'s uniform
+    // `AuthHttpError::Unauthorized("invalid credentials")`; see
+    // `global-coding-rules-errors`'s security-mandated
+    // uniform-response exception. Each cause still gets its own
+    // internal log line.
+    let resolved = match &user {
+        Some(user) => resolve_login_passkeys(conn, user).await?,
+        None => {
+            tracing::debug!(handle = %req.handle, "passkey login start: unknown handle");
+            None
+        }
+    };
+    let (Some(user), Some(passkeys)) = (user, resolved) else {
+        return Err(AuthHttpError::Unauthorized("invalid credentials"));
+    };
 
     let (rcr, auth_state_value) = state
         .webauthn
@@ -695,17 +753,45 @@ async fn passkey_login_finish(
     let conn = state.database.connection();
     let user = user_repo::find_by_handle(conn, &req.handle)
         .await
-        .map_err(into_generic_response)?
-        .ok_or(AuthHttpError::NotFound("user not found"))?;
+        .map_err(into_generic_response)?;
 
-    let pending = take_ceremony(&mut *auth_state().lock().await, user.id).ok_or(
-        AuthHttpError::BadRequest("no pending authentication for this user"),
-    )?;
+    // Uniform-response guard: every cause below (unknown handle, no
+    // pending or expired ceremony, a failed WebAuthn verification, no
+    // matching credential row, or the auth backend itself refusing
+    // the resolved credential) collapses to the SAME response as
+    // `login`'s uniform `AuthHttpError::Unauthorized("invalid
+    // credentials")`; see `global-coding-rules-errors`'s
+    // security-mandated uniform-response exception. Each cause still
+    // gets its own internal log line, and a genuine backend/database
+    // failure (as opposed to an authentication refusal) still goes
+    // through `into_generic_response`'s distinct 500 path.
+    let Some(user) = user else {
+        tracing::debug!(handle = %req.handle, "passkey login finish: unknown handle");
+        return Err(AuthHttpError::Unauthorized("invalid credentials"));
+    };
 
-    let auth_result = state
+    let Some(pending) = take_ceremony(&mut *auth_state().lock().await, user.id) else {
+        tracing::debug!(
+            user_id = %user.id,
+            "passkey login finish: no pending or expired authentication ceremony"
+        );
+        return Err(AuthHttpError::Unauthorized("invalid credentials"));
+    };
+
+    let auth_result = match state
         .webauthn
         .finish_passkey_authentication(&req.response, &pending)
-        .map_err(into_generic_response)?;
+    {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::debug!(
+                user_id = %user.id,
+                error = %e,
+                "passkey login finish: webauthn verification failed"
+            );
+            return Err(AuthHttpError::Unauthorized("invalid credentials"));
+        }
+    };
 
     // Update the credential counter in the DB to prevent replay.
     let creds = passkey_repo::find_by_user(conn, user.id)
@@ -717,23 +803,50 @@ async fn passkey_login_finish(
         {
             let updated_json = serde_json::to_string(&pk).map_err(into_generic_response)?;
             let now = Timestamp::now().as_millisecond();
-            let _ = passkey_repo::update_after_auth(conn, cred_row.id, updated_json, now).await;
+            if let Err(e) =
+                passkey_repo::update_after_auth(conn, cred_row.id, updated_json, now).await
+            {
+                // The signature counter is the anti-replay /
+                // cloned-authenticator detection mechanism: a failed
+                // persist must be visible, never silently discarded,
+                // per `software-surfaces-its-errors-no-silent-failure`.
+                // The login itself still proceeds: refusing an
+                // otherwise-valid, freshly-verified assertion over a
+                // bookkeeping write failure would be a worse outcome
+                // than a temporarily stale counter.
+                tracing::warn!(
+                    credential_id = %cred_row.id,
+                    error = %e,
+                    "failed to persist the passkey signature counter after authentication; \
+                     cloned-authenticator replay detection may be degraded for this credential"
+                );
+            }
         }
     }
 
     // Look up which credential row was used so we can resolve the
     // user via the auth backend.
-    let matched_cred = creds
-        .first()
-        .ok_or(AuthHttpError::Unauthorized("no matching credential found"))?;
+    let Some(matched_cred) = creds.first() else {
+        tracing::debug!(user_id = %user.id, "passkey login finish: no matching credential row");
+        return Err(AuthHttpError::Unauthorized("invalid credentials"));
+    };
 
-    let authed_user = auth_session
+    let authed_user = match auth_session
         .authenticate(Credentials::Passkey {
             credential_row_id: matched_cred.id,
         })
         .await
-        .map_err(into_generic_response)?
-        .ok_or(AuthHttpError::Unauthorized("passkey authentication failed"))?;
+    {
+        Ok(Some(authed_user)) => authed_user,
+        Ok(None) => {
+            tracing::debug!(
+                user_id = %user.id,
+                "passkey login finish: auth backend refused the resolved credential"
+            );
+            return Err(AuthHttpError::Unauthorized("invalid credentials"));
+        }
+        Err(e) => return Err(into_generic_response(e)),
+    };
 
     auth_session
         .login(&authed_user)
@@ -778,6 +891,19 @@ enum AuthHttpError {
          to enable it"
     )]
     RegistrationDisabled,
+    /// An OAuth callback attempted a first-time login (no existing
+    /// linked account) while
+    /// [`crate::state::ServerStateInner::allow_self_registration`] is
+    /// `false`. Distinct from [`AuthHttpError::RegistrationDisabled`]
+    /// per `global-coding-rules-errors`'s one-cause-one-error rule:
+    /// the two share the same underlying config knob and status code,
+    /// but are rejected from different handlers with different
+    /// causes, so each keeps its own message.
+    #[error(
+        "self-registration is disabled on this server; a new account cannot be auto-provisioned \
+         from this OAuth login"
+    )]
+    OAuthSelfRegistrationDisabled,
     /// A request field exceeded its maximum accepted length.
     #[error("field '{field}' is too long: {actual} bytes exceeds the {max}-byte maximum")]
     FieldTooLong {
@@ -824,7 +950,9 @@ impl IntoResponse for AuthHttpError {
             AuthHttpError::NotFound(_) => StatusCode::NOT_FOUND,
             AuthHttpError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AuthHttpError::Conflict(_) => StatusCode::CONFLICT,
-            AuthHttpError::RegistrationDisabled => StatusCode::FORBIDDEN,
+            AuthHttpError::RegistrationDisabled | AuthHttpError::OAuthSelfRegistrationDisabled => {
+                StatusCode::FORBIDDEN
+            }
             AuthHttpError::FieldTooLong { .. }
             | AuthHttpError::FieldBlank { .. }
             | AuthHttpError::InvalidOAuthState
