@@ -80,7 +80,12 @@ pub(crate) fn git_binary() -> OsString {
 
 /// Apply [`Credentials`] to a `git` command via environment variables,
 /// never argv. Does nothing for [`Credentials::None`] so the ambient
-/// git env (SSH agent, credential helper, `.netrc`) remains in charge.
+/// git env (SSH agent, credential helper, `.netrc`) remains in charge,
+/// exactly matching [`Credentials::None`]'s own doc comment: "rely on
+/// the ambient git environment ... the right choice for interactive
+/// use". No interactive-prompt suppression is applied on this arm, on
+/// purpose — suppressing it here would silently break that documented
+/// contract for a legitimate interactive CLI caller.
 ///
 /// For `BearerHttp`, sets `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/
 /// `GIT_CONFIG_VALUE_0` (git's environment-based config protocol,
@@ -91,9 +96,16 @@ pub(crate) fn git_binary() -> OsString {
 /// lifetime; the environment-variable form keeps it out of argv. The
 /// token still appears in the child's environment block
 /// (`/proc/<pid>/environ`), the same exposure `SshCommand` below
-/// already accepts for its own value.
+/// already accepts for its own value. Also calls
+/// [`suppress_interactive_prompts`]: mmcp already supplied the
+/// definitive credential on this arm, so any interactive fallback
+/// (a GCM popup, an SSH passphrase prompt) could only mask a genuine
+/// auth failure behind a hung subprocess, never serve a legitimate
+/// purpose, in an automated caller that has no human present to
+/// answer it.
 ///
-/// For `SshCommand`, sets `GIT_SSH_COMMAND`.
+/// For `SshCommand`, sets `GIT_SSH_COMMAND` and, for the same reason
+/// as `BearerHttp`, also calls [`suppress_interactive_prompts`].
 ///
 /// Any `-c` flags must appear *before* the git subcommand, so this
 /// helper is called on a freshly-constructed `Command` before its
@@ -108,11 +120,35 @@ fn apply_credentials(cmd: &mut Command, creds: &Credentials) {
                 "GIT_CONFIG_VALUE_0",
                 format!("Authorization: Bearer {token}"),
             );
+            suppress_interactive_prompts(cmd);
         }
         Credentials::SshCommand(value) => {
             cmd.env("GIT_SSH_COMMAND", value);
+            suppress_interactive_prompts(cmd);
         }
     }
+}
+
+/// Suppress every interactive-credential fallback a `git` subprocess
+/// might otherwise reach for: the terminal prompt, `GIT_ASKPASS`, and
+/// any configured `credential.helper` (on Windows, typically Git
+/// Credential Manager, which pops a real desktop dialog). Called only
+/// from [`apply_credentials`]'s `BearerHttp` and `SshCommand` arms,
+/// where mmcp already supplied a definitive credential and an
+/// interactive fallback could only mask a real auth failure — never
+/// from the `Credentials::None` arm, whose whole documented purpose is
+/// to defer to that same ambient, interactive machinery.
+///
+/// `-c credential.helper=` (empty value) disables every configured
+/// helper for this invocation only, without touching the user's
+/// global git config. `GIT_TERMINAL_PROMPT=0` stops git's own
+/// built-in terminal prompt. `GIT_ASKPASS=""` (empty program path)
+/// makes git treat askpass as unconfigured rather than trying to
+/// execute an empty command.
+fn suppress_interactive_prompts(cmd: &mut Command) {
+    cmd.arg("-c").arg("credential.helper=");
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GIT_ASKPASS", "");
 }
 
 /// Initialize a bare repository at `path`, idempotent.
@@ -939,4 +975,114 @@ pub fn walk_history(repo: &gix::Repository, path: &str) -> Result<Vec<CommitMeta
         out.push(commit_meta(info.id, &decoded_commit));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    /// Collect every `(key, value)` env var `apply_credentials` set on
+    /// `cmd`, so a test can assert presence/absence and value without
+    /// depending on `std::process::Command`'s (partial) `Debug` output.
+    fn envs_of(cmd: &Command) -> std::collections::HashMap<String, String> {
+        cmd.get_envs()
+            .filter_map(|(k, v)| {
+                Some((
+                    k.to_string_lossy().into_owned(),
+                    v?.to_string_lossy().into_owned(),
+                ))
+            })
+            .collect()
+    }
+
+    /// Collect every argv token `apply_credentials` appended to `cmd`.
+    fn args_of(cmd: &Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// Falsification: `Credentials::None` must leave the subprocess
+    /// exactly as the ambient environment would — no suppression args,
+    /// no suppression env vars — matching its own doc comment's
+    /// promise that this is "the right choice for interactive use".
+    #[test]
+    fn credentials_none_applies_no_suppression_and_no_credential_env() {
+        let mut cmd = Command::new("git");
+        apply_credentials(&mut cmd, &Credentials::None);
+
+        assert!(
+            args_of(&cmd).is_empty(),
+            "Credentials::None must not add any -c flags"
+        );
+        let envs = envs_of(&cmd);
+        assert!(
+            !envs.contains_key("GIT_TERMINAL_PROMPT"),
+            "Credentials::None must leave GIT_TERMINAL_PROMPT untouched"
+        );
+        assert!(
+            !envs.contains_key("GIT_ASKPASS"),
+            "Credentials::None must leave GIT_ASKPASS untouched"
+        );
+        assert!(
+            !envs.contains_key("GIT_CONFIG_COUNT"),
+            "Credentials::None must not set any bearer config env"
+        );
+    }
+
+    /// Falsification: `Credentials::BearerHttp` must both apply the
+    /// bearer header AND suppress every interactive fallback, so an
+    /// automated caller with a definitive (if possibly stale/invalid)
+    /// token never blocks on a GCM/terminal/askpass prompt.
+    #[test]
+    fn credentials_bearer_http_suppresses_interactive_prompts() {
+        let mut cmd = Command::new("git");
+        apply_credentials(&mut cmd, &Credentials::BearerHttp("s3cr3t".to_string()));
+
+        let args = args_of(&cmd);
+        assert!(
+            args.windows(2).any(|w| w == ["-c", "credential.helper="]),
+            "BearerHttp must disable credential.helper via -c, got: {args:?}"
+        );
+        let envs = envs_of(&cmd);
+        assert_eq!(
+            envs.get("GIT_TERMINAL_PROMPT").map(String::as_str),
+            Some("0")
+        );
+        assert_eq!(envs.get("GIT_ASKPASS").map(String::as_str), Some(""));
+        assert_eq!(
+            envs.get("GIT_CONFIG_VALUE_0").map(String::as_str),
+            Some("Authorization: Bearer s3cr3t"),
+            "the bearer header itself must still be applied"
+        );
+    }
+
+    /// Falsification: `Credentials::SshCommand` must also suppress
+    /// interactive fallbacks, for the same automated-caller reasoning
+    /// as `BearerHttp`.
+    #[test]
+    fn credentials_ssh_command_suppresses_interactive_prompts() {
+        let mut cmd = Command::new("git");
+        apply_credentials(
+            &mut cmd,
+            &Credentials::SshCommand("ssh -i /key".to_string()),
+        );
+
+        let args = args_of(&cmd);
+        assert!(
+            args.windows(2).any(|w| w == ["-c", "credential.helper="]),
+            "SshCommand must disable credential.helper via -c, got: {args:?}"
+        );
+        let envs = envs_of(&cmd);
+        assert_eq!(
+            envs.get("GIT_TERMINAL_PROMPT").map(String::as_str),
+            Some("0")
+        );
+        assert_eq!(envs.get("GIT_ASKPASS").map(String::as_str), Some(""));
+        assert_eq!(
+            envs.get("GIT_SSH_COMMAND").map(String::as_str),
+            Some("ssh -i /key"),
+            "the ssh command itself must still be applied"
+        );
+    }
 }
