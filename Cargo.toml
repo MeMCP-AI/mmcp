@@ -181,6 +181,15 @@ rmcp = { version = "=3.1.1", features = ["server", "macros", "transport-io", "el
 # HTTP client (for sync engine talking to mmcp-server)
 reqwest = { version = "0.13", default-features = false, features = ["json", "form", "rustls"] }
 
+# OAuth2 client (authorize-url building, CSRF state + PKCE, token
+# exchange). The "reqwest" feature's async `AsyncHttpClient` impl is
+# only for oauth2's OWN transitively pulled reqwest major version
+# (re-exported as `oauth2::reqwest` since this workspace's own
+# `reqwest` above is pinned to a different major); "rustls-tls"
+# matches the TLS backend the workspace's own reqwest dependency
+# uses ("rustls" feature above), rather than mixing in native-tls.
+oauth2 = { version = "5", default-features = false, features = ["reqwest", "rustls-tls"] }
+
 # AsciiDoc parser + Markdown renderer, used by the `mmcp import`
 # path so operators can import `.adoc` / `.asciidoc` source files
 # alongside markdown. The Markdown converter is not yet published
