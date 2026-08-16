@@ -6,9 +6,12 @@
 //! each test targets the server-local error surface, without a real WebAuthn client or a live OAuth provider.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use axum::{
     Json, Router,
+    body::Bytes,
     routing::{get, post},
 };
 use mmcp_server::config::OAuthProviderConfig;
@@ -102,12 +105,17 @@ async fn oauth_authorize_known_provider_redirects_to_provider_authorize_url() {
         "unexpected redirect target: {location}"
     );
     assert!(location.contains("client_id=client-abc"));
-    // The callback URL round-trips through `urlencoding::encode`
-    // before being appended; ensure it points back at our origin.
+    // `oauth2::AuthorizationRequest::url` builds the query string via
+    // `url::Url::query_pairs_mut`, which percent-encodes every
+    // parameter value (including the redirect URL and the `:` in the
+    // scope below) as `application/x-www-form-urlencoded`; ensure the
+    // redirect back to our origin is present.
     assert!(location.contains("redirect_uri="));
-    // The handler appends the scope literally (no URL-encoding on
-    // the `:` since it is a reserved char that is legal in a query).
-    assert!(location.contains("scope=user:email"));
+    assert!(location.contains("scope=user%3Aemail"));
+    // PKCE: `oauth_authorize` sets a challenge on every authorize
+    // request now, so its query parameters are always present.
+    assert!(location.contains("code_challenge="));
+    assert!(location.contains("code_challenge_method=S256"));
 }
 
 // ── OAuth CSRF state ────────────────────────────────────────────────
@@ -127,12 +135,38 @@ fn extract_state_param(location: &str) -> String {
 
 /// Spins up a minimal fake OAuth provider (token exchange + userinfo) on an
 /// ephemeral loopback port, so the callback happy path can be proven end to
-/// end without a live GitHub dependency.
-async fn start_fake_oauth_provider() -> SocketAddr {
+/// end without a live GitHub dependency. Returns the provider's address
+/// alongside a flag the `/token` route sets to `true` the moment it observes
+/// a non-empty `code_verifier` form field, so callers can assert `oauth2`
+/// actually transmitted the PKCE verifier on the exchange, not merely that
+/// the exchange succeeded.
+async fn start_fake_oauth_provider() -> (SocketAddr, Arc<AtomicBool>) {
+    let code_verifier_received = Arc::new(AtomicBool::new(false));
+    let token_route_flag = code_verifier_received.clone();
     let app = Router::new()
         .route(
             "/token",
-            post(|| async { Json(json!({ "access_token": "fake-access-token" })) }),
+            post(move |body: Bytes| {
+                let flag = token_route_flag.clone();
+                async move {
+                    // A hand-rolled check, not a URL-decoding library, is
+                    // enough here: PKCE code verifiers are base64url
+                    // (RFC 7636), which `application/x-www-form-urlencoded`
+                    // never percent-encodes, so a raw substring search on
+                    // `key=value` pairs sees the verifier exactly as sent.
+                    let form_body = String::from_utf8_lossy(&body);
+                    let carries_code_verifier = form_body.split('&').any(|pair| {
+                        pair.strip_prefix("code_verifier=")
+                            .is_some_and(|value| !value.is_empty())
+                    });
+                    flag.store(carries_code_verifier, Ordering::SeqCst);
+                    // `token_type` is mandatory for `oauth2`'s
+                    // `StandardTokenResponse` deserialization (RFC 6749
+                    // section 5.1); omitting it 500s the exchange instead
+                    // of the intended 200/400 the tests below assert on.
+                    Json(json!({ "access_token": "fake-access-token", "token_type": "bearer" }))
+                }
+            }),
         )
         .route(
             "/userinfo",
@@ -149,7 +183,7 @@ async fn start_fake_oauth_provider() -> SocketAddr {
             .await
             .unwrap();
     });
-    addr
+    (addr, code_verifier_received)
 }
 
 #[tokio::test]
@@ -181,7 +215,7 @@ async fn oauth_authorize_redirect_includes_a_nonempty_state_parameter() {
 
 #[tokio::test]
 async fn oauth_callback_with_matching_state_completes_the_login() {
-    let fake_addr = start_fake_oauth_provider().await;
+    let (fake_addr, code_verifier_received) = start_fake_oauth_provider().await;
     let provider = OAuthProviderConfig {
         slug: "github".to_string(),
         client_id: "client-abc".to_string(),
@@ -226,6 +260,10 @@ async fn oauth_callback_with_matching_state_completes_the_login() {
         "matching state must complete the oauth login, got body: {body}"
     );
     assert!(body.contains("OAuth login successful"));
+    assert!(
+        code_verifier_received.load(Ordering::SeqCst),
+        "oauth2's token exchange must present the PKCE code_verifier stored at authorize time"
+    );
 }
 
 #[tokio::test]
@@ -365,7 +403,7 @@ async fn oauth_callback_with_no_stored_state_is_rejected() {
     let resp = reqwest::Client::new()
         .get(format!(
             "http://{addr}/auth/oauth/github/callback?code=fake-code&state={}",
-            "a".repeat(64)
+            "a".repeat(43)
         ))
         .send()
         .await
@@ -405,12 +443,13 @@ async fn oauth_callback_state_length_mismatch_is_rejected_before_equality_compar
         .await
         .expect("oauth authorize");
 
-    // 63 hex characters: one short of the 64 the server always mints
-    // (32 CSPRNG bytes, hex-encoded).
+    // 42 base64url characters: one short of the 43 the server always
+    // mints (32 CSPRNG bytes, base64url-encoded with no padding via
+    // `oauth2::CsrfToken::new_random_len`).
     let resp = client
         .get(format!(
             "http://{addr}/auth/oauth/github/callback?code=fake-code&state={}",
-            "a".repeat(63)
+            "a".repeat(42)
         ))
         .send()
         .await
@@ -446,13 +485,13 @@ async fn oauth_callback_with_same_length_but_wrong_value_state_is_rejected() {
         .await
         .expect("oauth authorize");
 
-    // 64 hex characters, the correct width, but not the value the
-    // server actually stored: proves the equality comparison itself
-    // still runs once the length guard passes.
+    // 43 base64url characters, the correct width, but not the value
+    // the server actually stored: proves the equality comparison
+    // itself still runs once the length guard passes.
     let resp = client
         .get(format!(
             "http://{addr}/auth/oauth/github/callback?code=fake-code&state={}",
-            "a".repeat(64)
+            "a".repeat(43)
         ))
         .send()
         .await
@@ -469,7 +508,7 @@ async fn oauth_callback_with_same_length_but_wrong_value_state_is_rejected() {
 
 #[tokio::test]
 async fn oauth_state_is_single_use_a_replayed_valid_callback_is_rejected_the_second_time() {
-    let fake_addr = start_fake_oauth_provider().await;
+    let (fake_addr, _code_verifier_received) = start_fake_oauth_provider().await;
     let provider = OAuthProviderConfig {
         slug: "github".to_string(),
         client_id: "client-abc".to_string(),
