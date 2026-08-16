@@ -429,12 +429,10 @@ fn enforce_write(
 
 /// Core shared-secret push-token comparison, shared by
 /// [`enforce_write`] (git smart-HTTP `receive-pack`) and
-/// `crate::routes::sync::post_push` (mmcp issue #190: `post_push`
-/// previously accepted a plain per-user bearer token for a write
-/// capability equivalent to `receive-pack`, a materially weaker
-/// credential than this shared secret). One comparison, two callers,
-/// so the two write paths can never drift apart on what counts as a
-/// valid push credential.
+/// `crate::routes::sync::post_push`.
+/// One comparison, two callers, so the two write paths can never
+/// drift apart on what counts as a valid push credential for a
+/// capability equivalent to `receive-pack`.
 ///
 /// `presented` is the caller's candidate token, already stripped of
 /// any transport-specific framing (e.g. a `Bearer ` prefix) by the

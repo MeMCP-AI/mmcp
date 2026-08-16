@@ -30,16 +30,16 @@ const TEST_TOKEN_LIFETIME_SECS: i64 = 3600;
 /// expired without needing to sleep past a real deadline.
 const EXPIRED_TOKEN_BACKDATE_SECS: i64 = 100;
 
-/// Shared push-token value for tests that must present the mmcp
-/// issue #190 credential `POST /sync/push` now requires. The literal
-/// value is arbitrary; only equality with the server's own configured
+/// Shared push-token value for tests that must present the
+/// credential `POST /sync/push` requires. The literal value is
+/// arbitrary; only equality with the server's own configured
 /// `push_token` matters.
 const TEST_PUSH_TOKEN: &str = "sync-push-test-token";
 
 /// HTTP header carrying [`TEST_PUSH_TOKEN`], matching
-/// `mmcp_server::routes::defaults::PUSH_TOKEN_HEADER` (private to the
-/// server crate, so pinned here as a literal like every other header
-/// name in this file, e.g. `"www-authenticate"` below).
+/// [`mmcp_core::conventions::PUSH_TOKEN_HEADER`], pinned here as a
+/// literal like every other header name in this file, e.g.
+/// `"www-authenticate"` below.
 const PUSH_TOKEN_HEADER: &str = "x-mmcp-push-token";
 
 mod common;
@@ -135,8 +135,8 @@ async fn seed_group_without_repo(state: &mmcp_server::state::ServerState, slug: 
 
 /// Seed a real user row and mint a valid bearer token for it, the way
 /// `routes::auth::login` does for a real client. Every `/sync/*`
-/// handler now requires this header; returns the user id (so a test
-/// can assert against it) alongside the token string.
+/// handler requires this header; returns the user id (so a test can
+/// assert against it) alongside the token string.
 async fn seed_authenticated_user(
     state: &mmcp_server::state::ServerState,
     handle: &str,
@@ -446,10 +446,9 @@ async fn sync_refs_returns_400_for_invalid_uuid() {
     assert_eq!(resp.status(), 400);
 }
 
-/// Also covers mmcp issue #190's positive path: `POST /sync/push`
-/// now requires the shared push-token credential ALONGSIDE the
-/// caller's per-user bearer, and this is the happy-path proof that
-/// presenting both together still succeeds.
+/// `POST /sync/push` requires the shared push-token credential
+/// ALONGSIDE the caller's per-user bearer; this is the happy-path
+/// proof that presenting both together succeeds.
 #[tokio::test]
 async fn sync_push_first_publish_assigns_0_1_0_and_records_tag() {
     let (addr, state, _tmp) = start_server_with_push_token(Some(TEST_PUSH_TOKEN)).await;
@@ -529,8 +528,8 @@ async fn sync_push_first_publish_assigns_0_1_0_and_records_tag() {
 
 /// The push token is presented so this test still isolates the
 /// unknown-group 404 path: without it, an unknown group_id would be
-/// rejected 403 by the push-token gate (mmcp issue #190) before the
-/// group lookup ever runs, testing the wrong thing.
+/// rejected 403 by the push-token gate before the group lookup ever
+/// runs, testing the wrong thing.
 #[tokio::test]
 async fn sync_push_returns_404_for_unknown_group() {
     let (addr, state, _tmp) = start_server_with_push_token(Some(TEST_PUSH_TOKEN)).await;
@@ -553,14 +552,13 @@ async fn sync_push_returns_404_for_unknown_group() {
     assert_eq!(resp.status(), 404);
 }
 
-/// Falsification for mmcp issue #190: a valid per-user bearer token
-/// alone must not authorize `POST /sync/push`; the shared push-token
-/// credential `git-receive-pack`'s `enforce_write` already requires
-/// is now required here too, for the same write capability
-/// (`memory_versions` row + git tag). Status matches
-/// `enforce_write`'s own semantics for "token configured, none
-/// presented": 401, not 403 (403 is reserved for "no token
-/// configured at all").
+/// Falsification: a valid per-user bearer token alone must not
+/// authorize `POST /sync/push`; the same shared push-token
+/// credential `git-receive-pack`'s `enforce_write` requires is also
+/// required here, for the same write capability (`memory_versions`
+/// row + git tag). Status matches `enforce_write`'s own semantics
+/// for "token configured, none presented": 401, not 403 (403 is
+/// reserved for "no token configured at all").
 #[tokio::test]
 async fn sync_push_without_push_token_header_returns_401() {
     let (addr, state, _tmp) = start_server_with_push_token(Some(TEST_PUSH_TOKEN)).await;
@@ -587,9 +585,9 @@ async fn sync_push_without_push_token_header_returns_401() {
     );
 }
 
-/// Falsification for mmcp issue #283: `memory_repo::find_by_id`
-/// resolves `memory_id` independently of `group_id`, so `post_push`
-/// must itself reject a push that names a real `memory_id` alongside
+/// Falsification: `memory_repo::find_by_id` resolves `memory_id`
+/// independently of `group_id`, so `post_push` must itself reject
+/// a push that names a real `memory_id` alongside
 /// a `group_id` the memory does not belong to, BEFORE writing
 /// anything. Confirms zero mutation of the victim's version ledger,
 /// not just the rejected status code.

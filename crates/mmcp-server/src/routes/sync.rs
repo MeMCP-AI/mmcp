@@ -89,10 +89,10 @@ fn invalid_request(msg: impl Into<String>) -> SyncErrorResponse {
 /// requested write, distinct from [`not_found`] (the target does not
 /// exist at all) and from an authentication failure (the caller has
 /// no valid credential whatsoever). Used for the cross-tenant
-/// group/memory mismatch closed by mmcp issue #283: the message
-/// carries no detail about the memory's actual owning group, per
-/// `global-security-rules`'s error-message hygiene; the real
-/// mismatch is logged server-side by the caller of this helper.
+/// group/memory mismatch: the message carries no detail about the
+/// memory's actual owning group, per `global-security-rules`'s
+/// error-message hygiene; the real mismatch is logged server-side
+/// by the caller of this helper.
 fn forbidden(msg: impl Into<String>) -> SyncErrorResponse {
     SyncErrorResponse {
         status: StatusCode::FORBIDDEN,
@@ -294,12 +294,12 @@ async fn get_refs(
 /// via `SyncClient::push_version`. The handler:
 ///
 /// 0. Enforces the same shared push-token credential
-///    `git-receive-pack` requires (mmcp issue #190), presented via
+///    `git-receive-pack` requires, presented via
 ///    [`PUSH_TOKEN_HEADER`], before any other work: a plain
 ///    per-user bearer token is not sufficient for this write.
 /// 1. Validates that the group and memory exist, and that an
 ///    existing memory actually belongs to the requested group
-///    (mmcp issue #283) before writing anything.
+///    before writing anything.
 /// 2. Reads the memory's current `latest_version` from the
 ///    database and computes the next version via
 ///    `mmcp_sync::negotiate_next_version`.
@@ -338,12 +338,11 @@ async fn post_push(
             // The memory row exists but belongs to a DIFFERENT
             // group than the one this request named. Reject before
             // any write: no version row, no `latest_version`
-            // update, no tag. Closes the cross-tenant corruption
-            // path (mmcp issue #283) where `memory_repo::find_by_id`
-            // resolves `memory_id` independently of `group_id`, so
-            // an authenticated caller naming their own group
-            // alongside another tenant's memory id could otherwise
-            // overwrite that tenant's version ledger.
+            // update, no tag. `memory_repo::find_by_id` resolves
+            // `memory_id` independently of `group_id`, so an
+            // authenticated caller naming their own group alongside
+            // another tenant's memory id could otherwise overwrite
+            // that tenant's version ledger.
             tracing::warn!(
                 requested_group = %group.id,
                 memory_id = %m.id,

@@ -784,15 +784,12 @@ async fn passkey_register_finish_without_pending_state_returns_400() {
     );
 }
 
-// ── Passkey login start/finish: no account-existence oracle ────────
-//
-// `passkey_login_start` and `passkey_login_finish` used to return
-// distinguishable responses (404 for an unknown handle, 400 for a
-// known handle with zero passkeys registered), letting an
-// unauthenticated caller enumerate which handles exist. Both routes
-// now collapse every such cause into the exact same uniform response
-// `login` already uses for a bad password: 401
-// `AuthHttpError::Unauthorized("invalid credentials")`.
+// `passkey_login_start` and `passkey_login_finish` collapse every
+// failure cause (unknown handle, a known handle with zero passkeys
+// registered, a wrong assertion) into the exact same uniform
+// response `login` uses for a bad password: 401
+// `AuthHttpError::Unauthorized("invalid credentials")`. No response
+// shape distinguishes an existing account from a non-existent one.
 
 #[tokio::test]
 async fn passkey_login_start_unknown_handle_returns_401_uniform_response() {
@@ -823,14 +820,13 @@ async fn passkey_login_start_user_without_credentials_returns_401_uniform_respon
     assert_eq!(resp.status(), 401);
 }
 
-/// Falsification for issue #284: fires both requests against the same
-/// server and asserts the two responses are identical to EACH OTHER
-/// (status and body), not just independently equal to some expected
-/// value. Before the fix, the unknown-handle case returned 404 "user
-/// not found" and the zero-passkeys case returned 400 "no passkeys
-/// registered": an attacker probing `/auth/passkey/login/start` with
-/// candidate handles could distinguish "does not exist" from "exists,
-/// no passkey enrolled" purely from the response shape.
+/// Falsification: fires both requests against the same server and
+/// asserts the two responses are identical to EACH OTHER (status
+/// and body), not just independently equal to some expected value.
+/// A response shape that distinguished an unknown handle from a
+/// known handle with zero enrolled passkeys would let an attacker
+/// probing `/auth/passkey/login/start` enumerate which handles
+/// exist.
 #[tokio::test]
 async fn passkey_login_start_unknown_handle_and_zero_passkeys_are_indistinguishable() {
     let (addr, _tmp) = start_server_with_oauth(vec![]).await;

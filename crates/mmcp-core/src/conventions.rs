@@ -36,12 +36,12 @@ pub const ZERO_COMMIT: &str = "0000000000000000000000000000000000000000";
 
 /// Header carrying the shared push-token credential `POST /sync/push`
 /// requires in addition to the caller's own per-user bearer session
-/// token (mmcp issue #190). Deliberately distinct from
-/// `Authorization`, which the server's `AuthenticatedUser` extractor
-/// already owns for per-user session verification on this same
-/// route: reusing `Authorization` for the push token would make it
-/// collide with the session token on the one header a request
-/// carries.
+/// token.
+/// Deliberately distinct from `Authorization`, which the server's
+/// `AuthenticatedUser` extractor already owns for per-user session
+/// verification on this same route: reusing `Authorization` for the
+/// push token would make it collide with the session token on the
+/// one header a request carries.
 ///
 /// Single source of truth for both ends of the request: the server
 /// side re-exports this from `mmcp_server::routes::defaults` instead

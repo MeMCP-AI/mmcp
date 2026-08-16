@@ -68,11 +68,12 @@ pub(crate) const MAX_DISPLAY_NAME_LENGTH: usize = 128;
 
 /// Header carrying the shared push-token credential `POST /sync/push`
 /// requires in addition to the caller's own per-user bearer session
-/// token (mmcp issue #190). Deliberately distinct from
-/// `Authorization`, which `AuthenticatedUser` already owns for
-/// per-user session verification on this same route: reusing
-/// `Authorization` for the push token would make it collide with the
-/// session token on the one header a request carries.
+/// token.
+/// Deliberately distinct from `Authorization`, which
+/// `AuthenticatedUser` already owns for per-user session
+/// verification on this same route: reusing `Authorization` for the
+/// push token would make it collide with the session token on the
+/// one header a request carries.
 ///
 /// SSOT lives in [`mmcp_core::conventions::PUSH_TOKEN_HEADER`]: the
 /// client side (`mmcp_sync::client::SyncClient::push_version`) needs

@@ -224,8 +224,8 @@ impl SyncClient {
     /// [`SyncClient::with_push_credential`], it is also attached as
     /// the [`PUSH_TOKEN_HEADER`] header: the server's `POST
     /// /sync/push` handler requires this header in addition to the
-    /// control-plane bearer token (mmcp issue #190). The credential
-    /// is omitted, rather than sent empty, when unset or empty,
+    /// control-plane bearer token.
+    /// The credential is omitted, rather than sent empty, when unset or empty,
     /// mirroring [`SyncClient::git_credentials`]'s own
     /// empty-string guard. `get_manifest` and `get_refs` are reads
     /// and never attach this header: only this write path is gated
