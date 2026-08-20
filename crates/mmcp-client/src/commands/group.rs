@@ -343,7 +343,23 @@ async fn run_list() -> Result<()> {
     let project_uuid = std::env::current_dir()
         .ok()
         .and_then(|cwd| find_project_root(&cwd))
-        .and_then(|root| load_project_config(&root).ok())
+        .and_then(|root| match load_project_config(&root) {
+            Ok(cfg) => Some(cfg),
+            Err(e) => {
+                // Loud, not swallowed (mandatory no-silent-failure
+                // rule), but a log line rather than a hard command
+                // failure: `mmcp group list`'s own purpose is
+                // unrelated to project config health, so failing the
+                // whole listing over a broken `is_project` flag
+                // would be disproportionate.
+                tracing::warn!(
+                    path = %root.display(),
+                    error = %e,
+                    "mmcp group list: failed to load project config; is_project will be false for every row"
+                );
+                None
+            }
+        })
         .map(|cfg| *cfg.project_uuid.as_uuid());
 
     let entries = groups.list().await;

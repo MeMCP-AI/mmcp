@@ -55,9 +55,16 @@ pub async fn run(args: BootstrapArgs) -> Result<()> {
                 None => std::env::current_dir().ok(),
             };
             let project_root = starting.and_then(|dir| find_project_root(&dir));
-            let project_cfg = project_root
-                .as_ref()
-                .and_then(|root| load_project_config(root).ok());
+            // A project root that resolves but fails to parse is a
+            // genuine error, surfaced loudly rather than silently
+            // treated as "no project": a malformed `[sync]` block
+            // must not blank the whole project context with no
+            // visible signal (mandatory no-silent-failure rule).
+            // Only the "no project root at all" case stays `None`.
+            let project_cfg = match project_root.as_ref() {
+                Some(root) => Some(load_project_config(root).map_err(anyhow::Error::from)?),
+                None => None,
+            };
             let project_uuid = project_cfg.as_ref().map(|cfg| *cfg.project_uuid.as_uuid());
             (project_uuid, project_cfg, project_root)
         }

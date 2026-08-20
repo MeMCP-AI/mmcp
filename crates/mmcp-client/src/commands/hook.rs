@@ -67,6 +67,20 @@ pub async fn user_prompt() -> Result<()> {
 fn project_uuid_from_cwd(cwd: Option<&str>) -> Option<Uuid> {
     let cwd = std::path::Path::new(cwd?);
     let root = mmcp_store::config::find_project_root(cwd)?;
-    let cfg = mmcp_store::config::load(&root).ok()?;
-    Some(*cfg.project_uuid.as_uuid())
+    // Loud, not swallowed (mandatory no-silent-failure rule), but a
+    // log line rather than a hard hook failure: the hook's own job
+    // (session bookkeeping) is unrelated to project config health,
+    // so failing the whole hook invocation over an unresolvable
+    // project uuid would be disproportionate.
+    match mmcp_store::config::load(&root) {
+        Ok(cfg) => Some(*cfg.project_uuid.as_uuid()),
+        Err(e) => {
+            tracing::warn!(
+                path = %root.display(),
+                error = %e,
+                "hook user-prompt: failed to load project config; session will not be tagged with a project uuid"
+            );
+            None
+        }
+    }
 }
