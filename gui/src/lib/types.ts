@@ -76,9 +76,22 @@ export interface MemoryDescriptorList {
   skipped: Finding[];
 }
 
+/** Wire mirror of the Rust `SyncStatusDto`. `remotes_summary` replaces
+ * the old single `server_url`: the sole remote's name, or
+ * `"N remote(s), default '<name>'"`. */
 export interface SyncStatus {
   configured: boolean;
-  server_url: string | null;
+  remotes_summary: string | null;
+}
+
+/** One `mmcp-server`-transport remote whose manifest poll itself
+ * errored during a pull's fetch phase. Mirrors the Rust
+ * `RemoteManifestFailureDto`: a remote-level failure, not a group-level
+ * one, so it carries a remote name rather than a `Finding`'s `group`. */
+export interface RemoteManifestFailure {
+  remote_name: string;
+  code: string;
+  message: string;
 }
 
 export interface PullReport {
@@ -86,12 +99,23 @@ export interface PullReport {
   new_groups: number;
   /** Groups whose own attempt errored, as `Finding`s (see below). */
   failed: Finding[];
+  /** Remotes whose manifest poll itself errored; never silently dropped. */
+  manifest_failures: RemoteManifestFailure[];
 }
 
-export interface PushReport {
+/** One remote's push outcome. Mirrors the Rust `RemotePushOutcomeDto`. */
+export interface RemotePushOutcome {
+  remote_name: string;
   pushed: number;
   /** Groups whose own attempt errored, as `Finding`s (see below). */
   failed: Finding[];
+}
+
+/** Wire mirror of the Rust `PushReportDto`: one outcome per targeted
+ * remote (today always exactly one, `PushScope::Default`; kept
+ * per-remote for when a scope picker lands). */
+export interface PushReport {
+  by_remote: RemotePushOutcome[];
 }
 
 /** Raw severity string emitted by mmcp-store (`"error" | "warning" | "info"`).
@@ -156,10 +180,46 @@ export interface GuiErrorPayload {
 
 // --- mmcp-core config DTOs ---------------------------------------
 // Mirror the Rust types in `crates/mmcp-core/src/config/*`.
-// Fields are optional / nullable to match serde(default) + Option<T>.
+// A field marked optional (`field?:`) mirrors a Rust
+// `#[serde(skip_serializing_if = ...)]` field: on load the JSON key
+// is ABSENT (not `null`) when the value is empty/unset. A field typed
+// `T | null` mirrors a plain `Option<T>` with no skip: Rust always
+// emits the key, `null` when unset.
 
-export interface UserSyncConfig {
-  server_url: string;
+/** Mirrors `mmcp_core::config::RemoteAuth`'s kebab-case serialization. */
+export type RemoteAuth = 'none' | 'ssh-agent' | 'bearer';
+
+export interface MmcpServerRemote {
+  kind: 'mmcp-server';
+  name: string;
+  url: string;
+  default: boolean;
+  include_in_push_all: boolean;
+}
+
+export interface DirectGitRemote {
+  kind: 'direct-git';
+  name: string;
+  url: string;
+  auth: RemoteAuth;
+  /** Absent when unset. At project level an absent value resolves to
+   * the project's own group; at user level an absent value is a
+   * loud validation error, never silently defaulted. */
+  group?: string;
+  default: boolean;
+  include_in_push_all: boolean;
+}
+
+/** Mirrors `mmcp_core::config::Remote`'s internally-tagged `kind`. */
+export type Remote = MmcpServerRemote | DirectGitRemote;
+
+/** Mirrors `mmcp_core::config::SyncConfig`, reused verbatim on both
+ * `UserConfig.sync` and `ProjectConfig.sync`. */
+export interface SyncConfig {
+  /** Legacy single-remote shorthand, composed with `remotes` at
+   * resolution time rather than validated as mutually exclusive. */
+  server_url: string | null;
+  remotes: Remote[];
 }
 
 export interface UserAuthorConfig {
@@ -175,10 +235,14 @@ export interface UserDefaultsConfig {
 
 export interface UserLimitsConfig {
   max_auto_slug_length: number | null;
+  min_password_length: number | null;
+  max_password_length: number | null;
+  max_handle_length: number | null;
 }
 
 export interface UserConfig {
-  sync: UserSyncConfig | null;
+  /** Absent when the user declares no `[sync]` table at all. */
+  sync?: SyncConfig;
   author: UserAuthorConfig | null;
   defaults: UserDefaultsConfig | null;
   limits: UserLimitsConfig | null;
@@ -195,10 +259,6 @@ export interface LoadedUserConfig {
   resolved_author: ResolvedAuthor;
 }
 
-export interface ProjectSyncConfig {
-  server_url: string;
-}
-
 export interface ProjectSubscriptionsConfig {
   no_default_global: boolean;
   auto_detect_languages: boolean;
@@ -210,8 +270,13 @@ export interface ProjectSubscriptionsConfig {
 
 export interface ProjectConfig {
   project_uuid: string;
-  project_slug: string | null;
-  sync: ProjectSyncConfig | null;
+  /** Absent on configs written by pre-slug versions of `mmcp init`. */
+  project_slug?: string;
+  /** Absent when the project declares no `[sync]` table at all. */
+  sync?: SyncConfig;
+  /** When true, this project uses ONLY its own `sync.remotes`; the
+   * user-level remotes are not inherited. */
+  project_remote_only: boolean;
   subscriptions: ProjectSubscriptionsConfig;
 }
 
