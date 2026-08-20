@@ -114,6 +114,69 @@ pub enum StoreError {
     #[error("cannot determine home directory: set MMCP_HOME, HOME, or USERPROFILE")]
     HomeDirUnresolved,
 
+    /// The effective remote set (user + project `[sync]` merged)
+    /// declares the same remote `name` more than once. Cross-level
+    /// duplicate, or a declared remote colliding with the synthetic
+    /// name a `server_url` legacy shorthand entry resolves to; the
+    /// single-file, same-level case is already rejected earlier by
+    /// `mmcp_core::config::ConfigError::DuplicateRemoteName`.
+    #[error("sync remote name `{name}` is declared more than once across user and project config")]
+    RemoteNameCollision {
+        /// The name shared by two or more resolved remotes.
+        name: String,
+    },
+
+    /// A user-level `direct-git` remote declared no `group`. Unlike
+    /// a project-level entry, there is no implicit default: a
+    /// group-less user-level `direct-git` remote would push whichever
+    /// project happens to be active into the same shared repo.
+    #[error(
+        "direct-git remote `{name}` at user level has no group; group is required at user level"
+    )]
+    DirectGitMissingGroup {
+        /// Name of the offending remote.
+        name: String,
+    },
+
+    /// The effective remote set has two or more remotes and none is
+    /// marked `default = true` at any level.
+    #[error(
+        "ambiguous default sync remote: mark exactly one of [{}] as default = true",
+        candidates.join(", ")
+    )]
+    AmbiguousDefaultRemote {
+        /// Every remote name in the effective set, in resolution order.
+        candidates: Vec<String>,
+    },
+
+    /// A remote's declared `name` is empty or contains a character
+    /// outside ASCII alphanumerics, `-`, and `_`. Remote names flow
+    /// verbatim into a git ref path (`refs/remotes/<name>/main`), so
+    /// an unconstrained name could produce a malformed or
+    /// path-traversing refspec.
+    #[error("sync remote name `{name}` must be non-empty ASCII alphanumeric, `-`, or `_`")]
+    InvalidRemoteName {
+        /// The offending name.
+        name: String,
+    },
+
+    /// A `direct-git` remote's resolved group reference (explicit
+    /// `group` field, or the project's own UUID when defaulted) does
+    /// not resolve to any group the local mirror knows about.
+    #[error(
+        "direct-git remote `{remote_name}` group `{group_ref}` does not resolve to a mirrored group: {source}"
+    )]
+    DirectGitGroupNotFound {
+        /// Name of the offending remote.
+        remote_name: String,
+        /// The unresolved group reference (UUID or slug) as declared
+        /// or defaulted.
+        group_ref: String,
+        /// The underlying group-lookup failure.
+        #[source]
+        source: crate::memory::ImportError,
+    },
+
     /// A test fixture could not create its scratch directory under
     /// the OS temp root.
     ///

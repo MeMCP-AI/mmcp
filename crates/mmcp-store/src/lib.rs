@@ -98,4 +98,7 @@ pub use milestones::{
 };
 pub use mmcp_core::memory::{MemoryRefInput, XrefError, parse_cross_refs, parse_memory_refs};
 pub use sessions::{MemoryRead, SessionState, SessionStore};
-pub use sync::{IndexResolver, build_engine};
+pub use sync::{
+    EffectiveRemotes, IndexResolver, RemoteLevel, ResolvedRemote, build_engine,
+    build_engine_with_env, resolve_effective_remotes,
+};
