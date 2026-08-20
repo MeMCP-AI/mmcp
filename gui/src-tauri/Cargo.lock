@@ -3448,7 +3448,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-core"
-version = "0.1.94"
+version = "0.1.98"
 dependencies = [
  "gray_matter",
  "jiff",
@@ -3467,7 +3467,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-git"
-version = "0.1.94"
+version = "0.1.98"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3496,6 +3496,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -3505,7 +3506,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-session"
-version = "0.1.94"
+version = "0.1.98"
 dependencies = [
  "serde",
  "sha2 0.11.0",
@@ -3514,7 +3515,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-store"
-version = "0.1.94"
+version = "0.1.98"
 dependencies = [
  "acdc-converters-core",
  "acdc-converters-markdown",
@@ -3544,7 +3545,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-sync"
-version = "0.1.94"
+version = "0.1.98"
 dependencies = [
  "futures-util",
  "mmcp-core",
