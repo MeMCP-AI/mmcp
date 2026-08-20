@@ -126,8 +126,91 @@ fn status_inside_initialized_project_prints_project_fields() {
         .success()
         .stdout(predicate::str::contains("project root"))
         .stdout(predicate::str::contains("project uuid"))
-        .stdout(predicate::str::contains("server"))
+        .stdout(predicate::str::contains("remote-only"))
+        .stdout(predicate::str::contains("remotes"))
         .stdout(predicate::str::contains("default group"));
+}
+
+#[test]
+fn status_reports_every_configured_remote_with_kind_level_and_default_marker() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mmcp_home = tmp.path().join("mmcp-home");
+    mmcp()
+        .args([
+            "init",
+            "project",
+            "--slug",
+            "status-multi-remote",
+            "--config-only",
+        ])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+    configure_remotes(
+        tmp.path(),
+        vec![
+            mmcp_server_remote("primary", true),
+            mmcp_server_remote("mirror", false),
+        ],
+    );
+
+    mmcp()
+        .arg("status")
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("remotes       : 2 configured"))
+        .stdout(predicate::str::contains(
+            "primary [mmcp-server] level=project (default)",
+        ))
+        .stdout(predicate::str::contains(
+            "mirror [mmcp-server] level=project",
+        ));
+}
+
+#[test]
+fn status_reports_a_resolution_error_inline_without_crashing_the_rest_of_the_report() {
+    // Two remotes, neither marked `default = true`: a genuine
+    // `AmbiguousDefaultRemote` misconfiguration. `mmcp status` must
+    // still exit success and print every other section, with the
+    // remotes line carrying the error text instead of the listing.
+    let tmp = tempfile::tempdir().unwrap();
+    let mmcp_home = tmp.path().join("mmcp-home");
+    mmcp()
+        .args([
+            "init",
+            "project",
+            "--slug",
+            "status-config-error",
+            "--config-only",
+        ])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+    configure_remotes(
+        tmp.path(),
+        vec![
+            mmcp_server_remote("a", false),
+            mmcp_server_remote("b", false),
+        ],
+    );
+
+    mmcp()
+        .arg("status")
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("project root"))
+        .stdout(predicate::str::contains("project uuid"))
+        .stdout(predicate::str::contains("default group"))
+        .stdout(predicate::str::contains(
+            "remotes       : CONFIGURATION ERROR",
+        ))
+        .stdout(predicate::str::contains("ambiguous default sync remote"));
 }
 
 #[test]

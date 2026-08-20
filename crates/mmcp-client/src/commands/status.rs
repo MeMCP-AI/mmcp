@@ -2,7 +2,10 @@
 
 use anyhow::{Context, Result};
 
+use mmcp_core::config::ProjectConfig;
 use mmcp_store::config::{find_project_root, load};
+use mmcp_store::home::MmcpHome;
+use mmcp_store::{EffectiveRemotes, RemoteLevel, resolve_effective_remotes};
 
 /// Print a compact human-readable summary of the project state.
 pub async fn run() -> Result<()> {
@@ -13,18 +16,9 @@ pub async fn run() -> Result<()> {
 
     println!("project root  : {}", root.display());
     println!("project uuid  : {}", cfg.project_uuid);
-    // Full effective-remote-set display (merging user config, naming
-    // each remote, flagging the default) is wave 3's job per FR-301;
-    // this mechanical adaptation only keeps `mmcp status` compiling
-    // against the now-always-defaulted `SyncConfig` shape.
-    match cfg.sync.server_url.as_deref() {
-        Some(url) => println!("server        : {url}"),
-        None if cfg.sync.remotes.is_empty() => println!("server        : (local-only)"),
-        None => println!(
-            "server        : {} remote(s) configured",
-            cfg.sync.remotes.len()
-        ),
-    }
+    println!("remote-only   : {}", cfg.project_remote_only);
+    print_remotes_section(&cfg);
+
     let subs = &cfg.subscriptions;
     println!(
         "default group : {}",
@@ -55,4 +49,52 @@ pub async fn run() -> Result<()> {
         println!("subs tags     : {}", subs.tags.join(", "));
     }
     Ok(())
+}
+
+/// Print the effective remote-set section: every remote in the
+/// merged user+project set (`mmcp_store::resolve_effective_remotes`,
+/// per FR-301's precedence rules), naming each one's kind and origin
+/// level and marking the resolved default.
+///
+/// A resolution failure (name collision, ambiguous default, a
+/// user-level `direct-git` remote missing its required `group`) is
+/// printed inline as this section's own content instead of aborting
+/// the rest of the report: `mmcp status` is the diagnostic tool for
+/// exactly these misconfigurations, so every other section above and
+/// below still prints normally.
+fn print_remotes_section(project_cfg: &ProjectConfig) {
+    let resolved = MmcpHome::discover()
+        .and_then(|home| home.load_user_config())
+        .and_then(|user_cfg| resolve_effective_remotes(&user_cfg, project_cfg));
+    match resolved {
+        Ok(effective) => print_effective_remotes(&effective),
+        Err(err) => println!("remotes       : CONFIGURATION ERROR - {err}"),
+    }
+}
+
+/// Render a successfully-resolved [`EffectiveRemotes`] set: a count
+/// line, then one indented line per remote naming its name, kind,
+/// origin level, and whether it is the resolved default.
+fn print_effective_remotes(effective: &EffectiveRemotes) {
+    if effective.remotes.is_empty() {
+        println!("remotes       : (none configured)");
+        return;
+    }
+    println!("remotes       : {} configured", effective.remotes.len());
+    for (index, remote) in effective.remotes.iter().enumerate() {
+        let level = match remote.level {
+            RemoteLevel::User => "user",
+            RemoteLevel::Project => "project",
+        };
+        let marker = if effective.default_index == Some(index) {
+            " (default)"
+        } else {
+            ""
+        };
+        println!(
+            "  - {name} [{kind}] level={level}{marker}",
+            name = remote.name(),
+            kind = remote.remote.kind(),
+        );
+    }
 }
