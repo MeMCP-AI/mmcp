@@ -10,7 +10,7 @@
 
 use std::collections::HashSet;
 
-use mmcp_core::config::{ProjectConfig, Remote, UserConfig};
+use mmcp_core::config::{ProjectConfig, Remote, SyncConfig, UserConfig};
 
 use crate::error::StoreError;
 
@@ -131,7 +131,7 @@ pub fn resolve_effective_remotes(
 /// Append every remote `sync` declares (legacy shorthand first, then
 /// `sync.remotes` in file order) onto `out`, tagged with `level`.
 fn collect_level(
-    sync: &mmcp_core::config::SyncConfig,
+    sync: &SyncConfig,
     level: RemoteLevel,
     project: &ProjectConfig,
     out: &mut Vec<ResolvedRemote>,
@@ -199,14 +199,24 @@ fn resolve_direct_git_group(
 
 /// A remote name flows verbatim into `refs/remotes/<name>/main`
 /// (`mmcp_sync::BoundRemote::tracking_ref`); constrain it to the
-/// charset a git ref path can safely carry. Also reject the two
-/// names reserved for legacy-shorthand synthesis
-/// ([`USER_LEGACY_REMOTE_NAME`] / [`PROJECT_LEGACY_REMOTE_NAME`]):
-/// without this, a declared `[[sync.remotes]]` entry could spoof one
-/// of those reserved names at a level with no `server_url` set (so
-/// nothing synthesized to collide with in
-/// [`check_name_collisions`]), and `ResolvedRemote::is_legacy_shorthand`
-/// would then misclassify it as the shorthand, making it read the
+/// charset a git ref path can safely carry (checked on the RAW name:
+/// normalizing first would let a name with a disallowed character
+/// slip through as long as its normalized form happened to be
+/// clean). Also reject any name whose
+/// [`SyncConfig::normalized_remote_name`] matches either reserved
+/// synthetic name's own normalized form
+/// ([`USER_LEGACY_REMOTE_NAME`] / [`PROJECT_LEGACY_REMOTE_NAME`]),
+/// not just an exact raw-string match: without normalizing this
+/// comparison, a declared `[[sync.remotes]]` entry named
+/// `USER-LEGACY` or `user_legacy` would both slip past a raw
+/// `matches!` guard AND, per
+/// [`SyncConfig::normalized_remote_name`]'s own doc comment, collide
+/// with the real legacy shorthand's credential env var. A level with
+/// no `server_url` set has nothing synthesized for
+/// [`check_name_collisions`] to catch such a spoof against, so this
+/// guard is the only place that ever rejects it, and
+/// `ResolvedRemote::is_legacy_shorthand` would otherwise misclassify
+/// the declared remote as the shorthand, routing it to the
 /// un-suffixed `MMCP_SYNC_TOKEN(_PUSH)?` env vars instead of its own
 /// name-derived pair.
 fn validate_remote_name(name: &str) -> Result<(), StoreError> {
@@ -214,7 +224,9 @@ fn validate_remote_name(name: &str) -> Result<(), StoreError> {
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    let reserved = matches!(name, USER_LEGACY_REMOTE_NAME | PROJECT_LEGACY_REMOTE_NAME);
+    let normalized = SyncConfig::normalized_remote_name(name);
+    let reserved = normalized == SyncConfig::normalized_remote_name(USER_LEGACY_REMOTE_NAME)
+        || normalized == SyncConfig::normalized_remote_name(PROJECT_LEGACY_REMOTE_NAME);
     if charset_valid && !reserved {
         Ok(())
     } else {
@@ -224,16 +236,25 @@ fn validate_remote_name(name: &str) -> Result<(), StoreError> {
     }
 }
 
-/// Reject a name appearing more than once in the merged set: a
-/// cross-level collision, or a declared remote colliding with a
-/// legacy shorthand's synthetic name. Same-level duplicates among
-/// REAL `[[sync.remotes]]` entries are already impossible by the
-/// time this runs (`SyncConfig::validate` rejected them at parse
-/// time); this only ever fires on a genuinely cross-cutting name.
+/// Reject a name appearing more than once in the merged set, by
+/// [`SyncConfig::normalized_remote_name`] rather than the raw string:
+/// a cross-level collision, or a declared remote colliding with a
+/// legacy shorthand's synthetic name, closes the same credential
+/// env var collision described on
+/// [`SyncConfig::normalized_remote_name`]'s own doc comment, now
+/// across the two config files instead of within one. Same-level
+/// duplicates among REAL `[[sync.remotes]]` entries (by normalized
+/// key) are already impossible by the time this runs
+/// (`SyncConfig::validate` rejected them at parse time); this only
+/// ever fires on a genuinely cross-cutting name.
+///
+/// The error still reports the colliding entry's own original,
+/// unnormalized `name`, matching [`SyncConfig::validate`]'s same
+/// readability choice.
 fn check_name_collisions(remotes: &[ResolvedRemote]) -> Result<(), StoreError> {
-    let mut seen: HashSet<&str> = HashSet::new();
+    let mut seen: HashSet<String> = HashSet::new();
     for entry in remotes {
-        if !seen.insert(entry.name()) {
+        if !seen.insert(SyncConfig::normalized_remote_name(entry.name())) {
             return Err(StoreError::RemoteNameCollision {
                 name: entry.name().to_string(),
             });
@@ -595,6 +616,72 @@ mod tests {
         assert!(matches!(
             err,
             StoreError::InvalidRemoteName { name } if name == USER_LEGACY_REMOTE_NAME
+        ));
+    }
+
+    /// Cross-level twin of `project.rs`'s
+    /// `two_remotes_normalizing_to_the_same_env_var_are_rejected_in_one_file`:
+    /// a user-level `prod-eu` and a project-level `prod_eu` both
+    /// derive the identical `MMCP_SYNC_TOKEN_PROD_EU` credential env
+    /// var. `SyncConfig::validate` only ever sees one file at a time,
+    /// so this collision is only catchable here, where both configs
+    /// are loaded together.
+    #[test]
+    fn cross_level_normalized_name_collision_is_rejected() {
+        let user = user_with(SyncConfig {
+            remotes: vec![mmcp_server("prod-eu", false)],
+            ..SyncConfig::default()
+        });
+        let project = project_with(
+            SyncConfig {
+                remotes: vec![mmcp_server("prod_eu", true)],
+                ..SyncConfig::default()
+            },
+            false,
+        );
+        let err = resolve_effective_remotes(&user, &project)
+            .expect_err("normalized cross-level collision must error");
+        assert!(matches!(err, StoreError::RemoteNameCollision { name } if name == "prod_eu"));
+    }
+
+    /// Case/separator variants of the reserved legacy names must be
+    /// rejected exactly like the exact-match spoof above:
+    /// `USER-LEGACY` normalizes to the same key as `user-legacy`.
+    #[test]
+    fn a_case_variant_of_a_reserved_legacy_name_is_rejected() {
+        let user = user_with(SyncConfig::default());
+        let project = project_with(
+            SyncConfig {
+                remotes: vec![mmcp_server("USER-LEGACY", false)],
+                ..SyncConfig::default()
+            },
+            false,
+        );
+        let err = resolve_effective_remotes(&user, &project)
+            .expect_err("case-variant reserved name spoof must error");
+        assert!(matches!(
+            err,
+            StoreError::InvalidRemoteName { name } if name == "USER-LEGACY"
+        ));
+    }
+
+    /// Separator variant: `user_legacy` (underscore) also normalizes
+    /// to the same key as `user-legacy`.
+    #[test]
+    fn a_separator_variant_of_a_reserved_legacy_name_is_rejected() {
+        let user = user_with(SyncConfig::default());
+        let project = project_with(
+            SyncConfig {
+                remotes: vec![mmcp_server("user_legacy", false)],
+                ..SyncConfig::default()
+            },
+            false,
+        );
+        let err = resolve_effective_remotes(&user, &project)
+            .expect_err("separator-variant reserved name spoof must error");
+        assert!(matches!(
+            err,
+            StoreError::InvalidRemoteName { name } if name == "user_legacy"
         ));
     }
 }

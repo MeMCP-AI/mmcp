@@ -149,14 +149,15 @@ impl SyncConfig {
     /// Derivation rule, exact and stable (a later wave, mmcp-sync,
     /// reads env vars produced by this exact rule): ASCII-uppercase
     /// `remote_name`, then replace every `-` with `_` so a hyphenated
-    /// remote name still yields a portable env var identifier.
-    /// Deliberately NOT a free-text config field: see
-    /// [`RemoteAuth::Bearer`].
+    /// remote name still yields a portable env var identifier. See
+    /// [`SyncConfig::normalized_remote_name`], the single owning
+    /// definition of this rule. Deliberately NOT a free-text config
+    /// field: see [`RemoteAuth::Bearer`].
     #[must_use]
     pub fn token_env_name(remote_name: &str) -> String {
         format!(
             "MMCP_SYNC_TOKEN_{}",
-            Self::normalize_remote_name_for_env(remote_name)
+            Self::normalized_remote_name(remote_name)
         )
     }
 
@@ -168,20 +169,44 @@ impl SyncConfig {
     pub fn push_token_env_name(remote_name: &str) -> String {
         format!(
             "MMCP_SYNC_PUSH_TOKEN_{}",
-            Self::normalize_remote_name_for_env(remote_name)
+            Self::normalized_remote_name(remote_name)
         )
     }
 
-    /// Shared name-to-env-suffix rule backing
-    /// [`SyncConfig::token_env_name`] and
-    /// [`SyncConfig::push_token_env_name`].
-    fn normalize_remote_name_for_env(remote_name: &str) -> String {
+    /// Injective key used both to derive a remote's credential env
+    /// var suffix ([`SyncConfig::token_env_name`],
+    /// [`SyncConfig::push_token_env_name`]) and to decide whether two
+    /// remote names collide: ASCII-uppercase `remote_name`, then
+    /// replace every `-` with `_`.
+    ///
+    /// Every place that checks a remote name for uniqueness or for
+    /// spoofing a reserved name MUST compare this normalized form,
+    /// never the raw name: `token_env_name` collapses `prod-eu` and
+    /// `prod_eu` (or `PROD-EU`) to the identical env var
+    /// `MMCP_SYNC_TOKEN_PROD_EU`, so two differently-spelled remotes
+    /// that pass a raw-string uniqueness check still share one
+    /// credential slot. A user-level remote `prod-eu` and a
+    /// git-tracked project-level remote `prod_eu` pointed at an
+    /// attacker URL would otherwise both read the user's real token
+    /// from that shared env var, exfiltrating it to the attacker's
+    /// remote on the next fetch. `pub` (not crate-private): both
+    /// [`SyncConfig::validate`] (same-file check) and
+    /// `mmcp_store::sync::remotes` (cross-level check, reserved-name
+    /// guard) compare against this exact key, so the transform has
+    /// exactly one owning definition instead of being reimplemented
+    /// at each call site.
+    #[must_use]
+    pub fn normalized_remote_name(remote_name: &str) -> String {
         remote_name.to_ascii_uppercase().replace('-', "_")
     }
 
     /// Single-file, single-level validation of this `remotes` list:
-    /// rejects two entries sharing a `name`, and rejects more than
-    /// one entry marked `default = true`.
+    /// rejects two entries whose [`SyncConfig::normalized_remote_name`]
+    /// collide (not just entries sharing a raw `name`), and rejects
+    /// more than one entry marked `default = true`. Comparing the
+    /// normalized form here closes the same credential-collision hole
+    /// [`SyncConfig::normalized_remote_name`]'s own doc comment
+    /// describes, for two colliding names declared in the SAME file.
     ///
     /// Cross-level validation, a project remote colliding with a user
     /// remote by name, or picking a winner between two
@@ -190,12 +215,13 @@ impl SyncConfig {
     /// the resolver, a later wave.
     ///
     /// # Errors
-    /// [`ConfigError::DuplicateRemoteName`] or
-    /// [`ConfigError::MultipleDefaultRemotes`].
+    /// [`ConfigError::DuplicateRemoteName`] (reported with the
+    /// colliding entry's own original, unnormalized `name`, for a
+    /// readable message) or [`ConfigError::MultipleDefaultRemotes`].
     pub(crate) fn validate(&self) -> Result<(), ConfigError> {
-        let mut seen_names = HashSet::new();
+        let mut seen_normalized: HashSet<String> = HashSet::new();
         for remote in &self.remotes {
-            if !seen_names.insert(remote.name()) {
+            if !seen_normalized.insert(Self::normalized_remote_name(remote.name())) {
                 return Err(ConfigError::DuplicateRemoteName {
                     name: remote.name().to_string(),
                 });
@@ -936,6 +962,73 @@ project_uuid = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
         assert_eq!(
             SyncConfig::push_token_env_name("prod-eu"),
             "MMCP_SYNC_PUSH_TOKEN_PROD_EU"
+        );
+    }
+
+    /// Exploit chain this closes: `prod-eu` and `prod_eu` (or
+    /// `PROD-EU`) both derive the identical `MMCP_SYNC_TOKEN_PROD_EU`
+    /// env var via `token_env_name`. Before comparing the normalized
+    /// form, `validate` only rejected a RAW-string duplicate, so two
+    /// remotes spelled this way in the SAME file would silently share
+    /// one credential slot.
+    #[test]
+    fn two_remotes_normalizing_to_the_same_env_var_are_rejected_in_one_file() {
+        let source = r#"
+project_uuid = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
+
+[[sync.remotes]]
+kind = "mmcp-server"
+name = "prod-eu"
+url = "https://a.example.com"
+
+[[sync.remotes]]
+kind = "mmcp-server"
+name = "prod_eu"
+url = "https://attacker.example.com"
+"#;
+        let err = ProjectConfig::from_toml(source)
+            .expect_err("normalized-name collision must be rejected");
+        assert!(matches!(
+            err,
+            ConfigError::DuplicateRemoteName { name } if name == "prod_eu"
+        ));
+    }
+
+    /// Same closure as the hyphen/underscore case above, for the
+    /// case-only variant: `PROD-EU` and `prod-eu` also normalize to
+    /// the same key.
+    #[test]
+    fn case_variant_remote_names_normalizing_to_the_same_env_var_are_rejected() {
+        let source = r#"
+project_uuid = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
+
+[[sync.remotes]]
+kind = "mmcp-server"
+name = "prod-eu"
+url = "https://a.example.com"
+
+[[sync.remotes]]
+kind = "mmcp-server"
+name = "PROD-EU"
+url = "https://attacker.example.com"
+"#;
+        let err = ProjectConfig::from_toml(source)
+            .expect_err("case-variant normalized collision must be rejected");
+        assert!(matches!(
+            err,
+            ConfigError::DuplicateRemoteName { name } if name == "PROD-EU"
+        ));
+    }
+
+    #[test]
+    fn normalized_remote_name_collapses_case_and_hyphen_underscore_variants() {
+        assert_eq!(
+            SyncConfig::normalized_remote_name("prod-eu"),
+            SyncConfig::normalized_remote_name("prod_eu")
+        );
+        assert_eq!(
+            SyncConfig::normalized_remote_name("prod-eu"),
+            SyncConfig::normalized_remote_name("PROD-EU")
         );
     }
 }
