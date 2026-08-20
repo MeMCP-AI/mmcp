@@ -1,4 +1,5 @@
-//! [`PushReport`] and its per-group item [`PushedGroup`].
+//! [`PushReport`], its per-remote [`RemotePushOutcome`], and its
+//! per-group item [`PushedGroup`].
 
 use uuid::Uuid;
 
@@ -6,12 +7,65 @@ use super::GroupSyncFailure;
 
 /// Report of a completed `push` call.
 ///
-/// `SyncError` is not `Clone`/`PartialEq` (it wraps `mmcp_git::GitError`,
-/// which wraps `std::io::Error`), so this report does not derive
-/// those either; nothing in this workspace compares or clones a
-/// `PushReport` as a whole (field-level assertions cover the tests).
+/// One [`RemotePushOutcome`] per [`crate::PushScope`]-selected
+/// remote the push actually targeted, in the engine's own remote
+/// list order. Replaces the pre-multi-remote flat `pushed`/`failed`
+/// pair: every caller that needs a single combined view uses
+/// [`PushReport::total_pushed`] / [`PushReport::total_failed`] /
+/// [`PushReport::iter_failures`] rather than re-flattening
+/// `by_remote` by hand at each call site.
 #[derive(Debug)]
 pub struct PushReport {
+    /// One outcome per targeted remote.
+    pub by_remote: Vec<RemotePushOutcome>,
+}
+
+impl PushReport {
+    /// Total groups pushed (successfully attempted, regardless of
+    /// `content_transferred`) across every remote.
+    #[must_use]
+    pub fn total_pushed(&self) -> usize {
+        self.by_remote.iter().map(|r| r.pushed.len()).sum()
+    }
+
+    /// Total groups whose push attempt itself errored across every
+    /// remote.
+    #[must_use]
+    pub fn total_failed(&self) -> usize {
+        self.by_remote.iter().map(|r| r.failed.len()).sum()
+    }
+
+    /// Every `(remote_name, failure)` pair across every remote, in
+    /// `by_remote` order.
+    pub fn iter_failures(&self) -> impl Iterator<Item = (&str, &GroupSyncFailure)> {
+        self.by_remote
+            .iter()
+            .flat_map(|r| r.failed.iter().map(move |f| (r.remote_name.as_str(), f)))
+    }
+
+    /// Every `(remote_name, pushed_group)` pair whose content-plane
+    /// transfer was skipped (`content_transferred: false`), across
+    /// every remote, in `by_remote` order.
+    pub fn iter_partial_failures(&self) -> impl Iterator<Item = (&str, &PushedGroup)> {
+        self.by_remote.iter().flat_map(|r| {
+            r.pushed
+                .iter()
+                .filter(|p| !p.content_transferred)
+                .map(move |p| (r.remote_name.as_str(), p))
+        })
+    }
+}
+
+/// One remote's push outcome: which groups it shipped, which it
+/// failed on. `SyncError` is not `Clone`/`PartialEq` (it wraps
+/// `mmcp_git::GitError`, which wraps `std::io::Error`), so this
+/// carries no derive beyond `Debug`; nothing in this workspace
+/// compares or clones a full report (field-level assertions cover
+/// the tests).
+#[derive(Debug)]
+pub struct RemotePushOutcome {
+    /// Name of the [`crate::BoundRemote`] this outcome belongs to.
+    pub remote_name: String,
     /// Groups whose push attempt did NOT error, in iteration order.
     /// A group appears here even when the content plane was
     /// skipped (see `PushedGroup::content_transferred`); a group
@@ -35,4 +89,68 @@ pub struct PushedGroup {
     /// still appears in the report so operators can see what was
     /// attempted; retry on the next push picks it up.
     pub content_transferred: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use crate::error::SyncError;
+    use mmcp_core::id::GroupId;
+
+    fn sample_report() -> PushReport {
+        PushReport {
+            by_remote: vec![
+                RemotePushOutcome {
+                    remote_name: "primary".to_string(),
+                    pushed: vec![
+                        PushedGroup {
+                            group_id: Uuid::nil(),
+                            content_transferred: true,
+                        },
+                        PushedGroup {
+                            group_id: Uuid::max(),
+                            content_transferred: false,
+                        },
+                    ],
+                    failed: vec![GroupSyncFailure {
+                        group_id: GroupId::from_uuid(Uuid::now_v7()),
+                        error: SyncError::NotFound("x".to_string()),
+                    }],
+                },
+                RemotePushOutcome {
+                    remote_name: "mirror".to_string(),
+                    pushed: vec![],
+                    failed: vec![],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn total_pushed_sums_across_remotes() {
+        assert_eq!(sample_report().total_pushed(), 2);
+    }
+
+    #[test]
+    fn total_failed_sums_across_remotes() {
+        assert_eq!(sample_report().total_failed(), 1);
+    }
+
+    #[test]
+    fn iter_failures_attributes_each_failure_to_its_remote() {
+        let report = sample_report();
+        let names: Vec<&str> = report.iter_failures().map(|(name, _)| name).collect();
+        assert_eq!(names, vec!["primary"]);
+    }
+
+    #[test]
+    fn iter_partial_failures_only_yields_untransferred_groups() {
+        let report = sample_report();
+        let partials: Vec<(&str, Uuid)> = report
+            .iter_partial_failures()
+            .map(|(name, g)| (name, g.group_id))
+            .collect();
+        assert_eq!(partials, vec![("primary", Uuid::max())]);
+    }
 }

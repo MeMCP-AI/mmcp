@@ -16,7 +16,10 @@ use std::sync::{Arc, Mutex};
 use mmcp_core::id::{GroupId, UserId};
 use mmcp_core::manifest::GroupManifest;
 use mmcp_git::{GitBackend, NativeBackend, RepoHandle};
-use mmcp_sync::{GroupHandleResolver, ManifestResponse, RemoteGroup, SyncClient, SyncEngine};
+use mmcp_sync::{
+    BoundRemote, GroupHandleResolver, ManifestResponse, PushScope, RemoteGroup, RemoteTransport,
+    SyncClient, SyncEngine,
+};
 use tempfile::TempDir;
 use tracing_subscriber::fmt::MakeWriter;
 use uuid::Uuid;
@@ -125,6 +128,20 @@ impl mmcp_sync::ScopeIndex for OrderedResolver {
     }
 }
 
+/// Wrap a single `SyncClient` as the engine's sole bound remote:
+/// named `"primary"`, marked default, included in `PushScope::All`.
+/// Every test below drove a single-`SyncClient` engine before the
+/// multi-remote restructuring; this helper keeps that shape while
+/// adapting to `SyncEngine::new`'s new `Vec<BoundRemote>` signature.
+fn bound(client: SyncClient) -> Vec<BoundRemote> {
+    vec![BoundRemote {
+        name: "primary".to_string(),
+        default: true,
+        include_in_push_all: true,
+        transport: RemoteTransport::MmcpServer(client),
+    }]
+}
+
 /// Seeds tracing's process-global per-callsite interest cache as
 /// permanently "always interested", once per test-binary process.
 ///
@@ -177,15 +194,21 @@ async fn push_reports_each_in_scope_group_with_transport_status() {
     let (backend, resolver, group_uuid, _tmp) = seeded_backend().await;
 
     let client = SyncClient::new(server.uri()).expect("client");
-    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, client);
+    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, bound(client));
     let report = engine
-        .push(mmcp_sync::SyncFilter::All, &resolver, &resolver)
+        .push(
+            mmcp_sync::SyncFilter::All,
+            PushScope::Default,
+            &resolver,
+            &resolver,
+        )
         .await
         .expect("push ok");
 
-    assert_eq!(report.pushed.len(), 1);
-    assert_eq!(report.pushed[0].group_id, group_uuid);
-    assert!(!report.pushed[0].content_transferred);
+    assert_eq!(report.by_remote.len(), 1);
+    assert_eq!(report.by_remote[0].pushed.len(), 1);
+    assert_eq!(report.by_remote[0].pushed[0].group_id, group_uuid);
+    assert!(!report.by_remote[0].pushed[0].content_transferred);
 }
 
 /// A `GitError::Transport` collapses into `content_transferred: false`.
@@ -206,7 +229,7 @@ async fn push_transport_failure_logs_a_warning_instead_of_staying_silent() {
     let server = MockServer::start().await;
     let (backend, resolver, group_uuid, _tmp) = seeded_backend().await;
     let client = SyncClient::new(server.uri()).expect("client");
-    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, client);
+    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, bound(client));
 
     // `set_default`'s guard is thread-local, not closure-scoped, so
     // it stays alive across the `.await` below. `#[tokio::test]`
@@ -220,12 +243,17 @@ async fn push_transport_failure_logs_a_warning_instead_of_staying_silent() {
     // `Interest::never` verdict.
     let _guard = tracing::subscriber::set_default(subscriber);
     let report = engine
-        .push(mmcp_sync::SyncFilter::All, &resolver, &resolver)
+        .push(
+            mmcp_sync::SyncFilter::All,
+            PushScope::Default,
+            &resolver,
+            &resolver,
+        )
         .await
         .expect("push ok");
     drop(_guard);
 
-    assert!(!report.pushed[0].content_transferred);
+    assert!(!report.by_remote[0].pushed[0].content_transferred);
     assert!(
         captured.contains("push content-plane transport failed"),
         "the transport failure swallow must emit a warn-level log line"
@@ -253,18 +281,19 @@ async fn push_group_filter_restricts_to_matching_group() {
     resolver.insert(*other_id.as_uuid(), other_handle);
 
     let client = SyncClient::new(server.uri()).expect("client");
-    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, client);
+    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, bound(client));
     let report = engine
         .push(
             mmcp_sync::SyncFilter::Group(group_uuid),
+            PushScope::Default,
             &resolver,
             &resolver,
         )
         .await
         .expect("push ok");
 
-    assert_eq!(report.pushed.len(), 1);
-    assert_eq!(report.pushed[0].group_id, group_uuid);
+    assert_eq!(report.by_remote[0].pushed.len(), 1);
+    assert_eq!(report.by_remote[0].pushed[0].group_id, group_uuid);
 }
 
 #[tokio::test]
@@ -278,13 +307,18 @@ async fn push_unknown_group_is_a_silent_noop() {
 
     let ghost = Uuid::now_v7();
     let client = SyncClient::new(server.uri()).expect("client");
-    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, client);
+    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, bound(client));
     let report = engine
-        .push(mmcp_sync::SyncFilter::Group(ghost), &resolver, &resolver)
+        .push(
+            mmcp_sync::SyncFilter::Group(ghost),
+            PushScope::Default,
+            &resolver,
+            &resolver,
+        )
         .await
         .expect("push ok");
 
-    assert!(report.pushed.is_empty());
+    assert!(report.by_remote[0].pushed.is_empty());
 }
 
 #[tokio::test]
@@ -318,14 +352,15 @@ async fn fetch_reports_each_in_scope_group_and_lists_new_ones() {
         .await;
 
     let client = SyncClient::new(server.uri()).expect("client");
-    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, client);
+    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, bound(client));
     let report = engine
         .fetch(mmcp_sync::SyncFilter::All, &resolver, &resolver)
         .await
         .expect("fetch ok");
     assert_eq!(report.groups.len(), 1);
-    assert_eq!(report.groups[0].slug, "team-rust");
-    assert_eq!(report.groups[0].remote_head, "aaa");
+    assert_eq!(report.groups[0].slug.as_deref(), Some("team-rust"));
+    assert_eq!(report.groups[0].remote_head.as_deref(), Some("aaa"));
+    assert_eq!(report.groups[0].remote_name, "primary");
     assert_eq!(report.new_groups.len(), 1);
     assert_eq!(report.new_groups[0].slug, "team-python");
 }
@@ -359,7 +394,7 @@ async fn pull_reports_updated_and_new_groups() {
         .await;
 
     let client = SyncClient::new(server.uri()).expect("client");
-    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, client);
+    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, bound(client));
     let report = engine
         .pull(mmcp_sync::SyncFilter::All, &resolver, &resolver)
         .await
@@ -389,14 +424,14 @@ async fn sync_runs_pull_then_push() {
         .await;
 
     let client = SyncClient::new(server.uri()).expect("client");
-    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, client);
+    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, bound(client));
     let report = engine
         .sync(mmcp_sync::SyncFilter::All, &resolver, &resolver)
         .await
         .expect("sync ok");
     assert_eq!(report.pulled.updated.len(), 1);
-    assert_eq!(report.pushed.pushed.len(), 1);
-    assert_eq!(report.pushed.pushed[0].group_id, group_uuid);
+    assert_eq!(report.pushed.total_pushed(), 1);
+    assert_eq!(report.pushed.by_remote[0].pushed[0].group_id, group_uuid);
 }
 
 #[tokio::test]
@@ -441,34 +476,44 @@ async fn push_survives_an_earlier_groups_failure_and_attributes_it_correctly() {
     resolver.insert(*good_group_id.as_uuid(), good_handle);
 
     let client = SyncClient::new(server.uri()).expect("client");
-    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, client);
+    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, bound(client));
     let report = engine
-        .push(mmcp_sync::SyncFilter::All, &resolver, &resolver)
+        .push(
+            mmcp_sync::SyncFilter::All,
+            PushScope::Default,
+            &resolver,
+            &resolver,
+        )
         .await
         .expect("push must still return Ok with partial success, not a bare top-level Err");
+    let outcome = &report.by_remote[0];
 
     assert_eq!(
-        report.pushed.len(),
+        outcome.pushed.len(),
         1,
         "the later, healthy group's push must still be recorded despite the earlier group's \
          failure: {:?}",
-        report.pushed
+        outcome.pushed
     );
-    assert_eq!(report.pushed[0].group_id, *good_group_id.as_uuid());
+    assert_eq!(outcome.pushed[0].group_id, *good_group_id.as_uuid());
 
     assert_eq!(
-        report.failed.len(),
+        outcome.failed.len(),
         1,
         "the earlier group's failure must be attributed, not silently dropped: {:?}",
-        report.failed.iter().map(|f| f.group_id).collect::<Vec<_>>()
+        outcome
+            .failed
+            .iter()
+            .map(|f| f.group_id)
+            .collect::<Vec<_>>()
     );
-    assert_eq!(report.failed[0].group_id, broken_group_id);
+    assert_eq!(outcome.failed[0].group_id, broken_group_id);
     assert!(
         matches!(
-            report.failed[0].error,
+            outcome.failed[0].error,
             mmcp_sync::SyncError::Git(mmcp_git::GitError::RepoNotFound(_))
         ),
         "expected a RepoNotFound git error for the deleted repo, got {:?}",
-        report.failed[0].error
+        outcome.failed[0].error
     );
 }

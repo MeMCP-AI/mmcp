@@ -29,21 +29,27 @@
 //! [`concurrency`] holds the [`run_bounded`] helper (exported at the
 //! crate root so `mmcp-server` can reuse it instead of hand-rolling
 //! its own bounded fan-out), [`scope`] holds scope-filter matching,
-//! [`resolver`] holds the local-handle-lookup trait, [`sync_engine`]
-//! holds [`SyncEngine`] itself, its push/pull/fetch orchestration,
-//! and the `partition_sync_outcomes` helper the three verbs share,
-//! and [`reports`] holds the outcome types every verb returns.
+//! [`resolver`] holds the local-handle-lookup trait, [`remote`] holds
+//! [`BoundRemote`], [`RemoteTransport`], and [`PushScope`], the types
+//! describing one engine-bound remote and how `push` selects among
+//! several, [`sync_engine`] holds [`SyncEngine`] itself, its
+//! push/pull/fetch orchestration, and the `partition_sync_outcomes`
+//! helper the three verbs share, and [`reports`] holds the outcome
+//! types every verb returns.
 
 mod concurrency;
 mod defaults;
+mod remote;
 mod reports;
 mod resolver;
 mod scope;
 mod sync_engine;
 
 pub use concurrency::run_bounded;
+pub use remote::{BoundRemote, PushScope, RemoteTransport};
 pub use reports::{
-    FetchReport, FetchedGroup, GroupSyncFailure, PullReport, PushReport, PushedGroup, SyncReport,
+    FetchReport, FetchedGroup, GroupSyncFailure, PullReport, PushReport, PushedGroup,
+    RemotePushOutcome, SyncReport,
 };
 pub use resolver::GroupHandleResolver;
 pub use scope::NoScopeIndex;

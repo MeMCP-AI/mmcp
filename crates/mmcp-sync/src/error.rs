@@ -63,6 +63,24 @@ pub enum SyncError {
     /// rejection reason verbatim without paraphrasing.
     #[error("push diverged: group {group} rejected by remote: {stderr}")]
     PushDiverged { group: Uuid, stderr: String },
+
+    /// [`crate::PushScope::Default`] resolved against an engine with
+    /// zero bound remotes, or more than one with none marked
+    /// `default: true`. The mmcp-store resolver that builds an
+    /// engine's remote list guarantees a well-formed default before
+    /// construction, so this normally only fires against a
+    /// hand-built `SyncEngine` (tests, or a future caller that skips
+    /// the resolver).
+    #[error("no default sync remote is configured")]
+    NoDefaultRemote,
+
+    /// [`crate::PushScope::Named`] named a remote the engine has no
+    /// [`crate::BoundRemote`] for.
+    #[error("no sync remote named {name}")]
+    UnknownRemote {
+        /// The name the caller asked for.
+        name: String,
+    },
 }
 
 impl SyncError {

@@ -3,6 +3,11 @@
 use super::GroupSyncFailure;
 
 /// Report of a completed `pull` call.
+///
+/// Stays flat, no per-remote dimension: `pull` only ever fast-
+/// forwards local `main` from the engine's single default remote
+/// (see [`crate::SyncEngine::pull`]'s doc comment), so every entry
+/// here already belongs to that one remote implicitly.
 #[derive(Debug)]
 pub struct PullReport {
     /// Groups whose local head was advanced (or is already in sync).

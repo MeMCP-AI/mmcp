@@ -15,5 +15,5 @@ mod sync;
 pub use fetch::{FetchReport, FetchedGroup};
 pub use group_sync_failure::GroupSyncFailure;
 pub use pull::PullReport;
-pub use push::{PushReport, PushedGroup};
+pub use push::{PushReport, PushedGroup, RemotePushOutcome};
 pub use sync::SyncReport;
