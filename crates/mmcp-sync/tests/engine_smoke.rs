@@ -525,6 +525,68 @@ async fn fetch_aggregates_two_remotes_dedupes_new_groups_and_attributes_each_gro
 }
 
 #[tokio::test]
+async fn fetch_survives_one_remotes_unreachable_manifest_and_still_aggregates_the_other() {
+    // `mirror_server` never mounts `/sync/manifest`, so wiremock's
+    // default unmatched-route response (404) drives `get_manifest`
+    // into `SyncError::Remote`. Before this fix a single `?` on that
+    // call would have propagated the error and aborted the whole
+    // `fetch`, discarding `primary`'s already-successful manifest
+    // read too; this pins that `primary`'s groups still land in the
+    // report and `mirror`'s failure surfaces under
+    // `manifest_failures` instead.
+    let primary_server = MockServer::start().await;
+    let mirror_server = MockServer::start().await;
+    let (backend, resolver, group_uuid, _tmp) = seeded_backend().await;
+
+    let manifest = ManifestResponse {
+        groups: vec![RemoteGroup {
+            group_id: group_uuid,
+            slug: "team-rust".to_string(),
+            head_commit: "aaa".to_string(),
+        }],
+    };
+    Mock::given(method("GET"))
+        .and(path("/sync/manifest"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&manifest))
+        .mount(&primary_server)
+        .await;
+
+    let primary = SyncClient::new(primary_server.uri()).expect("primary client");
+    let mirror = SyncClient::new(mirror_server.uri()).expect("mirror client");
+    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, bound_two(primary, mirror));
+
+    let report = engine
+        .fetch(mmcp_sync::SyncFilter::All, &resolver, &resolver)
+        .await
+        .expect("fetch must still return Ok despite one remote's unreachable manifest");
+
+    assert_eq!(
+        report.groups.len(),
+        1,
+        "the reachable remote's group must still be reported: {:?}",
+        report.groups
+    );
+    assert_eq!(report.groups[0].remote_name, "primary");
+    assert_eq!(report.groups[0].group_id, group_uuid);
+
+    assert_eq!(
+        report.manifest_failures.len(),
+        1,
+        "the unreachable remote's manifest failure must surface, not vanish: {:?}",
+        report.manifest_failures
+    );
+    assert_eq!(report.manifest_failures[0].remote_name, "mirror");
+    assert!(
+        matches!(
+            report.manifest_failures[0].error,
+            mmcp_sync::SyncError::Remote { .. }
+        ),
+        "expected a Remote error for the unmounted route, got {:?}",
+        report.manifest_failures[0].error
+    );
+}
+
+#[tokio::test]
 async fn pull_fast_forwards_only_from_the_default_remotes_fetched_entries() {
     // Both remotes advertise the same known group; `fetch` (called
     // internally by `pull`) reports it once per remote, but `pull`

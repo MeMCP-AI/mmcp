@@ -10,10 +10,12 @@ mod fetch;
 mod group_sync_failure;
 mod pull;
 mod push;
+mod remote_manifest_failure;
 mod sync;
 
 pub use fetch::{FetchReport, FetchedGroup};
 pub use group_sync_failure::GroupSyncFailure;
 pub use pull::PullReport;
 pub use push::{PushReport, PushedGroup, RemotePushOutcome};
+pub use remote_manifest_failure::RemoteManifestFailure;
 pub use sync::SyncReport;

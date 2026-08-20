@@ -44,7 +44,7 @@ use crate::commands::tool_metadata_cli::{
 };
 use crate::notes::{
     dangling_ref_notes_for, finding_to_note, findings_to_notes, id_validation_to_notes,
-    malformed_frontmatter_notes, sync_group_failure_notes,
+    malformed_frontmatter_notes, sync_group_failure_notes, sync_manifest_failure_notes,
 };
 use crate::state::{WatcherHandle, spawn_watcher};
 use mmcp_store::config::{PROJECT_MANIFEST, find_project_root, load as load_project_config};
@@ -4145,7 +4145,11 @@ impl McpServer {
             .fetch(filter, &resolver, &resolver)
             .await
             .map_err(map_sync_error_to_mcp)?;
-        let notes = sync_group_failure_notes(&report.failed, "fetch", &label);
+        let mut notes = sync_group_failure_notes(&report.failed, "fetch", &label);
+        notes.extend(sync_manifest_failure_notes(
+            &report.manifest_failures,
+            "fetch",
+        ));
         Ok(ok_json_with_notes(
             json!({
                 "groups": report.groups.iter().map(|g| json!({
@@ -4157,6 +4161,7 @@ impl McpServer {
                 })).collect::<Vec<_>>(),
                 "new_groups": report.new_groups,
                 "failed": sync_failures_to_json(&report.failed),
+                "manifest_failures": sync_manifest_failures_to_json(&report.manifest_failures),
                 "project_uuid": cfg.project_uuid.to_string(),
                 "remotes": label,
             }),
@@ -4195,12 +4200,17 @@ impl McpServer {
         let updated_group_ids: Vec<Uuid> = report.updated.iter().map(|g| g.group_id).collect();
         mmcp_store::cache::notify_pull(&self.state.backend, &self.state.groups, &updated_group_ids)
             .await;
-        let notes = sync_group_failure_notes(&report.failed, "pull", &label);
+        let mut notes = sync_group_failure_notes(&report.failed, "pull", &label);
+        notes.extend(sync_manifest_failure_notes(
+            &report.manifest_failures,
+            "pull",
+        ));
         Ok(ok_json_with_notes(
             json!({
                 "updated": report.updated,
                 "new_groups": report.new_groups,
                 "failed": sync_failures_to_json(&report.failed),
+                "manifest_failures": sync_manifest_failures_to_json(&report.manifest_failures),
                 "project_uuid": cfg.project_uuid.to_string(),
                 "remotes": label,
             }),
@@ -4313,6 +4323,10 @@ impl McpServer {
         mmcp_store::cache::notify_pull(&self.state.backend, &self.state.groups, &updated_group_ids)
             .await;
         let mut notes = sync_group_failure_notes(&report.pulled.failed, "pull", &label);
+        notes.extend(sync_manifest_failure_notes(
+            &report.pulled.manifest_failures,
+            "pull",
+        ));
         for outcome in &report.pushed.by_remote {
             notes.extend(sync_group_failure_notes(
                 &outcome.failed,
@@ -4340,6 +4354,7 @@ impl McpServer {
                     "updated": report.pulled.updated,
                     "new_groups": report.pulled.new_groups,
                     "failed": sync_failures_to_json(&report.pulled.failed),
+                    "manifest_failures": sync_manifest_failures_to_json(&report.pulled.manifest_failures),
                 },
                 "pushed": {
                     "pushed": pushed_json,
@@ -6032,6 +6047,27 @@ fn sync_failures_to_json(failed: &[mmcp_sync::GroupSyncFailure]) -> Vec<serde_js
             if payload.get("group").is_none() {
                 payload["group"] = json!(f.group_id.to_string());
             }
+            if payload.get("message").is_none() {
+                payload["message"] = json!(f.error.to_string());
+            }
+            payload
+        })
+        .collect()
+}
+
+/// Serialize a `fetch` / `pull` report's `manifest_failures` list
+/// into the wire shape. Twin of [`sync_failures_to_json`] for the
+/// remote-keyed (not group-keyed) failure shape: each entry carries
+/// the failing `remote` name instead of a `group` id, since a
+/// manifest poll never got far enough to discover any group.
+fn sync_manifest_failures_to_json(
+    failed: &[mmcp_sync::RemoteManifestFailure],
+) -> Vec<serde_json::Value> {
+    failed
+        .iter()
+        .map(|f| {
+            let mut payload = sync_error_payload(&f.error);
+            payload["remote"] = json!(f.remote_name);
             if payload.get("message").is_none() {
                 payload["message"] = json!(f.error.to_string());
             }

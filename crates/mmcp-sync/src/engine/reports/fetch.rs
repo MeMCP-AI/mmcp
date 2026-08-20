@@ -2,7 +2,7 @@
 
 use uuid::Uuid;
 
-use super::GroupSyncFailure;
+use super::{GroupSyncFailure, RemoteManifestFailure};
 
 /// Report of a completed `fetch` call.
 ///
@@ -28,12 +28,22 @@ pub struct FetchReport {
     /// `group_id` across every polled remote's manifest (a group
     /// advertised by two remotes appears once). Reported so
     /// operators can decide whether to adopt them; the engine never
-    /// auto-clones.
+    /// auto-clones. Only ever populated from a remote whose manifest
+    /// poll itself succeeded; a remote in `manifest_failures` below
+    /// contributes nothing here.
     pub new_groups: Vec<crate::client::RemoteGroup>,
     /// Groups whose fetch attempt itself errored. See
     /// [`GroupSyncFailure`] and [`super::PushReport`]'s doc comment
     /// for the same "every group is still attempted" guarantee.
     pub failed: Vec<GroupSyncFailure>,
+    /// `mmcp-server`-transport remotes whose `/sync/manifest` poll
+    /// itself errored, before any group-level candidate could even be
+    /// built for that remote. One unreachable remote no longer
+    /// aborts the whole `fetch`: every OTHER remote's manifest is
+    /// still polled and its groups still land in `groups` /
+    /// `new_groups` above. See [`RemoteManifestFailure`] and
+    /// [`crate::SyncEngine::fetch`]'s doc comment.
+    pub manifest_failures: Vec<RemoteManifestFailure>,
 }
 
 /// One fetched group's before/after snapshot, attributed to the

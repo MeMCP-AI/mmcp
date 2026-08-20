@@ -13,7 +13,7 @@ use super::defaults::MAX_CONCURRENT_GROUP_TRANSFERS;
 use super::remote::{BoundRemote, PushScope, RemoteTransport};
 use super::reports::{
     FetchReport, FetchedGroup, GroupSyncFailure, PullReport, PushReport, PushedGroup,
-    RemotePushOutcome, SyncReport,
+    RemoteManifestFailure, RemotePushOutcome, SyncReport,
 };
 use super::resolver::GroupHandleResolver;
 use super::scope::group_matches;
@@ -304,7 +304,13 @@ impl SyncEngine {
     /// to its own group. Local `main` is left unchanged for that
     /// group; every other in-flight group still completes normally.
     ///
-    /// `filter` semantics match `fetch`.
+    /// `filter` semantics match `fetch`. A remote whose manifest poll
+    /// itself failed during the `fetch` phase never aborts `pull`
+    /// either: its entry carries forward unchanged into the returned
+    /// report's `manifest_failures` (see [`RemoteManifestFailure`]
+    /// and `fetch`'s own doc comment), while every other remote's
+    /// fetched groups still fast-forward normally when they belong to
+    /// the default remote.
     pub async fn pull(
         &self,
         filter: SyncFilter,
@@ -351,6 +357,7 @@ impl SyncEngine {
             updated,
             new_groups: fetched.new_groups,
             failed,
+            manifest_failures: fetched.manifest_failures,
         })
     }
 
@@ -454,22 +461,42 @@ impl SyncEngine {
     /// remote has no manifest to poll; its only candidate is ever its
     /// own bound `group_id`, fetched when that group already
     /// resolves locally and matches `filter`.
+    ///
+    /// One remote's manifest poll failing never aborts the others: an
+    /// unreachable remote's error lands in the returned report's
+    /// `manifest_failures` (see [`RemoteManifestFailure`]) instead of
+    /// propagating via `?`, and every OTHER `mmcp-server` remote is
+    /// still polled and still contributes its groups normally. Two
+    /// bound remotes, one down, means the caller still gets the
+    /// reachable one's full result rather than an all-or-nothing
+    /// `Err` that discards it too - a single `?` here used to mirror
+    /// the pre-multi-remote engine's single-remote behaviour, but
+    /// that equivalence only held when there was exactly one remote
+    /// to poll.
     pub async fn fetch(
         &self,
         filter: SyncFilter,
         group_handles: &dyn GroupHandleResolver,
         scope_index: &dyn ScopeIndex,
     ) -> Result<FetchReport, SyncError> {
-        // Poll every mmcp-server remote's manifest. A failure here
-        // aborts the whole fetch (mirrors the single-remote engine's
-        // prior behaviour): a manifest read is a quick control-plane
-        // call, and letting one remote's outage silently narrow which
-        // groups get discovered is worse than surfacing it loudly.
+        // Poll every mmcp-server remote's manifest, collecting each
+        // one's own outcome rather than propagating the first
+        // failure: a manifest read is a quick control-plane call, but
+        // with several bound remotes an unreachable one must not
+        // narrow which groups the OTHER remotes still get to
+        // advertise. See `RemoteManifestFailure` and this method's
+        // own doc comment.
         let mut manifests: Vec<(&BoundRemote, crate::client::ManifestResponse)> = Vec::new();
+        let mut manifest_failures: Vec<RemoteManifestFailure> = Vec::new();
         for remote in &self.remotes {
             if let RemoteTransport::MmcpServer(client) = &remote.transport {
-                let manifest = client.get_manifest().await?;
-                manifests.push((remote, manifest));
+                match client.get_manifest().await {
+                    Ok(manifest) => manifests.push((remote, manifest)),
+                    Err(error) => manifest_failures.push(RemoteManifestFailure {
+                        remote_name: remote.name.clone(),
+                        error,
+                    }),
+                }
             }
         }
 
@@ -537,6 +564,7 @@ impl SyncEngine {
             groups,
             new_groups,
             failed,
+            manifest_failures,
         })
     }
 

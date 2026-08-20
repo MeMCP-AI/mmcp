@@ -27,7 +27,10 @@ use mmcp_store::sync::build_engine;
 use mmcp_store::{EffectiveRemotes, resolve_effective_remotes};
 use mmcp_sync::{PushScope, SyncError, SyncFilter};
 
-use crate::notes::{render_notes_tail, sync_group_failure_notes, sync_push_partial_failure_notes};
+use crate::notes::{
+    render_notes_tail, sync_group_failure_notes, sync_manifest_failure_notes,
+    sync_push_partial_failure_notes,
+};
 
 /// CLI-side mirror of `GroupScope` that clap can parse via
 /// `ValueEnum`. Kept as a separate wire-form enum so `mmcp-core`
@@ -203,27 +206,40 @@ pub async fn run_fetch(selector: SyncSelector) -> Result<()> {
         groups = report.groups.len(),
         new_groups = report.new_groups.len(),
         failed = report.failed.len(),
+        manifest_failures = report.manifest_failures.len(),
         "fetch completed"
     );
     println!(
-        "fetch from {} completed: {} groups tracked, {} new groups advertised, {} groups failed",
+        "fetch from {} completed: {} groups tracked, {} new groups advertised, {} groups \
+         failed, {} remote manifests unreachable",
         label,
         report.groups.len(),
         report.new_groups.len(),
-        report.failed.len()
+        report.failed.len(),
+        report.manifest_failures.len()
     );
-    render_notes_tail(&sync_group_failure_notes(&report.failed, "fetch", &label));
+    let mut notes = sync_group_failure_notes(&report.failed, "fetch", &label);
+    notes.extend(sync_manifest_failure_notes(
+        &report.manifest_failures,
+        "fetch",
+    ));
+    render_notes_tail(&notes);
     // A3 partial-success fix: an earlier-in-order group's failure no
     // longer discards a later group's success (see
     // `mmcp_sync::engine::GroupSyncFailure`'s doc comment), but the
     // command must still exit non-zero when any group failed, or a
-    // real failure would silently read as success.
-    if !report.failed.is_empty() {
+    // real failure would silently read as success. An unreachable
+    // remote's manifest failure is the same kind of partial failure,
+    // now surfaced instead of aborting the whole call: still a
+    // failure the exit code must reflect.
+    if !report.failed.is_empty() || !report.manifest_failures.is_empty() {
         bail!(
-            "fetch from {} failed for {} of {} groups; see notes above for per-group errors",
+            "fetch from {} failed for {} of {} groups, {} remote manifest(s) unreachable; see \
+             notes above for per-group and per-remote errors",
             label,
             report.failed.len(),
-            report.failed.len() + report.groups.len()
+            report.failed.len() + report.groups.len(),
+            report.manifest_failures.len()
         );
     }
     Ok(())
@@ -278,22 +294,32 @@ pub async fn run_pull(selector: SyncSelector) -> Result<()> {
         updated = report.updated.len(),
         new_groups = report.new_groups.len(),
         failed = report.failed.len(),
+        manifest_failures = report.manifest_failures.len(),
         "pull completed"
     );
     println!(
-        "pull from {} completed: {} groups updated, {} new groups, {} groups failed",
+        "pull from {} completed: {} groups updated, {} new groups, {} groups failed, {} remote \
+         manifests unreachable",
         label,
         report.updated.len(),
         report.new_groups.len(),
-        report.failed.len()
+        report.failed.len(),
+        report.manifest_failures.len()
     );
-    render_notes_tail(&sync_group_failure_notes(&report.failed, "pull", &label));
-    if !report.failed.is_empty() {
+    let mut notes = sync_group_failure_notes(&report.failed, "pull", &label);
+    notes.extend(sync_manifest_failure_notes(
+        &report.manifest_failures,
+        "pull",
+    ));
+    render_notes_tail(&notes);
+    if !report.failed.is_empty() || !report.manifest_failures.is_empty() {
         bail!(
-            "pull from {} failed for {} of {} groups; see notes above for per-group errors",
+            "pull from {} failed for {} of {} groups, {} remote manifest(s) unreachable; see \
+             notes above for per-group and per-remote errors",
             label,
             report.failed.len(),
-            report.failed.len() + report.updated.len()
+            report.failed.len() + report.updated.len(),
+            report.manifest_failures.len()
         );
     }
     Ok(())
@@ -368,28 +394,37 @@ pub async fn run_sync(selector: SyncSelector, remote_scope: RemoteScopeArgs) -> 
         .await
         .map_err(to_anyhow)?;
     let report = mmcp_sync::SyncReport { pulled, pushed };
-    let total_failed = report.pulled.failed.len() + report.pushed.total_failed();
+    let total_failed = report.pulled.failed.len()
+        + report.pulled.manifest_failures.len()
+        + report.pushed.total_failed();
     tracing::info!(
         remotes = %label,
         updated = report.pulled.updated.len(),
         new_groups = report.pulled.new_groups.len(),
         pushed = report.pushed.total_pushed(),
+        manifest_failures = report.pulled.manifest_failures.len(),
         failed = total_failed,
         "sync completed"
     );
     println!(
-        "sync against {} completed: pulled {} groups ({} new), pushed {} groups, {} groups failed",
+        "sync against {} completed: pulled {} groups ({} new), pushed {} groups, {} groups \
+         failed, {} remote manifests unreachable",
         label,
         report.pulled.updated.len(),
         report.pulled.new_groups.len(),
         report.pushed.total_pushed(),
-        total_failed
+        total_failed,
+        report.pulled.manifest_failures.len()
     );
     let mut notes = sync_push_partial_failure_notes(&report.pushed);
     notes.extend(sync_group_failure_notes(
         &report.pulled.failed,
         "pull",
         &label,
+    ));
+    notes.extend(sync_manifest_failure_notes(
+        &report.pulled.manifest_failures,
+        "pull",
     ));
     for (remote_name, failures) in report
         .pushed

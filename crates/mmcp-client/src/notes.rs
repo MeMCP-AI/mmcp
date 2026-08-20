@@ -22,7 +22,7 @@ use mmcp_proto::{Note, NoteLevel};
 use mmcp_store::diagnostics::Finding;
 use mmcp_store::groups::GroupEntry;
 use mmcp_store::memory::list_all_memory_files;
-use mmcp_sync::{GroupSyncFailure, PushReport};
+use mmcp_sync::{GroupSyncFailure, PushReport, RemoteManifestFailure};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -189,6 +189,34 @@ pub fn sync_group_failure_notes(
                 "group": f.group_id.to_string(),
                 "stage": stage,
                 "server_url": server_url,
+            }))
+        })
+        .collect()
+}
+
+/// Turn a `fetch` / `pull` report's `manifest_failures` list into one
+/// `sync_manifest_failed` note per unreachable remote.
+///
+/// Distinct from [`sync_group_failure_notes`]: a manifest failure has
+/// no group id (the poll never got far enough to discover one), so it
+/// gets its own note code and context shape (`remote` instead of
+/// `group`) rather than forcing a placeholder group id through the
+/// existing helper.
+#[must_use]
+pub fn sync_manifest_failure_notes(failed: &[RemoteManifestFailure], stage: &str) -> Vec<Note> {
+    failed
+        .iter()
+        .map(|f| {
+            Note::error(
+                "sync_manifest_failed",
+                format!(
+                    "{stage} could not read remote '{}' manifest: {}",
+                    f.remote_name, f.error
+                ),
+            )
+            .with_context(json!({
+                "remote": f.remote_name,
+                "stage": stage,
             }))
         })
         .collect()

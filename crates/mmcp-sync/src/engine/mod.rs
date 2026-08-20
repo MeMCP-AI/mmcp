@@ -49,7 +49,7 @@ pub use concurrency::run_bounded;
 pub use remote::{BoundRemote, PushScope, RemoteTransport};
 pub use reports::{
     FetchReport, FetchedGroup, GroupSyncFailure, PullReport, PushReport, PushedGroup,
-    RemotePushOutcome, SyncReport,
+    RemoteManifestFailure, RemotePushOutcome, SyncReport,
 };
 pub use resolver::GroupHandleResolver;
 pub use scope::NoScopeIndex;

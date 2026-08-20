@@ -1,6 +1,6 @@
 //! [`PullReport`].
 
-use super::GroupSyncFailure;
+use super::{GroupSyncFailure, RemoteManifestFailure};
 
 /// Report of a completed `pull` call.
 ///
@@ -20,4 +20,12 @@ pub struct PullReport {
     /// [`super::PushReport::failed`]'s doc comment for the same
     /// "every group is still attempted" guarantee.
     pub failed: Vec<GroupSyncFailure>,
+    /// Remotes whose manifest poll itself errored during the `fetch`
+    /// phase `pull` delegates to, carried forward unchanged: `pull`'s
+    /// own fast-forward phase never produces a new one. Kept as its
+    /// own field rather than folded into `failed` above, matching
+    /// [`super::FetchReport::manifest_failures`]'s same shape, since
+    /// a manifest failure has no group id to key a [`GroupSyncFailure`]
+    /// on. See [`RemoteManifestFailure`].
+    pub manifest_failures: Vec<RemoteManifestFailure>,
 }
