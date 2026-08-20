@@ -96,6 +96,26 @@ impl EffectiveRemotes {
     pub fn default_remote(&self) -> Option<&ResolvedRemote> {
         self.default_index.map(|i| &self.remotes[i])
     }
+
+    /// Short human-readable label for this effective remote set: the
+    /// sole remote's name, `"N remote(s), default '<name>'"` for
+    /// several, or `"(no remotes configured)"` for an empty set. The
+    /// single owning definition shared by every consumer that shows a
+    /// remote-set summary (`mmcp-client`'s CLI log lines and MCP
+    /// tool responses, the GUI's status bar) instead of each
+    /// reimplementing the same formatting.
+    #[must_use]
+    pub fn summary_label(&self) -> String {
+        match self.default_remote() {
+            Some(default) if self.remotes.len() == 1 => default.name().to_string(),
+            Some(default) => format!(
+                "{} remote(s), default '{}'",
+                self.remotes.len(),
+                default.name()
+            ),
+            None => "(no remotes configured)".to_string(),
+        }
+    }
 }
 
 /// Resolve the effective remote set for a sync operation, merging
@@ -683,5 +703,48 @@ mod tests {
             err,
             StoreError::InvalidRemoteName { name } if name == "user_legacy"
         ));
+    }
+
+    fn resolved(remote: Remote, level: RemoteLevel) -> ResolvedRemote {
+        ResolvedRemote {
+            remote,
+            level,
+            direct_git_group: None,
+        }
+    }
+
+    /// Single owning definition, shared by `mmcp-client`'s CLI log
+    /// lines / MCP tool responses and the GUI's status bar. A single
+    /// configured remote is named directly, no count prefix.
+    #[test]
+    fn summary_label_names_the_sole_remote_when_only_one_is_configured() {
+        let effective = EffectiveRemotes {
+            remotes: vec![resolved(mmcp_server("primary", false), RemoteLevel::User)],
+            default_index: Some(0),
+        };
+        assert_eq!(effective.summary_label(), "primary");
+    }
+
+    /// A multi-remote effective set formats as a count plus the
+    /// resolved default's name, not a collapsed single string.
+    #[test]
+    fn summary_label_summarises_a_multi_remote_set_with_its_default() {
+        let effective = EffectiveRemotes {
+            remotes: vec![
+                resolved(mmcp_server("u1", false), RemoteLevel::User),
+                resolved(mmcp_server("p1", true), RemoteLevel::Project),
+            ],
+            default_index: Some(1),
+        };
+        assert_eq!(effective.summary_label(), "2 remote(s), default 'p1'");
+    }
+
+    #[test]
+    fn summary_label_reports_no_remotes_configured_on_an_empty_set() {
+        let effective = EffectiveRemotes {
+            remotes: vec![],
+            default_index: None,
+        };
+        assert_eq!(effective.summary_label(), "(no remotes configured)");
     }
 }

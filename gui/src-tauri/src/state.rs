@@ -29,13 +29,12 @@ use crate::commands::sync::MIRROR_CHANGED_EVENT;
 use crate::error::{GuiError, GuiResult};
 
 /// Handle to a live sync engine plus the resolved remote-set summary
-/// the frontend shows instead of the old single `server_url`.
+/// the frontend shows in the status bar.
 pub struct SyncBundle {
     pub engine: SyncEngine,
     pub resolver: IndexResolver,
-    /// Human-readable label for the effective remote set: the sole
-    /// remote's name, or `"N remote(s), default '<name>'"`. See
-    /// [`remotes_label`].
+    /// Human-readable label for the effective remote set. See
+    /// [`EffectiveRemotes::summary_label`].
     pub remotes_summary: String,
     /// Base URL of the default remote when it is an `mmcp-server`
     /// transport; feeds the reachability probe. `None` when the
@@ -247,7 +246,7 @@ async fn build_sync(
     let Some(effective) = load_effective_remotes(home, reference_point)? else {
         return Ok(None);
     };
-    let remotes_summary = remotes_label(&effective);
+    let remotes_summary = effective.summary_label();
     let probe_url = default_probe_url(&effective);
     let (engine, resolver) = build_engine(Arc::clone(backend), index.clone(), &effective)
         .await
@@ -258,24 +257,6 @@ async fn build_sync(
         remotes_summary,
         probe_url,
     }))
-}
-
-/// Short human-readable label for a resolved remote set, shown by the
-/// status bar in place of the old single `server_url`. Own copy of
-/// `mmcp_client::commands::sync::remotes_label`'s logic: that helper
-/// is `pub(crate)` to `mmcp-client`, and duplicating one small
-/// formatting function is cheaper than adding a cross-crate public
-/// export for a single display string.
-fn remotes_label(effective: &EffectiveRemotes) -> String {
-    match effective.default_remote() {
-        Some(default) if effective.remotes.len() == 1 => default.name().to_string(),
-        Some(default) => format!(
-            "{} remote(s), default '{}'",
-            effective.remotes.len(),
-            default.name()
-        ),
-        None => "(no remotes configured)".to_string(),
-    }
 }
 
 /// Base URL to feed the reachability probe: the default remote's URL
@@ -366,7 +347,7 @@ mod tests {
     /// own remote. Guards the exact dead-fallback bug FR-301
     /// documents (`UserConfig.sync` never consulted for real sync
     /// work) from recurring on the GUI's own load path.
-    /// The derived-field tests above (`remotes_label`,
+    /// The derived-field tests above (`summary_label`,
     /// `default_probe_url`) only cover formatting on an already-
     /// merged `EffectiveRemotes`, not the merge itself.
     #[tokio::test]
@@ -417,20 +398,25 @@ mod tests {
         );
     }
 
+    /// `SyncBundle::remotes_summary` is built from
+    /// `EffectiveRemotes::summary_label` (shared with `mmcp-client`,
+    /// see `mmcp-store`'s own tests for the formatting rules
+    /// themselves); this just proves `build_sync`'s wiring reaches
+    /// the shared function rather than a local reimplementation.
     #[test]
-    fn remotes_label_names_the_sole_remote_when_only_one_is_configured() {
+    fn summary_label_names_the_sole_remote_when_only_one_is_configured() {
         let effective = EffectiveRemotes {
             remotes: vec![mmcp_server_remote("primary", false, RemoteLevel::User)],
             default_index: Some(0),
         };
-        assert_eq!(remotes_label(&effective), "primary");
+        assert_eq!(effective.summary_label(), "primary");
     }
 
     /// A multi-remote effective set (the case FR-301 adds) must
     /// format as a count plus the resolved default's name, not
     /// collapse to a single legacy `server_url`-shaped string.
     #[test]
-    fn remotes_label_summarises_a_multi_remote_set_with_its_default() {
+    fn summary_label_summarises_a_multi_remote_set_with_its_default() {
         let effective = EffectiveRemotes {
             remotes: vec![
                 mmcp_server_remote("u1", false, RemoteLevel::User),
@@ -438,16 +424,16 @@ mod tests {
             ],
             default_index: Some(1),
         };
-        assert_eq!(remotes_label(&effective), "2 remote(s), default 'p1'");
+        assert_eq!(effective.summary_label(), "2 remote(s), default 'p1'");
     }
 
     #[test]
-    fn remotes_label_reports_no_remotes_configured_on_an_empty_set() {
+    fn summary_label_reports_no_remotes_configured_on_an_empty_set() {
         let effective = EffectiveRemotes {
             remotes: vec![],
             default_index: None,
         };
-        assert_eq!(remotes_label(&effective), "(no remotes configured)");
+        assert_eq!(effective.summary_label(), "(no remotes configured)");
     }
 
     /// `SyncBundle::probe_url` must read the default remote's URL

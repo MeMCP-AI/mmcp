@@ -470,10 +470,7 @@ impl SyncEngine {
     /// still polled and still contributes its groups normally. Two
     /// bound remotes, one down, means the caller still gets the
     /// reachable one's full result rather than an all-or-nothing
-    /// `Err` that discards it too - a single `?` here used to mirror
-    /// the pre-multi-remote engine's single-remote behaviour, but
-    /// that equivalence only held when there was exactly one remote
-    /// to poll.
+    /// `Err` that discards it too.
     pub async fn fetch(
         &self,
         filter: SyncFilter,

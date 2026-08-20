@@ -145,24 +145,6 @@ pub async fn resolve_sync_filter(
     );
 }
 
-/// Short human-readable label for a resolved remote set, used in
-/// place of the old single `server_url` in log lines and notes
-/// context. Wave 3 (`mmcp status` / `--all-remotes` display) owns a
-/// real remotes listing; this stays a terse summary. `pub(crate)` so
-/// the MCP `sync_*` tool handlers in `commands::serve` share the
-/// exact same label instead of drifting onto their own wording.
-pub(crate) fn remotes_label(effective: &EffectiveRemotes) -> String {
-    match effective.default_remote() {
-        Some(default) if effective.remotes.len() == 1 => default.name().to_string(),
-        Some(default) => format!(
-            "{} remote(s), default '{}'",
-            effective.remotes.len(),
-            default.name()
-        ),
-        None => "(no remotes configured)".to_string(),
-    }
-}
-
 /// Load the project + user config, resolve the effective remote set,
 /// and bail loudly when it is empty: every sync verb needs at least
 /// one remote to do anything.
@@ -191,7 +173,7 @@ pub async fn run_fetch(selector: SyncSelector) -> Result<()> {
     let root = find_project_root(&cwd)
         .context("no mmcp project found in current directory or any parent")?;
     let effective = load_effective_remotes(&root).await?;
-    let label = remotes_label(&effective);
+    let label = effective.summary_label();
 
     let mmcp_home = MmcpHome::discover()?;
     let (backend, group_index) = mmcp_home.init_backend().await?;
@@ -267,7 +249,7 @@ async fn prepare(
     let root = find_project_root(&cwd)
         .context("no mmcp project found in current directory or any parent")?;
     let effective = load_effective_remotes(&root).await?;
-    let label = remotes_label(&effective);
+    let label = effective.summary_label();
 
     let mmcp_home = MmcpHome::discover()?;
     let (backend, group_index) = mmcp_home.init_backend().await?;

@@ -4132,7 +4132,7 @@ impl McpServer {
         Parameters(args): Parameters<SyncToolArgs>,
     ) -> Result<CallToolResult, McpError> {
         let (cfg, effective) = self.require_sync_configured()?;
-        let label = crate::commands::sync::remotes_label(&effective);
+        let label = effective.summary_label();
         let filter = resolve_sync_filter(&args, &self.state.groups).await?;
         let (engine, resolver) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
@@ -4184,7 +4184,7 @@ impl McpServer {
         Parameters(args): Parameters<SyncToolArgs>,
     ) -> Result<CallToolResult, McpError> {
         let (cfg, effective) = self.require_sync_configured()?;
-        let label = crate::commands::sync::remotes_label(&effective);
+        let label = effective.summary_label();
         let filter = resolve_sync_filter(&args, &self.state.groups).await?;
         let (engine, resolver) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
@@ -4233,7 +4233,7 @@ impl McpServer {
         Parameters(args): Parameters<SyncToolArgs>,
     ) -> Result<CallToolResult, McpError> {
         let (cfg, effective) = self.require_sync_configured()?;
-        let label = crate::commands::sync::remotes_label(&effective);
+        let label = effective.summary_label();
         let filter = resolve_sync_filter(&args, &self.state.groups).await?;
         let (engine, resolver) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
@@ -4305,7 +4305,7 @@ impl McpServer {
         Parameters(args): Parameters<SyncToolArgs>,
     ) -> Result<CallToolResult, McpError> {
         let (cfg, effective) = self.require_sync_configured()?;
-        let label = crate::commands::sync::remotes_label(&effective);
+        let label = effective.summary_label();
         let filter = resolve_sync_filter(&args, &self.state.groups).await?;
         let (engine, resolver) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),

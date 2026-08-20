@@ -17,9 +17,9 @@ pub const MIRROR_CHANGED_EVENT: &str = "mirror:changed";
 pub struct SyncStatusDto {
     pub configured: bool,
     /// Human-readable label for the effective remote set; see
-    /// [`crate::state::SyncBundle::remotes_summary`]. Replaces the
-    /// old single `server_url` field now that a bundle can carry
-    /// several remotes.
+    /// [`crate::state::SyncBundle::remotes_summary`]. A bundle can
+    /// carry several remotes, so this summarises the whole effective
+    /// set rather than naming a single server.
     pub remotes_summary: Option<String>,
 }
 
