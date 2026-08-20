@@ -365,10 +365,10 @@ mod tests {
     /// config plus a real project `.mmcp.toml`, each declaring their
     /// own remote. Guards the exact dead-fallback bug FR-301
     /// documents (`UserConfig.sync` never consulted for real sync
-    /// work) from recurring on the GUI's own load path — the derived-
-    /// field tests above (`remotes_label`, `default_probe_url`) only
-    /// cover formatting on an already-merged `EffectiveRemotes`, not
-    /// the merge itself.
+    /// work) from recurring on the GUI's own load path.
+    /// The derived-field tests above (`remotes_label`,
+    /// `default_probe_url`) only cover formatting on an already-
+    /// merged `EffectiveRemotes`, not the merge itself.
     #[tokio::test]
     async fn load_effective_remotes_merges_user_and_project_configs_with_project_default_winning() {
         let home_tmp = tempfile::TempDir::new().expect("home tempdir");

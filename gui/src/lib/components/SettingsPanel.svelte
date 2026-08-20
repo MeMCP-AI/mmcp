@@ -536,7 +536,7 @@
               <div class="flex flex-col gap-2">
                 <label class="flex items-center gap-2 text-fg">
                   <input type="checkbox" bind:checked={draftProjectRemoteOnly} />
-                  use only this project's own remotes — do not inherit the user's
+                  use only this project's own remotes, do not inherit the user's
                 </label>
               </div>
 

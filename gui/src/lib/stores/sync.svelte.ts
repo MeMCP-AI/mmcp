@@ -17,7 +17,7 @@ function summarizeManifestFailures(report: PullReport): string {
 
 // A pull is a full success only when every group AND every remote's
 // manifest poll succeeded. Checking `failed` alone would silently
-// hide an unreachable remote — the exact no-silent-failure gap
+// hide an unreachable remote, exactly the no-silent-failure gap
 // `manifest_failures` exists to close.
 function pullFailed(report: PullReport): boolean {
   return report.failed.length > 0 || report.manifest_failures.length > 0;
@@ -77,7 +77,7 @@ class SyncStore {
         const summary = status.remotes_summary;
         const prev = this.remotesSummary();
         // Reset to idle when we were pristine, or when the
-        // workspace switch pointed at a different remote set —
+        // workspace switch pointed at a different remote set:
         // leaving the old `ok`/`err`/`syncing` phase up after a
         // switch would stamp the wrong summary on the status bar.
         if (
