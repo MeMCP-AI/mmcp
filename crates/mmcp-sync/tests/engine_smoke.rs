@@ -434,6 +434,181 @@ async fn sync_runs_pull_then_push() {
     assert_eq!(report.pushed.by_remote[0].pushed[0].group_id, group_uuid);
 }
 
+/// Wrap two `SyncClient`s as the engine's bound remotes: `"primary"`
+/// (default, included in `PushScope::All`) and `"mirror"` (not
+/// default, also included in `PushScope::All`). Exercises the
+/// multi-remote fan-out paths a single-`BoundRemote` engine (see
+/// [`bound`]) never reaches: `fetch`'s cross-manifest `new_groups`
+/// dedup, `pull`'s filter down to the default remote's fetched
+/// entries, and `PushScope::All` producing one `RemotePushOutcome`
+/// per remote.
+fn bound_two(primary: SyncClient, mirror: SyncClient) -> Vec<BoundRemote> {
+    vec![
+        BoundRemote {
+            name: "primary".to_string(),
+            default: true,
+            include_in_push_all: true,
+            transport: RemoteTransport::MmcpServer(primary),
+        },
+        BoundRemote {
+            name: "mirror".to_string(),
+            default: false,
+            include_in_push_all: true,
+            transport: RemoteTransport::MmcpServer(mirror),
+        },
+    ]
+}
+
+#[tokio::test]
+async fn fetch_aggregates_two_remotes_dedupes_new_groups_and_attributes_each_group_to_its_remote() {
+    // Both remotes advertise the SAME already-known group (so `fetch`
+    // must report it once per remote, each correctly attributed by
+    // `remote_name`) and the SAME unknown group (so `new_groups` must
+    // dedup it down to one entry instead of two).
+    let primary_server = MockServer::start().await;
+    let mirror_server = MockServer::start().await;
+    let (backend, resolver, group_uuid, _tmp) = seeded_backend().await;
+
+    let shared_new_group = Uuid::now_v7();
+    let manifest = ManifestResponse {
+        groups: vec![
+            RemoteGroup {
+                group_id: group_uuid,
+                slug: "team-rust".to_string(),
+                head_commit: "aaa".to_string(),
+            },
+            RemoteGroup {
+                group_id: shared_new_group,
+                slug: "team-unknown".to_string(),
+                head_commit: "ccc".to_string(),
+            },
+        ],
+    };
+    for server in [&primary_server, &mirror_server] {
+        Mock::given(method("GET"))
+            .and(path("/sync/manifest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&manifest))
+            .mount(server)
+            .await;
+    }
+
+    let primary = SyncClient::new(primary_server.uri()).expect("primary client");
+    let mirror = SyncClient::new(mirror_server.uri()).expect("mirror client");
+    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, bound_two(primary, mirror));
+
+    let report = engine
+        .fetch(mmcp_sync::SyncFilter::All, &resolver, &resolver)
+        .await
+        .expect("fetch ok");
+
+    assert_eq!(
+        report.groups.len(),
+        2,
+        "the known group must be reported once per remote that advertised it"
+    );
+    let remote_names: std::collections::HashSet<&str> = report
+        .groups
+        .iter()
+        .map(|g| g.remote_name.as_str())
+        .collect();
+    assert_eq!(
+        remote_names,
+        std::collections::HashSet::from(["primary", "mirror"])
+    );
+
+    assert_eq!(
+        report.new_groups.len(),
+        1,
+        "a group advertised by two remotes must dedup to one new_groups entry"
+    );
+    assert_eq!(report.new_groups[0].group_id, shared_new_group);
+}
+
+#[tokio::test]
+async fn pull_fast_forwards_only_from_the_default_remotes_fetched_entries() {
+    // Both remotes advertise the same known group; `fetch` (called
+    // internally by `pull`) reports it once per remote, but `pull`
+    // must only fast-forward from the DEFAULT remote's entry, never
+    // double-advancing or advancing from the non-default one.
+    let primary_server = MockServer::start().await;
+    let mirror_server = MockServer::start().await;
+    let (backend, resolver, group_uuid, _tmp) = seeded_backend().await;
+
+    let manifest = ManifestResponse {
+        groups: vec![RemoteGroup {
+            group_id: group_uuid,
+            slug: "team-rust".to_string(),
+            head_commit: "aaa".to_string(),
+        }],
+    };
+    for server in [&primary_server, &mirror_server] {
+        Mock::given(method("GET"))
+            .and(path("/sync/manifest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&manifest))
+            .mount(server)
+            .await;
+    }
+
+    let primary = SyncClient::new(primary_server.uri()).expect("primary client");
+    let mirror = SyncClient::new(mirror_server.uri()).expect("mirror client");
+    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, bound_two(primary, mirror));
+
+    let report = engine
+        .pull(mmcp_sync::SyncFilter::All, &resolver, &resolver)
+        .await
+        .expect("pull ok");
+
+    assert_eq!(
+        report.updated.len(),
+        1,
+        "pull must advance local main from the default remote's entry exactly once, never from \
+         the non-default remote's duplicate fetch of the same group: {:?}",
+        report.updated
+    );
+    assert_eq!(report.updated[0].group_id, group_uuid);
+}
+
+#[tokio::test]
+async fn push_scope_all_produces_one_outcome_per_included_remote() {
+    let primary_server = MockServer::start().await;
+    let mirror_server = MockServer::start().await;
+    let (backend, resolver, group_uuid, _tmp) = seeded_backend().await;
+
+    let primary = SyncClient::new(primary_server.uri()).expect("primary client");
+    let mirror = SyncClient::new(mirror_server.uri()).expect("mirror client");
+    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, bound_two(primary, mirror));
+
+    let report = engine
+        .push(
+            mmcp_sync::SyncFilter::All,
+            PushScope::All,
+            &resolver,
+            &resolver,
+        )
+        .await
+        .expect("push ok");
+
+    assert_eq!(
+        report.by_remote.len(),
+        2,
+        "PushScope::All must fan out to every included remote, not just the default one"
+    );
+    let names: std::collections::HashSet<&str> = report
+        .by_remote
+        .iter()
+        .map(|o| o.remote_name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        std::collections::HashSet::from(["primary", "mirror"])
+    );
+    for outcome in &report.by_remote {
+        assert_eq!(outcome.pushed.len(), 1);
+        assert_eq!(outcome.pushed[0].group_id, group_uuid);
+    }
+    assert_eq!(report.total_pushed(), 2);
+}
+
 #[tokio::test]
 async fn push_survives_an_earlier_groups_failure_and_attributes_it_correctly() {
     // `push`'s result-aggregation keeps every already-collected success after an
