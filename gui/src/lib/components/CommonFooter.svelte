@@ -18,26 +18,15 @@
   const phase = $derived(syncStore.phase);
   const reach = $derived(reachabilityStore.state);
 
-  const serverUrl = $derived.by(() => {
+  const remotesSummary = $derived.by(() => {
     switch (phase.t) {
       case 'idle':
       case 'syncing':
       case 'ok':
       case 'err':
-        return phase.serverUrl;
+        return phase.remotesSummary;
       default:
         return null;
-    }
-  });
-
-  // Host only — full URLs get long.
-  const hostish = $derived.by(() => {
-    if (!serverUrl) return null;
-    try {
-      const u = new URL(serverUrl);
-      return u.host || serverUrl;
-    } catch {
-      return serverUrl;
     }
   });
 
@@ -85,9 +74,9 @@
     {/if}
   </span>
 
-  {#if hostish}
-    <code class="truncate font-mono text-fg-muted" title={serverUrl ?? undefined}>
-      {hostish}
+  {#if remotesSummary}
+    <code class="truncate font-mono text-fg-muted" title={remotesSummary}>
+      {remotesSummary}
     </code>
   {/if}
 

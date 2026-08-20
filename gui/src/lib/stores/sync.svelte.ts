@@ -1,12 +1,54 @@
 import { syncPull, syncPush, syncStatus } from '$lib/api/sync';
 import { formatErr } from '$lib/utils/error';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { Finding } from '$lib/types';
+import type { Finding, PullReport, PushReport } from '$lib/types';
 
-// One-line summary of a report's `failed` list, e.g. "2 group(s) failed: <id>: <msg>; ...".
+// One-line summary of a `Finding[]` list, e.g. "2 group(s) failed: <id>: <msg>; ...".
 function summarizeFailures(failed: Finding[]): string {
   const details = failed.map((f) => `${f.group}: ${f.message}`).join('; ');
   return `${failed.length} group(s) failed: ${details}`;
+}
+
+// One-line summary of a pull report's `manifest_failures` list.
+function summarizeManifestFailures(report: PullReport): string {
+  const details = report.manifest_failures.map((f) => `${f.remote_name}: ${f.message}`).join('; ');
+  return `${report.manifest_failures.length} remote(s) unreachable: ${details}`;
+}
+
+// A pull is a full success only when every group AND every remote's
+// manifest poll succeeded. Checking `failed` alone would silently
+// hide an unreachable remote — the exact no-silent-failure gap
+// `manifest_failures` exists to close.
+function pullFailed(report: PullReport): boolean {
+  return report.failed.length > 0 || report.manifest_failures.length > 0;
+}
+
+function summarizePullFailure(report: PullReport): string {
+  const parts = [`${report.updated} updated`, `${report.new_groups} new`];
+  if (report.failed.length > 0) parts.push(summarizeFailures(report.failed));
+  if (report.manifest_failures.length > 0) parts.push(summarizeManifestFailures(report));
+  return parts.join(', ');
+}
+
+// A push is a full success only when every targeted remote's own
+// outcome carries no failed group. Scanning `by_remote` (not a
+// flattened total) is required, or a failure on a non-first remote
+// would silently read as success.
+function pushFailed(report: PushReport): boolean {
+  return report.by_remote.some((r) => r.failed.length > 0);
+}
+
+function totalPushed(report: PushReport): number {
+  return report.by_remote.reduce((sum, r) => sum + r.pushed, 0);
+}
+
+function summarizePushFailure(report: PushReport): string {
+  return report.by_remote
+    .map((r) => {
+      const suffix = r.failed.length > 0 ? `, ${summarizeFailures(r.failed)}` : '';
+      return `${r.remote_name}: ${r.pushed} pushed${suffix}`;
+    })
+    .join('; ');
 }
 
 // Broadcast by the Settings window after a successful
@@ -18,10 +60,10 @@ type Phase =
   | { t: 'unknown' }
   | { t: 'failed' }
   | { t: 'not_configured' }
-  | { t: 'idle'; serverUrl: string }
-  | { t: 'syncing'; op: 'pull' | 'push'; serverUrl: string }
-  | { t: 'ok'; op: 'pull' | 'push'; serverUrl: string; summary: string }
-  | { t: 'err'; op: 'pull' | 'push'; serverUrl: string; message: string };
+  | { t: 'idle'; remotesSummary: string }
+  | { t: 'syncing'; op: 'pull' | 'push'; remotesSummary: string }
+  | { t: 'ok'; op: 'pull' | 'push'; remotesSummary: string; summary: string }
+  | { t: 'err'; op: 'pull' | 'push'; remotesSummary: string; message: string };
 
 class SyncStore {
   phase = $state<Phase>({ t: 'unknown' });
@@ -31,20 +73,20 @@ class SyncStore {
     await this.attachListener();
     try {
       const status = await syncStatus();
-      if (status.configured && status.server_url) {
-        const url = status.server_url;
-        const prev = this.serverUrl();
+      if (status.configured && status.remotes_summary) {
+        const summary = status.remotes_summary;
+        const prev = this.remotesSummary();
         // Reset to idle when we were pristine, or when the
-        // workspace switch pointed at a different server — leaving
-        // the old `ok`/`err`/`syncing` phase up after a switch
-        // would stamp the wrong server URL on the status bar.
+        // workspace switch pointed at a different remote set —
+        // leaving the old `ok`/`err`/`syncing` phase up after a
+        // switch would stamp the wrong summary on the status bar.
         if (
           this.phase.t === 'unknown' ||
           this.phase.t === 'failed' ||
           this.phase.t === 'not_configured' ||
-          prev !== url
+          prev !== summary
         ) {
-          this.phase = { t: 'idle', serverUrl: url };
+          this.phase = { t: 'idle', remotesSummary: summary };
         }
       } else {
         this.phase = { t: 'not_configured' };
@@ -71,65 +113,65 @@ class SyncStore {
   }
 
   async pull() {
-    const url = this.serverUrl();
-    if (!url) return;
-    this.phase = { t: 'syncing', op: 'pull', serverUrl: url };
+    const summary = this.remotesSummary();
+    if (!summary) return;
+    this.phase = { t: 'syncing', op: 'pull', remotesSummary: summary };
     try {
       const report = await syncPull();
-      if (report.failed.length > 0) {
-        // A per-group failure must never read as full success; it reuses the `err` phase.
+      if (pullFailed(report)) {
+        // A per-group or per-remote failure must never read as full success.
         this.phase = {
           t: 'err',
           op: 'pull',
-          serverUrl: url,
-          message: `${report.updated} updated, ${report.new_groups} new, ${summarizeFailures(report.failed)}`
+          remotesSummary: summary,
+          message: summarizePullFailure(report)
         };
         return;
       }
       this.phase = {
         t: 'ok',
         op: 'pull',
-        serverUrl: url,
+        remotesSummary: summary,
         summary: `${report.updated} updated, ${report.new_groups} new`
       };
     } catch (err) {
       this.phase = {
         t: 'err',
         op: 'pull',
-        serverUrl: url,
+        remotesSummary: summary,
         message: formatErr(err)
       };
     }
   }
 
   async push() {
-    const url = this.serverUrl();
-    if (!url) return;
-    this.phase = { t: 'syncing', op: 'push', serverUrl: url };
+    const summary = this.remotesSummary();
+    if (!summary) return;
+    this.phase = { t: 'syncing', op: 'push', remotesSummary: summary };
     try {
       const report = await syncPush();
-      if (report.failed.length > 0) {
-        // See the matching comment in `pull()`: a per-group failure
+      if (pushFailed(report)) {
+        // See the matching comment in `pull()`: a per-remote failure
         // must never silently read as full success.
         this.phase = {
           t: 'err',
           op: 'push',
-          serverUrl: url,
-          message: `${report.pushed} group(s) pushed, ${summarizeFailures(report.failed)}`
+          remotesSummary: summary,
+          message: summarizePushFailure(report)
         };
         return;
       }
       this.phase = {
         t: 'ok',
         op: 'push',
-        serverUrl: url,
-        summary: `${report.pushed} group(s) pushed`
+        remotesSummary: summary,
+        summary: `${totalPushed(report)} group(s) pushed`
       };
     } catch (err) {
       this.phase = {
         t: 'err',
         op: 'push',
-        serverUrl: url,
+        remotesSummary: summary,
         message: formatErr(err)
       };
     }
@@ -147,13 +189,13 @@ class SyncStore {
     return this.phase.t === 'syncing';
   }
 
-  private serverUrl(): string | null {
+  private remotesSummary(): string | null {
     switch (this.phase.t) {
       case 'idle':
       case 'syncing':
       case 'ok':
       case 'err':
-        return this.phase.serverUrl;
+        return this.phase.remotesSummary;
       default:
         return null;
     }

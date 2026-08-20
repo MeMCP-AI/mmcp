@@ -15,6 +15,8 @@
   } from '@lucide/svelte';
   import type { KindStr, LoadedProjectConfig, ProjectConfig, UserConfig } from '$lib/types';
   import type { KindDisplay, ThemeMode } from '$lib/stores/settings.svelte';
+  import RemotesEditor from './RemotesEditor.svelte';
+  import { fromDraft, toDraft, type DraftRemote } from '$lib/utils/remotes_draft';
 
   interface Props {
     value: KindDisplay;
@@ -101,7 +103,8 @@
   let draftUserEmail = $state('');
   let draftUserGitFallback = $state<'unset' | 'enabled' | 'disabled'>('unset');
   let draftUserDefaultGroup = $state('');
-  let draftUserSyncUrl = $state('');
+  let draftUserSyncServerUrl = $state('');
+  let draftUserRemotes = $state<DraftRemote[]>([]);
 
   $effect(() => {
     const c = userConfig;
@@ -115,7 +118,8 @@
           ? 'disabled'
           : 'unset';
     draftUserDefaultGroup = c.defaults?.group ?? '';
-    draftUserSyncUrl = c.sync?.server_url ?? '';
+    draftUserSyncServerUrl = c.sync?.server_url ?? '';
+    draftUserRemotes = (c.sync?.remotes ?? []).map(toDraft);
   });
 
   function emptyToNull(s: string): string | null {
@@ -133,12 +137,16 @@
     const authorName = emptyToNull(draftUserName);
     const authorEmail = emptyToNull(draftUserEmail);
     const defaultGroup = emptyToNull(draftUserDefaultGroup);
-    const syncUrl = emptyToNull(draftUserSyncUrl);
     const hasAuthor = authorName !== null || authorEmail !== null || fallback !== null;
     const hasDefaults = defaultGroup !== null;
-    const hasSync = syncUrl !== null;
     const cfg: UserConfig = {
-      sync: hasSync ? { server_url: syncUrl! } : null,
+      // Always sent as a complete object (never dropped for
+      // emptiness): the exact save path FR-301's review fan-out
+      // flagged, a partial reconstruction silently losing `remotes`.
+      sync: {
+        server_url: emptyToNull(draftUserSyncServerUrl),
+        remotes: draftUserRemotes.map(fromDraft)
+      },
       author: hasAuthor
         ? { name: authorName, email: authorEmail, git_fallback: fallback }
         : null,
@@ -153,7 +161,9 @@
 
   // Project form mirrors projectConfig.config when available.
   let draftProjectSlug = $state('');
-  let draftProjectSyncUrl = $state('');
+  let draftProjectSyncServerUrl = $state('');
+  let draftProjectRemotes = $state<DraftRemote[]>([]);
+  let draftProjectRemoteOnly = $state(false);
   let draftProjectNoDefault = $state(false);
   let draftProjectAdditional = $state('');
   let draftProjectLangUse = $state('');
@@ -163,7 +173,9 @@
     const c = projectConfig?.config;
     if (!c) return;
     draftProjectSlug = c.project_slug ?? '';
-    draftProjectSyncUrl = c.sync?.server_url ?? '';
+    draftProjectSyncServerUrl = c.sync?.server_url ?? '';
+    draftProjectRemotes = (c.sync?.remotes ?? []).map(toDraft);
+    draftProjectRemoteOnly = c.project_remote_only;
     draftProjectNoDefault = c.subscriptions.no_default_global;
     draftProjectAdditional = c.subscriptions.groups.join(', ');
     draftProjectLangUse = c.subscriptions.languages.join(', ');
@@ -183,10 +195,14 @@
     if (!current || !root) return;
     const cfg: ProjectConfig = {
       project_uuid: current.project_uuid,
-      project_slug: emptyToNull(draftProjectSlug),
-      sync: draftProjectSyncUrl.trim().length > 0
-        ? { server_url: draftProjectSyncUrl.trim() }
-        : null,
+      project_slug: emptyToNull(draftProjectSlug) ?? undefined,
+      // Always sent as a complete object; see the matching comment
+      // in `commitUser`.
+      sync: {
+        server_url: emptyToNull(draftProjectSyncServerUrl),
+        remotes: draftProjectRemotes.map(fromDraft)
+      },
+      project_remote_only: draftProjectRemoteOnly,
       subscriptions: {
         no_default_global: draftProjectNoDefault,
         auto_detect_languages: draftProjectAutoDetect,
@@ -430,14 +446,31 @@
                 placeholder="slug or UUID"
               />
 
-              <label for="u-sync" class="text-fg-muted">default sync URL</label>
+              <label for="u-sync" class="text-fg-muted">legacy sync URL</label>
               <input
                 id="u-sync"
                 type="text"
                 class="rounded-md border border-line-strong bg-surface-0 px-2 py-1.5 text-fg"
-                bind:value={draftUserSyncUrl}
-                placeholder="https://…"
+                bind:value={draftUserSyncServerUrl}
+                placeholder="https://… (optional single-remote shorthand)"
               />
+            </div>
+
+            <div>
+              <h3 class="text-sm font-semibold text-fg">Default sync remotes</h3>
+              <p class="mt-0.5 text-xs text-fg-subtle">
+                Inherited by every project unless a project sets its own <code
+                  class="rounded bg-surface-2 px-1 py-0.5 text-[11px] text-fg-muted"
+                  >project_remote_only</code
+                >.
+              </p>
+              <div class="mt-3">
+                <RemotesEditor
+                  remotes={draftUserRemotes}
+                  onChange={(r) => (draftUserRemotes = r)}
+                  disabled={saving}
+                />
+              </div>
             </div>
 
             <div>
@@ -490,14 +523,22 @@
                 bind:value={draftProjectSlug}
               />
 
-              <label for="p-sync" class="text-fg-muted">sync server URL</label>
+              <label for="p-sync" class="text-fg-muted">legacy sync URL</label>
               <input
                 id="p-sync"
                 type="text"
                 class="rounded-md border border-line-strong bg-surface-0 px-2 py-1.5 text-fg"
-                bind:value={draftProjectSyncUrl}
-                placeholder="(empty = local-only)"
+                bind:value={draftProjectSyncServerUrl}
+                placeholder="(empty = local-only single-remote shorthand)"
               />
+
+              <span class="self-start pt-1.5 text-fg-muted">remotes</span>
+              <div class="flex flex-col gap-2">
+                <label class="flex items-center gap-2 text-fg">
+                  <input type="checkbox" bind:checked={draftProjectRemoteOnly} />
+                  use only this project's own remotes — do not inherit the user's
+                </label>
+              </div>
 
               <span class="self-start pt-1.5 text-fg-muted">groups</span>
               <div class="flex flex-col gap-2">
@@ -526,6 +567,22 @@
                   class="rounded-md border border-line-strong bg-surface-0 px-2 py-1.5 text-fg"
                   bind:value={draftProjectLangUse}
                   placeholder="explicit languages — comma-separated"
+                />
+              </div>
+            </div>
+
+            <div>
+              <h3 class="text-sm font-semibold text-fg">Project sync remotes</h3>
+              <p class="mt-0.5 text-xs text-fg-subtle">
+                A <code class="rounded bg-surface-2 px-1 py-0.5 text-[11px] text-fg-muted"
+                  >direct-git</code
+                > entry with no group defaults to this project's own group.
+              </p>
+              <div class="mt-3">
+                <RemotesEditor
+                  remotes={draftProjectRemotes}
+                  onChange={(r) => (draftProjectRemotes = r)}
+                  disabled={saving}
                 />
               </div>
             </div>
