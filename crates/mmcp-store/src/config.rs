@@ -107,4 +107,83 @@ mod tests {
             "source must be the real toml::de::Error, not a stringified copy"
         );
     }
+
+    /// A `.mmcp.toml` declaring two `[[sync.remotes]]` entries with
+    /// the same `name` surfaces as `StoreError::ConfigDuplicateRemoteName`
+    /// naming the failing path, exercising `attach_path`'s
+    /// `ConfigError::DuplicateRemoteName` arm end to end through `load`.
+    #[test]
+    fn load_duplicate_remote_names_returns_typed_error_with_path() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let root = tmp.path();
+        let config_path = config_path_for(root);
+        std::fs::write(
+            &config_path,
+            r#"
+project_uuid = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
+
+[[sync.remotes]]
+kind = "mmcp-server"
+name = "primary"
+url = "https://a.example.com"
+
+[[sync.remotes]]
+kind = "direct-git"
+name = "primary"
+url = "ssh://git@example.com/b.git"
+"#,
+        )
+        .expect("write config with duplicate remote names");
+
+        let err = load(root).expect_err("duplicate remote name must not load");
+
+        match &err {
+            StoreError::ConfigDuplicateRemoteName { path, name } => {
+                assert_eq!(path, &config_path);
+                assert_eq!(name, "primary");
+            }
+            other => panic!("expected StoreError::ConfigDuplicateRemoteName, got {other:?}"),
+        }
+    }
+
+    /// A `.mmcp.toml` declaring two `default = true` remotes surfaces
+    /// as `StoreError::ConfigMultipleDefaultRemotes` naming the
+    /// failing path, exercising `attach_path`'s
+    /// `ConfigError::MultipleDefaultRemotes` arm end to end through
+    /// `load`.
+    #[test]
+    fn load_multiple_default_remotes_returns_typed_error_with_path() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let root = tmp.path();
+        let config_path = config_path_for(root);
+        std::fs::write(
+            &config_path,
+            r#"
+project_uuid = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
+
+[[sync.remotes]]
+kind = "mmcp-server"
+name = "primary"
+url = "https://a.example.com"
+default = true
+
+[[sync.remotes]]
+kind = "mmcp-server"
+name = "secondary"
+url = "https://b.example.com"
+default = true
+"#,
+        )
+        .expect("write config with two default remotes");
+
+        let err = load(root).expect_err("two default remotes must not load");
+
+        match &err {
+            StoreError::ConfigMultipleDefaultRemotes { path, names } => {
+                assert_eq!(path, &config_path);
+                assert_eq!(names, &vec!["primary".to_string(), "secondary".to_string()]);
+            }
+            other => panic!("expected StoreError::ConfigMultipleDefaultRemotes, got {other:?}"),
+        }
+    }
 }
