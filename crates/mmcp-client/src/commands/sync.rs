@@ -5,6 +5,15 @@
 //! body calls through to `mmcp_store::sync::build_engine` (the
 //! shared wiring used by the MCP tools as well) and formats the
 //! resulting report for stdout.
+//!
+//! Every sync verb resolves against the EFFECTIVE remote set (user
+//! config plus project config, merged per FR-301's precedence rules
+//! by `mmcp_store::resolve_effective_remotes`), not a single
+//! `server_url`: a project may configure zero, one, or several
+//! remotes at either level. `push` targets `PushScope::Default`
+//! (the resolved default remote only) at every call site here;
+//! `--all-remotes` / `--remote <name>` CLI flags for the other
+//! `PushScope` variants are a later wave's job, not this one's.
 
 use anyhow::{Context, Result, bail};
 use mmcp_core::manifest::GroupScope;
@@ -12,7 +21,8 @@ use mmcp_store::config::{find_project_root, load};
 use mmcp_store::home::MmcpHome;
 use mmcp_store::memory::resolve_group;
 use mmcp_store::sync::build_engine;
-use mmcp_sync::{SyncError, SyncFilter};
+use mmcp_store::{EffectiveRemotes, resolve_effective_remotes};
+use mmcp_sync::{PushScope, SyncError, SyncFilter};
 
 use crate::notes::{render_notes_tail, sync_group_failure_notes, sync_push_partial_failure_notes};
 
@@ -91,6 +101,41 @@ pub async fn resolve_sync_filter(
     );
 }
 
+/// Short human-readable label for a resolved remote set, used in
+/// place of the old single `server_url` in log lines and notes
+/// context. Wave 3 (`mmcp status` / `--all-remotes` display) owns a
+/// real remotes listing; this stays a terse summary. `pub(crate)` so
+/// the MCP `sync_*` tool handlers in `commands::serve` share the
+/// exact same label instead of drifting onto their own wording.
+pub(crate) fn remotes_label(effective: &EffectiveRemotes) -> String {
+    match effective.default_remote() {
+        Some(default) if effective.remotes.len() == 1 => default.name().to_string(),
+        Some(default) => format!(
+            "{} remote(s), default '{}'",
+            effective.remotes.len(),
+            default.name()
+        ),
+        None => "(no remotes configured)".to_string(),
+    }
+}
+
+/// Load the project + user config, resolve the effective remote set,
+/// and bail loudly when it is empty: every sync verb needs at least
+/// one remote to do anything.
+async fn load_effective_remotes(root: &std::path::Path) -> Result<EffectiveRemotes> {
+    let project_cfg = load(root)?;
+    let mmcp_home = MmcpHome::discover()?;
+    let user_cfg = mmcp_home.load_user_config()?;
+    let effective = resolve_effective_remotes(&user_cfg, &project_cfg)?;
+    if effective.remotes.is_empty() {
+        bail!(
+            "project {} has no sync remotes configured, in [sync] at user or project level; cannot sync",
+            project_cfg.project_uuid
+        );
+    }
+    Ok(effective)
+}
+
 /// Run the read-only `mmcp fetch` subcommand.
 ///
 /// Walks the in-scope groups and writes each remote head into the
@@ -101,32 +146,19 @@ pub async fn run_fetch(selector: SyncSelector) -> Result<()> {
     let cwd = std::env::current_dir().context("reading current working directory")?;
     let root = find_project_root(&cwd)
         .context("no mmcp project found in current directory or any parent")?;
-    let cfg = load(&root)?;
-    let Some(sync_cfg) = cfg.sync.as_ref() else {
-        bail!(
-            "project {} has no [sync] block; cannot fetch against a remote",
-            cfg.project_uuid
-        );
-    };
+    let effective = load_effective_remotes(&root).await?;
+    let label = remotes_label(&effective);
 
     let mmcp_home = MmcpHome::discover()?;
     let (backend, group_index) = mmcp_home.init_backend().await?;
     let filter = resolve_sync_filter(&selector, &group_index).await?;
-    let token = sync_cfg.resolve_token();
-    let push_token = sync_cfg.resolve_push_token();
-    let (engine, resolver) = build_engine(
-        backend,
-        group_index,
-        &sync_cfg.server_url,
-        token.as_deref(),
-        push_token.as_deref(),
-    )?;
+    let (engine, resolver) = build_engine(backend, group_index, &effective).await?;
     let report = engine
         .fetch(filter, &resolver, &resolver)
         .await
         .map_err(to_anyhow)?;
     tracing::info!(
-        server = %sync_cfg.server_url,
+        remotes = %label,
         groups = report.groups.len(),
         new_groups = report.new_groups.len(),
         failed = report.failed.len(),
@@ -134,16 +166,12 @@ pub async fn run_fetch(selector: SyncSelector) -> Result<()> {
     );
     println!(
         "fetch from {} completed: {} groups tracked, {} new groups advertised, {} groups failed",
-        sync_cfg.server_url,
+        label,
         report.groups.len(),
         report.new_groups.len(),
         report.failed.len()
     );
-    render_notes_tail(&sync_group_failure_notes(
-        &report.failed,
-        "fetch",
-        &sync_cfg.server_url,
-    ));
+    render_notes_tail(&sync_group_failure_notes(&report.failed, "fetch", &label));
     // A3 partial-success fix: an earlier-in-order group's failure no
     // longer discards a later group's success (see
     // `mmcp_sync::engine::GroupSyncFailure`'s doc comment), but the
@@ -152,7 +180,7 @@ pub async fn run_fetch(selector: SyncSelector) -> Result<()> {
     if !report.failed.is_empty() {
         bail!(
             "fetch from {} failed for {} of {} groups; see notes above for per-group errors",
-            sync_cfg.server_url,
+            label,
             report.failed.len(),
             report.failed.len() + report.groups.len()
         );
@@ -161,8 +189,9 @@ pub async fn run_fetch(selector: SyncSelector) -> Result<()> {
 }
 
 /// Shared prelude for every sync verb: resolve the project, the
-/// sync config, the backend, and the requested [`SyncFilter`] so
-/// the verb-specific runner just calls the matching engine method.
+/// effective remote set, the backend, and the requested
+/// [`SyncFilter`] so the verb-specific runner just calls the
+/// matching engine method.
 ///
 /// Keeping this factored out stops each runner from re-implementing
 /// the same eight lines of boilerplate and guarantees `mmcp fetch`,
@@ -180,16 +209,8 @@ async fn prepare(
     let cwd = std::env::current_dir().context("reading current working directory")?;
     let root = find_project_root(&cwd)
         .context("no mmcp project found in current directory or any parent")?;
-    let cfg = load(&root)?;
-    let Some(sync_cfg) = cfg.sync.as_ref() else {
-        bail!(
-            "project {} has no [sync] block; cannot sync against a remote",
-            cfg.project_uuid
-        );
-    };
-    let server_url = sync_cfg.server_url.clone();
-    let token = sync_cfg.resolve_token();
-    let push_token = sync_cfg.resolve_push_token();
+    let effective = load_effective_remotes(&root).await?;
+    let label = remotes_label(&effective);
 
     let mmcp_home = MmcpHome::discover()?;
     let (backend, group_index) = mmcp_home.init_backend().await?;
@@ -197,27 +218,22 @@ async fn prepare(
     // Keep our own handle on the backend for the pull-trigger cache
     // hook below; `build_engine` takes ownership of a clone.
     let backend_for_cache = backend.clone();
-    let (engine, resolver) = build_engine(
-        backend,
-        group_index,
-        &server_url,
-        token.as_deref(),
-        push_token.as_deref(),
-    )?;
-    Ok((server_url, engine, resolver, filter, backend_for_cache))
+    let (engine, resolver) = build_engine(backend, group_index, &effective).await?;
+    Ok((label, engine, resolver, filter, backend_for_cache))
 }
 
 /// Run `mmcp pull`: fetch each in-scope group's remote head into
-/// the local tracking ref, then fast-forward local `main`.
+/// the local tracking ref, then fast-forward local `main` from the
+/// default remote only.
 pub async fn run_pull(selector: SyncSelector) -> Result<()> {
-    let (server_url, engine, resolver, filter, backend) = prepare(&selector).await?;
+    let (label, engine, resolver, filter, backend) = prepare(&selector).await?;
     let report = engine
         .pull(filter, &resolver, &resolver)
         .await
         .map_err(to_anyhow)?;
     notify_cache_of_pull(&backend, &resolver.index, &report).await;
     tracing::info!(
-        server = %server_url,
+        remotes = %label,
         updated = report.updated.len(),
         new_groups = report.new_groups.len(),
         failed = report.failed.len(),
@@ -225,20 +241,16 @@ pub async fn run_pull(selector: SyncSelector) -> Result<()> {
     );
     println!(
         "pull from {} completed: {} groups updated, {} new groups, {} groups failed",
-        server_url,
+        label,
         report.updated.len(),
         report.new_groups.len(),
         report.failed.len()
     );
-    render_notes_tail(&sync_group_failure_notes(
-        &report.failed,
-        "pull",
-        &server_url,
-    ));
+    render_notes_tail(&sync_group_failure_notes(&report.failed, "pull", &label));
     if !report.failed.is_empty() {
         bail!(
             "pull from {} failed for {} of {} groups; see notes above for per-group errors",
-            server_url,
+            label,
             report.failed.len(),
             report.failed.len() + report.updated.len()
         );
@@ -247,88 +259,95 @@ pub async fn run_pull(selector: SyncSelector) -> Result<()> {
 }
 
 /// Run `mmcp push`: walk each in-scope group and ship local `main`
-/// to the remote.
+/// to the default remote. `--all-remotes` / `--remote <name>` are a
+/// later wave's job; every push here runs with `PushScope::Default`.
 pub async fn run_push(selector: SyncSelector) -> Result<()> {
-    let (server_url, engine, resolver, filter, _backend) = prepare(&selector).await?;
+    let (label, engine, resolver, filter, _backend) = prepare(&selector).await?;
     let report = engine
-        .push(filter, &resolver, &resolver)
+        .push(filter, PushScope::Default, &resolver, &resolver)
         .await
         .map_err(to_anyhow)?;
     tracing::info!(
-        server = %server_url,
-        pushed = report.pushed.len(),
-        failed = report.failed.len(),
+        remotes = %label,
+        pushed = report.total_pushed(),
+        failed = report.total_failed(),
         "push completed"
     );
     println!(
         "push to {} completed: {} groups pushed, {} groups failed",
-        server_url,
-        report.pushed.len(),
-        report.failed.len()
+        label,
+        report.total_pushed(),
+        report.total_failed()
     );
-    let mut notes = sync_push_partial_failure_notes(&report, &server_url);
-    notes.extend(sync_group_failure_notes(
-        &report.failed,
-        "push",
-        &server_url,
-    ));
+    let mut notes = sync_push_partial_failure_notes(&report);
+    for (remote_name, failures) in report
+        .by_remote
+        .iter()
+        .map(|outcome| (outcome.remote_name.as_str(), outcome.failed.as_slice()))
+    {
+        notes.extend(sync_group_failure_notes(failures, "push", remote_name));
+    }
     render_notes_tail(&notes);
-    if !report.failed.is_empty() {
+    if report.total_failed() > 0 {
         bail!(
             "push to {} failed for {} of {} groups; see notes above for per-group errors",
-            server_url,
-            report.failed.len(),
-            report.failed.len() + report.pushed.len()
+            label,
+            report.total_failed(),
+            report.total_failed() + report.total_pushed()
         );
     }
     Ok(())
 }
 
-/// Run `mmcp sync`: pull then push against the same filter.
+/// Run `mmcp sync`: pull then push against the same filter, push
+/// scoped to the default remote only.
 ///
 /// Exit-code contract (returned via `Result`): `Ok(())` on success,
 /// an `anyhow::Error` carrying `SyncError::Conflict` on conflict
 /// (caller maps to exit 2), any other `anyhow::Error` generic (1).
 pub async fn run_sync(selector: SyncSelector) -> Result<()> {
-    let (server_url, engine, resolver, filter, backend) = prepare(&selector).await?;
+    let (label, engine, resolver, filter, backend) = prepare(&selector).await?;
     let report = engine
         .sync(filter, &resolver, &resolver)
         .await
         .map_err(to_anyhow)?;
     notify_cache_of_pull(&backend, &resolver.index, &report.pulled).await;
-    let total_failed = report.pulled.failed.len() + report.pushed.failed.len();
+    let total_failed = report.pulled.failed.len() + report.pushed.total_failed();
     tracing::info!(
-        server = %server_url,
+        remotes = %label,
         updated = report.pulled.updated.len(),
         new_groups = report.pulled.new_groups.len(),
-        pushed = report.pushed.pushed.len(),
+        pushed = report.pushed.total_pushed(),
         failed = total_failed,
         "sync completed"
     );
     println!(
         "sync against {} completed: pulled {} groups ({} new), pushed {} groups, {} groups failed",
-        server_url,
+        label,
         report.pulled.updated.len(),
         report.pulled.new_groups.len(),
-        report.pushed.pushed.len(),
+        report.pushed.total_pushed(),
         total_failed
     );
-    let mut notes = sync_push_partial_failure_notes(&report.pushed, &server_url);
+    let mut notes = sync_push_partial_failure_notes(&report.pushed);
     notes.extend(sync_group_failure_notes(
         &report.pulled.failed,
         "pull",
-        &server_url,
+        &label,
     ));
-    notes.extend(sync_group_failure_notes(
-        &report.pushed.failed,
-        "push",
-        &server_url,
-    ));
+    for (remote_name, failures) in report
+        .pushed
+        .by_remote
+        .iter()
+        .map(|outcome| (outcome.remote_name.as_str(), outcome.failed.as_slice()))
+    {
+        notes.extend(sync_group_failure_notes(failures, "push", remote_name));
+    }
     render_notes_tail(&notes);
     if total_failed > 0 {
         bail!(
             "sync against {} failed for {} groups (pull + push combined); see notes above for per-group errors",
-            server_url,
+            label,
             total_failed
         );
     }

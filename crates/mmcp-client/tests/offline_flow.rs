@@ -31,11 +31,12 @@ async fn import_list_read_health_and_diagnose_run_without_any_remote() {
     let project_cfg = ProjectConfig {
         project_uuid: ProjectUuid::new(),
         project_slug: None,
-        sync: None,
+        sync: Default::default(),
+        project_remote_only: false,
         subscriptions: SubscriptionsConfig::default(),
     };
     assert!(
-        project_cfg.sync.is_none(),
+        project_cfg.sync.is_empty(),
         "remoteless test must start from a sync-less config"
     );
 

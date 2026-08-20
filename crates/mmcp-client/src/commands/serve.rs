@@ -2055,7 +2055,24 @@ impl McpServer {
         let project_uuid = std::env::current_dir()
             .ok()
             .and_then(|cwd| find_project_root(&cwd))
-            .and_then(|root| load_project_config(&root).ok())
+            .and_then(|root| match load_project_config(&root) {
+                Ok(cfg) => Some(cfg),
+                Err(e) => {
+                    // Surfaced loudly (not silently swallowed) per
+                    // the mandatory no-silent-failure rule, but as a
+                    // log line rather than a hard tool failure: this
+                    // list is otherwise unrelated to the broken
+                    // config, and failing the whole call over an
+                    // unrelated `is_project` flag would be
+                    // disproportionate.
+                    tracing::warn!(
+                        path = %root.display(),
+                        error = %e,
+                        "list_groups: failed to load project config; is_project will be false for every row"
+                    );
+                    None
+                }
+            })
             .map(|cfg| *cfg.project_uuid.as_uuid());
 
         let entries = self.state.groups.list().await;
@@ -3723,6 +3740,7 @@ impl McpServer {
         // carries no filesystem guarantees: Shared-group adoption
         // and subscriptions resolution therefore only fire on the
         // path / cwd branches.
+        let mut project_config_load_notes: Vec<mmcp_proto::Note> = Vec::new();
         let (project_uuid, project_cfg, project_root) = match args.project.as_deref() {
             Some(query) => {
                 let entry = mmcp_store::memory::resolve_group(&self.state.groups, query)
@@ -3746,9 +3764,33 @@ impl McpServer {
                     None => std::env::current_dir().ok(),
                 };
                 let project_root = starting_dir.and_then(|dir| find_project_root(&dir));
-                let project_cfg = project_root
-                    .as_ref()
-                    .and_then(|root| load_project_config(root).ok());
+                // A resolved project root that fails to parse is a
+                // genuine error, surfaced via the standard notes
+                // channel rather than silently degrading to "no
+                // project" (mandatory no-silent-failure rule): the
+                // whole point of this tool is reporting project
+                // context, so a malformed `[sync]` block must not
+                // blank it with no visible signal. Only the "no
+                // project root at all" case stays silently `None`.
+                let project_cfg = match project_root.as_ref() {
+                    Some(root) => match load_project_config(root) {
+                        Ok(cfg) => Some(cfg),
+                        Err(e) => {
+                            project_config_load_notes.push(
+                                mmcp_proto::Note::error(
+                                    "project_config_parse_failed",
+                                    format!(
+                                        "failed to load project config at {}: {e}",
+                                        root.display()
+                                    ),
+                                )
+                                .with_context(json!({ "path": root.to_string_lossy() })),
+                            );
+                            None
+                        }
+                    },
+                    None => None,
+                };
                 let project_uuid = project_cfg.as_ref().map(|cfg| *cfg.project_uuid.as_uuid());
                 (project_uuid, project_cfg, project_root)
             }
@@ -3835,6 +3877,7 @@ impl McpServer {
         // context points callers at it. The subscribed-reads
         // resolver's own failure signals ride the same channel.
         let mut notes = claude_md_notes(project_root.as_deref());
+        notes.extend(project_config_load_notes);
         notes.extend(subscribed_notes);
 
         Ok(ok_json_with_notes(
@@ -4088,33 +4131,26 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<SyncToolArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let (cfg, server_url) = self.require_sync_configured()?;
+        let (cfg, effective) = self.require_sync_configured()?;
+        let label = crate::commands::sync::remotes_label(&effective);
         let filter = resolve_sync_filter(&args, &self.state.groups).await?;
-        let token = cfg
-            .sync
-            .as_ref()
-            .and_then(mmcp_core::config::SyncConfig::resolve_token);
-        let push_token = cfg
-            .sync
-            .as_ref()
-            .and_then(mmcp_core::config::SyncConfig::resolve_push_token);
         let (engine, resolver) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
             self.state.groups.clone(),
-            &server_url,
-            token.as_deref(),
-            push_token.as_deref(),
+            &effective,
         )
+        .await
         .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
         let report = engine
             .fetch(filter, &resolver, &resolver)
             .await
             .map_err(map_sync_error_to_mcp)?;
-        let notes = sync_group_failure_notes(&report.failed, "fetch", &server_url);
+        let notes = sync_group_failure_notes(&report.failed, "fetch", &label);
         Ok(ok_json_with_notes(
             json!({
                 "groups": report.groups.iter().map(|g| json!({
                     "group_id": g.group_id.to_string(),
+                    "remote_name": g.remote_name,
                     "slug": g.slug,
                     "remote_head": g.remote_head,
                     "ref_updated": g.ref_updated,
@@ -4122,7 +4158,7 @@ impl McpServer {
                 "new_groups": report.new_groups,
                 "failed": sync_failures_to_json(&report.failed),
                 "project_uuid": cfg.project_uuid.to_string(),
-                "server_url": server_url,
+                "remotes": label,
             }),
             notes,
         ))
@@ -4142,23 +4178,15 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<SyncToolArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let (cfg, server_url) = self.require_sync_configured()?;
+        let (cfg, effective) = self.require_sync_configured()?;
+        let label = crate::commands::sync::remotes_label(&effective);
         let filter = resolve_sync_filter(&args, &self.state.groups).await?;
-        let token = cfg
-            .sync
-            .as_ref()
-            .and_then(mmcp_core::config::SyncConfig::resolve_token);
-        let push_token = cfg
-            .sync
-            .as_ref()
-            .and_then(mmcp_core::config::SyncConfig::resolve_push_token);
         let (engine, resolver) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
             self.state.groups.clone(),
-            &server_url,
-            token.as_deref(),
-            push_token.as_deref(),
+            &effective,
         )
+        .await
         .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
         let report = engine
             .pull(filter, &resolver, &resolver)
@@ -4167,14 +4195,14 @@ impl McpServer {
         let updated_group_ids: Vec<Uuid> = report.updated.iter().map(|g| g.group_id).collect();
         mmcp_store::cache::notify_pull(&self.state.backend, &self.state.groups, &updated_group_ids)
             .await;
-        let notes = sync_group_failure_notes(&report.failed, "pull", &server_url);
+        let notes = sync_group_failure_notes(&report.failed, "pull", &label);
         Ok(ok_json_with_notes(
             json!({
                 "updated": report.updated,
                 "new_groups": report.new_groups,
                 "failed": sync_failures_to_json(&report.failed),
                 "project_uuid": cfg.project_uuid.to_string(),
-                "server_url": server_url,
+                "remotes": label,
             }),
             notes,
         ))
@@ -4194,26 +4222,21 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<SyncToolArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let (cfg, server_url) = self.require_sync_configured()?;
+        let (cfg, effective) = self.require_sync_configured()?;
+        let label = crate::commands::sync::remotes_label(&effective);
         let filter = resolve_sync_filter(&args, &self.state.groups).await?;
-        let token = cfg
-            .sync
-            .as_ref()
-            .and_then(mmcp_core::config::SyncConfig::resolve_token);
-        let push_token = cfg
-            .sync
-            .as_ref()
-            .and_then(mmcp_core::config::SyncConfig::resolve_push_token);
         let (engine, resolver) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
             self.state.groups.clone(),
-            &server_url,
-            token.as_deref(),
-            push_token.as_deref(),
+            &effective,
         )
+        .await
         .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
+        // `mmcp-server`'s push scope is Default only, mirroring the
+        // CLI: a real `--all-remotes` / `--remote <name>` selector on
+        // this tool's arg surface is a later wave's job.
         let report = engine
-            .push(filter, &resolver, &resolver)
+            .push(filter, mmcp_sync::PushScope::Default, &resolver, &resolver)
             .await
             .map_err(map_sync_error_to_mcp)?;
         // The `sync_partial_failure` populator: per-group
@@ -4223,23 +4246,35 @@ impl McpServer {
         // network blip, etc.). Shared helper keeps the CLI and
         // MCP surfaces emitting identical codes and contexts. The
         // `sync_group_failed` populator covers the distinct case of
-        // a push that errored outright: every OTHER
-        // group in `report.pushed` still shipped despite it.
-        let mut notes = crate::notes::sync_push_partial_failure_notes(&report, &server_url);
-        notes.extend(sync_group_failure_notes(
-            &report.failed,
-            "push",
-            &server_url,
-        ));
+        // a push that errored outright: every OTHER group in the
+        // report still shipped despite it.
+        let mut notes = crate::notes::sync_push_partial_failure_notes(&report);
+        for outcome in &report.by_remote {
+            notes.extend(sync_group_failure_notes(
+                &outcome.failed,
+                "push",
+                &outcome.remote_name,
+            ));
+        }
+        let pushed_json: Vec<serde_json::Value> = report
+            .by_remote
+            .iter()
+            .flat_map(|outcome| {
+                outcome.pushed.iter().map(move |p| {
+                    json!({
+                        "group_id": p.group_id.to_string(),
+                        "remote_name": outcome.remote_name,
+                        "content_transferred": p.content_transferred,
+                    })
+                })
+            })
+            .collect();
         Ok(ok_json_with_notes(
             json!({
-                "pushed": report.pushed.iter().map(|p| json!({
-                    "group_id": p.group_id.to_string(),
-                    "content_transferred": p.content_transferred,
-                })).collect::<Vec<_>>(),
-                "failed": sync_failures_to_json(&report.failed),
+                "pushed": pushed_json,
+                "failed": report.by_remote.iter().flat_map(|o| sync_failures_to_json(&o.failed)).collect::<Vec<_>>(),
                 "project_uuid": cfg.project_uuid.to_string(),
-                "server_url": server_url,
+                "remotes": label,
             }),
             notes,
         ))
@@ -4259,23 +4294,15 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<SyncToolArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let (cfg, server_url) = self.require_sync_configured()?;
+        let (cfg, effective) = self.require_sync_configured()?;
+        let label = crate::commands::sync::remotes_label(&effective);
         let filter = resolve_sync_filter(&args, &self.state.groups).await?;
-        let token = cfg
-            .sync
-            .as_ref()
-            .and_then(mmcp_core::config::SyncConfig::resolve_token);
-        let push_token = cfg
-            .sync
-            .as_ref()
-            .and_then(mmcp_core::config::SyncConfig::resolve_push_token);
         let (engine, resolver) = mmcp_store::sync::build_engine(
             self.state.backend.clone(),
             self.state.groups.clone(),
-            &server_url,
-            token.as_deref(),
-            push_token.as_deref(),
+            &effective,
         )
+        .await
         .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
         let report = engine
             .sync(filter, &resolver, &resolver)
@@ -4285,12 +4312,28 @@ impl McpServer {
             report.pulled.updated.iter().map(|g| g.group_id).collect();
         mmcp_store::cache::notify_pull(&self.state.backend, &self.state.groups, &updated_group_ids)
             .await;
-        let mut notes = sync_group_failure_notes(&report.pulled.failed, "pull", &server_url);
-        notes.extend(sync_group_failure_notes(
-            &report.pushed.failed,
-            "push",
-            &server_url,
-        ));
+        let mut notes = sync_group_failure_notes(&report.pulled.failed, "pull", &label);
+        for outcome in &report.pushed.by_remote {
+            notes.extend(sync_group_failure_notes(
+                &outcome.failed,
+                "push",
+                &outcome.remote_name,
+            ));
+        }
+        let pushed_json: Vec<serde_json::Value> = report
+            .pushed
+            .by_remote
+            .iter()
+            .flat_map(|outcome| {
+                outcome.pushed.iter().map(move |p| {
+                    json!({
+                        "group_id": p.group_id.to_string(),
+                        "remote_name": outcome.remote_name,
+                        "content_transferred": p.content_transferred,
+                    })
+                })
+            })
+            .collect();
         Ok(ok_json_with_notes(
             json!({
                 "pulled": {
@@ -4299,14 +4342,11 @@ impl McpServer {
                     "failed": sync_failures_to_json(&report.pulled.failed),
                 },
                 "pushed": {
-                    "pushed": report.pushed.pushed.iter().map(|p| json!({
-                        "group_id": p.group_id.to_string(),
-                        "content_transferred": p.content_transferred,
-                    })).collect::<Vec<_>>(),
-                    "failed": sync_failures_to_json(&report.pushed.failed),
+                    "pushed": pushed_json,
+                    "failed": report.pushed.by_remote.iter().flat_map(|o| sync_failures_to_json(&o.failed)).collect::<Vec<_>>(),
                 },
                 "project_uuid": cfg.project_uuid.to_string(),
-                "server_url": server_url,
+                "remotes": label,
             }),
             notes,
         ))
@@ -5582,9 +5622,18 @@ fn compose_status(
             Some(json!({ "code": "project_config_load_failed" })),
         )
     })?;
-    let sync = match cfg.sync.as_ref() {
-        Some(s) => json!({ "configured": true, "server_url": s.server_url }),
-        None => json!({ "configured": false }),
+    // Full effective-remote-set display (merging user config, naming
+    // each remote, flagging the default) is wave 3's job per FR-301;
+    // this mechanical adaptation only keeps `status` compiling
+    // against the now-always-defaulted `SyncConfig` shape.
+    let sync = if cfg.sync.is_empty() {
+        json!({ "configured": false })
+    } else {
+        json!({
+            "configured": true,
+            "server_url": cfg.sync.server_url,
+            "remotes_count": cfg.sync.remotes.len(),
+        })
     };
     Ok(json!({
         "project_configured": true,
@@ -5801,7 +5850,13 @@ impl McpServer {
     /// path.
     fn require_sync_configured(
         &self,
-    ) -> Result<(mmcp_core::config::ProjectConfig, String), McpError> {
+    ) -> Result<
+        (
+            mmcp_core::config::ProjectConfig,
+            mmcp_store::EffectiveRemotes,
+        ),
+        McpError,
+    > {
         let cwd = std::env::current_dir().map_err(|e| {
             McpError::internal_error(format!("cannot read working directory: {e}"), None)
         })?;
@@ -5810,14 +5865,45 @@ impl McpServer {
 }
 
 /// Resolve the project at `cwd` (walking parent dirs) and return its
-/// [`ProjectConfig`] plus the configured `[sync].server_url`.
+/// [`ProjectConfig`] plus its EFFECTIVE remote set (user config
+/// merged with project config, per FR-301's precedence rules).
 ///
 /// Factored out of [`McpServer::require_sync_configured`] so tests can
 /// feed a deterministic path without touching process-wide
-/// `current_dir`. The three error branches are stable wire contracts:
-/// `project_not_found`, `project_config_load_failed`, and
-/// `sync_not_configured`.
-fn resolve_sync_config(cwd: &Path) -> Result<(mmcp_core::config::ProjectConfig, String), McpError> {
+/// `current_dir`. The stable wire-contract error codes:
+/// `project_not_found`, `project_config_load_failed`,
+/// `sync_resolution_failed` (a name collision, missing `direct-git`
+/// group, or ambiguous default across user + project config), and
+/// `sync_not_configured` (the effective set resolved but is empty).
+fn resolve_sync_config(
+    cwd: &Path,
+) -> Result<
+    (
+        mmcp_core::config::ProjectConfig,
+        mmcp_store::EffectiveRemotes,
+    ),
+    McpError,
+> {
+    let home = MmcpHome::discover()
+        .map_err(|e| McpError::internal_error(format!("cannot resolve mmcp home: {e}"), None))?;
+    resolve_sync_config_with_home(cwd, &home)
+}
+
+/// Same as [`resolve_sync_config`], with the [`MmcpHome`] injected so
+/// tests can point the user-level config lookup at a tempdir instead
+/// of the real OS home / `MMCP_HOME` (mirrors the same
+/// dependency-injection rationale as
+/// `mmcp_core::config::SyncConfig::resolve_token_with`).
+fn resolve_sync_config_with_home(
+    cwd: &Path,
+    home: &MmcpHome,
+) -> Result<
+    (
+        mmcp_core::config::ProjectConfig,
+        mmcp_store::EffectiveRemotes,
+    ),
+    McpError,
+> {
     let root = find_project_root(cwd).ok_or_else(|| {
         McpError::invalid_params(
             "no mmcp project found in current directory or any parent",
@@ -5830,18 +5916,29 @@ fn resolve_sync_config(cwd: &Path) -> Result<(mmcp_core::config::ProjectConfig, 
             Some(json!({ "code": "project_config_load_failed" })),
         )
     })?;
-    let Some(sync) = cfg.sync.as_ref() else {
+    let user_cfg = home
+        .load_user_config()
+        .map_err(|e| McpError::internal_error(format!("failed to load user config: {e}"), None))?;
+    let effective = mmcp_store::resolve_effective_remotes(&user_cfg, &cfg).map_err(|e| {
+        McpError::invalid_params(
+            format!("failed to resolve effective sync remotes: {e}"),
+            Some(json!({
+                "code": "sync_resolution_failed",
+                "project_uuid": cfg.project_uuid.to_string(),
+            })),
+        )
+    })?;
+    if effective.remotes.is_empty() {
         return Err(McpError::invalid_params(
-            "project has no [sync] block; cannot sync against a remote",
+            "project has no sync remotes configured; cannot sync against a remote",
             Some(json!({
                 "code": "sync_not_configured",
                 "project_uuid": cfg.project_uuid.to_string(),
-                "retry_hint": "add [sync] server_url = \"http://...\" to .mmcp.toml"
+                "retry_hint": "add [sync] server_url = \"http://...\" (or a [[sync.remotes]] entry) to .mmcp.toml or ~/.mmcp/config.toml"
             })),
         ));
-    };
-    let server_url = sync.server_url.clone();
-    Ok((cfg, server_url))
+    }
+    Ok((cfg, effective))
 }
 
 /// Build the structured `code` payload for a [`mmcp_sync::SyncError`],
@@ -5897,6 +5994,13 @@ fn sync_error_payload(err: &mmcp_sync::SyncError) -> serde_json::Value {
             "code": "push_diverged",
             "group": group.to_string(),
             "stderr": stderr,
+        }),
+        SyncError::NoDefaultRemote => json!({
+            "code": "sync_no_default_remote",
+        }),
+        SyncError::UnknownRemote { name } => json!({
+            "code": "sync_unknown_remote",
+            "name": name,
         }),
     }
 }
@@ -10308,11 +10412,21 @@ mod tests {
         std::fs::write(root.join(PROJECT_MANIFEST), body).expect("write .mmcp.toml");
     }
 
+    /// `MmcpHome` rooted at a subdir of `tmp` a test never wrote a
+    /// `config.toml` into: `load_user_config` falls back to
+    /// `UserConfig::default()`, giving every `resolve_sync_config_with_home`
+    /// test a deterministic empty user-level config regardless of
+    /// the real OS home / `MMCP_HOME`.
+    fn empty_user_home(tmp: &TempDir) -> MmcpHome {
+        MmcpHome::from_root(tmp.path().join("mmcp-home"))
+    }
+
     #[test]
     fn resolve_sync_config_errors_when_cwd_has_no_project() {
         let tmp = TempDir::new().expect("tempdir");
-        let err =
-            resolve_sync_config(tmp.path()).expect_err("tempdir should not host a mmcp project");
+        let home = empty_user_home(&tmp);
+        let err = resolve_sync_config_with_home(tmp.path(), &home)
+            .expect_err("tempdir should not host a mmcp project");
         let payload = err.data.as_ref().expect("error data");
         assert_eq!(
             payload.get("code").and_then(|v| v.as_str()),
@@ -10323,11 +10437,13 @@ mod tests {
     #[test]
     fn resolve_sync_config_errors_when_sync_block_is_missing() {
         let tmp = TempDir::new().expect("tempdir");
+        let home = empty_user_home(&tmp);
         write_project_config(
             tmp.path(),
             "project_uuid = \"018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91\"\n",
         );
-        let err = resolve_sync_config(tmp.path()).expect_err("must reject missing [sync]");
+        let err = resolve_sync_config_with_home(tmp.path(), &home)
+            .expect_err("must reject missing [sync]");
         let payload = err.data.as_ref().expect("error data");
         assert_eq!(
             payload.get("code").and_then(|v| v.as_str()),
@@ -10345,14 +10461,20 @@ mod tests {
     }
 
     #[test]
-    fn resolve_sync_config_returns_server_url_on_happy_path() {
+    fn resolve_sync_config_resolves_the_effective_remote_set_on_happy_path() {
         let tmp = TempDir::new().expect("tempdir");
+        let home = empty_user_home(&tmp);
         write_project_config(
             tmp.path(),
             "project_uuid = \"018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91\"\n\n[sync]\nserver_url = \"http://localhost:8787\"\n",
         );
-        let (cfg, server_url) = resolve_sync_config(tmp.path()).expect("happy path should resolve");
-        assert_eq!(server_url, "http://localhost:8787");
+        let (cfg, effective) =
+            resolve_sync_config_with_home(tmp.path(), &home).expect("happy path should resolve");
+        assert_eq!(effective.remotes.len(), 1);
+        assert!(matches!(
+            &effective.remotes[0].remote,
+            mmcp_core::config::Remote::MmcpServer { url, .. } if url == "http://localhost:8787"
+        ));
         assert_eq!(
             cfg.project_uuid.to_string(),
             "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
@@ -11120,7 +11242,8 @@ mod tests {
         let cfg = mmcp_core::config::ProjectConfig {
             project_uuid: mmcp_core::id::ProjectUuid::new(),
             project_slug: None,
-            sync: None,
+            sync: Default::default(),
+            project_remote_only: false,
             subscriptions: Default::default(),
         };
         mmcp_store::config::save(&project_root, &cfg).expect("seed config");

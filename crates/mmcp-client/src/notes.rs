@@ -144,26 +144,28 @@ pub async fn dangling_ref_notes_for(
 /// silent success.
 ///
 /// Shared by the MCP `sync_push` tool and the CLI `mmcp push` /
-/// `mmcp sync` commands so both emit the same code with the
-/// same context shape (`group`, `stage`, `server_url`).
+/// `mmcp sync` commands so both emit the same code with the same
+/// context shape (`group`, `stage`, `remote`). Reads the remote name
+/// straight off `report` (one push attempt is always attributed to
+/// its own `BoundRemote` since the multi-remote restructuring), so
+/// unlike the single-remote era this needs no separate label
+/// argument from the caller.
 #[must_use]
-pub fn sync_push_partial_failure_notes(report: &PushReport, server_url: &str) -> Vec<Note> {
+pub fn sync_push_partial_failure_notes(report: &PushReport) -> Vec<Note> {
     report
-        .pushed
-        .iter()
-        .filter(|p| !p.content_transferred)
-        .map(|p| {
+        .iter_partial_failures()
+        .map(|(remote_name, p)| {
             Note::warn(
                 "sync_partial_failure",
                 format!(
-                    "push for group {} did not ship content (transport error or unsupported backend)",
+                    "push for group {} via remote '{remote_name}' did not ship content (transport error or unsupported backend)",
                     p.group_id
                 ),
             )
             .with_context(json!({
                 "group": p.group_id.to_string(),
                 "stage": "push",
-                "server_url": server_url,
+                "remote": remote_name,
             }))
         })
         .collect()

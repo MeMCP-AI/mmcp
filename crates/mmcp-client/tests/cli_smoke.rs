@@ -123,13 +123,15 @@ fn init_project_second_call_is_idempotent() {
 
 #[test]
 fn sync_fails_when_project_has_no_sync_block() {
-    // A freshly initialized project has `sync = None`, so running
-    // `mmcp sync --all` against it must fail with a message naming
-    // the missing block. Use `--config-only` to keep the tempdir
-    // free of the bare repo - sync never gets that far anyway.
-    // `--all` is the explicit whole-mirror selector; bare `mmcp
-    // sync` is its own failure mode covered by
-    // `sync_rejects_bare_call_without_selector` below.
+    // A freshly initialized project has an empty `[sync]` (no
+    // legacy `server_url`, no `[[sync.remotes]]`) at either user or
+    // project level, so running `mmcp sync --all` against it must
+    // fail with a message naming the empty effective remote set.
+    // Use `--config-only` to keep the tempdir free of the bare repo
+    // - sync never gets that far anyway. `--all` is the explicit
+    // whole-mirror selector; bare `mmcp sync` is its own failure
+    // mode covered by `sync_rejects_bare_call_without_selector`
+    // below.
     let tmp = tempfile::tempdir().unwrap();
     let mmcp_home = tmp.path().join("mmcp-home");
     mmcp()
@@ -144,7 +146,7 @@ fn sync_fails_when_project_has_no_sync_block() {
         .env("MMCP_HOME", &mmcp_home)
         .assert()
         .failure()
-        .stderr(predicate::str::contains("no [sync]"));
+        .stderr(predicate::str::contains("no sync remotes configured"));
 }
 
 #[test]

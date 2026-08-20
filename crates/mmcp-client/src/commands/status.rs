@@ -13,9 +13,17 @@ pub async fn run() -> Result<()> {
 
     println!("project root  : {}", root.display());
     println!("project uuid  : {}", cfg.project_uuid);
-    match &cfg.sync {
-        Some(sync) => println!("server        : {}", sync.server_url),
-        None => println!("server        : (local-only)"),
+    // Full effective-remote-set display (merging user config, naming
+    // each remote, flagging the default) is wave 3's job per FR-301;
+    // this mechanical adaptation only keeps `mmcp status` compiling
+    // against the now-always-defaulted `SyncConfig` shape.
+    match cfg.sync.server_url.as_deref() {
+        Some(url) => println!("server        : {url}"),
+        None if cfg.sync.remotes.is_empty() => println!("server        : (local-only)"),
+        None => println!(
+            "server        : {} remote(s) configured",
+            cfg.sync.remotes.len()
+        ),
     }
     let subs = &cfg.subscriptions;
     println!(

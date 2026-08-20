@@ -308,7 +308,8 @@ fn load_or_mint_config(
     let cfg = ProjectConfig {
         project_uuid,
         project_slug: None,
-        sync: None,
+        sync: Default::default(),
+        project_remote_only: false,
         subscriptions: Default::default(),
     };
     Ok((cfg, cwd.to_path_buf(), true))
@@ -486,7 +487,8 @@ mod tests {
         let cfg = ProjectConfig {
             project_uuid: stored_uuid,
             project_slug: None,
-            sync: None,
+            sync: Default::default(),
+            project_remote_only: false,
             subscriptions: Default::default(),
         };
         save(&project_root, &cfg).expect("seed config");
@@ -518,7 +520,8 @@ mod tests {
         let cfg = ProjectConfig {
             project_uuid: ProjectUuid::new(),
             project_slug: Some("team-rust".into()),
-            sync: None,
+            sync: Default::default(),
+            project_remote_only: false,
             subscriptions: Default::default(),
         };
         save(&project_root, &cfg).expect("seed config");
@@ -542,7 +545,8 @@ mod tests {
         let cfg = ProjectConfig {
             project_uuid: stored_uuid,
             project_slug: Some("team-rust".into()),
-            sync: None,
+            sync: Default::default(),
+            project_remote_only: false,
             subscriptions: Default::default(),
         };
         save(&project_root, &cfg).expect("seed config");

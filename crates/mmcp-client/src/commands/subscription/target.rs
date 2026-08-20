@@ -220,7 +220,8 @@ mod tests {
         ProjectConfig {
             project_uuid: ProjectUuid::new(),
             project_slug: None,
-            sync: None,
+            sync: Default::default(),
+            project_remote_only: false,
             subscriptions: SubscriptionsConfig::default(),
         }
     }
