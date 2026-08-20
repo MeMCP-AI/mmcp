@@ -5,10 +5,41 @@
 //! exit code and output without a running server.
 
 use assert_cmd::Command;
+use mmcp_core::config::Remote;
 use predicates::prelude::*;
 
 fn mmcp() -> Command {
     Command::cargo_bin("mmcp").expect("mmcp binary")
+}
+
+/// Unreachable-fast address for an `mmcp-server` remote's `url`:
+/// connection refused near-instantly (no DNS lookup, no listener),
+/// matching the pattern `mmcp-sync`'s own engine tests already rely
+/// on for a deterministic transport failure. Every remote-scope test
+/// below pairs this with `--config-only` (no local bare group repo,
+/// so zero candidate groups) so a push/fetch attempt never actually
+/// reaches the network: scope RESOLUTION is what these tests probe,
+/// not transport behaviour.
+const UNREACHABLE_REMOTE_URL: &str = "http://127.0.0.1:1";
+
+/// Build an `mmcp-server` remote for test fixtures.
+fn mmcp_server_remote(name: &str, default: bool) -> Remote {
+    Remote::MmcpServer {
+        name: name.to_string(),
+        url: UNREACHABLE_REMOTE_URL.to_string(),
+        default,
+        include_in_push_all: true,
+    }
+}
+
+/// Overwrite `project_root`'s `.mmcp.toml` `[[sync.remotes]]` list,
+/// loading and re-saving through the real config types so every
+/// other field (`project_uuid`, `subscriptions`, ...) round-trips
+/// unchanged.
+fn configure_remotes(project_root: &std::path::Path, remotes: Vec<Remote>) {
+    let mut cfg = mmcp_store::config::load(project_root).expect("load project config");
+    cfg.sync.remotes = remotes;
+    mmcp_store::config::save(project_root, &cfg).expect("save project config with remotes");
 }
 
 #[test]
@@ -180,6 +211,202 @@ fn sync_rejects_bare_call_without_selector() {
             predicate::str::contains("--group")
                 .and(predicate::str::contains("--scope").and(predicate::str::contains("--all"))),
         );
+}
+
+#[test]
+fn push_all_remotes_and_remote_flags_are_mutually_exclusive() {
+    // clap's ArgGroup rejects both at parse time, before the command
+    // ever touches config or the network.
+    let tmp = tempfile::tempdir().unwrap();
+    let mmcp_home = tmp.path().join("mmcp-home");
+    mmcp()
+        .args(["push", "--all", "--all-remotes", "--remote", "primary"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn sync_all_remotes_and_remote_flags_are_mutually_exclusive() {
+    // Same `RemoteScopeArgs` struct, reused verbatim on `sync`.
+    let tmp = tempfile::tempdir().unwrap();
+    let mmcp_home = tmp.path().join("mmcp-home");
+    mmcp()
+        .args(["sync", "--all", "--all-remotes", "--remote", "primary"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn push_remote_flag_with_unknown_name_reports_a_clear_error() {
+    // The engine's own `SyncError::UnknownRemote` message must reach
+    // the operator verbatim, not buried in a generic anyhow chain.
+    let tmp = tempfile::tempdir().unwrap();
+    let mmcp_home = tmp.path().join("mmcp-home");
+    mmcp()
+        .args([
+            "init",
+            "project",
+            "--slug",
+            "push-unknown-remote",
+            "--config-only",
+        ])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+    configure_remotes(tmp.path(), vec![mmcp_server_remote("primary", true)]);
+
+    mmcp()
+        .args(["push", "--all", "--remote", "ghost-remote"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "no sync remote named ghost-remote",
+        ));
+}
+
+#[test]
+fn push_remote_flag_targets_the_named_non_default_remote() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mmcp_home = tmp.path().join("mmcp-home");
+    mmcp()
+        .args([
+            "init",
+            "project",
+            "--slug",
+            "push-named-remote",
+            "--config-only",
+        ])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+    configure_remotes(
+        tmp.path(),
+        vec![
+            mmcp_server_remote("primary", true),
+            mmcp_server_remote("mirror", false),
+        ],
+    );
+
+    // A real, exact match against the non-default remote must
+    // resolve cleanly (no `UnknownRemote`, no `NoDefaultRemote`) and
+    // complete, even though the effective set's default is "primary".
+    mmcp()
+        .args(["push", "--all", "--remote", "mirror"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("push to"));
+}
+
+#[test]
+fn push_all_remotes_flag_succeeds_with_multiple_remotes_configured() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mmcp_home = tmp.path().join("mmcp-home");
+    mmcp()
+        .args([
+            "init",
+            "project",
+            "--slug",
+            "push-all-remotes",
+            "--config-only",
+        ])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+    configure_remotes(
+        tmp.path(),
+        vec![
+            mmcp_server_remote("primary", true),
+            mmcp_server_remote("mirror", false),
+        ],
+    );
+
+    mmcp()
+        .args(["push", "--all", "--all-remotes"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("push to"));
+}
+
+#[test]
+fn push_default_scope_still_succeeds_with_no_new_flags_and_remotes_configured() {
+    // Regression guard: introducing `RemoteScopeArgs` must not change
+    // the no-flag behaviour when remotes ARE configured (the
+    // remotes-absent case is already covered by
+    // `sync_fails_when_project_has_no_sync_block`).
+    let tmp = tempfile::tempdir().unwrap();
+    let mmcp_home = tmp.path().join("mmcp-home");
+    mmcp()
+        .args([
+            "init",
+            "project",
+            "--slug",
+            "push-default-scope",
+            "--config-only",
+        ])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+    configure_remotes(
+        tmp.path(),
+        vec![
+            mmcp_server_remote("primary", true),
+            mmcp_server_remote("mirror", false),
+        ],
+    );
+
+    mmcp()
+        .args(["push", "--all"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("push to"));
+}
+
+#[test]
+fn sync_accepts_remote_scope_flags_and_still_requires_configured_remotes() {
+    // `sync` reuses the same `RemoteScopeArgs`; a sync-less project
+    // must still fail with the pre-existing "no sync remotes
+    // configured" message, proving the new flags parse and thread
+    // into `run_sync` without disturbing the earlier bail.
+    let tmp = tempfile::tempdir().unwrap();
+    let mmcp_home = tmp.path().join("mmcp-home");
+    mmcp()
+        .args([
+            "init",
+            "project",
+            "--slug",
+            "sync-remote-scope",
+            "--config-only",
+        ])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+
+    mmcp()
+        .args(["sync", "--all", "--all-remotes"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no sync remotes configured"));
 }
 
 #[test]

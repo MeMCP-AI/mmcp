@@ -10,10 +10,13 @@
 //! config plus project config, merged per FR-301's precedence rules
 //! by `mmcp_store::resolve_effective_remotes`), not a single
 //! `server_url`: a project may configure zero, one, or several
-//! remotes at either level. `push` targets `PushScope::Default`
-//! (the resolved default remote only) at every call site here;
-//! `--all-remotes` / `--remote <name>` CLI flags for the other
-//! `PushScope` variants are a later wave's job, not this one's.
+//! remotes at either level. `mmcp push` and `mmcp sync`'s push half
+//! both default to `PushScope::Default` (the resolved default remote
+//! only); `--all-remotes` / `--remote <name>` on either subcommand
+//! (shared via [`RemoteScopeArgs`]) select `PushScope::All` /
+//! `PushScope::Named`. `mmcp fetch` and `mmcp pull` carry neither
+//! flag: they stay read-only and unaffected by push scoping, per
+//! FR-301's own Resolution section.
 
 use anyhow::{Context, Result, bail};
 use mmcp_core::manifest::GroupScope;
@@ -71,6 +74,44 @@ pub struct SyncSelector {
     /// default is still `--all` until the breaking flip lands.
     #[arg(long, group = "sync_selector", default_value_t = false)]
     pub all: bool,
+}
+
+/// Push remote-selection flags shared by `mmcp push` and `mmcp
+/// sync`'s push half. Orthogonal to [`SyncSelector`], which picks
+/// which GROUPS are touched: this picks which REMOTE(S) receive the
+/// push, and the two families combine freely (e.g. `mmcp push
+/// --scope shared --all-remotes`).
+///
+/// At most one of `--all-remotes` / `--remote` may be given, and
+/// neither is required: [`RemoteScopeArgs::resolve`] maps the
+/// no-flag case to `PushScope::Default`.
+#[derive(Debug, Clone, clap::Args)]
+#[group(id = "push_remote_scope", multiple = false)]
+pub struct RemoteScopeArgs {
+    /// Push to every effective remote whose `include_in_push_all` is
+    /// not `false`, instead of the resolved default remote only.
+    #[arg(long, group = "push_remote_scope")]
+    pub all_remotes: bool,
+
+    /// Push to exactly this remote by name, instead of the resolved
+    /// default remote. Must match a remote in the effective set; an
+    /// unknown name is a clear CLI error naming the requested name.
+    #[arg(long, group = "push_remote_scope", value_name = "NAME")]
+    pub remote: Option<String>,
+}
+
+impl RemoteScopeArgs {
+    /// Resolve to the [`PushScope`] this CLI invocation selected.
+    #[must_use]
+    pub fn resolve(&self) -> PushScope {
+        if self.all_remotes {
+            PushScope::All
+        } else if let Some(name) = &self.remote {
+            PushScope::Named(name.clone())
+        } else {
+            PushScope::Default
+        }
+    }
 }
 
 /// Resolve a [`SyncSelector`] into a [`SyncFilter`] against the
@@ -259,12 +300,13 @@ pub async fn run_pull(selector: SyncSelector) -> Result<()> {
 }
 
 /// Run `mmcp push`: walk each in-scope group and ship local `main`
-/// to the default remote. `--all-remotes` / `--remote <name>` are a
-/// later wave's job; every push here runs with `PushScope::Default`.
-pub async fn run_push(selector: SyncSelector) -> Result<()> {
+/// to the remote(s) `remote_scope` selects (the resolved default
+/// remote when neither `--all-remotes` nor `--remote <name>` is
+/// given).
+pub async fn run_push(selector: SyncSelector, remote_scope: RemoteScopeArgs) -> Result<()> {
     let (label, engine, resolver, filter, _backend) = prepare(&selector).await?;
     let report = engine
-        .push(filter, PushScope::Default, &resolver, &resolver)
+        .push(filter, remote_scope.resolve(), &resolver, &resolver)
         .await
         .map_err(to_anyhow)?;
     tracing::info!(
@@ -300,18 +342,32 @@ pub async fn run_push(selector: SyncSelector) -> Result<()> {
 }
 
 /// Run `mmcp sync`: pull then push against the same filter, push
-/// scoped to the default remote only.
+/// scoped per `remote_scope` (the resolved default remote when
+/// neither `--all-remotes` nor `--remote <name>` is given).
+///
+/// Calls `engine.pull` then `engine.push` directly instead of the
+/// engine's own `sync` convenience method, which fixes its push
+/// phase to `PushScope::Default` with no override: replicating
+/// `sync`'s pull-then-push behaviour and report assembly here is
+/// what lets this CLI-only flag reach the push phase without
+/// changing `SyncEngine::sync`'s signature (and its other callers,
+/// the MCP `sync` tool and `mmcp-sync`'s own tests).
 ///
 /// Exit-code contract (returned via `Result`): `Ok(())` on success,
 /// an `anyhow::Error` carrying `SyncError::Conflict` on conflict
 /// (caller maps to exit 2), any other `anyhow::Error` generic (1).
-pub async fn run_sync(selector: SyncSelector) -> Result<()> {
+pub async fn run_sync(selector: SyncSelector, remote_scope: RemoteScopeArgs) -> Result<()> {
     let (label, engine, resolver, filter, backend) = prepare(&selector).await?;
-    let report = engine
-        .sync(filter, &resolver, &resolver)
+    let pulled = engine
+        .pull(filter, &resolver, &resolver)
         .await
         .map_err(to_anyhow)?;
-    notify_cache_of_pull(&backend, &resolver.index, &report.pulled).await;
+    notify_cache_of_pull(&backend, &resolver.index, &pulled).await;
+    let pushed = engine
+        .push(filter, remote_scope.resolve(), &resolver, &resolver)
+        .await
+        .map_err(to_anyhow)?;
+    let report = mmcp_sync::SyncReport { pulled, pushed };
     let total_failed = report.pulled.failed.len() + report.pushed.total_failed();
     tracing::info!(
         remotes = %label,

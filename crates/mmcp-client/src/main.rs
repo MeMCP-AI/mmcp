@@ -56,6 +56,8 @@ enum Command {
     Sync {
         #[command(flatten)]
         selector: commands::sync::SyncSelector,
+        #[command(flatten)]
+        remote_scope: commands::sync::RemoteScopeArgs,
     },
 
     /// Read remote heads into local tracking refs without
@@ -76,6 +78,8 @@ enum Command {
     Push {
         #[command(flatten)]
         selector: commands::sync::SyncSelector,
+        #[command(flatten)]
+        remote_scope: commands::sync::RemoteScopeArgs,
     },
 
     /// Quick health check: manifests parse, memories parse, no errors.
@@ -267,10 +271,16 @@ async fn main() -> Result<()> {
             Some(InitCommand::Project(args)) => commands::init::run_project(args).await?,
         },
         Command::Status => commands::status::run().await?,
-        Command::Sync { selector } => commands::sync::run_sync(selector).await?,
+        Command::Sync {
+            selector,
+            remote_scope,
+        } => commands::sync::run_sync(selector, remote_scope).await?,
         Command::Fetch { selector } => commands::sync::run_fetch(selector).await?,
         Command::Pull { selector } => commands::sync::run_pull(selector).await?,
-        Command::Push { selector } => commands::sync::run_push(selector).await?,
+        Command::Push {
+            selector,
+            remote_scope,
+        } => commands::sync::run_push(selector, remote_scope).await?,
         Command::Import(args) => commands::import::run(args).await?,
         Command::Export {
             group,
