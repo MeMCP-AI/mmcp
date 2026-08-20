@@ -1,10 +1,8 @@
 //! Typed representation of `.mmcp/config.toml`.
 
-use std::collections::HashSet;
-
 use serde::{Deserialize, Serialize};
 
-use crate::config::ConfigError;
+use crate::config::{ConfigError, SyncConfig};
 use crate::id::ProjectUuid;
 use crate::loadset::GroupRef;
 
@@ -89,352 +87,6 @@ pub fn is_group_adopted(slug: &str, cfg: &ProjectConfig) -> bool {
             .any(|lang| slug == GroupRef::Language(lang.clone()).canonical_name())
 }
 
-/// Environment variable carrying the control-plane bearer token for
-/// `/sync/*` requests: a per-user PASETO session token issued by the
-/// server's login flow and verified against `mmcp_auth::TokenVerifier`.
-pub const SYNC_TOKEN_ENV: &str = "MMCP_SYNC_TOKEN";
-
-/// Environment variable carrying the content-plane git push
-/// credential, compared by the server's git smart-HTTP endpoint by
-/// exact string equality against its own `MMCP_PUSH_TOKEN`. The two
-/// env var names differ because they read in different processes
-/// (this one client side, `MMCP_PUSH_TOKEN` server side); whoever
-/// configures both sides sets them to the same value.
-pub const SYNC_PUSH_TOKEN_ENV: &str = "MMCP_SYNC_PUSH_TOKEN";
-
-/// Remote sync configuration, reused verbatim on both
-/// [`ProjectConfig`] and [`crate::config::UserConfig`] so the sync
-/// surface is uniform between project and user level.
-///
-/// Carries no credential field: every token is env-only
-/// ([`SyncConfig::resolve_token`], [`SyncConfig::resolve_push_token`],
-/// [`SyncConfig::token_env_name`], [`SyncConfig::push_token_env_name`]),
-/// so a `.mmcp.toml` rewrite can never persist a secret to a file
-/// that convention tracks in git.
-///
-/// Always defaulted (not `Option<SyncConfig>`): a config with no
-/// `[sync]` table at all still parses to `SyncConfig::default()`
-/// (`server_url: None`, `remotes` empty), so a toggle that lives on
-/// the enclosing config (see [`ProjectConfig::project_remote_only`])
-/// stays reachable even when this struct itself is unset.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct SyncConfig {
-    /// Legacy shorthand for a single `mmcp-server` remote. Purely
-    /// additive: composed with `remotes` at resolution time (a later
-    /// wave), never validated as mutually exclusive with it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub server_url: Option<String>,
-
-    /// Any number of named remotes. Kept empty (and absent from
-    /// rendered TOML) on configs that only use the legacy
-    /// `server_url` shorthand.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub remotes: Vec<Remote>,
-}
-
-impl SyncConfig {
-    /// True when this config declares neither the legacy `server_url`
-    /// shorthand nor any `remotes` entry. Replaces the old
-    /// `Option<SyncConfig>::is_none()` check now that this struct is
-    /// always present and always defaulted.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.server_url.is_none() && self.remotes.is_empty()
-    }
-
-    /// Env var name carrying the control-plane bearer token for the
-    /// remote named `remote_name`, `MMCP_SYNC_TOKEN_<NAME>`.
-    ///
-    /// Derivation rule, exact and stable (a later wave, mmcp-sync,
-    /// reads env vars produced by this exact rule): ASCII-uppercase
-    /// `remote_name`, then replace every `-` with `_` so a hyphenated
-    /// remote name still yields a portable env var identifier. See
-    /// [`SyncConfig::normalized_remote_name`], the single owning
-    /// definition of this rule. Deliberately NOT a free-text config
-    /// field: see [`RemoteAuth::Bearer`].
-    #[must_use]
-    pub fn token_env_name(remote_name: &str) -> String {
-        format!(
-            "MMCP_SYNC_TOKEN_{}",
-            Self::normalized_remote_name(remote_name)
-        )
-    }
-
-    /// Env var name carrying the content-plane git push credential
-    /// for the remote named `remote_name`,
-    /// `MMCP_SYNC_PUSH_TOKEN_<NAME>`. Same derivation rule as
-    /// [`SyncConfig::token_env_name`].
-    #[must_use]
-    pub fn push_token_env_name(remote_name: &str) -> String {
-        format!(
-            "MMCP_SYNC_PUSH_TOKEN_{}",
-            Self::normalized_remote_name(remote_name)
-        )
-    }
-
-    /// Injective key used both to derive a remote's credential env
-    /// var suffix ([`SyncConfig::token_env_name`],
-    /// [`SyncConfig::push_token_env_name`]) and to decide whether two
-    /// remote names collide: ASCII-uppercase `remote_name`, then
-    /// replace every `-` with `_`.
-    ///
-    /// Every place that checks a remote name for uniqueness or for
-    /// spoofing a reserved name MUST compare this normalized form,
-    /// never the raw name: `token_env_name` collapses `prod-eu` and
-    /// `prod_eu` (or `PROD-EU`) to the identical env var
-    /// `MMCP_SYNC_TOKEN_PROD_EU`, so two differently-spelled remotes
-    /// that pass a raw-string uniqueness check still share one
-    /// credential slot. A user-level remote `prod-eu` and a
-    /// git-tracked project-level remote `prod_eu` pointed at an
-    /// attacker URL would otherwise both read the user's real token
-    /// from that shared env var, exfiltrating it to the attacker's
-    /// remote on the next fetch. `pub` (not crate-private): both
-    /// [`SyncConfig::validate`] (same-file check) and
-    /// `mmcp_store::sync::remotes` (cross-level check, reserved-name
-    /// guard) compare against this exact key, so the transform has
-    /// exactly one owning definition instead of being reimplemented
-    /// at each call site.
-    #[must_use]
-    pub fn normalized_remote_name(remote_name: &str) -> String {
-        remote_name.to_ascii_uppercase().replace('-', "_")
-    }
-
-    /// Single-file, single-level validation of this `remotes` list:
-    /// rejects two entries whose [`SyncConfig::normalized_remote_name`]
-    /// collide (not just entries sharing a raw `name`), and rejects
-    /// more than one entry marked `default = true`. Comparing the
-    /// normalized form here closes the same credential-collision hole
-    /// [`SyncConfig::normalized_remote_name`]'s own doc comment
-    /// describes, for two colliding names declared in the SAME file.
-    ///
-    /// Cross-level validation, a project remote colliding with a user
-    /// remote by name, or picking a winner between two
-    /// `default = true` remotes declared at different levels, needs
-    /// both config files loaded together and is deliberately left to
-    /// the resolver, a later wave.
-    ///
-    /// # Errors
-    /// [`ConfigError::DuplicateRemoteName`] (reported with the
-    /// colliding entry's own original, unnormalized `name`, for a
-    /// readable message) or [`ConfigError::MultipleDefaultRemotes`].
-    pub(crate) fn validate(&self) -> Result<(), ConfigError> {
-        let mut seen_normalized: HashSet<String> = HashSet::new();
-        for remote in &self.remotes {
-            if !seen_normalized.insert(Self::normalized_remote_name(remote.name())) {
-                return Err(ConfigError::DuplicateRemoteName {
-                    name: remote.name().to_string(),
-                });
-            }
-        }
-
-        let default_names: Vec<String> = self
-            .remotes
-            .iter()
-            .filter(|remote| remote.is_default())
-            .map(|remote| remote.name().to_string())
-            .collect();
-        if default_names.len() > 1 {
-            return Err(ConfigError::MultipleDefaultRemotes {
-                names: default_names,
-            });
-        }
-
-        Ok(())
-    }
-
-    /// Effective control-plane bearer token for `/sync/*` requests,
-    /// reading `MMCP_SYNC_TOKEN` from the real process environment.
-    /// Env-only: no file-backed fallback exists, so this credential
-    /// never round-trips through `.mmcp.toml`.
-    #[must_use]
-    pub fn resolve_token(&self) -> Option<String> {
-        Self::resolve_token_with(|key| std::env::var(key).ok())
-    }
-
-    /// Same resolution as [`SyncConfig::resolve_token`], with the
-    /// env lookup injected so tests never touch `std::env`, which
-    /// would race under cargo's default parallel test runner. An
-    /// empty env value is treated as absent, matching
-    /// `SyncClient::git_credentials`'s existing
-    /// `Some(token) if !token.is_empty()` pattern in the
-    /// `mmcp-sync` crate.
-    fn resolve_token_with(get: impl Fn(&str) -> Option<String>) -> Option<String> {
-        get(SYNC_TOKEN_ENV).filter(|token| !token.is_empty())
-    }
-
-    /// Effective content-plane git push credential, reading
-    /// `MMCP_SYNC_PUSH_TOKEN` from the real process environment.
-    /// Structurally a twin of [`SyncConfig::resolve_token`]: env-only,
-    /// same empty-value handling, distinct env var and distinct
-    /// destination (`SyncClient::with_push_credential`, never
-    /// `SyncClient::with_bearer`).
-    #[must_use]
-    pub fn resolve_push_token(&self) -> Option<String> {
-        Self::resolve_push_token_with(|key| std::env::var(key).ok())
-    }
-
-    /// Same resolution as [`SyncConfig::resolve_push_token`], with
-    /// the env lookup injected for the same race-avoidance reason as
-    /// [`SyncConfig::resolve_token_with`].
-    fn resolve_push_token_with(get: impl Fn(&str) -> Option<String>) -> Option<String> {
-        get(SYNC_PUSH_TOKEN_ENV).filter(|token| !token.is_empty())
-    }
-}
-
-/// One configured sync remote.
-///
-/// Internally tagged (`kind = "..."`) rather than untagged: an
-/// untagged enum collapses every variant's parse failure into one
-/// generic "data did not match any variant" error, which loses the
-/// per-field precision `deny_unknown_fields` otherwise gives each
-/// variant.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum Remote {
-    /// A remote mmcp server, reached over the control-plane and
-    /// content-plane HTTP APIs the client already speaks.
-    MmcpServer {
-        /// Unique name for this remote within its effective set.
-        name: String,
-        /// Base URL of the mmcp server.
-        url: String,
-        /// Whether this remote is the default push target. At most
-        /// one remote in a given `remotes` list may set this; see
-        /// [`SyncConfig::validate`].
-        #[serde(default)]
-        default: bool,
-        /// Whether `mmcp push --all-remotes` includes this remote.
-        #[serde(default = "default_include_in_push_all")]
-        include_in_push_all: bool,
-    },
-    /// A bare git remote reached directly, with no mmcp control
-    /// plane: no manifest, no ACL, no version-bump registration
-    /// through it.
-    DirectGit {
-        /// Unique name for this remote within its effective set.
-        name: String,
-        /// Git remote URL (any scheme the local git supports).
-        url: String,
-        /// How to authenticate against this remote.
-        #[serde(default)]
-        auth: RemoteAuth,
-        /// Which group this remote is scoped to (UUID or slug). A
-        /// `direct-git` remote's `url` names ONE concrete git
-        /// repository, unlike an `mmcp-server` remote's templated
-        /// URL shared across every group, so pushing several
-        /// unrelated groups' histories to the same repo's `main` is
-        /// incoherent. At project level, `None` resolves to the
-        /// project's own group at resolution time (a later wave, not
-        /// this struct); at user level, `None` is a loud resolution
-        /// error there, never silently defaulted, since a group-less
-        /// user-level entry would push whichever project is active
-        /// into the same shared repo.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        group: Option<String>,
-        /// Whether this remote is the default push target. At most
-        /// one remote in a given `remotes` list may set this; see
-        /// [`SyncConfig::validate`].
-        #[serde(default)]
-        default: bool,
-        /// Whether `mmcp push --all-remotes` includes this remote.
-        #[serde(default = "default_include_in_push_all")]
-        include_in_push_all: bool,
-    },
-}
-
-/// Default for [`Remote::MmcpServer::include_in_push_all`] and
-/// [`Remote::DirectGit::include_in_push_all`]: a remote participates
-/// in a bulk push unless it explicitly opts out.
-fn default_include_in_push_all() -> bool {
-    true
-}
-
-impl Remote {
-    /// This remote's `name` field, whichever variant it is.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        match self {
-            Self::MmcpServer { name, .. } | Self::DirectGit { name, .. } => name,
-        }
-    }
-
-    /// This remote's `default` field, whichever variant it is.
-    #[must_use]
-    pub fn is_default(&self) -> bool {
-        match self {
-            Self::MmcpServer { default, .. } | Self::DirectGit { default, .. } => *default,
-        }
-    }
-
-    /// This remote's `include_in_push_all` field, whichever variant
-    /// it is.
-    #[must_use]
-    pub fn include_in_push_all(&self) -> bool {
-        match self {
-            Self::MmcpServer {
-                include_in_push_all,
-                ..
-            }
-            | Self::DirectGit {
-                include_in_push_all,
-                ..
-            } => *include_in_push_all,
-        }
-    }
-
-    /// This remote's kind tag, matching the `kind` value its TOML
-    /// form serializes under.
-    #[must_use]
-    pub fn kind(&self) -> &'static str {
-        match self {
-            Self::MmcpServer { .. } => "mmcp-server",
-            Self::DirectGit { .. } => "direct-git",
-        }
-    }
-
-    /// This remote's declared `group` (UUID or slug), if any.
-    /// Always `None` for [`Remote::MmcpServer`], which is not scoped
-    /// to a single group: its templated URL serves every group in
-    /// the effective set. Only [`Remote::DirectGit`] carries this
-    /// field; see its own doc comment for the resolution rule.
-    #[must_use]
-    pub fn group(&self) -> Option<&str> {
-        match self {
-            Self::MmcpServer { .. } => None,
-            Self::DirectGit { group, .. } => group.as_deref(),
-        }
-    }
-}
-
-/// Auth selector for a [`Remote::DirectGit`] remote.
-///
-/// Deliberately not a free-text env-var-name field: that shape would
-/// let a git-tracked config redirect an arbitrary already-set env var
-/// to an arbitrary URL, exfiltrating whatever that variable holds.
-/// The actual env var name is always derived from the remote's own
-/// `name` ([`SyncConfig::token_env_name`]), never user-supplied.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RemoteAuth {
-    /// No credential; rely on ambient git/SSH environment (agent,
-    /// known_hosts, netrc, whatever the user's own git is already
-    /// configured with). Correct default for a plain `ssh://` remote.
-    #[default]
-    None,
-    /// Same runtime effect as `None` today (maps to
-    /// `mmcp_git::Credentials::None`); kept as a distinct explicit
-    /// variant so a config can document intent (this remote
-    /// deliberately relies on the user's SSH agent) even though
-    /// there is nothing extra to configure.
-    SshAgent,
-    /// Bearer credential read from the derived
-    /// `MMCP_SYNC_TOKEN_<NAME>` env var
-    /// ([`SyncConfig::token_env_name`]), mapped to
-    /// `mmcp_git::Credentials::BearerHttp`.
-    Bearer,
-}
-
 /// Unified opt-in surface for which groups and memories the project
 /// pulls into scope.
 ///
@@ -446,7 +98,12 @@ pub enum RemoteAuth {
 ///
 /// `no_default_global` and `auto_detect_languages` are the legacy
 /// toggles, kept under the same section so the config has a single
-/// source of truth for "what does this project subscribe to."
+/// source of truth for "what does this project subscribe to." Kept
+/// alongside [`ProjectConfig`] rather than in its own file: it is
+/// this project's own subscription surface, has no independent
+/// existence outside a [`ProjectConfig`], and every other consumer
+/// across the workspace reaches it only through
+/// `ProjectConfig.subscriptions`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubscriptionsConfig {
@@ -491,6 +148,7 @@ pub struct SubscriptionsConfig {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use crate::config::{Remote, RemoteAuth};
 
     #[test]
     fn minimal_config_requires_only_project_uuid() {
@@ -604,69 +262,6 @@ tags = ["git", "testing"]
         assert!(
             !rendered.contains("token"),
             "SyncConfig must never serialize a credential field: {rendered}"
-        );
-    }
-
-    #[test]
-    fn resolve_token_with_reads_the_env_value() {
-        let resolved = SyncConfig::resolve_token_with(|key| {
-            (key == SYNC_TOKEN_ENV).then(|| "env-token".to_string())
-        });
-        assert_eq!(resolved.as_deref(), Some("env-token"));
-    }
-
-    #[test]
-    fn resolve_token_with_is_none_when_env_absent() {
-        let resolved = SyncConfig::resolve_token_with(|_| None);
-        assert!(resolved.is_none());
-    }
-
-    #[test]
-    fn resolve_token_with_treats_an_empty_env_value_as_absent() {
-        let resolved =
-            SyncConfig::resolve_token_with(|key| (key == SYNC_TOKEN_ENV).then(String::new));
-        assert!(resolved.is_none());
-    }
-
-    #[test]
-    fn resolve_push_token_with_reads_the_env_value() {
-        let resolved = SyncConfig::resolve_push_token_with(|key| {
-            (key == SYNC_PUSH_TOKEN_ENV).then(|| "env-push-token".to_string())
-        });
-        assert_eq!(resolved.as_deref(), Some("env-push-token"));
-    }
-
-    #[test]
-    fn resolve_push_token_with_is_none_when_env_absent() {
-        let resolved = SyncConfig::resolve_push_token_with(|_| None);
-        assert!(resolved.is_none());
-    }
-
-    #[test]
-    fn resolve_push_token_with_treats_an_empty_env_value_as_absent() {
-        let resolved = SyncConfig::resolve_push_token_with(|key| {
-            (key == SYNC_PUSH_TOKEN_ENV).then(String::new)
-        });
-        assert!(resolved.is_none());
-    }
-
-    /// The two resolvers read distinct env vars: setting one must
-    /// never leak into the other's result. Structural regression
-    /// test for the credential-plane split.
-    #[test]
-    fn resolve_token_and_resolve_push_token_read_distinct_env_vars() {
-        let get = |key: &str| match key {
-            k if k == SYNC_TOKEN_ENV => Some("control-plane-value".to_string()),
-            k if k == SYNC_PUSH_TOKEN_ENV => Some("content-plane-value".to_string()),
-            _ => None,
-        };
-        assert_eq!(
-            SyncConfig::resolve_token_with(get).as_deref(),
-            Some("control-plane-value")
-        );
-        assert_eq!(
-            SyncConfig::resolve_push_token_with(get).as_deref(),
-            Some("content-plane-value")
         );
     }
 
@@ -851,17 +446,6 @@ url = "ssh://git@example.com/mirror.git"
     }
 
     #[test]
-    fn mmcp_server_group_accessor_is_always_none() {
-        let remote = Remote::MmcpServer {
-            name: "primary".to_string(),
-            url: "https://mmcp.example.com".to_string(),
-            default: true,
-            include_in_push_all: true,
-        };
-        assert_eq!(remote.group(), None);
-    }
-
-    #[test]
     fn server_url_and_remotes_together_are_purely_additive() {
         let source = r#"
 project_uuid = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
@@ -941,30 +525,6 @@ project_uuid = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
         assert!(!cfg.project_remote_only);
     }
 
-    #[test]
-    fn token_env_name_uses_the_documented_derivation_rule() {
-        assert_eq!(
-            SyncConfig::token_env_name("primary"),
-            "MMCP_SYNC_TOKEN_PRIMARY"
-        );
-        assert_eq!(
-            SyncConfig::token_env_name("prod-eu"),
-            "MMCP_SYNC_TOKEN_PROD_EU"
-        );
-    }
-
-    #[test]
-    fn push_token_env_name_uses_the_documented_derivation_rule() {
-        assert_eq!(
-            SyncConfig::push_token_env_name("primary"),
-            "MMCP_SYNC_PUSH_TOKEN_PRIMARY"
-        );
-        assert_eq!(
-            SyncConfig::push_token_env_name("prod-eu"),
-            "MMCP_SYNC_PUSH_TOKEN_PROD_EU"
-        );
-    }
-
     /// Exploit chain this closes: `prod-eu` and `prod_eu` (or
     /// `PROD-EU`) both derive the identical `MMCP_SYNC_TOKEN_PROD_EU`
     /// env var via `token_env_name`. Before comparing the normalized
@@ -1018,17 +578,5 @@ url = "https://attacker.example.com"
             err,
             ConfigError::DuplicateRemoteName { name } if name == "PROD-EU"
         ));
-    }
-
-    #[test]
-    fn normalized_remote_name_collapses_case_and_hyphen_underscore_variants() {
-        assert_eq!(
-            SyncConfig::normalized_remote_name("prod-eu"),
-            SyncConfig::normalized_remote_name("prod_eu")
-        );
-        assert_eq!(
-            SyncConfig::normalized_remote_name("prod-eu"),
-            SyncConfig::normalized_remote_name("PROD-EU")
-        );
     }
 }

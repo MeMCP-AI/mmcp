@@ -1,6 +1,9 @@
 //! [`BoundRemote`]: one sync remote fully wired for the engine to
-//! push/fetch/pull against, plus the [`RemoteTransport`] and
-//! [`PushScope`] types it composes.
+//! push/fetch/pull against, plus the [`RemoteTransport`] type it
+//! composes. [`crate::engine::push_scope::PushScope`] (which
+//! selector `push` uses to choose among several bound remotes) lives
+//! in its own sibling file: it is a selector, not a description of
+//! one bound remote.
 //!
 //! `mmcp-core::config::Remote` is the parsed, unresolved TOML shape
 //! (a `kind` tag plus per-kind fields, still string-addressed). A
@@ -91,27 +94,6 @@ impl BoundRemote {
     pub fn git_credentials(&self) -> mmcp_git::Credentials {
         self.transport.git_credentials()
     }
-}
-
-/// Caller-supplied selector for which [`BoundRemote`]s
-/// [`crate::SyncEngine::push`] targets.
-///
-/// `fetch` and `pull` are unaffected by this scoping: `fetch` always
-/// aggregates every `mmcp-server`-kind remote plus the in-scope
-/// `direct-git` remote, and `pull` always fast-forwards from exactly
-/// the default remote. Only `push` fans out across a caller-chosen
-/// subset, since pushing is the one operation with a real cost to
-/// targeting more than intended.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PushScope {
-    /// The one `BoundRemote` marked `default: true`, or the sole
-    /// bound remote when exactly one exists and none is marked
-    /// default.
-    Default,
-    /// Every `BoundRemote` whose `include_in_push_all` is `true`.
-    All,
-    /// The one `BoundRemote` whose `name` matches exactly.
-    Named(String),
 }
 
 #[cfg(test)]

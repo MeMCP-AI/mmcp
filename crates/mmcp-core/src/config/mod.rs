@@ -8,13 +8,18 @@
 //! Parsing is done through `serde` + the `toml` crate. Rendering back
 //! out is symmetric so round-tripping preserves unknown fields.
 
+mod env_vars;
 mod error;
 mod project;
+mod remote;
+mod remote_auth;
+mod sync_config;
 pub mod user;
 
+pub use env_vars::{SYNC_PUSH_TOKEN_ENV, SYNC_TOKEN_ENV};
 pub use error::ConfigError;
-pub use project::{
-    ProjectConfig, Remote, RemoteAuth, SYNC_PUSH_TOKEN_ENV, SYNC_TOKEN_ENV, SubscriptionsConfig,
-    SyncConfig, is_group_adopted,
-};
+pub use project::{ProjectConfig, SubscriptionsConfig, is_group_adopted};
+pub use remote::Remote;
+pub use remote_auth::RemoteAuth;
+pub use sync_config::SyncConfig;
 pub use user::{AuthorConfig, DefaultsConfig, LimitsConfig, UserConfig};

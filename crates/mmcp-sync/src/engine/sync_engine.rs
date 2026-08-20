@@ -10,7 +10,8 @@ use uuid::Uuid;
 
 use super::concurrency::run_bounded;
 use super::defaults::MAX_CONCURRENT_GROUP_TRANSFERS;
-use super::remote::{BoundRemote, PushScope, RemoteTransport};
+use super::push_scope::PushScope;
+use super::remote::{BoundRemote, RemoteTransport};
 use super::reports::{
     FetchReport, FetchedGroup, GroupSyncFailure, PullReport, PushReport, PushedGroup,
     RemoteManifestFailure, RemotePushOutcome, SyncReport,
