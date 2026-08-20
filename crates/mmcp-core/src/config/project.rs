@@ -293,6 +293,19 @@ pub enum Remote {
         /// How to authenticate against this remote.
         #[serde(default)]
         auth: RemoteAuth,
+        /// Which group this remote is scoped to (UUID or slug). A
+        /// `direct-git` remote's `url` names ONE concrete git
+        /// repository, unlike an `mmcp-server` remote's templated
+        /// URL shared across every group, so pushing several
+        /// unrelated groups' histories to the same repo's `main` is
+        /// incoherent. At project level, `None` resolves to the
+        /// project's own group at resolution time (a later wave, not
+        /// this struct); at user level, `None` is a loud resolution
+        /// error there, never silently defaulted, since a group-less
+        /// user-level entry would push whichever project is active
+        /// into the same shared repo.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<String>,
         /// Whether this remote is the default push target. At most
         /// one remote in a given `remotes` list may set this; see
         /// [`SyncConfig::validate`].
@@ -351,6 +364,19 @@ impl Remote {
         match self {
             Self::MmcpServer { .. } => "mmcp-server",
             Self::DirectGit { .. } => "direct-git",
+        }
+    }
+
+    /// This remote's declared `group` (UUID or slug), if any.
+    /// Always `None` for [`Remote::MmcpServer`], which is not scoped
+    /// to a single group: its templated URL serves every group in
+    /// the effective set. Only [`Remote::DirectGit`] carries this
+    /// field; see its own doc comment for the resolution rule.
+    #[must_use]
+    pub fn group(&self) -> Option<&str> {
+        match self {
+            Self::MmcpServer { .. } => None,
+            Self::DirectGit { group, .. } => group.as_deref(),
         }
     }
 }
@@ -539,6 +565,7 @@ tags = ["git", "testing"]
                         name: "mirror".to_string(),
                         url: "ssh://git@example.com/mirror.git".to_string(),
                         auth: RemoteAuth::Bearer,
+                        group: None,
                         default: false,
                         include_in_push_all: false,
                     },
@@ -751,6 +778,61 @@ include_in_push_all = false
         let rendered = cfg.to_toml().expect("render two-kind remotes config");
         let reparsed = ProjectConfig::from_toml(&rendered).expect("reparse rendered config");
         assert_eq!(cfg, reparsed);
+    }
+
+    #[test]
+    fn direct_git_group_field_round_trips_when_set() {
+        let source = r#"
+project_uuid = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
+
+[[sync.remotes]]
+kind = "direct-git"
+name = "mirror"
+url = "ssh://git@example.com/mirror.git"
+group = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c92"
+"#;
+        let cfg = ProjectConfig::from_toml(source).expect("parse direct-git with group");
+        assert_eq!(
+            cfg.sync.remotes[0].group(),
+            Some("018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c92")
+        );
+
+        let rendered = cfg.to_toml().expect("render direct-git with group");
+        let reparsed = ProjectConfig::from_toml(&rendered).expect("reparse rendered config");
+        assert_eq!(cfg, reparsed);
+    }
+
+    #[test]
+    fn direct_git_group_field_is_absent_from_toml_when_unset() {
+        let source = r#"
+project_uuid = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
+
+[[sync.remotes]]
+kind = "direct-git"
+name = "mirror"
+url = "ssh://git@example.com/mirror.git"
+"#;
+        let cfg = ProjectConfig::from_toml(source).expect("parse direct-git without group");
+        assert_eq!(cfg.sync.remotes[0].group(), None);
+        let rendered = cfg.to_toml().expect("render");
+        // `subscriptions.groups = []` legitimately contains the
+        // substring "group"; check for the `Remote::DirectGit`
+        // field's own key line specifically.
+        assert!(
+            !rendered.contains("\ngroup = "),
+            "unset group must not serialize: {rendered}"
+        );
+    }
+
+    #[test]
+    fn mmcp_server_group_accessor_is_always_none() {
+        let remote = Remote::MmcpServer {
+            name: "primary".to_string(),
+            url: "https://mmcp.example.com".to_string(),
+            default: true,
+            include_in_push_all: true,
+        };
+        assert_eq!(remote.group(), None);
     }
 
     #[test]
