@@ -11,10 +11,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use mmcp_core::config::ProjectConfig;
+use mmcp_core::config::{ProjectConfig, Remote, UserConfig};
 use mmcp_git::NativeBackend;
 use mmcp_store::{
-    GroupIndex, IndexResolver, MmcpHome, ResolvedAuthor, build_engine, config as project_config,
+    EffectiveRemotes, GroupIndex, IndexResolver, MmcpHome, ResolvedAuthor, build_engine,
+    config as project_config, resolve_effective_remotes,
 };
 use mmcp_sync::SyncEngine;
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
@@ -27,10 +28,29 @@ use uuid::Uuid;
 use crate::commands::sync::MIRROR_CHANGED_EVENT;
 use crate::error::{GuiError, GuiResult};
 
+/// Handle to a live sync engine plus the resolved remote-set summary
+/// the frontend shows instead of the old single `server_url`.
 pub struct SyncBundle {
     pub engine: SyncEngine,
     pub resolver: IndexResolver,
-    pub server_url: String,
+    /// Human-readable label for the effective remote set: the sole
+    /// remote's name, or `"N remote(s), default '<name>'"`. See
+    /// [`remotes_label`].
+    pub remotes_summary: String,
+    /// Base URL of the default remote when it is an `mmcp-server`
+    /// transport; feeds the reachability probe. `None` when the
+    /// default remote is `direct-git`, which has no manifest
+    /// endpoint to poll.
+    pub probe_url: Option<String>,
+}
+
+/// Status-relevant fields of a freshly rebuilt [`SyncBundle`],
+/// returned by [`AppState::rebuild_sync`] so a caller refreshes the
+/// status bar and respawns the reachability probe without re-reading
+/// the `sync` lock itself.
+pub struct SyncStatusSnapshot {
+    pub remotes_summary: String,
+    pub probe_url: Option<String>,
 }
 
 /// Mutable runtime wrapper. The bundle is rebuilt whenever the
@@ -70,7 +90,7 @@ impl AppState {
         let author = home.resolve_author();
 
         let reference_point = resolve_reference_point(app);
-        let sync = build_sync(&backend, &index, reference_point.as_deref())?;
+        let sync = build_sync(&backend, &index, &home, reference_point.as_deref()).await?;
 
         let watcher = spawn_mirror_watcher(app, &repos_root).unwrap_or_else(|err| {
             tracing::warn!(error = %err, "mirror watcher unavailable — manual refresh only");
@@ -99,13 +119,20 @@ impl AppState {
 
     /// Rebuild the sync bundle against a new reference point. Takes
     /// a write lock so in-flight pull/push finish first. Returns the
-    /// new server URL (if any) so the caller can restart the probe
-    /// loop.
-    pub async fn rebuild_sync(&self, reference_point: Option<&Path>) -> GuiResult<Option<String>> {
-        let fresh = build_sync(&self.backend, &self.index, reference_point)?;
-        let url = fresh.as_ref().map(|b| b.server_url.clone());
+    /// new bundle's status snapshot (if any) so the caller can
+    /// refresh the status bar and restart the probe loop.
+    pub async fn rebuild_sync(
+        &self,
+        reference_point: Option<&Path>,
+    ) -> GuiResult<Option<SyncStatusSnapshot>> {
+        let home = MmcpHome::discover().map_err(GuiError::from)?;
+        let fresh = build_sync(&self.backend, &self.index, &home, reference_point).await?;
+        let snapshot = fresh.as_ref().map(|b| SyncStatusSnapshot {
+            remotes_summary: b.remotes_summary.clone(),
+            probe_url: b.probe_url.clone(),
+        });
         *self.sync.write().await = fresh;
-        Ok(url)
+        Ok(snapshot)
     }
 }
 
@@ -211,30 +238,90 @@ fn spawn_mirror_watcher(
     Ok(Some(debouncer))
 }
 
-fn build_sync(
+async fn build_sync(
     backend: &Arc<NativeBackend>,
     index: &GroupIndex,
+    home: &MmcpHome,
     reference_point: Option<&Path>,
 ) -> GuiResult<Option<SyncBundle>> {
-    let Some(cfg) = load_project_sync(reference_point)? else {
+    let Some(effective) = load_effective_remotes(home, reference_point)? else {
         return Ok(None);
     };
-    let server_url = cfg.server_url.clone();
-    let token = cfg.resolve_token();
-    let push_token = cfg.resolve_push_token();
-    let (engine, resolver) = build_engine(
-        Arc::clone(backend),
-        index.clone(),
-        &server_url,
-        token.as_deref(),
-        push_token.as_deref(),
-    )
-    .map_err(GuiError::from)?;
+    let remotes_summary = remotes_label(&effective);
+    let probe_url = default_probe_url(&effective);
+    let (engine, resolver) = build_engine(Arc::clone(backend), index.clone(), &effective)
+        .await
+        .map_err(GuiError::from)?;
     Ok(Some(SyncBundle {
         engine,
         resolver,
-        server_url,
+        remotes_summary,
+        probe_url,
     }))
+}
+
+/// Short human-readable label for a resolved remote set, shown by the
+/// status bar in place of the old single `server_url`. Own copy of
+/// `mmcp_client::commands::sync::remotes_label`'s logic: that helper
+/// is `pub(crate)` to `mmcp-client`, and duplicating one small
+/// formatting function is cheaper than adding a cross-crate public
+/// export for a single display string.
+fn remotes_label(effective: &EffectiveRemotes) -> String {
+    match effective.default_remote() {
+        Some(default) if effective.remotes.len() == 1 => default.name().to_string(),
+        Some(default) => format!(
+            "{} remote(s), default '{}'",
+            effective.remotes.len(),
+            default.name()
+        ),
+        None => "(no remotes configured)".to_string(),
+    }
+}
+
+/// Base URL to feed the reachability probe: the default remote's URL
+/// when it is an `mmcp-server` transport, `None` when the effective
+/// set is empty or its default remote is `direct-git` (no manifest
+/// endpoint to poll).
+fn default_probe_url(effective: &EffectiveRemotes) -> Option<String> {
+    effective
+        .default_remote()
+        .and_then(|resolved| match &resolved.remote {
+            Remote::MmcpServer { url, .. } => Some(url.clone()),
+            Remote::DirectGit { .. } => None,
+        })
+}
+
+/// Load the project config at `reference_point` (or cwd when unset)
+/// plus `home`'s user config, and resolve the effective remote set
+/// per FR-301's precedence rules. `home` is caller-supplied (never
+/// re-discovered here) so a test can point it at a tempdir-rooted
+/// [`MmcpHome`] instead of the real `~/.mmcp`.
+///
+/// `Ok(None)` when no project config is found under the reference
+/// point, or when the resolved effective set is empty: the GUI treats
+/// a project with zero configured remotes the same as a project with
+/// no config at all, sync stays unconfigured either way.
+fn load_effective_remotes(
+    home: &MmcpHome,
+    reference_point: Option<&Path>,
+) -> GuiResult<Option<EffectiveRemotes>> {
+    let start: PathBuf = match reference_point {
+        Some(p) => p.to_path_buf(),
+        None => match std::env::current_dir() {
+            Ok(cwd) => cwd,
+            Err(_) => return Ok(None),
+        },
+    };
+    let Some(root) = project_config::find_project_root(&start) else {
+        return Ok(None);
+    };
+    let project_cfg: ProjectConfig = project_config::load(&root).map_err(GuiError::from)?;
+    let user_cfg: UserConfig = home.load_user_config().map_err(GuiError::from)?;
+    let effective = resolve_effective_remotes(&user_cfg, &project_cfg).map_err(GuiError::from)?;
+    if effective.remotes.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(effective))
 }
 
 /// Resolve the directory we use as the anchor for `.mmcp.toml`
@@ -253,26 +340,164 @@ fn resolve_reference_point(app: &AppHandle) -> Option<PathBuf> {
     candidate.is_dir().then_some(candidate)
 }
 
-fn load_project_sync(
-    reference_point: Option<&Path>,
-) -> GuiResult<Option<mmcp_core::config::SyncConfig>> {
-    let start: PathBuf = match reference_point {
-        Some(p) => p.to_path_buf(),
-        None => match std::env::current_dir() {
-            Ok(cwd) => cwd,
-            Err(_) => return Ok(None),
-        },
-    };
-    let Some(root) = project_config::find_project_root(&start) else {
-        return Ok(None);
-    };
-    let cfg: ProjectConfig = project_config::load(&root).map_err(GuiError::from)?;
-    Ok(cfg.sync)
-}
-
 #[cfg(test)]
 mod tests {
+    use mmcp_core::config::RemoteAuth;
+    use mmcp_store::{RemoteLevel, ResolvedRemote};
+
     use super::*;
+
+    fn mmcp_server_remote(name: &str, default: bool, level: RemoteLevel) -> ResolvedRemote {
+        ResolvedRemote {
+            remote: Remote::MmcpServer {
+                name: name.to_string(),
+                url: format!("https://{name}.example.com"),
+                default,
+                include_in_push_all: true,
+            },
+            level,
+            direct_git_group: None,
+        }
+    }
+
+    /// End-to-end proof that `load_effective_remotes` actually reads
+    /// AND merges both config files: a real tempdir-rooted user
+    /// config plus a real project `.mmcp.toml`, each declaring their
+    /// own remote. Guards the exact dead-fallback bug FR-301
+    /// documents (`UserConfig.sync` never consulted for real sync
+    /// work) from recurring on the GUI's own load path — the derived-
+    /// field tests above (`remotes_label`, `default_probe_url`) only
+    /// cover formatting on an already-merged `EffectiveRemotes`, not
+    /// the merge itself.
+    #[tokio::test]
+    async fn load_effective_remotes_merges_user_and_project_configs_with_project_default_winning() {
+        let home_tmp = tempfile::TempDir::new().expect("home tempdir");
+        let home = MmcpHome::from_root(home_tmp.path());
+        let user_cfg = UserConfig {
+            sync: mmcp_core::config::SyncConfig {
+                remotes: vec![Remote::MmcpServer {
+                    name: "u1".to_string(),
+                    url: "https://u1.example.com".to_string(),
+                    default: false,
+                    include_in_push_all: true,
+                }],
+                ..mmcp_core::config::SyncConfig::default()
+            },
+            ..UserConfig::default()
+        };
+        home.save_user_config(&user_cfg).expect("save user config");
+
+        let project_tmp = tempfile::TempDir::new().expect("project tempdir");
+        let project_cfg = ProjectConfig {
+            project_uuid: mmcp_core::id::ProjectUuid::new(),
+            project_slug: None,
+            sync: mmcp_core::config::SyncConfig {
+                remotes: vec![Remote::MmcpServer {
+                    name: "p1".to_string(),
+                    url: "https://p1.example.com".to_string(),
+                    default: true,
+                    include_in_push_all: true,
+                }],
+                ..mmcp_core::config::SyncConfig::default()
+            },
+            project_remote_only: false,
+            subscriptions: mmcp_core::config::SubscriptionsConfig::default(),
+        };
+        project_config::save(project_tmp.path(), &project_cfg).expect("save project config");
+
+        let effective = load_effective_remotes(&home, Some(project_tmp.path()))
+            .expect("load effective remotes")
+            .expect("some effective remotes");
+
+        let names: Vec<&str> = effective.remotes.iter().map(ResolvedRemote::name).collect();
+        assert_eq!(names, vec!["u1", "p1"]);
+        assert_eq!(
+            effective.default_remote().map(ResolvedRemote::name),
+            Some("p1")
+        );
+    }
+
+    #[test]
+    fn remotes_label_names_the_sole_remote_when_only_one_is_configured() {
+        let effective = EffectiveRemotes {
+            remotes: vec![mmcp_server_remote("primary", false, RemoteLevel::User)],
+            default_index: Some(0),
+        };
+        assert_eq!(remotes_label(&effective), "primary");
+    }
+
+    /// A multi-remote effective set (the case FR-301 adds) must
+    /// format as a count plus the resolved default's name, not
+    /// collapse to a single legacy `server_url`-shaped string.
+    #[test]
+    fn remotes_label_summarises_a_multi_remote_set_with_its_default() {
+        let effective = EffectiveRemotes {
+            remotes: vec![
+                mmcp_server_remote("u1", false, RemoteLevel::User),
+                mmcp_server_remote("p1", true, RemoteLevel::Project),
+            ],
+            default_index: Some(1),
+        };
+        assert_eq!(remotes_label(&effective), "2 remote(s), default 'p1'");
+    }
+
+    #[test]
+    fn remotes_label_reports_no_remotes_configured_on_an_empty_set() {
+        let effective = EffectiveRemotes {
+            remotes: vec![],
+            default_index: None,
+        };
+        assert_eq!(remotes_label(&effective), "(no remotes configured)");
+    }
+
+    /// `SyncBundle::probe_url` must read the default remote's URL
+    /// from a multi-remote set, not assume a single legacy
+    /// `server_url`.
+    #[test]
+    fn default_probe_url_reads_the_default_remotes_url_from_a_multi_remote_set() {
+        let effective = EffectiveRemotes {
+            remotes: vec![
+                mmcp_server_remote("u1", false, RemoteLevel::User),
+                mmcp_server_remote("p1", true, RemoteLevel::Project),
+            ],
+            default_index: Some(1),
+        };
+        assert_eq!(
+            default_probe_url(&effective).as_deref(),
+            Some("https://p1.example.com")
+        );
+    }
+
+    /// A `direct-git` default remote has no manifest endpoint: the
+    /// probe URL must be `None`, not the git remote URL.
+    #[test]
+    fn default_probe_url_is_none_for_a_direct_git_default_remote() {
+        let effective = EffectiveRemotes {
+            remotes: vec![ResolvedRemote {
+                remote: Remote::DirectGit {
+                    name: "mirror".to_string(),
+                    url: "ssh://git@example.com/mirror.git".to_string(),
+                    auth: RemoteAuth::None,
+                    group: Some("team-rust".to_string()),
+                    default: true,
+                    include_in_push_all: true,
+                },
+                level: RemoteLevel::Project,
+                direct_git_group: Some("team-rust".to_string()),
+            }],
+            default_index: Some(0),
+        };
+        assert_eq!(default_probe_url(&effective), None);
+    }
+
+    #[test]
+    fn default_probe_url_is_none_for_an_empty_effective_set() {
+        let effective = EffectiveRemotes {
+            remotes: vec![],
+            default_index: None,
+        };
+        assert_eq!(default_probe_url(&effective), None);
+    }
 
     /// A path under `<uuid>.git/` classifies as `Group` with the bare UUID, never the directory name.
     #[test]

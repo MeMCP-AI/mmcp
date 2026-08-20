@@ -1,6 +1,6 @@
 //! Sync commands (pull / push / status snapshot).
 
-use mmcp_sync::SyncFilter;
+use mmcp_sync::{PushScope, SyncFilter};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
@@ -16,7 +16,11 @@ pub const MIRROR_CHANGED_EVENT: &str = "mirror:changed";
 #[derive(Debug, Serialize)]
 pub struct SyncStatusDto {
     pub configured: bool,
-    pub server_url: Option<String>,
+    /// Human-readable label for the effective remote set; see
+    /// [`crate::state::SyncBundle::remotes_summary`]. Replaces the
+    /// old single `server_url` field now that a bundle can carry
+    /// several remotes.
+    pub remotes_summary: Option<String>,
 }
 
 /// Stable [`mmcp_store::Finding::code`] for each `mmcp_sync::SyncError`
@@ -32,6 +36,8 @@ fn sync_error_code(err: &mmcp_sync::SyncError) -> &'static str {
         mmcp_sync::SyncError::Conflict { .. } => "sync_conflict",
         mmcp_sync::SyncError::PullDiverged { .. } => "sync_pull_diverged",
         mmcp_sync::SyncError::PushDiverged { .. } => "sync_push_diverged",
+        mmcp_sync::SyncError::NoDefaultRemote => "sync_no_default_remote",
+        mmcp_sync::SyncError::UnknownRemote { .. } => "sync_unknown_remote",
     }
 }
 
@@ -51,19 +57,62 @@ fn sync_failures_dto(failed: &[mmcp_sync::GroupSyncFailure]) -> Vec<mmcp_store::
         .collect()
 }
 
+/// One `mmcp-server`-transport remote whose manifest poll itself
+/// errored during a pull's `fetch` phase; see
+/// `mmcp_sync::RemoteManifestFailure`. A remote-level failure, not a
+/// group-level one, so it carries no group id and is kept as its own
+/// DTO rather than overloading [`mmcp_store::Finding::group`] with a
+/// remote name.
+#[derive(Debug, Serialize)]
+pub struct RemoteManifestFailureDto {
+    pub remote_name: String,
+    pub code: &'static str,
+    pub message: String,
+}
+
+fn manifest_failures_dto(
+    failed: &[mmcp_sync::RemoteManifestFailure],
+) -> Vec<RemoteManifestFailureDto> {
+    failed
+        .iter()
+        .map(|f| RemoteManifestFailureDto {
+            remote_name: f.remote_name.clone(),
+            code: sync_error_code(&f.error),
+            message: f.error.to_string(),
+        })
+        .collect()
+}
+
 #[derive(Debug, Serialize)]
 pub struct PullReportDto {
     pub updated: usize,
     pub new_groups: usize,
     /// Groups whose own attempt errored; see `mmcp_sync::GroupSyncFailure`.
     pub failed: Vec<mmcp_store::Finding>,
+    /// Remotes whose manifest poll itself errored; see
+    /// `mmcp_sync::PullReport::manifest_failures`. Surfaced rather
+    /// than dropped, per the no-silent-failure rule: an unreachable
+    /// remote never disappears from the report.
+    pub manifest_failures: Vec<RemoteManifestFailureDto>,
+}
+
+/// One remote's push outcome, mirroring `mmcp_sync::RemotePushOutcome`
+/// with the same summarised failure shape `sync_pull` uses. Kept
+/// per-remote rather than flattened: `PushScope::All` (not exposed by
+/// the GUI yet, but `mmcp_sync::PushScope` already supports it) can
+/// target more than one remote, and flattening would lose which
+/// remote a given failure belongs to.
+#[derive(Debug, Serialize)]
+pub struct RemotePushOutcomeDto {
+    pub remote_name: String,
+    pub pushed: usize,
+    /// Groups whose own attempt errored; see `mmcp_sync::GroupSyncFailure`.
+    pub failed: Vec<mmcp_store::Finding>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct PushReportDto {
-    pub pushed: usize,
-    /// Groups whose own attempt errored; see `mmcp_sync::GroupSyncFailure`.
-    pub failed: Vec<mmcp_store::Finding>,
+    pub by_remote: Vec<RemotePushOutcomeDto>,
 }
 
 #[tauri::command]
@@ -71,7 +120,7 @@ pub async fn sync_status(state: State<'_, AppState>) -> GuiResult<SyncStatusDto>
     let guard = state.sync.read().await;
     Ok(SyncStatusDto {
         configured: guard.is_some(),
-        server_url: guard.as_ref().map(|s| s.server_url.clone()),
+        remotes_summary: guard.as_ref().map(|s| s.remotes_summary.clone()),
     })
 }
 
@@ -101,6 +150,7 @@ pub async fn sync_pull(app: AppHandle, state: State<'_, AppState>) -> GuiResult<
         updated: report.updated.len(),
         new_groups: report.new_groups.len(),
         failed: sync_failures_dto(&report.failed),
+        manifest_failures: manifest_failures_dto(&report.manifest_failures),
     })
 }
 
@@ -108,14 +158,29 @@ pub async fn sync_pull(app: AppHandle, state: State<'_, AppState>) -> GuiResult<
 pub async fn sync_push(state: State<'_, AppState>) -> GuiResult<PushReportDto> {
     let guard = state.sync.read().await;
     let bundle = guard.as_ref().ok_or(GuiError::SyncNotConfigured)?;
+    // `PushScope::Default` matches the CLI's own default landing
+    // point (`mmcp push` with no `--all-remotes`/`--remote` flag);
+    // the GUI doesn't expose a remote-scope picker yet.
     let report = bundle
         .engine
-        .push(SyncFilter::All, &bundle.resolver, &bundle.resolver)
+        .push(
+            SyncFilter::All,
+            PushScope::Default,
+            &bundle.resolver,
+            &bundle.resolver,
+        )
         .await
         .map_err(GuiError::from)?;
     Ok(PushReportDto {
-        pushed: report.pushed.len(),
-        failed: sync_failures_dto(&report.failed),
+        by_remote: report
+            .by_remote
+            .iter()
+            .map(|r| RemotePushOutcomeDto {
+                remote_name: r.remote_name.clone(),
+                pushed: r.pushed.len(),
+                failed: sync_failures_dto(&r.failed),
+            })
+            .collect(),
     })
 }
 
@@ -152,5 +217,49 @@ mod tests {
     fn empty_failed_list_produces_empty_dto() {
         let dto = sync_failures_dto(&[]);
         assert!(dto.is_empty());
+    }
+
+    /// `sync_error_code`'s match must stay exhaustive over every
+    /// `SyncError` variant `mmcp_sync::PushScope` resolution can
+    /// raise: `NoDefaultRemote` (an empty or ambiguous effective set)
+    /// and `UnknownRemote` (a `PushScope::Named` selector with no
+    /// matching bound remote) each get their own stable code, never
+    /// falling through to a shared or absent arm.
+    #[test]
+    fn no_default_remote_and_unknown_remote_map_to_their_own_stable_codes() {
+        assert_eq!(
+            sync_error_code(&SyncError::NoDefaultRemote),
+            "sync_no_default_remote"
+        );
+        assert_eq!(
+            sync_error_code(&SyncError::UnknownRemote {
+                name: "mirror".to_string()
+            }),
+            "sync_unknown_remote"
+        );
+    }
+
+    /// A remote-level manifest failure carries the failing remote's
+    /// name and a stable code, distinct from `sync_failures_dto`'s
+    /// group-keyed `Finding`s: there is no group id to attach a
+    /// manifest poll failure to.
+    #[test]
+    fn manifest_failures_dto_carries_remote_name_and_message() {
+        let failed = vec![mmcp_sync::RemoteManifestFailure {
+            remote_name: "mirror".to_string(),
+            error: SyncError::Transport("connection refused".to_string()),
+        }];
+
+        let dto = manifest_failures_dto(&failed);
+
+        assert_eq!(dto.len(), 1);
+        assert_eq!(dto[0].remote_name, "mirror");
+        assert_eq!(dto[0].code, "sync_transport_error");
+        assert_eq!(dto[0].message, "transport error: connection refused");
+    }
+
+    #[test]
+    fn empty_manifest_failures_produces_empty_dto() {
+        assert!(manifest_failures_dto(&[]).is_empty());
     }
 }

@@ -75,7 +75,7 @@ pub async fn set_reference_point(
     path: Option<String>,
 ) -> GuiResult<SyncStatusDto> {
     let resolved = normalise(path);
-    let new_url = state.rebuild_sync(resolved.as_deref()).await?;
+    let snapshot = state.rebuild_sync(resolved.as_deref()).await?;
 
     // Swap probes. An aborted task just drops its future; no need to
     // await it — the old `get_manifest()` request may still finish
@@ -84,13 +84,13 @@ pub async fn set_reference_point(
     if let Some(old) = probe.take() {
         old.abort();
     }
-    if let Some(url) = new_url.clone() {
+    if let Some(url) = snapshot.as_ref().and_then(|s| s.probe_url.clone()) {
         let fresh = tauri::async_runtime::spawn(probe_loop(app.clone(), url));
         *probe = Some(fresh);
     }
 
     Ok(SyncStatusDto {
-        configured: new_url.is_some(),
-        server_url: new_url,
+        configured: snapshot.is_some(),
+        remotes_summary: snapshot.map(|s| s.remotes_summary),
     })
 }

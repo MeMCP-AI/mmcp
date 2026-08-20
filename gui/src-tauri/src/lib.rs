@@ -76,13 +76,13 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 match AppState::discover(&discover_handle).await {
                     Ok(state) => {
-                        let server_url = state
+                        let probe_url = state
                             .sync
                             .read()
                             .await
                             .as_ref()
-                            .map(|s| s.server_url.clone());
-                        if let Some(url) = server_url {
+                            .and_then(|s| s.probe_url.clone());
+                        if let Some(url) = probe_url {
                             let probe =
                                 tauri::async_runtime::spawn(probe_loop(handle.clone(), url));
                             *state.probe.lock().await = Some(probe);
