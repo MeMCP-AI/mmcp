@@ -99,7 +99,8 @@ mod tests {
         ProjectConfig {
             project_uuid: ProjectUuid::new(),
             project_slug: None,
-            sync,
+            sync: sync.unwrap_or_default(),
+            project_remote_only: false,
             subscriptions,
         }
     }

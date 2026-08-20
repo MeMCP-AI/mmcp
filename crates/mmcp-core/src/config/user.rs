@@ -6,15 +6,20 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::SyncConfig;
+use super::{ConfigError, SyncConfig};
 
 /// User-level configuration. All fields are optional; a missing
 /// config file is equivalent to an empty struct.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UserConfig {
-    /// Default sync server. Project `.mmcp.toml` `[sync]` overrides.
-    pub sync: Option<SyncConfig>,
+    /// Default sync remotes, inherited by every project unless a
+    /// project sets its own `project_remote_only = true`. Always
+    /// present (`SyncConfig::default()` when unset), the same shape
+    /// as `ProjectConfig.sync`, so the sync surface is uniform
+    /// between user and project level.
+    #[serde(default, skip_serializing_if = "SyncConfig::is_empty")]
+    pub sync: SyncConfig,
 
     /// Author identity for commits.
     pub author: Option<AuthorConfig>,
@@ -88,13 +93,24 @@ pub struct LimitsConfig {
 
 impl UserConfig {
     /// Parse from a TOML string.
-    pub fn from_toml(text: &str) -> Result<Self, toml::de::Error> {
-        toml::from_str(text)
+    ///
+    /// # Errors
+    /// Returns [`ConfigError::Parse`] on malformed TOML, or
+    /// [`ConfigError::DuplicateRemoteName`] /
+    /// [`ConfigError::MultipleDefaultRemotes`] when `sync.remotes`
+    /// fails [`SyncConfig::validate`]'s single-file, single-level
+    /// checks. Widened from `toml::de::Error` to [`ConfigError`] to
+    /// carry these new semantic-validation failures; mirrors
+    /// `ProjectConfig::from_toml`.
+    pub fn from_toml(text: &str) -> Result<Self, ConfigError> {
+        let cfg: Self = toml::from_str(text).map_err(ConfigError::from)?;
+        cfg.sync.validate()?;
+        Ok(cfg)
     }
 
     /// Render to a TOML string.
-    pub fn to_toml(&self) -> Result<String, toml::ser::Error> {
-        toml::to_string_pretty(self)
+    pub fn to_toml(&self) -> Result<String, ConfigError> {
+        toml::to_string_pretty(self).map_err(ConfigError::from)
     }
 }
 
@@ -106,7 +122,7 @@ mod tests {
     #[test]
     fn empty_string_parses_to_defaults() {
         let cfg: UserConfig = toml::from_str("").unwrap();
-        assert!(cfg.sync.is_none());
+        assert!(cfg.sync.is_empty());
         assert!(cfg.author.is_none());
         assert!(cfg.defaults.is_none());
         assert!(cfg.limits.is_none());
@@ -136,8 +152,8 @@ max_handle_length = 32
         assert_eq!(cfg.author.as_ref().unwrap().name.as_deref(), Some("Alice"));
         assert_eq!(cfg.author.as_ref().unwrap().git_fallback, Some(true));
         assert_eq!(
-            cfg.sync.as_ref().unwrap().server_url,
-            "https://mmcp.example.com"
+            cfg.sync.server_url.as_deref(),
+            Some("https://mmcp.example.com")
         );
         assert_eq!(
             cfg.defaults.as_ref().unwrap().group.as_deref(),
@@ -170,5 +186,49 @@ max_handle_length = 32
         let text = "[author]\nname = \"Bob\"\n";
         let cfg = UserConfig::from_toml(text).unwrap();
         assert!(cfg.author.as_ref().unwrap().git_fallback.is_none());
+    }
+
+    /// Same uniform `SyncConfig` surface as `ProjectConfig`:
+    /// `remotes` parses, round-trips, and exposes the same helper
+    /// methods at user level.
+    #[test]
+    fn remotes_round_trip_at_user_level() {
+        let text = r#"
+[[sync.remotes]]
+kind = "mmcp-server"
+name = "primary"
+url = "https://mmcp.example.com"
+default = true
+"#;
+        let cfg = UserConfig::from_toml(text).unwrap();
+        assert_eq!(cfg.sync.remotes.len(), 1);
+        assert_eq!(cfg.sync.remotes[0].name(), "primary");
+        assert!(cfg.sync.remotes[0].is_default());
+
+        let rendered = cfg.to_toml().unwrap();
+        let reparsed = UserConfig::from_toml(&rendered).unwrap();
+        assert_eq!(cfg.sync, reparsed.sync);
+    }
+
+    /// The same single-file, single-level duplicate-name check
+    /// applies at user level as at project level.
+    #[test]
+    fn duplicate_remote_names_are_rejected_at_user_level() {
+        let text = r#"
+[[sync.remotes]]
+kind = "mmcp-server"
+name = "primary"
+url = "https://a.example.com"
+
+[[sync.remotes]]
+kind = "mmcp-server"
+name = "primary"
+url = "https://b.example.com"
+"#;
+        let err = UserConfig::from_toml(text).expect_err("duplicate name must be rejected");
+        assert!(matches!(
+            err,
+            ConfigError::DuplicateRemoteName { name } if name == "primary"
+        ));
     }
 }

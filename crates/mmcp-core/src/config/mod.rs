@@ -13,5 +13,7 @@ mod project;
 pub mod user;
 
 pub use error::ConfigError;
-pub use project::{ProjectConfig, SubscriptionsConfig, SyncConfig, is_group_adopted};
+pub use project::{
+    ProjectConfig, Remote, RemoteAuth, SubscriptionsConfig, SyncConfig, is_group_adopted,
+};
 pub use user::{AuthorConfig, DefaultsConfig, LimitsConfig, UserConfig};
