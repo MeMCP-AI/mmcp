@@ -199,13 +199,23 @@ fn resolve_direct_git_group(
 
 /// A remote name flows verbatim into `refs/remotes/<name>/main`
 /// (`mmcp_sync::BoundRemote::tracking_ref`); constrain it to the
-/// charset a git ref path can safely carry.
+/// charset a git ref path can safely carry. Also reject the two
+/// names reserved for legacy-shorthand synthesis
+/// ([`USER_LEGACY_REMOTE_NAME`] / [`PROJECT_LEGACY_REMOTE_NAME`]):
+/// without this, a declared `[[sync.remotes]]` entry could spoof one
+/// of those reserved names at a level with no `server_url` set (so
+/// nothing synthesized to collide with in
+/// [`check_name_collisions`]), and `ResolvedRemote::is_legacy_shorthand`
+/// would then misclassify it as the shorthand, making it read the
+/// un-suffixed `MMCP_SYNC_TOKEN(_PUSH)?` env vars instead of its own
+/// name-derived pair.
 fn validate_remote_name(name: &str) -> Result<(), StoreError> {
-    let valid = !name.is_empty()
+    let charset_valid = !name.is_empty()
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    if valid {
+    let reserved = matches!(name, USER_LEGACY_REMOTE_NAME | PROJECT_LEGACY_REMOTE_NAME);
+    if charset_valid && !reserved {
         Ok(())
     } else {
         Err(StoreError::InvalidRemoteName {
@@ -560,6 +570,31 @@ mod tests {
         assert!(matches!(
             err,
             StoreError::InvalidRemoteName { name } if name == "has space"
+        ));
+    }
+
+    #[test]
+    fn a_declared_remote_may_not_spoof_a_reserved_legacy_synthetic_name() {
+        // No `server_url` shorthand set at either level, so there is
+        // nothing synthesized for a same-named declared remote to
+        // collide with in `check_name_collisions`; the reserved name
+        // must still be rejected in `validate_remote_name` itself, or
+        // `ResolvedRemote::is_legacy_shorthand` would misclassify this
+        // declared remote and route it to the wrong credential env
+        // vars.
+        let user = user_with(SyncConfig::default());
+        let project = project_with(
+            SyncConfig {
+                remotes: vec![mmcp_server(USER_LEGACY_REMOTE_NAME, false)],
+                ..SyncConfig::default()
+            },
+            false,
+        );
+        let err =
+            resolve_effective_remotes(&user, &project).expect_err("reserved name spoof must error");
+        assert!(matches!(
+            err,
+            StoreError::InvalidRemoteName { name } if name == USER_LEGACY_REMOTE_NAME
         ));
     }
 }
