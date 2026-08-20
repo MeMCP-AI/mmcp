@@ -4,10 +4,11 @@ use serde::{Deserialize, Serialize};
 
 /// Auth selector for a [`crate::config::Remote::DirectGit`] remote.
 ///
-/// Own file rather than sharing [`crate::config::remote`]: unlike
-/// [`crate::config::Remote`]'s own `default_include_in_push_all`
-/// helper, this is a full independent selector type, not a
-/// tightly-coupled implementation detail of one field.
+/// Own file rather than sharing the sibling module that defines
+/// [`crate::config::Remote`]: unlike that struct's own
+/// `default_include_in_push_all` helper, this is a full independent
+/// selector type, not a tightly-coupled implementation detail of one
+/// field.
 ///
 /// Deliberately not a free-text env-var-name field: that shape would
 /// let a git-tracked config redirect an arbitrary already-set env var

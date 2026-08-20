@@ -25,18 +25,21 @@
 //! so every path except real network transport is covered without
 //! a running `mmcp-server`.
 //!
-//! Module layout: [`defaults`] holds the shared concurrency cap,
-//! [`concurrency`] holds the [`run_bounded`] helper (exported at the
-//! crate root so `mmcp-server` can reuse it instead of hand-rolling
-//! its own bounded fan-out), [`scope`] holds scope-filter matching,
-//! [`resolver`] holds the local-handle-lookup trait, [`remote`] holds
+//! Module layout: the `defaults` module holds the shared concurrency
+//! cap, the `concurrency` module holds the [`run_bounded`] helper
+//! (exported at the crate root so `mmcp-server` can reuse it instead
+//! of hand-rolling its own bounded fan-out), the `scope` module holds
+//! [`NoScopeIndex`] and the rest of scope-filter matching, the
+//! `resolver` module holds [`GroupHandleResolver`], the
+//! local-handle-lookup trait, the `remote` module holds
 //! [`BoundRemote`] and [`RemoteTransport`], the types describing one
-//! engine-bound remote, [`push_scope`] holds [`PushScope`], the
-//! selector for how `push` chooses among several bound remotes (its
-//! own file: a selector is a distinct concern from a bound remote's
-//! own description), [`sync_engine`] holds [`SyncEngine`] itself, its
-//! push/pull/fetch orchestration, and the `partition_sync_outcomes`
-//! helper the three verbs share, and [`reports`] holds the outcome
+//! engine-bound remote, the `push_scope` module holds [`PushScope`],
+//! the selector for how `push` chooses among several bound remotes
+//! (its own file: a selector is a distinct concern from a bound
+//! remote's own description), the `sync_engine` module holds
+//! [`SyncEngine`] itself, its push/pull/fetch orchestration, and the
+//! `partition_sync_outcomes` helper the three verbs share, and the
+//! `reports` module holds [`SyncReport`] and the rest of the outcome
 //! types every verb returns.
 
 mod concurrency;

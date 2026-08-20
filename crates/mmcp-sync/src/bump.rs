@@ -7,7 +7,7 @@
 //! accepted with or without leading whitespace and case insensitive on the key.
 //! Recognised values are `patch`, `minor`, `major`.
 //! Anything else - absent trailer, mis-spelled key, unknown level - falls back to [`BumpIntent::default`],
-//! which is `Minor` and documented as the "typical rule tweak" level in [`mmcp_core::memory::bump`].
+//! which is `Minor`, documented on [`mmcp_core::memory::BumpIntent`] itself as the rule-addition-or-removal level.
 
 use mmcp_core::memory::BumpIntent;
 

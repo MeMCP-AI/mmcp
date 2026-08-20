@@ -60,8 +60,8 @@ impl RemoteTransport {
 #[derive(Debug, Clone)]
 pub struct BoundRemote {
     /// Unique name within the engine's remote list. Feeds
-    /// [`BoundRemote::tracking_ref`] and [`PushScope::Named`]
-    /// matching.
+    /// [`BoundRemote::tracking_ref`] and
+    /// [`crate::PushScope::Named`] matching.
     pub name: String,
     /// Whether this is the engine's default push target and the
     /// only remote [`crate::SyncEngine::pull`] fast-forwards local

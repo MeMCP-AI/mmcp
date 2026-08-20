@@ -17,8 +17,8 @@ pub struct PullReport {
     pub new_groups: Vec<crate::client::RemoteGroup>,
     /// Groups that failed either during the fetch phase or the
     /// fast-forward phase. See [`GroupSyncFailure`] and
-    /// [`super::PushReport::failed`]'s doc comment for the same
-    /// "every group is still attempted" guarantee.
+    /// [`super::RemotePushOutcome::failed`]'s doc comment for the
+    /// same "every group is still attempted" guarantee.
     pub failed: Vec<GroupSyncFailure>,
     /// Remotes whose manifest poll itself errored during the `fetch`
     /// phase `pull` delegates to, carried forward unchanged: `pull`'s

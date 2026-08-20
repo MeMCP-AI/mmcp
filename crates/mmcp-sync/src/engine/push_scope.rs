@@ -11,10 +11,10 @@
 /// subset, since pushing is the one operation with a real cost to
 /// targeting more than intended.
 ///
-/// Own file, split out of [`crate::engine::remote`]: a push-scope
-/// SELECTOR is a distinct concern from [`crate::BoundRemote`] /
-/// [`crate::RemoteTransport`], which describe one already-bound
-/// remote rather than choosing among several.
+/// Own file, split out of the sibling module that defines
+/// [`crate::BoundRemote`] / [`crate::RemoteTransport`]: a push-scope
+/// SELECTOR is a distinct concern from those types, which describe
+/// one already-bound remote rather than choosing among several.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PushScope {
     /// The one `BoundRemote` marked `default: true`, or the sole
