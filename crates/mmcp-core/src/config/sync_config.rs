@@ -121,11 +121,20 @@ impl SyncConfig {
     /// both config files loaded together and is deliberately left to
     /// the resolver, a later wave.
     ///
+    /// Called from every writer of `.mmcp.toml`/`config.toml`, not
+    /// just the load path: [`crate::config::ProjectConfig::from_toml`]
+    /// and [`crate::config::UserConfig::from_toml`] call it on read, and
+    /// `mmcp-store`'s `config::save`/`MmcpHome::save_user_config`
+    /// call it before serializing, so a caller (CLI or GUI) can never
+    /// persist a `.mmcp.toml`/`config.toml` that the loader would
+    /// then reject. `pub`, not `pub(crate)`: any future writer
+    /// outside `mmcp-core` must validate before it writes too.
+    ///
     /// # Errors
     /// [`ConfigError::DuplicateRemoteName`] (reported with the
     /// colliding entry's own original, unnormalized `name`, for a
     /// readable message) or [`ConfigError::MultipleDefaultRemotes`].
-    pub(crate) fn validate(&self) -> Result<(), ConfigError> {
+    pub fn validate(&self) -> Result<(), ConfigError> {
         let mut seen_normalized: HashSet<String> = HashSet::new();
         for remote in &self.remotes {
             if !seen_normalized.insert(Self::normalized_remote_name(remote.name())) {

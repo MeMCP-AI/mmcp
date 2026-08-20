@@ -71,8 +71,19 @@ pub fn load(root: &Path) -> Result<ProjectConfig, StoreError> {
 
 /// Render `config` into the project's `.mmcp.toml`.
 /// Overwrites any existing file.
+///
+/// Validates `config.sync` (same [`mmcp_core::config::SyncConfig::validate`]
+/// check `ProjectConfig::from_toml` runs on read) BEFORE writing, so
+/// this function can never persist a `.mmcp.toml` that a subsequent
+/// `load` would then reject: a duplicate remote name or more than
+/// one `default = true` remote fails here, at write time, instead of
+/// silently landing on disk and only surfacing on the next load.
 pub fn save(root: &Path, config: &ProjectConfig) -> Result<(), StoreError> {
     let path = config_path_for(root);
+    config
+        .sync
+        .validate()
+        .map_err(|error| attach_path(path.clone(), error))?;
     let text = config
         .to_toml()
         .map_err(|error| attach_path(path.clone(), error))?;
@@ -185,5 +196,92 @@ default = true
             }
             other => panic!("expected StoreError::ConfigMultipleDefaultRemotes, got {other:?}"),
         }
+    }
+
+    fn project_with_remotes(remotes: Vec<mmcp_core::config::Remote>) -> ProjectConfig {
+        ProjectConfig {
+            project_uuid: mmcp_core::id::ProjectUuid::from_uuid(
+                uuid::Uuid::parse_str("018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91").unwrap(),
+            ),
+            project_slug: None,
+            sync: mmcp_core::config::SyncConfig {
+                server_url: None,
+                remotes,
+            },
+            project_remote_only: false,
+            subscriptions: mmcp_core::config::SubscriptionsConfig::default(),
+        }
+    }
+
+    /// A `ProjectConfig` built programmatically (never round-tripped
+    /// through TOML text) with two `[[sync.remotes]]` entries sharing
+    /// a `name` must be REJECTED by `save`, not merely by `from_toml`
+    /// on a subsequent load: this is the write path itself, closing
+    /// the gap where the GUI's `save_project_config` command used to
+    /// persist a config it could then no longer load back.
+    #[test]
+    fn save_rejects_a_programmatically_built_config_with_duplicate_remote_names() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let root = tmp.path();
+        let cfg = project_with_remotes(vec![
+            mmcp_core::config::Remote::MmcpServer {
+                name: "primary".to_string(),
+                url: "https://a.example.com".to_string(),
+                default: false,
+                include_in_push_all: true,
+            },
+            mmcp_core::config::Remote::MmcpServer {
+                name: "primary".to_string(),
+                url: "https://b.example.com".to_string(),
+                default: false,
+                include_in_push_all: true,
+            },
+        ]);
+
+        let err = save(root, &cfg).expect_err("duplicate remote name must not save");
+
+        match &err {
+            StoreError::ConfigDuplicateRemoteName { name, .. } => assert_eq!(name, "primary"),
+            other => panic!("expected StoreError::ConfigDuplicateRemoteName, got {other:?}"),
+        }
+        assert!(
+            !config_path_for(root).exists(),
+            "a rejected save must not leave a partial .mmcp.toml on disk"
+        );
+    }
+
+    /// Same write-path guard, for the other `SyncConfig::validate`
+    /// failure mode: two remotes both marked `default = true`.
+    #[test]
+    fn save_rejects_a_programmatically_built_config_with_two_default_remotes() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let root = tmp.path();
+        let cfg = project_with_remotes(vec![
+            mmcp_core::config::Remote::MmcpServer {
+                name: "primary".to_string(),
+                url: "https://a.example.com".to_string(),
+                default: true,
+                include_in_push_all: true,
+            },
+            mmcp_core::config::Remote::MmcpServer {
+                name: "secondary".to_string(),
+                url: "https://b.example.com".to_string(),
+                default: true,
+                include_in_push_all: true,
+            },
+        ]);
+
+        let err = save(root, &cfg).expect_err("two default remotes must not save");
+
+        match &err {
+            StoreError::ConfigMultipleDefaultRemotes { names, .. } => {
+                assert_eq!(names, &vec!["primary".to_string(), "secondary".to_string()]);
+            }
+            other => panic!("expected StoreError::ConfigMultipleDefaultRemotes, got {other:?}"),
+        }
+        assert!(
+            !config_path_for(root).exists(),
+            "a rejected save must not leave a partial .mmcp.toml on disk"
+        );
     }
 }

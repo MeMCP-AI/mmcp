@@ -107,8 +107,17 @@ impl MmcpHome {
     /// Persist the user-level config.
     /// Creates the home directory if it does not yet exist,
     /// so callers can write the first config without a separate `init` step.
+    ///
+    /// Validates `cfg.sync` before writing, mirroring
+    /// [`crate::config::save`]'s project-level guard: a duplicate
+    /// remote name or more than one `default = true` remote fails
+    /// here, at write time, instead of landing on disk and only
+    /// surfacing on the next `load_user_config`.
     pub fn save_user_config(&self, cfg: &UserConfig) -> Result<(), StoreError> {
         let path = self.user_config_path();
+        cfg.sync
+            .validate()
+            .map_err(|error| crate::config::attach_path(path.clone(), error))?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|source| {
                 StoreError::io(parent.to_path_buf(), FileOperation::CreateDir, source)
@@ -252,5 +261,93 @@ mod tests {
             .and_then(|s| s.downcast_ref::<std::io::Error>())
             .expect("source must be the real std::io::Error, not a stringified copy");
         assert_eq!(chained.kind(), expected_kind);
+    }
+
+    fn user_config_with_remotes(remotes: Vec<mmcp_core::config::Remote>) -> UserConfig {
+        UserConfig {
+            sync: mmcp_core::config::SyncConfig {
+                server_url: None,
+                remotes,
+            },
+            author: None,
+            defaults: None,
+            limits: None,
+        }
+    }
+
+    /// A `UserConfig` built programmatically (never round-tripped
+    /// through TOML text) with two `[[sync.remotes]]` entries sharing
+    /// a `name` must be REJECTED by `save_user_config`, not merely by
+    /// `from_toml` on a subsequent load: mirrors
+    /// `crate::config::save`'s project-level test, closing the same
+    /// gap on the GUI's `save_user_config` command.
+    #[test]
+    fn save_user_config_rejects_a_programmatically_built_config_with_duplicate_remote_names() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let home = MmcpHome::from_root(tmp.path());
+        let cfg = user_config_with_remotes(vec![
+            mmcp_core::config::Remote::MmcpServer {
+                name: "primary".to_string(),
+                url: "https://a.example.com".to_string(),
+                default: false,
+                include_in_push_all: true,
+            },
+            mmcp_core::config::Remote::MmcpServer {
+                name: "primary".to_string(),
+                url: "https://b.example.com".to_string(),
+                default: false,
+                include_in_push_all: true,
+            },
+        ]);
+
+        let err = home
+            .save_user_config(&cfg)
+            .expect_err("duplicate remote name must not save");
+
+        match &err {
+            StoreError::ConfigDuplicateRemoteName { name, .. } => assert_eq!(name, "primary"),
+            other => panic!("expected StoreError::ConfigDuplicateRemoteName, got {other:?}"),
+        }
+        assert!(
+            !home.user_config_path().exists(),
+            "a rejected save must not leave a partial config.toml on disk"
+        );
+    }
+
+    /// Same write-path guard, for the other `SyncConfig::validate`
+    /// failure mode: two remotes both marked `default = true`.
+    #[test]
+    fn save_user_config_rejects_a_programmatically_built_config_with_two_default_remotes() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let home = MmcpHome::from_root(tmp.path());
+        let cfg = user_config_with_remotes(vec![
+            mmcp_core::config::Remote::MmcpServer {
+                name: "primary".to_string(),
+                url: "https://a.example.com".to_string(),
+                default: true,
+                include_in_push_all: true,
+            },
+            mmcp_core::config::Remote::MmcpServer {
+                name: "secondary".to_string(),
+                url: "https://b.example.com".to_string(),
+                default: true,
+                include_in_push_all: true,
+            },
+        ]);
+
+        let err = home
+            .save_user_config(&cfg)
+            .expect_err("two default remotes must not save");
+
+        match &err {
+            StoreError::ConfigMultipleDefaultRemotes { names, .. } => {
+                assert_eq!(names, &vec!["primary".to_string(), "secondary".to_string()]);
+            }
+            other => panic!("expected StoreError::ConfigMultipleDefaultRemotes, got {other:?}"),
+        }
+        assert!(
+            !home.user_config_path().exists(),
+            "a rejected save must not leave a partial config.toml on disk"
+        );
     }
 }
