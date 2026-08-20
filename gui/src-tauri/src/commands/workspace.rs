@@ -15,8 +15,8 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::commands::sync::SyncStatusDto;
 use crate::error::{GuiDialogError, GuiResult};
-use crate::probe_loop;
 use crate::state::AppState;
+use crate::{emit_reachability_not_applicable, probe_loop};
 
 fn normalise(path: Option<String>) -> Option<PathBuf> {
     let raw = path?;
@@ -26,6 +26,29 @@ fn normalise(path: Option<String>) -> Option<PathBuf> {
     }
     let candidate = PathBuf::from(trimmed);
     candidate.is_dir().then_some(candidate)
+}
+
+/// What `set_reference_point` does with the reachability probe after
+/// a sync-bundle rebuild, given the fresh bundle's `probe_url`. A
+/// pure decision, factored out of the command so it is unit-testable
+/// without a real `AppHandle`: the `None` arm covers a `direct-git`
+/// default (or no sync at all), where a stale online/offline reading
+/// from the PREVIOUS workspace must not linger on screen because
+/// nothing told the frontend the probe no longer applies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProbeAction {
+    /// Respawn the probe against this URL.
+    Spawn(String),
+    /// No probe applies to the new default remote: reset the badge
+    /// instead of leaving a stale reading on screen.
+    Reset,
+}
+
+fn probe_action_for(probe_url: Option<String>) -> ProbeAction {
+    match probe_url {
+        Some(url) => ProbeAction::Spawn(url),
+        None => ProbeAction::Reset,
+    }
 }
 
 /// Open a native folder picker parented to the main window,
@@ -78,19 +101,48 @@ pub async fn set_reference_point(
     let snapshot = state.rebuild_sync(resolved.as_deref()).await?;
 
     // Swap probes. An aborted task just drops its future; no need to
-    // await it — the old `get_manifest()` request may still finish
-    // on the wire but its result is discarded.
+    // await it, the old `get_manifest()` request may still finish on
+    // the wire but its result is discarded.
     let mut probe = state.probe.lock().await;
     if let Some(old) = probe.take() {
         old.abort();
     }
-    if let Some(url) = snapshot.as_ref().and_then(|s| s.probe_url.clone()) {
-        let fresh = tauri::async_runtime::spawn(probe_loop(app.clone(), url));
-        *probe = Some(fresh);
+    match probe_action_for(snapshot.as_ref().and_then(|s| s.probe_url.clone())) {
+        ProbeAction::Spawn(url) => {
+            let fresh = tauri::async_runtime::spawn(probe_loop(app.clone(), url));
+            *probe = Some(fresh);
+        }
+        ProbeAction::Reset => emit_reachability_not_applicable(&app),
     }
 
     Ok(SyncStatusDto {
         configured: snapshot.is_some(),
         remotes_summary: snapshot.map(|s| s.remotes_summary),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A resolved `probe_url` respawns the probe against it. Covers
+    /// the ordinary `mmcp-server`-default case, unchanged by Fix 3.
+    #[test]
+    fn probe_action_for_some_url_spawns_a_fresh_probe() {
+        assert_eq!(
+            probe_action_for(Some("https://a.example.com".to_string())),
+            ProbeAction::Spawn("https://a.example.com".to_string())
+        );
+    }
+
+    /// Falsification target for the regression this fix closes: no
+    /// `probe_url` (no sync configured, or a `direct-git` default)
+    /// must produce `Reset`, not silently leave the previous probe's
+    /// last reading in place. Before this fix, `set_reference_point`
+    /// had no corresponding branch at all, the `None` case was a
+    /// silent no-op.
+    #[test]
+    fn probe_action_for_no_url_resets_the_badge() {
+        assert_eq!(probe_action_for(None), ProbeAction::Reset);
+    }
 }

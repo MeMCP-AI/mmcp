@@ -25,12 +25,38 @@ use crate::commands::settings::SettingsLock;
 use crate::state::AppState;
 
 const PROBE_INTERVAL: Duration = Duration::from_secs(15);
+const REACHABILITY_CHANGED_EVENT: &str = "reachability:changed";
 
+/// Payload for the `reachability:changed` event, the frontend's only
+/// source of the sync-server reachability badge.
+///
+/// Three states, not a `bool` plus `Option<String>`: `NotApplicable`
+/// is distinct from `Offline`, not a degenerate case of it. Emitted
+/// whenever the active default remote has no manifest endpoint to
+/// probe (`direct-git`) or no sync is configured at all, so the
+/// frontend's `ReachabilityStore` never keeps showing a PREVIOUS
+/// workspace's online/offline reading for a remote nothing has
+/// checked (frontend: `gui/src/lib/stores/reachability.svelte.ts`).
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "snake_case")]
-struct ReachabilityEvent {
-    online: bool,
-    reason: Option<String>,
+#[serde(rename_all = "snake_case", tag = "status")]
+enum ReachabilityEvent {
+    Online,
+    Offline {
+        reason: String,
+    },
+    /// No probe applies to the current default remote: either no
+    /// sync is configured, or the default remote is `direct-git`
+    /// (no `/sync/manifest` endpoint to poll).
+    NotApplicable,
+}
+
+/// Emit [`ReachabilityEvent::NotApplicable`] on the shared
+/// `reachability:changed` event. Called whenever a sync-bundle
+/// rebuild (workspace switch) lands on a remote set with no
+/// `probe_url`, so the badge resets instead of keeping the OLD
+/// workspace's online/offline reading.
+pub(crate) fn emit_reachability_not_applicable(handle: &AppHandle) {
+    let _ = handle.emit(REACHABILITY_CHANGED_EVENT, ReachabilityEvent::NotApplicable);
 }
 
 pub fn run() {
@@ -116,10 +142,9 @@ pub(crate) async fn probe_loop(handle: AppHandle, server_url: String) {
         Ok(c) => c,
         Err(err) => {
             let _ = handle.emit(
-                "reachability:changed",
-                ReachabilityEvent {
-                    online: false,
-                    reason: Some(err.to_string()),
+                REACHABILITY_CHANGED_EVENT,
+                ReachabilityEvent::Offline {
+                    reason: err.to_string(),
                 },
             );
             return;
@@ -129,25 +154,48 @@ pub(crate) async fn probe_loop(handle: AppHandle, server_url: String) {
     loop {
         ticker.tick().await;
         let event = match client.get_manifest().await {
-            Ok(_) => ReachabilityEvent {
-                online: true,
-                reason: None,
-            },
+            Ok(_) => ReachabilityEvent::Online,
             // Only transport failures count as "offline". Remote 401 /
-            // 500 responses mean the server is alive — the user
-            // should still be allowed to click Pull / Push and see a
-            // clear error.
-            Err(SyncError::Transport(msg)) => ReachabilityEvent {
-                online: false,
-                reason: Some(msg),
-            },
-            Err(_) => ReachabilityEvent {
-                online: true,
-                reason: None,
-            },
+            // 500 responses mean the server is alive, the user should
+            // still be allowed to click Pull / Push and see a clear
+            // error.
+            Err(SyncError::Transport(msg)) => ReachabilityEvent::Offline { reason: msg },
+            Err(_) => ReachabilityEvent::Online,
         };
-        if handle.emit("reachability:changed", event).is_err() {
+        if handle.emit(REACHABILITY_CHANGED_EVENT, event).is_err() {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    /// The frontend's `ReachabilityEvent` TS union
+    /// (`gui/src/lib/types.ts`) discriminates on a `status` field with
+    /// exactly these three string values. A wire-shape drift here
+    /// breaks that contract silently (both sides compile; the
+    /// frontend just stops matching any arm), so pin it down as a
+    /// structural test instead of relying on the two sides staying in
+    /// sync by convention.
+    #[test]
+    fn reachability_event_wire_shape_tags_on_status() {
+        assert_eq!(
+            serde_json::to_value(ReachabilityEvent::Online).unwrap(),
+            serde_json::json!({ "status": "online" })
+        );
+        assert_eq!(
+            serde_json::to_value(ReachabilityEvent::Offline {
+                reason: "connection refused".to_string()
+            })
+            .unwrap(),
+            serde_json::json!({ "status": "offline", "reason": "connection refused" })
+        );
+        assert_eq!(
+            serde_json::to_value(ReachabilityEvent::NotApplicable).unwrap(),
+            serde_json::json!({ "status": "not_applicable" })
+        );
     }
 }

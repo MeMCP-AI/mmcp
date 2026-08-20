@@ -76,8 +76,8 @@ export interface MemoryDescriptorList {
   skipped: Finding[];
 }
 
-/** Wire mirror of the Rust `SyncStatusDto`. `remotes_summary` replaces
- * the old single `server_url`: the sole remote's name, or
+/** Wire mirror of the Rust `SyncStatusDto`. `remotes_summary` is the
+ * effective remote set's label: the sole remote's name, or
  * `"N remote(s), default '<name>'"`. */
 export interface SyncStatus {
   configured: boolean;
@@ -146,10 +146,16 @@ export interface DiagReport {
   groups: GroupReport[];
 }
 
-export interface ReachabilityEvent {
-  online: boolean;
-  reason: string | null;
-}
+/** Wire mirror of the Rust `ReachabilityEvent`. Three states, not a
+ * `boolean` plus nullable reason: `not_applicable` is distinct from
+ * `offline`, emitted whenever the active default remote has no
+ * manifest endpoint to probe (no sync configured, or a `direct-git`
+ * default), so the badge resets instead of keeping a PREVIOUS
+ * workspace's online/offline reading. */
+export type ReachabilityEvent =
+  | { status: 'online' }
+  | { status: 'offline'; reason: string }
+  | { status: 'not_applicable' };
 
 // Mirrors every `kind` string emitted by `Serialize for GuiError` in gui/src-tauri/src/error/gui.rs.
 // A missing variant is invisible to any `kind`-based branch here, so keep the union exhaustive.

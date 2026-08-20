@@ -4,7 +4,8 @@ import type { UnlistenFn } from '@tauri-apps/api/event';
 type State =
   | { t: 'unknown' }
   | { t: 'online' }
-  | { t: 'offline'; reason: string };
+  | { t: 'offline'; reason: string }
+  | { t: 'not_applicable' };
 
 class ReachabilityStore {
   state = $state<State>({ t: 'unknown' });
@@ -18,9 +19,12 @@ class ReachabilityStore {
     if (this.unlisten) return;
     this.unlisten = await onReachabilityChanged((event) => {
       const wasOffline = this.state.t === 'offline';
-      const next: State = event.online
-        ? { t: 'online' }
-        : { t: 'offline', reason: event.reason ?? 'unreachable' };
+      const next: State =
+        event.status === 'online'
+          ? { t: 'online' }
+          : event.status === 'offline'
+            ? { t: 'offline', reason: event.reason }
+            : { t: 'not_applicable' };
       this.state = next;
       if (wasOffline && next.t === 'online') this.onRestore?.();
     });

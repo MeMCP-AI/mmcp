@@ -5,6 +5,7 @@
   // the end of the status row.
 
   import {
+    CircleDashed,
     LoaderCircle,
     Settings as SettingsIcon,
     Stethoscope,
@@ -37,6 +38,10 @@
     return 'text-fg-muted';
   });
 
+  const reachTip = $derived.by(() =>
+    reach.t === 'not_applicable' ? 'Reachability not checked for this remote' : undefined
+  );
+
   const syncLine = $derived.by(() => {
     switch (phase.t) {
       case 'not_configured':
@@ -60,7 +65,7 @@
 <footer
   class="flex h-7 shrink-0 items-center gap-3 border-t border-line bg-surface-1 px-3 text-[11px] text-fg-muted"
 >
-  <span class="inline-flex items-center gap-1 {reachTone}">
+  <span class="inline-flex items-center gap-1 {reachTone}" title={reachTip}>
     {#if phase.t === 'not_configured'}
       <WifiOff size={11} />
       no server
@@ -69,6 +74,8 @@
     {:else if reach.t === 'offline'}
       <WifiOff size={11} />
       <span title={reach.reason}>offline</span>
+    {:else if reach.t === 'not_applicable'}
+      <CircleDashed size={11} /> not checked
     {:else}
       <LoaderCircle size={11} class="animate-spin" /> probing…
     {/if}

@@ -6,7 +6,7 @@
   // red off, zinc pending); the label is the resolved remote-set
   // summary (a remote's name, or a count plus its default's name).
 
-  import { LoaderCircle, Wifi, WifiOff } from '@lucide/svelte';
+  import { CircleDashed, LoaderCircle, Wifi, WifiOff } from '@lucide/svelte';
   import { reachabilityStore } from '$lib/stores/reachability.svelte';
   import { syncStore } from '$lib/stores/sync.svelte';
 
@@ -38,7 +38,8 @@
   const tipReach = $derived.by(() => {
     if (!configured) return 'No sync server configured';
     if (reach.t === 'online') return 'Online';
-    if (reach.t === 'offline') return `Offline — ${reach.reason}`;
+    if (reach.t === 'offline') return `Offline: ${reach.reason}`;
+    if (reach.t === 'not_applicable') return 'Reachability not checked for this remote';
     return 'Probing…';
   });
 </script>
@@ -55,6 +56,9 @@
     <span class="font-mono truncate max-w-[12rem]">{remotesSummary}</span>
   {:else if reach.t === 'offline'}
     <WifiOff size={11} />
+    <span class="font-mono truncate max-w-[12rem]">{remotesSummary}</span>
+  {:else if reach.t === 'not_applicable'}
+    <CircleDashed size={11} />
     <span class="font-mono truncate max-w-[12rem]">{remotesSummary}</span>
   {:else}
     <LoaderCircle size={11} class="animate-spin" />
