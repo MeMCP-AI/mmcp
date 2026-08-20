@@ -51,6 +51,35 @@ pub enum StoreError {
         source: toml::ser::Error,
     },
 
+    /// The project- or user-level config at `path` declared two
+    /// `sync.remotes` entries sharing the same `name`. Single-file
+    /// semantic-validation failure, distinct from a TOML syntax
+    /// error: see `mmcp_core::config::ConfigError::DuplicateRemoteName`,
+    /// which this variant wraps with the failing file's path attached.
+    #[error("duplicate sync remote name in {path}: {name}", path = path.display())]
+    ConfigDuplicateRemoteName {
+        /// Path of the config file that declared the collision.
+        path: PathBuf,
+        /// The name shared by two or more `remotes` entries.
+        name: String,
+    },
+
+    /// The project- or user-level config at `path` marked more than
+    /// one `sync.remotes` entry `default = true`. Single-file
+    /// semantic-validation failure; see
+    /// `mmcp_core::config::ConfigError::MultipleDefaultRemotes`.
+    #[error(
+        "more than one default sync remote in {path}: {joined}",
+        path = path.display(),
+        joined = names.join(", ")
+    )]
+    ConfigMultipleDefaultRemotes {
+        /// Path of the config file that declared the collision.
+        path: PathBuf,
+        /// Names of every remote in this file marked `default = true`.
+        names: Vec<String>,
+    },
+
     /// Git backend failure while opening a repository, reading a
     /// manifest, or committing a write.
     #[error("git backend error: {0}")]

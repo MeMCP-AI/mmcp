@@ -101,7 +101,7 @@ impl MmcpHome {
         }
         let text = std::fs::read_to_string(&path)
             .map_err(|source| StoreError::io(path.clone(), FileOperation::Read, source))?;
-        UserConfig::from_toml(&text).map_err(|source| StoreError::TomlParse { path, source })
+        UserConfig::from_toml(&text).map_err(|error| crate::config::attach_path(path, error))
     }
 
     /// Persist the user-level config.
@@ -114,10 +114,9 @@ impl MmcpHome {
                 StoreError::io(parent.to_path_buf(), FileOperation::CreateDir, source)
             })?;
         }
-        let text = cfg.to_toml().map_err(|source| StoreError::TomlSerialize {
-            path: path.clone(),
-            source,
-        })?;
+        let text = cfg
+            .to_toml()
+            .map_err(|error| crate::config::attach_path(path.clone(), error))?;
         std::fs::write(&path, text)
             .map_err(|source| StoreError::io(path, FileOperation::Write, source))?;
         Ok(())

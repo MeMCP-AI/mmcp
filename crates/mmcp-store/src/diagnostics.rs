@@ -988,7 +988,7 @@ fn check_project_config(findings: &mut Vec<Finding>) {
     }
 
     // Check sync: user config OR project config must have it
-    let user_has_sync = user_cfg.sync.is_some();
+    let user_has_sync = !user_cfg.sync.is_empty();
 
     // Project-level config
     let cwd = match std::env::current_dir() {
@@ -1039,7 +1039,7 @@ fn check_project_config(findings: &mut Vec<Finding>) {
                 });
             }
             Ok(cfg) => {
-                if cfg.sync.is_none() && !user_has_sync {
+                if cfg.sync.is_empty() && !user_has_sync {
                     findings.push(Finding {
                         group: "(project)".to_string(),
                         slug: None,

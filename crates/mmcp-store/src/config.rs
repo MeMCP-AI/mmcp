@@ -13,15 +13,28 @@ use mmcp_core::config::{ConfigError, ProjectConfig};
 
 use crate::error::{FileOperation, StoreError};
 
-/// Map a `ProjectConfig` TOML round-trip failure onto the caller's own `path`.
-/// The resulting `StoreError` names the file that failed,
-/// instead of losing it behind `ConfigError`'s path-less `#[from]` conversion.
-/// `ConfigError` cannot carry a path itself: `ProjectConfig::from_toml`/`to_toml` are generic over any caller.
-/// See `home.rs` and `sessions.rs` for the same pattern.
-fn attach_path(path: PathBuf, error: ConfigError) -> StoreError {
+/// Map a `ProjectConfig`/`UserConfig` TOML round-trip failure onto
+/// the caller's own `path`. The resulting `StoreError` names the
+/// file that failed, instead of losing it behind `ConfigError`'s
+/// path-less `#[from]` conversion. `ConfigError` cannot carry a path
+/// itself: `ProjectConfig::from_toml`/`to_toml` and
+/// `UserConfig::from_toml`/`to_toml` are generic over any caller.
+/// Exhaustive match, no catch-all: each `ConfigError` variant maps
+/// onto its own explicit `StoreError` variant so a caller can tell a
+/// TOML syntax error from a semantic-validation failure. Shared by
+/// this module (project-level) and `home.rs` (user-level) so the two
+/// levels never drift onto different `StoreError` shapes for the
+/// same underlying `ConfigError`.
+pub(crate) fn attach_path(path: PathBuf, error: ConfigError) -> StoreError {
     match error {
         ConfigError::Parse(source) => StoreError::TomlParse { path, source },
         ConfigError::Render(source) => StoreError::TomlSerialize { path, source },
+        ConfigError::DuplicateRemoteName { name } => {
+            StoreError::ConfigDuplicateRemoteName { path, name }
+        }
+        ConfigError::MultipleDefaultRemotes { names } => {
+            StoreError::ConfigMultipleDefaultRemotes { path, names }
+        }
     }
 }
 
