@@ -9,9 +9,11 @@
 //! tools can attach without further initialization changes.
 
 use std::borrow::Cow;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use mmcp_core::config::is_group_adopted;
@@ -35,6 +37,7 @@ use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::commands::serve_defaults::{SYNC_FULL_TIMEOUT, SYNC_SINGLE_OP_TIMEOUT};
 use crate::commands::subscription::{
     SubscribeError, SubscribeMcpArgs, SubscriptionAction, resolve_subscribed_reads,
 };
@@ -4118,7 +4121,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Read each in-scope group's remote HEAD into a local remote-tracking ref without advancing the group's `main` branch. Git-symmetric with `fetch`: use this to inspect what `sync_pull` would fast-forward before committing to it. A group that fails does not abort the call: it surfaces under `failed` (and as a `sync_group_failed` note) while every other group's result still ships. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block, and the usual `selector_required` / `selector_conflict` / `unknown_group` for arg validation.",
+        description = "Read each in-scope group's remote HEAD into a local remote-tracking ref without advancing the group's `main` branch. Git-symmetric with `fetch`: use this to inspect what `sync_pull` would fast-forward before committing to it. A group that fails does not abort the call: it surfaces under `failed` (and as a `sync_group_failed` note) while every other group's result still ships. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block, `sync_timeout` when the fetch does not complete within the call's bound, and the usual `selector_required` / `selector_conflict` / `unknown_group` for arg validation.",
         annotations(
             title = "Fetch remote-tracking refs",
             read_only_hint = false,
@@ -4134,17 +4137,22 @@ impl McpServer {
         let (cfg, effective) = self.require_sync_configured()?;
         let label = effective.summary_label();
         let filter = resolve_sync_filter(&args, &self.state.groups).await?;
-        let (engine, resolver) = mmcp_store::sync::build_engine(
-            self.state.backend.clone(),
-            self.state.groups.clone(),
-            &effective,
-        )
-        .await
-        .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
-        let report = engine
-            .fetch(filter, &resolver, &resolver)
+        let report = run_sync_with_timeout(SYNC_SINGLE_OP_TIMEOUT, "fetch", &label, async {
+            let (engine, resolver) = mmcp_store::sync::build_engine(
+                self.state.backend.clone(),
+                self.state.groups.clone(),
+                &effective,
+            )
             .await
-            .map_err(map_sync_error_to_mcp)?;
+            .map_err(|e| {
+                McpError::internal_error(format!("failed to build sync engine: {e}"), None)
+            })?;
+            engine
+                .fetch(filter, &resolver, &resolver)
+                .await
+                .map_err(map_sync_error_to_mcp)
+        })
+        .await?;
         let mut notes = sync_group_failure_notes(&report.failed, "fetch", &label);
         notes.extend(sync_manifest_failure_notes(
             &report.manifest_failures,
@@ -4170,7 +4178,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Pull updates from the configured mmcp sync server into the local mirror. Returns the groups whose local HEAD advanced plus any groups the server has that are not mirrored yet. A group that fails does not abort the call: it surfaces under `failed` (and as a `sync_group_failed` note) while every other group's result still ships. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block, and code `sync_conflict` / `sync_remote` / `sync_transport` for a call-level failure that precedes the per-group fan-out.",
+        description = "Pull updates from the configured mmcp sync server into the local mirror. Returns the groups whose local HEAD advanced plus any groups the server has that are not mirrored yet. A group that fails does not abort the call: it surfaces under `failed` (and as a `sync_group_failed` note) while every other group's result still ships. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block, and code `sync_conflict` / `sync_remote` / `sync_transport` / `sync_timeout` for a call-level failure that precedes the per-group fan-out.",
         annotations(
             title = "Pull from sync server",
             read_only_hint = false,
@@ -4186,17 +4194,22 @@ impl McpServer {
         let (cfg, effective) = self.require_sync_configured()?;
         let label = effective.summary_label();
         let filter = resolve_sync_filter(&args, &self.state.groups).await?;
-        let (engine, resolver) = mmcp_store::sync::build_engine(
-            self.state.backend.clone(),
-            self.state.groups.clone(),
-            &effective,
-        )
-        .await
-        .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
-        let report = engine
-            .pull(filter, &resolver, &resolver)
+        let report = run_sync_with_timeout(SYNC_SINGLE_OP_TIMEOUT, "pull", &label, async {
+            let (engine, resolver) = mmcp_store::sync::build_engine(
+                self.state.backend.clone(),
+                self.state.groups.clone(),
+                &effective,
+            )
             .await
-            .map_err(map_sync_error_to_mcp)?;
+            .map_err(|e| {
+                McpError::internal_error(format!("failed to build sync engine: {e}"), None)
+            })?;
+            engine
+                .pull(filter, &resolver, &resolver)
+                .await
+                .map_err(map_sync_error_to_mcp)
+        })
+        .await?;
         let updated_group_ids: Vec<Uuid> = report.updated.iter().map(|g| g.group_id).collect();
         mmcp_store::cache::notify_pull(&self.state.backend, &self.state.groups, &updated_group_ids)
             .await;
@@ -4219,7 +4232,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Push the local pending-edit queue to the configured mmcp sync server. Returns each drained edit with the server-assigned version and tag, plus whether the content plane (git push) actually shipped bytes. A group whose push itself errors does not abort the call: it surfaces under `failed` (and as a `sync_group_failed` note) while every other group's push still ships. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block.",
+        description = "Push the local pending-edit queue to the configured mmcp sync server. Returns each drained edit with the server-assigned version and tag, plus whether the content plane (git push) actually shipped bytes. A group whose push itself errors does not abort the call: it surfaces under `failed` (and as a `sync_group_failed` note) while every other group's push still ships. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block, and `sync_timeout` when the push does not complete within the call's bound.",
         annotations(
             title = "Push to sync server",
             read_only_hint = false,
@@ -4235,20 +4248,25 @@ impl McpServer {
         let (cfg, effective) = self.require_sync_configured()?;
         let label = effective.summary_label();
         let filter = resolve_sync_filter(&args, &self.state.groups).await?;
-        let (engine, resolver) = mmcp_store::sync::build_engine(
-            self.state.backend.clone(),
-            self.state.groups.clone(),
-            &effective,
-        )
-        .await
-        .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
         // `mmcp-server`'s push scope is Default only, mirroring the
         // CLI: this tool's arg surface exposes no `--all-remotes` /
         // `--remote <name>` equivalent.
-        let report = engine
-            .push(filter, mmcp_sync::PushScope::Default, &resolver, &resolver)
+        let report = run_sync_with_timeout(SYNC_SINGLE_OP_TIMEOUT, "push", &label, async {
+            let (engine, resolver) = mmcp_store::sync::build_engine(
+                self.state.backend.clone(),
+                self.state.groups.clone(),
+                &effective,
+            )
             .await
-            .map_err(map_sync_error_to_mcp)?;
+            .map_err(|e| {
+                McpError::internal_error(format!("failed to build sync engine: {e}"), None)
+            })?;
+            engine
+                .push(filter, mmcp_sync::PushScope::Default, &resolver, &resolver)
+                .await
+                .map_err(map_sync_error_to_mcp)
+        })
+        .await?;
         // The `sync_partial_failure` populator: per-group
         // content_transferred=false means the control plane
         // accepted the push but the git content plane did not
@@ -4291,7 +4309,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Run a full sync (pull then push) against the configured mmcp server. Returns both report shapes nested under `pulled` and `pushed`, each carrying its own `failed` list for groups that errored without aborting the rest. Same error codes as `sync_pull` / `sync_push`.",
+        description = "Run a full sync (pull then push) against the configured mmcp server. Returns both report shapes nested under `pulled` and `pushed`, each carrying its own `failed` list for groups that errored without aborting the rest. Same error codes as `sync_pull` / `sync_push`, including `sync_timeout`; this tool's bound is the longest of the four since it runs a full pull before starting the push.",
         annotations(
             title = "Full sync (pull + push)",
             read_only_hint = false,
@@ -4307,17 +4325,22 @@ impl McpServer {
         let (cfg, effective) = self.require_sync_configured()?;
         let label = effective.summary_label();
         let filter = resolve_sync_filter(&args, &self.state.groups).await?;
-        let (engine, resolver) = mmcp_store::sync::build_engine(
-            self.state.backend.clone(),
-            self.state.groups.clone(),
-            &effective,
-        )
-        .await
-        .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
-        let report = engine
-            .sync(filter, &resolver, &resolver)
+        let report = run_sync_with_timeout(SYNC_FULL_TIMEOUT, "sync", &label, async {
+            let (engine, resolver) = mmcp_store::sync::build_engine(
+                self.state.backend.clone(),
+                self.state.groups.clone(),
+                &effective,
+            )
             .await
-            .map_err(map_sync_error_to_mcp)?;
+            .map_err(|e| {
+                McpError::internal_error(format!("failed to build sync engine: {e}"), None)
+            })?;
+            engine
+                .sync(filter, &resolver, &resolver)
+                .await
+                .map_err(map_sync_error_to_mcp)
+        })
+        .await?;
         let updated_group_ids: Vec<Uuid> =
             report.pulled.updated.iter().map(|g| g.group_id).collect();
         mmcp_store::cache::notify_pull(&self.state.backend, &self.state.groups, &updated_group_ids)
@@ -6079,6 +6102,49 @@ fn map_sync_error_to_mcp(err: mmcp_sync::SyncError) -> McpError {
     let message = err.to_string();
     let payload = sync_error_payload(&err);
     McpError::invalid_params(message, Some(payload))
+}
+
+/// Build the `sync_timeout` [`McpError`] for a sync tool call that ran
+/// past its bound.
+///
+/// Rides the same `invalid_params` + structured `code` channel as
+/// [`map_sync_error_to_mcp`]'s codes, so a caller branching on `code`
+/// finds every call-level sync failure, timeout included, in one place.
+fn sync_timeout_error(operation: &str, remotes: &str, bound: Duration) -> McpError {
+    let timeout_secs = bound.as_secs();
+    let message = format!(
+        "sync {operation} to remote(s) '{remotes}' did not complete within {timeout_secs}s; \
+         check network connectivity and remote reachability"
+    );
+    McpError::invalid_params(
+        message,
+        Some(json!({
+            "code": "sync_timeout",
+            "operation": operation,
+            "remotes": remotes,
+            "timeout_secs": timeout_secs,
+        })),
+    )
+}
+
+/// Bound a sync tool's engine build plus engine invocation with `bound`,
+/// mapping a timeout to [`sync_timeout_error`] instead of letting the
+/// call hang indefinitely.
+///
+/// Defense in depth: a hang anywhere beneath `fut` (an unbounded git
+/// subprocess, a resolver that blocks incorrectly, or any future
+/// regression in that call stack) still surfaces as a clear, actionable
+/// MCP error instead of a tool call that never returns.
+async fn run_sync_with_timeout<T>(
+    bound: Duration,
+    operation: &str,
+    remotes: &str,
+    fut: impl Future<Output = Result<T, McpError>>,
+) -> Result<T, McpError> {
+    match tokio::time::timeout(bound, fut).await {
+        Ok(result) => result,
+        Err(_elapsed) => Err(sync_timeout_error(operation, remotes, bound)),
+    }
 }
 
 /// Serialize a `push` / `pull` / `fetch` report's `failed` list into the wire shape.
@@ -10504,6 +10570,83 @@ mod tests {
     /// the real OS home / `MMCP_HOME`.
     fn empty_user_home(tmp: &TempDir) -> MmcpHome {
         MmcpHome::from_root(tmp.path().join("mmcp-home"))
+    }
+
+    /// Short test-scoped override so this test proves the timeout
+    /// path deterministically without waiting out a production bound
+    /// (`SYNC_SINGLE_OP_TIMEOUT` / `SYNC_FULL_TIMEOUT`).
+    const TEST_SYNC_TIMEOUT_OVERRIDE: Duration = Duration::from_millis(20);
+
+    /// A future well past [`TEST_SYNC_TIMEOUT_OVERRIDE`] and any
+    /// sane test wall clock, standing in for a hang anywhere beneath
+    /// a sync tool handler (unbounded git subprocess, a blocking
+    /// resolver, or a future regression in that call stack).
+    async fn hang_forever() -> Result<(), McpError> {
+        tokio::time::sleep(Duration::from_secs(u64::MAX / 2)).await;
+        unreachable!("test-scoped timeout must fire first");
+    }
+
+    #[tokio::test]
+    async fn run_sync_with_timeout_surfaces_sync_timeout_when_the_call_hangs() {
+        let err = run_sync_with_timeout(
+            TEST_SYNC_TIMEOUT_OVERRIDE,
+            "fetch",
+            "origin",
+            hang_forever(),
+        )
+        .await
+        .expect_err("a hung future must time out");
+        assert!(
+            err.message
+                .contains("sync fetch to remote(s) 'origin' did not complete within"),
+            "message must name the operation and the remote: {}",
+            err.message
+        );
+        let payload = err.data.as_ref().expect("sync_timeout error data");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("sync_timeout")
+        );
+        assert_eq!(
+            payload.get("operation").and_then(|v| v.as_str()),
+            Some("fetch")
+        );
+        assert_eq!(
+            payload.get("remotes").and_then(|v| v.as_str()),
+            Some("origin")
+        );
+        assert_eq!(
+            payload.get("timeout_secs").and_then(|v| v.as_u64()),
+            Some(TEST_SYNC_TIMEOUT_OVERRIDE.as_secs())
+        );
+    }
+
+    #[tokio::test]
+    async fn run_sync_with_timeout_passes_through_a_result_that_finishes_in_time() {
+        let ok = run_sync_with_timeout(SYNC_SINGLE_OP_TIMEOUT, "pull", "origin", async {
+            Ok::<_, McpError>(42)
+        })
+        .await
+        .expect("a future that finishes in time must not be treated as a timeout");
+        assert_eq!(ok, 42);
+
+        let inner_err = run_sync_with_timeout(SYNC_SINGLE_OP_TIMEOUT, "push", "origin", async {
+            Err::<(), McpError>(McpError::invalid_params(
+                "boom",
+                Some(json!({ "code": "sync_transport" })),
+            ))
+        })
+        .await
+        .expect_err("an inner error must ride through untouched, not be replaced by a timeout");
+        assert_eq!(
+            inner_err
+                .data
+                .as_ref()
+                .and_then(|p| p.get("code"))
+                .and_then(|v| v.as_str()),
+            Some("sync_transport"),
+            "a real inner failure must keep its own code, not become sync_timeout"
+        );
     }
 
     #[test]

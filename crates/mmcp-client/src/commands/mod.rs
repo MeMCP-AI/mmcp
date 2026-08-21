@@ -15,6 +15,7 @@ pub mod issue;
 pub mod memory;
 pub mod milestone;
 pub mod serve;
+mod serve_defaults;
 pub mod status;
 pub mod subscribe;
 pub mod subscription;
