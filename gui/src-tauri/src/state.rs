@@ -386,9 +386,9 @@ mod tests {
     /// `UserConfig.sync` is loaded but never actually consulted, so a
     /// user-level-only remote silently vanishes from the GUI's own
     /// load path.
-    /// The derived-field tests above (`summary_label`,
-    /// `default_probe_url`) only cover formatting on an already-
-    /// merged `EffectiveRemotes`, not the merge itself.
+    /// `default_probe_url`'s own tests below cover formatting on an already-merged `EffectiveRemotes`.
+    /// `summary_label`'s formatting is owned by mmcp-store.
+    /// This test covers the merge itself.
     #[tokio::test]
     async fn load_effective_remotes_merges_user_and_project_configs_with_project_default_winning() {
         let home_tmp = tempfile::TempDir::new().expect("home tempdir");

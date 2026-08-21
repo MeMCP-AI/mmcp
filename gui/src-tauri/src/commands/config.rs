@@ -209,11 +209,10 @@ mod tests {
         }
     }
 
-    /// Two remotes across the merged
-    /// user+project set, neither marked default, must be rejected
-    /// BEFORE persist, the exact shape `resolve_effective_remotes`
-    /// only used to catch on the NEXT load, after a bad config had
-    /// already bricked `AppState::discover`.
+    /// This guard rejects an ambiguous default before the merged config is persisted.
+    /// Two remotes across the merged user+project set, with neither marked default, are exactly this shape.
+    /// `resolve_effective_remotes` also rejects that shape, but only on the next load.
+    /// Catching it here, before persist, keeps a bad config from reaching `AppState::discover` at all.
     #[test]
     fn ambiguous_default_across_merged_levels_is_rejected() {
         let user = user_cfg(vec![mmcp_server("u1", false)]);

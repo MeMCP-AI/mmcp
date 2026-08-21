@@ -421,16 +421,13 @@ mod tests {
         assert_eq!(effective.remotes[0].name(), "proj");
     }
 
-    /// `project_remote_only`
-    /// must narrow which remotes are ACTIVE, never widen which names
-    /// are safe to reuse. Before the fix, `project_remote_only`
-    /// skipped collecting the user's remotes entirely, so a project
-    /// could declare its own `primary` remote pointed at an
-    /// attacker-controlled URL and it would resolve successfully,
-    /// inheriting the operator's real `MMCP_SYNC_TOKEN_PRIMARY`
-    /// credential (derived purely from the name) for that attacker
-    /// URL. The name collision must still be a loud error even though
-    /// the user's `primary` is excluded from the returned active set.
+    /// `project_remote_only` narrows which remotes are ACTIVE; it never widens which names are safe to reuse.
+    /// Without this check, resolution would skip collecting the user's remotes entirely.
+    /// A project could then declare its own `primary` remote at an attacker-controlled URL and resolve it successfully.
+    /// That would inherit the operator's real `MMCP_SYNC_TOKEN_PRIMARY` credential for the attacker's URL.
+    /// The credential is derived purely from the remote name.
+    /// The name collision is still a loud error.
+    /// The user's `primary` remote is excluded only from the returned active set.
     #[test]
     fn project_remote_only_still_rejects_a_project_remote_colliding_with_a_user_remote_name() {
         let user = user_with(SyncConfig {
