@@ -76,6 +76,18 @@ pub struct AppState {
     /// when discovery failed to spawn a watcher — the app keeps
     /// running with manual refresh still available.
     pub _watcher: Mutex<Option<Debouncer<RecommendedWatcher>>>,
+    /// Reason the last sync-resolution attempt (startup discovery, or
+    /// a `rebuild_sync` call) failed, e.g. an ambiguous default
+    /// remote across the merged user+project config.
+    ///
+    /// `None` while `sync` is either configured or genuinely
+    /// unconfigured, which is not an error (no remotes declared
+    /// anywhere).
+    ///
+    /// Read by `sync_status` so a broken config is visible from the
+    /// status bar instead of just leaving `sync` at `None` with no
+    /// explanation.
+    pub sync_error: RwLock<Option<String>>,
 }
 
 impl AppState {
@@ -89,7 +101,25 @@ impl AppState {
         let author = home.resolve_author();
 
         let reference_point = resolve_reference_point(app);
-        let sync = build_sync(&backend, &index, &home, reference_point.as_deref()).await?;
+        // A resolver failure (ambiguous default remote across the
+        // merged config, an invalid remote name, ...) must degrade to
+        // a usable app state rather than abort discovery entirely: an
+        // `Err` here used to propagate through `?` and skip
+        // `handle.manage(state)` altogether, leaving every
+        // `State<AppState>`-dependent command dead, including the
+        // ones the user would need to open Settings and fix the
+        // config from inside a running app.
+        let (sync, sync_error) =
+            match build_sync(&backend, &index, &home, reference_point.as_deref()).await {
+                Ok(sync) => (sync, None),
+                Err(err) => {
+                    tracing::error!(
+                        error = %err,
+                        "sync resolution failed at startup, degrading to sync-unconfigured"
+                    );
+                    (None, Some(err.to_string()))
+                }
+            };
 
         let watcher = spawn_mirror_watcher(app, &repos_root).unwrap_or_else(|err| {
             tracing::warn!(error = %err, "mirror watcher unavailable — manual refresh only");
@@ -103,6 +133,7 @@ impl AppState {
             author: RwLock::new(author),
             probe: Mutex::new(None),
             _watcher: Mutex::new(watcher),
+            sync_error: RwLock::new(sync_error),
         })
     }
 
@@ -131,6 +162,9 @@ impl AppState {
             probe_url: b.probe_url.clone(),
         });
         *self.sync.write().await = fresh;
+        // A successful rebuild supersedes whatever `sync_error`
+        // startup discovery (or a previous rebuild) left behind.
+        *self.sync_error.write().await = None;
         Ok(snapshot)
     }
 }
@@ -308,7 +342,11 @@ fn load_effective_remotes(
 /// Resolve the directory we use as the anchor for `.mmcp.toml`
 /// discovery. Priority: `reference_point` from settings.json (if set
 /// and it actually exists), otherwise process cwd.
-fn resolve_reference_point(app: &AppHandle) -> Option<PathBuf> {
+///
+/// `pub(crate)`: also called from `commands::config` so a config save
+/// can find the currently active project to merge-validate a
+/// candidate remote set against, without re-deriving this lookup.
+pub(crate) fn resolve_reference_point(app: &AppHandle) -> Option<PathBuf> {
     let dir = app.path().app_config_dir().ok()?;
     let path = dir.join("settings.json");
     let text = std::fs::read_to_string(&path).ok()?;

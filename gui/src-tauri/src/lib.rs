@@ -22,6 +22,7 @@ use tokio::time::interval;
 use tracing_subscriber::EnvFilter;
 
 use crate::commands::settings::SettingsLock;
+use crate::commands::workspace::{ProbeAction, probe_action_for};
 use crate::state::AppState;
 
 const PROBE_INTERVAL: Duration = Duration::from_secs(15);
@@ -108,10 +109,20 @@ pub fn run() {
                             .await
                             .as_ref()
                             .and_then(|s| s.probe_url.clone());
-                        if let Some(url) = probe_url {
-                            let probe =
-                                tauri::async_runtime::spawn(probe_loop(handle.clone(), url));
-                            *state.probe.lock().await = Some(probe);
+                        // Reuse the same decision `set_reference_point`
+                        // makes on a workspace switch: a `direct-git`
+                        // default (or no sync at all) has no
+                        // `probe_url`, and must reset the badge to the
+                        // explicit not-applicable state rather than
+                        // leave it stuck on "probing…" forever with no
+                        // `reachability:changed` event ever emitted.
+                        match probe_action_for(probe_url) {
+                            ProbeAction::Spawn(url) => {
+                                let probe =
+                                    tauri::async_runtime::spawn(probe_loop(handle.clone(), url));
+                                *state.probe.lock().await = Some(probe);
+                            }
+                            ProbeAction::Reset => emit_reachability_not_applicable(&handle),
                         }
                         handle.manage(state);
                         tracing::info!("AppState discovered, commands are live");

@@ -21,6 +21,14 @@ pub struct SyncStatusDto {
     /// carry several remotes, so this summarises the whole effective
     /// set rather than naming a single server.
     pub remotes_summary: Option<String>,
+    /// Reason sync failed to resolve at startup or the last rebuild,
+    /// e.g. an ambiguous default remote across the merged config.
+    /// See [`crate::state::AppState::sync_error`].
+    ///
+    /// `None` when `configured` is true, OR when `configured` is
+    /// false because no remotes are declared anywhere, which is not
+    /// an error.
+    pub error: Option<String>,
 }
 
 /// Stable [`mmcp_store::Finding::code`] for each `mmcp_sync::SyncError`
@@ -118,9 +126,11 @@ pub struct PushReportDto {
 #[tauri::command]
 pub async fn sync_status(state: State<'_, AppState>) -> GuiResult<SyncStatusDto> {
     let guard = state.sync.read().await;
+    let error = state.sync_error.read().await.clone();
     Ok(SyncStatusDto {
         configured: guard.is_some(),
         remotes_summary: guard.as_ref().map(|s| s.remotes_summary.clone()),
+        error,
     })
 }
 

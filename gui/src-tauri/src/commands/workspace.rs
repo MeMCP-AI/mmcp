@@ -28,15 +28,22 @@ fn normalise(path: Option<String>) -> Option<PathBuf> {
     candidate.is_dir().then_some(candidate)
 }
 
-/// What `set_reference_point` does with the reachability probe after
-/// a sync-bundle rebuild, given the fresh bundle's `probe_url`. A
-/// pure decision, factored out of the command so it is unit-testable
-/// without a real `AppHandle`: the `None` arm covers a `direct-git`
-/// default (or no sync at all), where a stale online/offline reading
-/// from the PREVIOUS workspace must not linger on screen because
-/// nothing told the frontend the probe no longer applies.
+/// What a sync-bundle rebuild does with the reachability probe,
+/// given the fresh bundle's `probe_url`.
+///
+/// A pure decision, factored out so it is unit-testable without a
+/// real `AppHandle`, and shared by EVERY place that (re)spawns the
+/// probe: `set_reference_point` below (a workspace switch) and
+/// `lib::run`'s setup closure (app startup).
+///
+/// The `None` arm covers a `direct-git` default (or no sync at all),
+/// where a stale online/offline reading from a PREVIOUS workspace,
+/// or no reading at all yet, must not linger on screen because
+/// nothing told the frontend the probe does not apply here.
+///
+/// `pub(crate)`: consumed from `crate::run`'s setup closure.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ProbeAction {
+pub(crate) enum ProbeAction {
     /// Respawn the probe against this URL.
     Spawn(String),
     /// No probe applies to the new default remote: reset the badge
@@ -44,7 +51,7 @@ enum ProbeAction {
     Reset,
 }
 
-fn probe_action_for(probe_url: Option<String>) -> ProbeAction {
+pub(crate) fn probe_action_for(probe_url: Option<String>) -> ProbeAction {
     match probe_url {
         Some(url) => ProbeAction::Spawn(url),
         None => ProbeAction::Reset,
@@ -118,6 +125,10 @@ pub async fn set_reference_point(
     Ok(SyncStatusDto {
         configured: snapshot.is_some(),
         remotes_summary: snapshot.map(|s| s.remotes_summary),
+        // `rebuild_sync` above already cleared `state.sync_error` on
+        // this successful path (it only reaches here via `?`, which
+        // would have returned early on failure instead).
+        error: None,
     })
 }
 
