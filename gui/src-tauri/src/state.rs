@@ -437,44 +437,6 @@ mod tests {
         );
     }
 
-    /// `SyncBundle::remotes_summary` is built from
-    /// `EffectiveRemotes::summary_label` (shared with `mmcp-client`,
-    /// see `mmcp-store`'s own tests for the formatting rules
-    /// themselves); this just proves `build_sync`'s wiring reaches
-    /// the shared function rather than a local reimplementation.
-    #[test]
-    fn summary_label_names_the_sole_remote_when_only_one_is_configured() {
-        let effective = EffectiveRemotes {
-            remotes: vec![mmcp_server_remote("primary", false, RemoteLevel::User)],
-            default_index: Some(0),
-        };
-        assert_eq!(effective.summary_label(), "primary");
-    }
-
-    /// A multi-remote effective set must format as a count plus the
-    /// resolved default's name, not collapse to a single legacy
-    /// `server_url`-shaped string.
-    #[test]
-    fn summary_label_summarises_a_multi_remote_set_with_its_default() {
-        let effective = EffectiveRemotes {
-            remotes: vec![
-                mmcp_server_remote("u1", false, RemoteLevel::User),
-                mmcp_server_remote("p1", true, RemoteLevel::Project),
-            ],
-            default_index: Some(1),
-        };
-        assert_eq!(effective.summary_label(), "2 remote(s), default 'p1'");
-    }
-
-    #[test]
-    fn summary_label_reports_no_remotes_configured_on_an_empty_set() {
-        let effective = EffectiveRemotes {
-            remotes: vec![],
-            default_index: None,
-        };
-        assert_eq!(effective.summary_label(), "(no remotes configured)");
-    }
-
     /// `SyncBundle::probe_url` must read the default remote's URL
     /// from a multi-remote set, not assume a single legacy
     /// `server_url`.

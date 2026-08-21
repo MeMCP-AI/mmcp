@@ -209,7 +209,7 @@ mod tests {
         }
     }
 
-    /// Falsification target for F2: two remotes across the merged
+    /// Two remotes across the merged
     /// user+project set, neither marked default, must be rejected
     /// BEFORE persist, the exact shape `resolve_effective_remotes`
     /// only used to catch on the NEXT load, after a bad config had

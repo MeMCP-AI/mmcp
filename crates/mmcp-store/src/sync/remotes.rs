@@ -129,7 +129,7 @@ impl EffectiveRemotes {
 /// to reuse. Without this, a project could declare a remote sharing
 /// a real user-level remote's name and inherit that name's ambient
 /// `MMCP_SYNC_TOKEN_<NAME>` credential while pointing the connection
-/// at an attacker-controlled URL (FR-301 security finding F1).
+/// at an attacker-controlled URL.
 ///
 /// # Errors
 /// [`StoreError::InvalidRemoteName`] for a name outside the safe git-ref
@@ -421,7 +421,7 @@ mod tests {
         assert_eq!(effective.remotes[0].name(), "proj");
     }
 
-    /// FR-301 security finding F1 regression: `project_remote_only`
+    /// `project_remote_only`
     /// must narrow which remotes are ACTIVE, never widen which names
     /// are safe to reuse. Before the fix, `project_remote_only`
     /// skipped collecting the user's remotes entirely, so a project
