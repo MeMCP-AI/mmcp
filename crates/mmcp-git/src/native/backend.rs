@@ -237,16 +237,22 @@ impl GitBackend for NativeBackend {
         .await
     }
 
+    /// `clone`/`fetch`/`push` shell out to the `git` binary for the
+    /// actual network transfer and are genuinely `async fn` built on
+    /// `tokio::process::Command`, each bounded by its own
+    /// `tokio::time::timeout` (see [`crate::native::repo_ops`]).
+    /// Unlike every other `GitBackend` method here, they run directly
+    /// on the calling task instead of inside `spawn_blocking`: there is
+    /// no synchronous `gix`/filesystem work left to offload, so
+    /// wrapping them would only cost a blocking-pool thread for no
+    /// benefit.
     async fn clone_to(
         &self,
         remote_url: &str,
         dst: &Path,
         creds: &Credentials,
     ) -> Result<(), GitError> {
-        let dst = dst.to_path_buf();
-        let remote_url = remote_url.to_string();
-        let creds = creds.clone();
-        tokio::task::spawn_blocking(move || repo_ops::clone(&remote_url, &dst, &creds)).await?
+        repo_ops::clone(remote_url, dst, creds).await
     }
 
     async fn fetch(
@@ -256,8 +262,7 @@ impl GitBackend for NativeBackend {
         refs: &[RefSpec],
         creds: &Credentials,
     ) -> Result<(), GitError> {
-        let repo_path = Self::handle_path(repo).to_path_buf();
-        let remote_url = remote_url.to_string();
+        let repo_path = Self::handle_path(repo);
         // Format refspecs the way `git fetch` expects, including the
         // `+` prefix for forced updates. Without the prefix git refuses
         // to overwrite a diverged local ref, so callers who opted into
@@ -270,11 +275,7 @@ impl GitBackend for NativeBackend {
                 format!("{prefix}{}:{}", r.local, r.remote)
             })
             .collect();
-        let creds = creds.clone();
-        tokio::task::spawn_blocking(move || {
-            repo_ops::fetch(&repo_path, &remote_url, &refspecs, &creds)
-        })
-        .await?
+        repo_ops::fetch(repo_path, remote_url, &refspecs, creds).await
     }
 
     async fn push(
@@ -285,18 +286,23 @@ impl GitBackend for NativeBackend {
         creds: &Credentials,
     ) -> Result<PushReport, GitError> {
         let repo_path = Self::handle_path(repo).to_path_buf();
-        let remote_url = remote_url.to_string();
         let refspecs: Vec<(String, String, bool)> = refs
             .iter()
             .map(|r| (r.local.clone(), r.remote.clone(), r.force))
             .collect();
-        let creds = creds.clone();
         let backend = self.clone();
+        // The local-ref preflight check needs the synchronous `gix`
+        // view, so it still runs inside `spawn_blocking`; the actual
+        // network push below no longer holds a `gix::Repository` at
+        // all and awaits directly.
+        let preflight_path = repo_path.clone();
+        let preflight_refspecs = refspecs.clone();
         tokio::task::spawn_blocking(move || {
-            let handle = backend.open_repo(&repo_path)?;
-            repo_ops::push(&handle.to_thread_local(), &remote_url, &refspecs, &creds)
+            let handle = backend.open_repo(&preflight_path)?;
+            repo_ops::preflight_local_refs(&handle.to_thread_local(), &preflight_refspecs)
         })
-        .await?
+        .await??;
+        repo_ops::push(&repo_path, remote_url, &refspecs, creds).await
     }
 
     async fn read_file(&self, repo: &RepoHandle, path: &str, rev: &Rev) -> Result<Bytes, GitError> {

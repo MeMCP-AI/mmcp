@@ -1,5 +1,35 @@
 //! Default values for the native `gix` backend.
 
+use std::time::Duration;
+
+/// Upper bound for a `git fetch` or `git push` subprocess.
+///
+/// An incremental transfer over a slow or lossy connection can
+/// legitimately take minutes. Unbounded, a stalled remote used to pin
+/// the calling task (and, before the `tokio::process` migration, an
+/// entire blocking-pool thread plus the child process) forever. Five
+/// minutes is generous for a real transfer of a reasonably sized group
+/// repository while still turning an indefinite hang into a bounded
+/// failure with a clear error.
+pub const FETCH_PUSH_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+/// Upper bound for a `git clone` subprocess.
+///
+/// A clone transfers the full repository history in one shot, which
+/// can be substantially larger than a single `fetch`/`push`
+/// increment, so it gets a longer bound than [`FETCH_PUSH_TIMEOUT`].
+pub const CLONE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// Upper bound for a purely local `git remote set-url`/`git remote
+/// add` subprocess (see `ensure_remote` in
+/// [`crate::native::repo_ops`]).
+///
+/// No network I/O is involved, so this defends only against
+/// pathological local contention (a stale `.git/index.lock` held by
+/// another process): a healthy local git-config edit completes in
+/// well under a second.
+pub const LOCAL_GIT_OP_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Maximum number of open [`gix::ThreadSafeRepository`] handles
 /// [`crate::native::NativeBackend`] keeps resident in `repo_cache` at
 /// once.

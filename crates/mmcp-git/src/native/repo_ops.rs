@@ -1,20 +1,34 @@
-//! Synchronous repository operations against a bare git repo.
+//! Repository operations against a bare git repo.
 //!
-//! These functions are invoked from `spawn_blocking` inside the async
-//! backend so the whole `gix` call tree stays synchronous. Every
-//! function that needs an open repository takes an already-opened
-//! `&gix::Repository`: [`crate::native::NativeBackend`] owns the
-//! cached [`gix::ThreadSafeRepository`] handle and hands out a
-//! thread-local view per call, so this module never re-opens a repo
-//! itself.
+//! Every function that needs an open repository takes an
+//! already-opened `&gix::Repository`: [`crate::native::NativeBackend`]
+//! owns the cached [`gix::ThreadSafeRepository`] handle and hands out
+//! a thread-local view per call, so this module never re-opens a repo
+//! itself. The `gix`-based read/write functions are synchronous and
+//! are invoked from `spawn_blocking` inside the async backend, the
+//! same as ever.
+//!
+//! [`clone`], [`fetch`], [`push`], and `ensure_remote` are the
+//! exception: they shell out to the `git` binary for the actual
+//! network transfer, so they are genuinely `async fn` built on
+//! `tokio::process::Command`. Each subprocess call runs under
+//! `tokio::time::timeout`; on expiry the child is explicitly killed
+//! and reaped before the function returns
+//! [`GitError::Timeout`](crate::error::GitError::Timeout), so a dead
+//! or unresponsive remote fails within a bounded window instead of
+//! pinning the calling task (or, with the old `spawn_blocking` design,
+//! an entire blocking-pool thread) indefinitely.
 
 use std::ffi::OsString;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Output, Stdio};
+use std::time::Duration;
 
 use bytes::Bytes;
 use gix::bstr::BString;
 use gix::objs::tree::EntryKind;
+use tokio::io::AsyncReadExt;
+use tokio::process::{Child, Command};
 
 use crate::error::GitError;
 use crate::native::defaults;
@@ -186,6 +200,7 @@ fn suppress_interactive_prompts(cmd: &mut Command) {
     cmd.env("GIT_ASKPASS", "");
 
     let builder_set_ssh_command = cmd
+        .as_std()
         .get_envs()
         .any(|(key, _)| key == std::ffi::OsStr::new("GIT_SSH_COMMAND"));
     if builder_set_ssh_command {
@@ -239,11 +254,97 @@ pub fn init_bare(path: &Path) -> Result<(), GitError> {
     Ok(())
 }
 
-/// Clone `remote_url` into `dst` via the user-installed git binary.
-pub fn clone(remote_url: &str, dst: &Path, creds: &Credentials) -> Result<(), GitError> {
+/// Run `cmd` to completion, capturing its stdout/stderr while it
+/// executes, bounded by `timeout`.
+///
+/// On expiry, explicitly kills the child and waits for it to actually
+/// exit before returning [`GitError::Timeout`], so no child process
+/// is ever left running past this call: `kill_on_drop` below is a
+/// backstop for a panic or an early return elsewhere, not the
+/// mechanism this path relies on. `op`/`target` label the error only;
+/// they do not affect execution.
+async fn run_git_subprocess(
+    mut cmd: Command,
+    timeout: Duration,
+    op: &'static str,
+    target: &str,
+) -> Result<Output, GitError> {
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd.kill_on_drop(true);
+    let mut child = cmd.spawn()?;
+    wait_with_timeout(&mut child, timeout, op, target).await
+}
+
+/// Drain `child`'s stdout/stderr while waiting for it to exit, bounded
+/// by `timeout`. Split out from [`run_git_subprocess`] so a test can
+/// drive an already-spawned child directly and observe, via
+/// `Child::try_wait`, that a timed-out child was genuinely reaped.
+///
+/// Stdout and stderr are read concurrently with the wait, not after
+/// it: a child that fills its stderr pipe (git's own progress output
+/// on a large transfer) before exiting would otherwise block on a
+/// full OS pipe buffer, reintroducing exactly the kind of hang this
+/// function exists to bound.
+async fn wait_with_timeout(
+    child: &mut Child,
+    timeout: Duration,
+    op: &'static str,
+    target: &str,
+) -> Result<Output, GitError> {
+    // Every caller (`run_git_subprocess`, and the timeout tests that
+    // drive this function directly) pipes stdout/stderr before
+    // spawning; a `None` here means a caller broke that contract, an
+    // unrecoverable programming error rather than a runtime condition
+    // to route through `Result`.
+    #[allow(clippy::expect_used)]
+    let mut stdout_pipe = child
+        .stdout
+        .take()
+        .expect("child must have been spawned with stdout piped");
+    #[allow(clippy::expect_used)]
+    let mut stderr_pipe = child
+        .stderr
+        .take()
+        .expect("child must have been spawned with stderr piped");
+    let mut stdout_buf = Vec::new();
+    let mut stderr_buf = Vec::new();
+
+    let collect = async {
+        let (stdout_res, stderr_res, status_res) = tokio::join!(
+            stdout_pipe.read_to_end(&mut stdout_buf),
+            stderr_pipe.read_to_end(&mut stderr_buf),
+            child.wait(),
+        );
+        stdout_res?;
+        stderr_res?;
+        status_res
+    };
+
+    match tokio::time::timeout(timeout, collect).await {
+        Ok(Ok(status)) => Ok(Output {
+            status,
+            stdout: stdout_buf,
+            stderr: stderr_buf,
+        }),
+        Ok(Err(io_err)) => Err(GitError::Io(io_err)),
+        Err(_elapsed) => {
+            child.kill().await?;
+            // Reap so the OS process table entry is actually gone,
+            // not merely signalled, before this returns.
+            let _ = child.wait().await;
+            Err(GitError::timeout(op, target, timeout))
+        }
+    }
+}
+
+/// Clone `remote_url` into `dst` via the user-installed git binary,
+/// bounded by [`defaults::CLONE_TIMEOUT`].
+pub async fn clone(remote_url: &str, dst: &Path, creds: &Credentials) -> Result<(), GitError> {
     let mut cmd = Command::new(git_binary());
     apply_credentials(&mut cmd, creds);
-    let output = cmd.arg("clone").arg(remote_url).arg(dst).output()?;
+    cmd.arg("clone").arg(remote_url).arg(dst);
+    let output = run_git_subprocess(cmd, defaults::CLONE_TIMEOUT, "clone", remote_url).await?;
     if !output.status.success() {
         return Err(GitError::transport(
             "clone",
@@ -255,22 +356,23 @@ pub fn clone(remote_url: &str, dst: &Path, creds: &Credentials) -> Result<(), Gi
 }
 
 /// Fetch `refspecs` from `remote_url` into the bare repo at
-/// `repo_path`. An `origin` remote is configured on the fly so
-/// subsequent fetches reuse it.
-pub fn fetch(
+/// `repo_path`, bounded by [`defaults::FETCH_PUSH_TIMEOUT`]. An
+/// `origin` remote is configured on the fly so subsequent fetches
+/// reuse it.
+pub async fn fetch(
     repo_path: &Path,
     remote_url: &str,
     refspecs: &[String],
     creds: &Credentials,
 ) -> Result<(), GitError> {
-    ensure_remote(repo_path, remote_url)?;
+    ensure_remote(repo_path, remote_url).await?;
     let mut cmd = Command::new(git_binary());
     apply_credentials(&mut cmd, creds);
     cmd.arg("-C").arg(repo_path).arg("fetch").arg("origin");
     for spec in refspecs {
         cmd.arg(spec);
     }
-    let output = cmd.output()?;
+    let output = run_git_subprocess(cmd, defaults::FETCH_PUSH_TIMEOUT, "fetch", remote_url).await?;
     if !output.status.success() {
         return Err(GitError::transport(
             "fetch",
@@ -281,19 +383,23 @@ pub fn fetch(
     Ok(())
 }
 
-/// Push `refspecs` (local, remote, force) from `repo` to `remote_url`.
-/// `repo` is used only for the local-ref preflight check; the push
-/// itself still shells out to the `git` binary so it works against
-/// any smart-HTTP-capable remote.
-pub fn push(
-    repo: &gix::Repository,
+/// Push `refspecs` (local, remote, force) to `remote_url` against the
+/// bare repo at `repo_path`, bounded by
+/// [`defaults::FETCH_PUSH_TIMEOUT`].
+///
+/// Callers run [`preflight_local_refs`] against the repo's open
+/// `gix::Repository` handle themselves before calling this: that
+/// check needs the synchronous `gix` view
+/// [`crate::native::NativeBackend`] hands out inside `spawn_blocking`,
+/// while this function is the genuinely async part that shells out to
+/// `git` so the push works against any smart-HTTP-capable remote.
+pub async fn push(
+    repo_path: &Path,
     remote_url: &str,
     refspecs: &[(String, String, bool)],
     creds: &Credentials,
 ) -> Result<PushReport, GitError> {
-    preflight_local_refs(repo, refspecs)?;
-    let repo_path = repo.git_dir();
-    ensure_remote(repo_path, remote_url)?;
+    ensure_remote(repo_path, remote_url).await?;
     let mut cmd = Command::new(git_binary());
     apply_credentials(&mut cmd, creds);
     cmd.arg("-C").arg(repo_path).arg("push").arg("origin");
@@ -305,7 +411,7 @@ pub fn push(
         };
         cmd.arg(spec);
     }
-    let output = cmd.output()?;
+    let output = run_git_subprocess(cmd, defaults::FETCH_PUSH_TIMEOUT, "push", remote_url).await?;
     if !output.status.success() {
         return Err(GitError::transport(
             "push",
@@ -413,7 +519,12 @@ fn is_ancestor(
 ///
 /// Empty refspec lists (used by tests exercising error paths) skip
 /// the check so the subprocess surfaces its own error.
-fn preflight_local_refs(
+///
+/// `pub(crate)`: [`crate::native::NativeBackend::push`] runs this
+/// against the open `gix::Repository` handle inside its own
+/// `spawn_blocking`, before awaiting the async [`push`] subprocess
+/// call, which no longer holds a `gix::Repository` at all.
+pub(crate) fn preflight_local_refs(
     repo: &gix::Repository,
     refspecs: &[(String, String, bool)],
 ) -> Result<(), GitError> {
@@ -442,28 +553,49 @@ fn preflight_local_refs(
 
 /// Ensure the repo at `repo_path` has an `origin` remote pointing
 /// at `remote_url`. Safe to call repeatedly.
-fn ensure_remote(repo_path: &Path, remote_url: &str) -> Result<(), GitError> {
+///
+/// Purely local: `git remote set-url`/`git remote add` only read and
+/// rewrite `repo_path`'s own config file, no network I/O. Still
+/// `async fn` built on `tokio::process::Command`, bounded by
+/// [`defaults::LOCAL_GIT_OP_TIMEOUT`], so this never blocks the
+/// calling task's worker thread even briefly: [`fetch`] and [`push`]
+/// call it directly, without wrapping it in `spawn_blocking`.
+async fn ensure_remote(repo_path: &Path, remote_url: &str) -> Result<(), GitError> {
     // Try to set the URL first; if the remote does not exist,
     // fall back to adding it.
-    let set = Command::new(git_binary())
+    let mut set_cmd = Command::new(git_binary());
+    set_cmd
         .arg("-C")
         .arg(repo_path)
         .arg("remote")
         .arg("set-url")
         .arg("origin")
-        .arg(remote_url)
-        .output()?;
+        .arg(remote_url);
+    let set = run_git_subprocess(
+        set_cmd,
+        defaults::LOCAL_GIT_OP_TIMEOUT,
+        "remote-set-url",
+        remote_url,
+    )
+    .await?;
     if set.status.success() {
         return Ok(());
     }
-    let add = Command::new(git_binary())
+    let mut add_cmd = Command::new(git_binary());
+    add_cmd
         .arg("-C")
         .arg(repo_path)
         .arg("remote")
         .arg("add")
         .arg("origin")
-        .arg(remote_url)
-        .output()?;
+        .arg(remote_url);
+    let add = run_git_subprocess(
+        add_cmd,
+        defaults::LOCAL_GIT_OP_TIMEOUT,
+        "remote-add",
+        remote_url,
+    )
+    .await?;
     if !add.status.success() {
         return Err(GitError::transport(
             "remote-add",
@@ -1051,8 +1183,12 @@ mod credential_tests {
     /// Collect every `(key, value)` env var `apply_credentials` set on
     /// `cmd`, so a test can assert presence/absence and value without
     /// depending on `std::process::Command`'s (partial) `Debug` output.
+    /// Goes through `as_std()`: `tokio::process::Command` wraps a
+    /// `std::process::Command` internally and exposes its own
+    /// inspection methods only via that accessor.
     fn envs_of(cmd: &Command) -> std::collections::HashMap<String, String> {
-        cmd.get_envs()
+        cmd.as_std()
+            .get_envs()
             .filter_map(|(k, v)| {
                 Some((
                     k.to_string_lossy().into_owned(),
@@ -1064,7 +1200,8 @@ mod credential_tests {
 
     /// Collect every argv token `apply_credentials` appended to `cmd`.
     fn args_of(cmd: &Command) -> Vec<String> {
-        cmd.get_args()
+        cmd.as_std()
+            .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect()
     }
@@ -1253,6 +1390,113 @@ mod credential_tests {
             ssh_command.is_some_and(|v| v.contains("BatchMode=yes")),
             "Credentials::None must always land a BatchMode=yes GIT_SSH_COMMAND, \
              got: {ssh_command:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+    use super::*;
+
+    /// Seconds a deliberately-hung test child sleeps for: comfortably
+    /// longer than any short test timeout used against it, so the
+    /// process is still alive when `wait_with_timeout` gives up and
+    /// kills it, never because it happened to finish naturally.
+    const HUNG_CHILD_SLEEP_SECS: u64 = 100;
+
+    /// Spawn an OS process that sleeps far longer than any short test
+    /// timeout, so the child is deterministically still running when
+    /// `wait_with_timeout` gives up on it.
+    ///
+    /// [`wait_with_timeout`] is generic over any `tokio::process::
+    /// Command`, so this does not need to be `git` itself: an
+    /// OS-native sleep avoids depending on a specific subcommand's
+    /// stdin-blocking behavior, which proved inconsistent across git
+    /// installations.
+    #[cfg(windows)]
+    fn spawn_hung_child() -> Child {
+        let mut cmd = Command::new("powershell");
+        cmd.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &format!("Start-Sleep -Seconds {HUNG_CHILD_SLEEP_SECS}"),
+        ]);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        cmd.spawn().expect("spawn powershell Start-Sleep")
+    }
+
+    /// Unix equivalent of the Windows [`spawn_hung_child`] above.
+    #[cfg(not(windows))]
+    fn spawn_hung_child() -> Child {
+        let mut cmd = Command::new("sleep");
+        cmd.arg(HUNG_CHILD_SLEEP_SECS.to_string());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        cmd.spawn().expect("spawn sleep")
+    }
+
+    /// Falsification: a child that outlives `timeout` is explicitly
+    /// killed and reaped, not merely reported as timed out. Red check
+    /// performed manually: removing the `child.kill().await?` call
+    /// from `wait_with_timeout`'s timeout branch makes this fail at
+    /// the final `try_wait` assertion (`Ok(None)`, still running)
+    /// instead of the `matches!` assertion, since a still-sleeping
+    /// child keeps running for [`HUNG_CHILD_SLEEP_SECS`] regardless of
+    /// what `wait_with_timeout` returns; restoring the call makes it
+    /// pass again.
+    #[tokio::test]
+    async fn wait_with_timeout_kills_and_reaps_a_hung_child() {
+        let mut child = spawn_hung_child();
+        let short_timeout = Duration::from_millis(200);
+
+        let result = wait_with_timeout(&mut child, short_timeout, "test-op", "test-target").await;
+
+        assert!(
+            matches!(result, Err(GitError::Timeout { op: "test-op", .. })),
+            "expected GitError::Timeout, got {result:?}"
+        );
+        // `Child::try_wait` returns `Ok(None)` for a still-running
+        // process and `Ok(Some(status))` once it has actually exited
+        // and been reaped; tokio caches the exit status internally so
+        // this observes the real post-kill process state, not merely
+        // trusting that `wait_with_timeout` claims to have killed it.
+        let post_kill_status = child
+            .try_wait()
+            .expect("try_wait after an explicit kill+wait must not error");
+        assert!(
+            post_kill_status.is_some(),
+            "the child must have actually exited after the timeout branch killed it"
+        );
+    }
+
+    /// Falsification: a command that finishes well inside `timeout`
+    /// still returns its real exit status and output, so the timeout
+    /// path above did not come at the cost of the normal case.
+    #[tokio::test]
+    async fn wait_with_timeout_returns_real_output_for_a_fast_command() {
+        let mut cmd = Command::new(git_binary());
+        cmd.arg("--version");
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let mut child = cmd.spawn().expect("spawn git --version");
+
+        let output = wait_with_timeout(
+            &mut child,
+            defaults::LOCAL_GIT_OP_TIMEOUT,
+            "test-op",
+            "test-target",
+        )
+        .await
+        .expect("git --version must complete well inside the timeout");
+
+        assert!(output.status.success(), "git --version must exit 0");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("git version"),
+            "stdout must carry git's real version output, got: {:?}",
+            String::from_utf8_lossy(&output.stdout)
         );
     }
 }

@@ -115,6 +115,21 @@ pub enum GitError {
         stderr: String,
     },
 
+    /// The `git` subprocess driving `clone`/`fetch`/`push`, or the
+    /// local `git remote` housekeeping that precedes `fetch`/`push`,
+    /// exceeded its bound and was killed. Distinct from
+    /// [`GitError::Transport`] (a remote that responded with a
+    /// rejection): this fires when the subprocess never produced an
+    /// exit status at all, so the caller fails fast within a bounded
+    /// window instead of pinning the async task and the child process
+    /// indefinitely.
+    #[error("git {op} against {url} exceeded its {timeout_secs}s bound and was terminated")]
+    Timeout {
+        op: &'static str,
+        url: String,
+        timeout_secs: u64,
+    },
+
     /// UTF-8 decoding error when reading a text file. Every
     /// `GitBackend::read_file` implementation returns a borrowed
     /// `Bytes` buffer, not an owned `Vec<u8>`, so callers validate
@@ -134,6 +149,17 @@ impl GitError {
             op,
             url: redact_url(url),
             stderr: stderr.into(),
+        }
+    }
+
+    /// Build a `Timeout` variant, redacting any basic-auth credentials
+    /// from `url` the same way [`Self::transport`] does.
+    #[must_use]
+    pub fn timeout(op: &'static str, url: &str, bound: std::time::Duration) -> Self {
+        GitError::Timeout {
+            op,
+            url: redact_url(url),
+            timeout_secs: bound.as_secs(),
         }
     }
 }
