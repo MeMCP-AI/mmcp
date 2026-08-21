@@ -60,6 +60,12 @@ type Phase =
   | { t: 'unknown' }
   | { t: 'failed' }
   | { t: 'not_configured' }
+  // Sync resolution genuinely errored (e.g. an ambiguous default
+  // remote across the merged user+project config), distinct from
+  // `not_configured`'s benign "no remotes declared anywhere": the
+  // backend degraded to a usable app state per the no-silent-failure
+  // rule, but the user still needs to open Settings and fix it.
+  | { t: 'broken'; message: string }
   | { t: 'idle'; remotesSummary: string }
   | { t: 'syncing'; op: 'pull' | 'push'; remotesSummary: string }
   | { t: 'ok'; op: 'pull' | 'push'; remotesSummary: string; summary: string }
@@ -84,10 +90,13 @@ class SyncStore {
           this.phase.t === 'unknown' ||
           this.phase.t === 'failed' ||
           this.phase.t === 'not_configured' ||
+          this.phase.t === 'broken' ||
           prev !== summary
         ) {
           this.phase = { t: 'idle', remotesSummary: summary };
         }
+      } else if (status.error) {
+        this.phase = { t: 'broken', message: status.error };
       } else {
         this.phase = { t: 'not_configured' };
       }
@@ -181,7 +190,8 @@ class SyncStore {
     return (
       this.phase.t !== 'unknown' &&
       this.phase.t !== 'failed' &&
-      this.phase.t !== 'not_configured'
+      this.phase.t !== 'not_configured' &&
+      this.phase.t !== 'broken'
     );
   }
 

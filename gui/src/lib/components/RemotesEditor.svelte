@@ -27,6 +27,24 @@
     onChange(remotes.map((r) => (r._key === key ? { ...r, ...patch } : r)));
   }
 
+  // Checking one remote's "default push target" clears it on every
+  // other remote in this same list: a single file may declare at
+  // most one default (the backend's `SyncConfig::validate` rejects
+  // more than one), so the editor never lets the user create that
+  // state to begin with.
+  //
+  // Unchecking the sole default is still allowed: the merged
+  // effective set across levels may resolve a default from
+  // elsewhere, or from being the only remote left.
+  function setDefault(key: string, checked: boolean) {
+    onChange(
+      remotes.map((r) => ({
+        ...r,
+        default: r._key === key ? checked : checked ? false : r.default
+      }))
+    );
+  }
+
   function remove(key: string) {
     onChange(remotes.filter((r) => r._key !== key));
   }
@@ -141,7 +159,7 @@
             type="checkbox"
             checked={remote.default}
             {disabled}
-            onchange={(e) => update(remote._key, { default: e.currentTarget.checked })}
+            onchange={(e) => setDefault(remote._key, e.currentTarget.checked)}
           />
           default push target
         </label>

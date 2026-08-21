@@ -78,10 +78,16 @@ export interface MemoryDescriptorList {
 
 /** Wire mirror of the Rust `SyncStatusDto`. `remotes_summary` is the
  * effective remote set's label: the sole remote's name, or
- * `"N remote(s), default '<name>'"`. */
+ * `"N remote(s), default '<name>'"`.
+ *
+ * `error` carries why sync failed to resolve (e.g. an ambiguous
+ * default remote across the merged user+project config) when
+ * `configured` is false for a reason other than "no remotes declared
+ * anywhere". */
 export interface SyncStatus {
   configured: boolean;
   remotes_summary: string | null;
+  error: string | null;
 }
 
 /** One `mmcp-server`-transport remote whose manifest poll itself

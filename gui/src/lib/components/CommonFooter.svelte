@@ -5,6 +5,7 @@
   // the end of the status row.
 
   import {
+    AlertTriangle,
     CircleDashed,
     LoaderCircle,
     Settings as SettingsIcon,
@@ -32,7 +33,7 @@
   });
 
   const reachTone = $derived.by(() => {
-    if (phase.t === 'not_configured') return 'text-fg-subtle';
+    if (phase.t === 'not_configured' || phase.t === 'broken') return 'text-fg-subtle';
     if (reach.t === 'online') return 'text-emerald-300';
     if (reach.t === 'offline') return 'text-rose-300';
     return 'text-fg-muted';
@@ -46,6 +47,8 @@
     switch (phase.t) {
       case 'not_configured':
         return 'no server';
+      case 'broken':
+        return 'config error';
       case 'unknown':
         return 'starting…';
       case 'failed':
@@ -60,13 +63,21 @@
         return `${phase.op} failed`;
     }
   });
+
+  const syncTitle = $derived.by(() => {
+    if (phase.t === 'err' || phase.t === 'broken') return phase.message;
+    return undefined;
+  });
 </script>
 
 <footer
   class="flex h-7 shrink-0 items-center gap-3 border-t border-line bg-surface-1 px-3 text-[11px] text-fg-muted"
 >
   <span class="inline-flex items-center gap-1 {reachTone}" title={reachTip}>
-    {#if phase.t === 'not_configured'}
+    {#if phase.t === 'broken'}
+      <AlertTriangle size={11} />
+      config error
+    {:else if phase.t === 'not_configured'}
       <WifiOff size={11} />
       no server
     {:else if reach.t === 'online'}
@@ -90,8 +101,12 @@
   <span class="h-3 w-px bg-line"></span>
 
   <span
-    class={phase.t === 'err' ? 'text-rose-300' : phase.t === 'syncing' ? 'text-amber-300' : ''}
-    title={phase.t === 'err' ? phase.message : undefined}
+    class={phase.t === 'err' || phase.t === 'broken'
+      ? 'text-rose-300'
+      : phase.t === 'syncing'
+        ? 'text-amber-300'
+        : ''}
+    title={syncTitle}
   >
     sync: {syncLine}
   </span>

@@ -6,12 +6,13 @@
   // red off, zinc pending); the label is the resolved remote-set
   // summary (a remote's name, or a count plus its default's name).
 
-  import { CircleDashed, LoaderCircle, Wifi, WifiOff } from '@lucide/svelte';
+  import { AlertTriangle, CircleDashed, LoaderCircle, Wifi, WifiOff } from '@lucide/svelte';
   import { reachabilityStore } from '$lib/stores/reachability.svelte';
   import { syncStore } from '$lib/stores/sync.svelte';
 
   const phase = $derived(syncStore.phase);
   const reach = $derived(reachabilityStore.state);
+  const broken = $derived(phase.t === 'broken');
 
   const remotesSummary = $derived.by(() => {
     switch (phase.t) {
@@ -29,6 +30,7 @@
   const configured = $derived(syncStore.configured);
 
   const tone = $derived.by(() => {
+    if (broken) return 'text-amber-300 ring-amber-500/40';
     if (!configured) return 'text-fg-subtle ring-line';
     if (reach.t === 'online') return 'text-emerald-300 ring-emerald-500/40';
     if (reach.t === 'offline') return 'text-rose-300 ring-rose-500/40';
@@ -36,6 +38,7 @@
   });
 
   const tipReach = $derived.by(() => {
+    if (phase.t === 'broken') return `Sync config error: ${phase.message}`;
     if (!configured) return 'No sync server configured';
     if (reach.t === 'online') return 'Online';
     if (reach.t === 'offline') return `Offline: ${reach.reason}`;
@@ -48,7 +51,10 @@
   class="inline-flex items-center gap-1.5 rounded-md bg-surface-0 px-2 py-0.5 text-[11px] ring-1 ring-inset {tone}"
   title={`${tipReach}${remotesSummary ? ` · ${remotesSummary}` : ''}`}
 >
-  {#if !configured}
+  {#if broken}
+    <AlertTriangle size={11} />
+    <span>config error</span>
+  {:else if !configured}
     <WifiOff size={11} />
     <span>no server</span>
   {:else if reach.t === 'online'}
