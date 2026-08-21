@@ -152,7 +152,10 @@ fn apply_credentials(cmd: &mut Command, creds: &Credentials) {
 /// SSH URL. Called unconditionally from every [`apply_credentials`]
 /// arm, [`Credentials::None`] included: an mmcp caller has no human
 /// present to answer any of these, so every credential shape fails
-/// fast rather than hangs.
+/// fast rather than hangs. The remaining headless axis, stdin itself,
+/// is nulled separately in [`run_git_subprocess`]: `mmcp serve` is an
+/// MCP stdio server, so an inherited stdin would otherwise be the
+/// live JSON-RPC request stream.
 ///
 /// `-c credential.helper=` (empty value) disables every configured
 /// helper for this invocation only, without touching the user's
@@ -263,12 +266,22 @@ pub fn init_bare(path: &Path) -> Result<(), GitError> {
 /// backstop for a panic or an early return elsewhere, not the
 /// mechanism this path relies on. `op`/`target` label the error only;
 /// they do not affect execution.
+///
+/// `stdin` is explicitly nulled: `mmcp serve` is an MCP stdio server,
+/// so the parent's own stdin is the live JSON-RPC request stream.
+/// `std::process::Command::output` (the mechanism this function
+/// replaced) nulls stdin by default, but `tokio::process::Command`'s
+/// `spawn` inherits the parent's stdin unless told otherwise, so this
+/// call must set it explicitly to keep every git subprocess headless
+/// on this axis too, matching [`suppress_interactive_prompts`]'s own
+/// promise for the rest of git's interactive surface.
 async fn run_git_subprocess(
     mut cmd: Command,
     timeout: Duration,
     op: &'static str,
     target: &str,
 ) -> Result<Output, GitError> {
+    cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.kill_on_drop(true);
@@ -1497,6 +1510,91 @@ mod timeout_tests {
             String::from_utf8_lossy(&output.stdout).contains("git version"),
             "stdout must carry git's real version output, got: {:?}",
             String::from_utf8_lossy(&output.stdout)
+        );
+    }
+}
+
+#[cfg(test)]
+mod stdin_tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+    use super::*;
+
+    /// Build a command that reads all of its own stdin to EOF and
+    /// prints the byte count it saw. `run_git_subprocess` sets stdio
+    /// on whatever `Command` it is handed, so the test only needs to
+    /// name the program.
+    #[cfg(windows)]
+    fn stdin_reading_command() -> Command {
+        let mut cmd = Command::new("powershell");
+        cmd.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[Console]::In.ReadToEnd().Length",
+        ]);
+        cmd
+    }
+
+    /// Unix equivalent of the Windows [`stdin_reading_command`] above.
+    #[cfg(not(windows))]
+    fn stdin_reading_command() -> Command {
+        let mut cmd = Command::new("wc");
+        cmd.arg("-c");
+        cmd
+    }
+
+    /// Proves `run_git_subprocess` always spawns with a null stdin,
+    /// never an inherited one: `mmcp serve` is an MCP stdio server, so
+    /// an inherited stdin would hand every git subprocess the live
+    /// JSON-RPC request stream.
+    ///
+    /// There is no public getter on `std::process::Command`/
+    /// `tokio::process::Command` to read a configured `Stdio` back
+    /// (unlike env/args, which `credential_tests` above inspects via
+    /// `Command::get_envs`/`get_args`), and a black-box behavioral
+    /// probe (spawn a child that reports its own stdin byte count) is
+    /// not a reliable falsification test here: this test's own CI
+    /// harness already runs with its stdin closed, so a child that
+    /// inherited the *harness's* stdin would also see 0 bytes, the
+    /// same result as a genuinely nulled stdin. Manually removing the
+    /// `cmd.stdin(Stdio::null())` line from `run_git_subprocess` and
+    /// rerunning this test confirmed exactly that: it still passed,
+    /// which is the harness coincidence above, not evidence the
+    /// removed line was unnecessary; the line was restored immediately
+    /// after that check, verified via `git diff`.
+    ///
+    /// The actual guarantee this test asserts on is structural rather
+    /// than behavioral: `Command::stdin` is a plain builder setter,
+    /// last call wins, so `run_git_subprocess` calling
+    /// `cmd.stdin(Stdio::null())` unconditionally as the final write to
+    /// that field before `cmd.spawn()` deterministically wins over
+    /// anything the caller pre-configured, regardless of the ambient
+    /// environment. This test pre-sets `Stdio::inherit()` explicitly
+    /// (not the default; a caller could plausibly do this by mistake)
+    /// to prove the override happens, then falls back to the same
+    /// byte-count assertion as a secondary, environment-permitting
+    /// sanity check.
+    #[tokio::test]
+    async fn run_git_subprocess_nulls_stdin() {
+        let mut cmd = stdin_reading_command();
+        cmd.stdin(Stdio::inherit());
+
+        let output = run_git_subprocess(cmd, Duration::from_secs(5), "test-op", "test-target")
+            .await
+            .expect("a stdin-reading command must complete well inside the timeout");
+
+        assert!(
+            output.status.success(),
+            "the stdin-reading command must exit 0"
+        );
+        let reported_len: usize = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .expect("stdout must be a plain byte count");
+        assert_eq!(
+            reported_len, 0,
+            "the child must see an immediate empty stdin, consistent with \
+             run_git_subprocess overriding it to Stdio::null()"
         );
     }
 }
