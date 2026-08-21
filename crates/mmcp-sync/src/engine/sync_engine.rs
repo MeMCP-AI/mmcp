@@ -380,11 +380,11 @@ impl SyncEngine {
             MAX_CONCURRENT_GROUP_TRANSFERS,
             |fetched_group| fetched_group.group_id,
             |fetched_group| {
-                // `.ok().flatten()`: this call site does not yet
-                // distinguish contended-vs-not-indexed (see
-                // `SyncError::GroupIndexContended`/`GroupNotIndexed`
-                // on the `push` path); both collapse to `None` here,
-                // matching this path's prior behavior exactly.
+                // `.ok().flatten()`: a contended index lookup and a
+                // genuinely unindexed group both collapse to `None`
+                // on this path. `SyncError::GroupIndexContended`/
+                // `GroupNotIndexed` on the `push` path distinguish
+                // the two causes.
                 let handle = group_handles.resolve(fetched_group.group_id).ok().flatten();
                 async move { self.fast_forward_one_group(fetched_group, handle).await }
             },
@@ -542,9 +542,10 @@ impl SyncEngine {
         let mut candidates: Vec<FetchCandidate<'_>> = Vec::new();
         for (remote, manifest) in &manifests {
             for remote_group in &manifest.groups {
-                // `.ok().flatten()`: see the fast-forward call site
-                // above for why contended-vs-not-indexed is not yet
-                // distinguished on this discovery path.
+                // `.ok().flatten()`: a contended index lookup and a
+                // genuinely unindexed group both collapse to `None`
+                // on this discovery path too; see the fast-forward
+                // call site above.
                 match group_handles.resolve(remote_group.group_id).ok().flatten() {
                     None => {
                         if seen_new_groups.insert(remote_group.group_id) {

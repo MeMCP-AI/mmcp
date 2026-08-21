@@ -98,9 +98,8 @@ impl mmcp_sync::ScopeIndex for MapResolver {
 /// Resolver whose `resolve` always reports a contended index lookup,
 /// never "not indexed" and never "resolved". Proves
 /// `SyncError::GroupIndexContended` is reachable and distinct from
-/// `SyncError::GroupNotIndexed`, which a resolver that always returns
-/// `Ok(None)` (indistinguishable from this one before the split)
-/// cannot demonstrate.
+/// `SyncError::GroupNotIndexed`: a resolver that always returns
+/// `Ok(None)` only ever demonstrates the latter.
 #[derive(Default, Clone)]
 struct ContendedResolver;
 

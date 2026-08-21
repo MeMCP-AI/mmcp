@@ -269,12 +269,11 @@ pub fn init_bare(path: &Path) -> Result<(), GitError> {
 ///
 /// `stdin` is explicitly nulled: `mmcp serve` is an MCP stdio server,
 /// so the parent's own stdin is the live JSON-RPC request stream.
-/// `std::process::Command::output` (the mechanism this function
-/// replaced) nulls stdin by default, but `tokio::process::Command`'s
-/// `spawn` inherits the parent's stdin unless told otherwise, so this
-/// call must set it explicitly to keep every git subprocess headless
-/// on this axis too, matching [`suppress_interactive_prompts`]'s own
-/// promise for the rest of git's interactive surface.
+/// `tokio::process::Command::spawn` inherits the parent's stdin
+/// unless told otherwise, so this call sets it explicitly, keeping
+/// every git subprocess headless on this axis too, matching
+/// [`suppress_interactive_prompts`]'s own promise for the rest of
+/// git's interactive surface.
 async fn run_git_subprocess(
     mut cmd: Command,
     timeout: Duration,
@@ -1551,17 +1550,12 @@ mod stdin_tests {
     /// There is no public getter on `std::process::Command`/
     /// `tokio::process::Command` to read a configured `Stdio` back
     /// (unlike env/args, which `credential_tests` above inspects via
-    /// `Command::get_envs`/`get_args`), and a black-box behavioral
-    /// probe (spawn a child that reports its own stdin byte count) is
-    /// not a reliable falsification test here: this test's own CI
-    /// harness already runs with its stdin closed, so a child that
-    /// inherited the *harness's* stdin would also see 0 bytes, the
-    /// same result as a genuinely nulled stdin. Manually removing the
-    /// `cmd.stdin(Stdio::null())` line from `run_git_subprocess` and
-    /// rerunning this test confirmed exactly that: it still passed,
-    /// which is the harness coincidence above, not evidence the
-    /// removed line was unnecessary; the line was restored immediately
-    /// after that check, verified via `git diff`.
+    /// `Command::get_envs`/`get_args`). A black-box behavioral probe
+    /// (spawn a child that reports its own stdin byte count) cannot
+    /// falsify this property in this test's own CI harness: the
+    /// harness's own stdin already runs closed, so a child that
+    /// inherited it would also see 0 bytes, the same result a
+    /// genuinely nulled stdin produces.
     ///
     /// The actual guarantee this test asserts on is structural rather
     /// than behavioral: `Command::stdin` is a plain builder setter,
