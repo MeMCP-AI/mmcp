@@ -6089,9 +6089,10 @@ fn sync_error_payload(err: &mmcp_sync::SyncError) -> serde_json::Value {
             "code": "sync_group_not_indexed",
             "group": group.to_string(),
         }),
-        SyncError::GroupIndexContended { group } => json!({
+        SyncError::GroupIndexContended { group, source } => json!({
             "code": "sync_group_index_contended",
             "group": group.to_string(),
+            "detail": source.to_string(),
         }),
     }
 }

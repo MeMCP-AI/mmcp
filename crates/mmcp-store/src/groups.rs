@@ -34,8 +34,9 @@ use crate::error::{FileOperation, StoreError};
 /// [`GroupIndex::try_get`]): a caller that cannot tell the two apart
 /// cannot tell "retry, this will resolve itself" from "real problem,
 /// investigate" from the reported failure alone.
-#[derive(Debug, Clone, Copy)]
-pub struct IndexContended;
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+#[error("group index lookup was contended by a concurrent writer")]
+pub struct GroupIndexContended;
 
 /// One entry in the [`GroupIndex`].
 #[derive(Debug, Clone)]
@@ -124,16 +125,16 @@ impl GroupIndex {
     /// (every production caller: `push_one_group` and friends are themselves async fns
     /// driven by the multi-thread runtime `mmcp-server`/`mmcp-client` start under).
     ///
-    /// `Ok(None)`: the group is genuinely not indexed. `Err(IndexContended)`:
+    /// `Ok(None)`: the group is genuinely not indexed. `Err(GroupIndexContended)`:
     /// the lock is currently held by a writer (`refresh` is rare and never holds
     /// the lock across an await point, so this is uncommon). Kept distinct, rather
     /// than both collapsing to `None`, so a caller can tell a transient race from
     /// a real "this group does not exist" result.
-    pub fn try_get(&self, group_id: &GroupId) -> Result<Option<GroupEntry>, IndexContended> {
+    pub fn try_get(&self, group_id: &GroupId) -> Result<Option<GroupEntry>, GroupIndexContended> {
         self.inner
             .try_read()
             .map(|guard| guard.get(group_id).cloned())
-            .map_err(|_| IndexContended)
+            .map_err(|_| GroupIndexContended)
     }
 
     /// Non-blocking snapshot of every indexed group's UUID.

@@ -58,6 +58,6 @@ pub use reports::{
     FetchReport, FetchedGroup, GroupSyncFailure, PullReport, PushReport, PushedGroup,
     RemoteManifestFailure, RemotePushOutcome, SyncReport,
 };
-pub use resolver::{GroupHandleResolver, IndexContended};
+pub use resolver::GroupHandleResolver;
 pub use scope::NoScopeIndex;
 pub use sync_engine::SyncEngine;

@@ -187,13 +187,13 @@ impl GroupHandleResolver for IndexResolver {
         // under), so a `block_on` bridge would panic with "Cannot start a runtime from
         // within a runtime". `Ok(None)` (group genuinely unindexed) and
         // `Err(IndexContended)` (the index lock was held by a concurrent writer) are kept
-        // distinct through this boundary, translating the store's own `groups::IndexContended`
-        // to the sync engine's decoupled marker of the same name: see
+        // distinct through this boundary, translating the store's own `groups::GroupIndexContended`
+        // to the sync engine's decoupled `IndexContended` marker: see
         // `SyncError::GroupNotIndexed`/`SyncError::GroupIndexContended`.
         self.index
             .try_get(&mmcp_core::id::GroupId::from_uuid(group_id))
             .map(|opt_entry| opt_entry.map(|entry| entry.handle))
-            .map_err(|crate::groups::IndexContended| IndexContended)
+            .map_err(|crate::groups::GroupIndexContended| IndexContended)
     }
 
     fn iter_group_ids(&self) -> Vec<Uuid> {

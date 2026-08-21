@@ -392,7 +392,7 @@ async fn push_contended_group_is_reported_distinctly_from_not_indexed() {
     );
     assert!(matches!(
         report.by_remote[0].failed[0].error,
-        mmcp_sync::SyncError::GroupIndexContended { group } if group == target
+        mmcp_sync::SyncError::GroupIndexContended { group, .. } if group == target
     ));
 }
 

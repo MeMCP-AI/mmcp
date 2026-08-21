@@ -3,6 +3,16 @@
 use thiserror::Error;
 use uuid::Uuid;
 
+/// The resolver's backing index lock was held by a concurrent writer
+/// when a non-blocking lookup ran.
+///
+/// Transient by construction: a well-behaved backing index never
+/// holds its lock across an await point, so this clears on the
+/// resolver's next call.
+#[derive(Debug, Clone, Copy, Error)]
+#[error("local group index lookup was contended by a concurrent writer")]
+pub struct IndexContended;
+
 /// Failures returned by the sync engine.
 #[derive(Debug, Error)]
 pub enum SyncError {
@@ -110,6 +120,9 @@ pub enum SyncError {
     GroupIndexContended {
         /// The group id whose `resolve` call hit a contended index.
         group: Uuid,
+        /// The underlying contention marker `resolve` returned.
+        #[source]
+        source: IndexContended,
     },
 }
 

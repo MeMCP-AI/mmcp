@@ -16,10 +16,10 @@ use super::reports::{
     FetchReport, FetchedGroup, GroupSyncFailure, PullReport, PushReport, PushedGroup,
     RemoteManifestFailure, RemotePushOutcome, SyncReport,
 };
-use super::resolver::{GroupHandleResolver, IndexContended};
+use super::resolver::GroupHandleResolver;
 use super::scope::group_matches;
 use crate::client::RemoteGroup;
-use crate::error::SyncError;
+use crate::error::{IndexContended, SyncError};
 use crate::filter::{ScopeIndex, SyncFilter};
 
 /// Split `run_bounded`'s tagged outcomes into successes and
@@ -251,7 +251,7 @@ impl SyncEngine {
                 );
                 return Err(SyncError::GroupNotIndexed { group: group_id });
             }
-            Err(IndexContended) => {
+            Err(source @ IndexContended) => {
                 // Same visibility rationale as the not-indexed arm
                 // above, but transient: the caller can retry this
                 // group without re-indexing anything.
@@ -260,7 +260,10 @@ impl SyncEngine {
                     remote = %remote.name,
                     "push skipped: local index lookup was contended"
                 );
-                return Err(SyncError::GroupIndexContended { group: group_id });
+                return Err(SyncError::GroupIndexContended {
+                    group: group_id,
+                    source,
+                });
             }
         };
         let refs = vec![RefSpec::new(

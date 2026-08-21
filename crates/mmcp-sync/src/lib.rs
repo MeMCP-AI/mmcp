@@ -31,10 +31,10 @@ pub use client::{
     SyncClient,
 };
 pub use engine::{
-    BoundRemote, FetchReport, FetchedGroup, GroupHandleResolver, GroupSyncFailure, IndexContended,
-    PullReport, PushReport, PushScope, PushedGroup, RemoteManifestFailure, RemotePushOutcome,
-    RemoteTransport, SyncEngine, SyncReport, run_bounded,
+    BoundRemote, FetchReport, FetchedGroup, GroupHandleResolver, GroupSyncFailure, PullReport,
+    PushReport, PushScope, PushedGroup, RemoteManifestFailure, RemotePushOutcome, RemoteTransport,
+    SyncEngine, SyncReport, run_bounded,
 };
-pub use error::SyncError;
+pub use error::{IndexContended, SyncError};
 pub use filter::{ScopeIndex, SyncFilter};
 pub use version::negotiate_next_version;

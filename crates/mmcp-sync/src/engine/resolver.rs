@@ -3,18 +3,7 @@
 
 use uuid::Uuid;
 
-/// The resolver's backing index lock was held by a concurrent writer
-/// when a non-blocking lookup ran.
-///
-/// Transient by construction: a well-behaved backing index never
-/// holds its lock across an await point (see the client's
-/// `GroupIndex::try_get`), so this clears on the resolver's next
-/// call. Distinct from "genuinely not indexed" (`Ok(None)` on
-/// [`GroupHandleResolver::resolve`]): a caller that cannot tell the
-/// two apart cannot tell "retry, this will resolve itself" from
-/// "real problem, investigate" from the reported failure alone.
-#[derive(Debug, Clone, Copy)]
-pub struct IndexContended;
+use crate::error::IndexContended;
 
 /// Resolves a `group_id` to its local [`mmcp_git::RepoHandle`] and
 /// enumerates every locally-known group.
