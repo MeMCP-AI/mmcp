@@ -121,6 +121,16 @@ impl EffectiveRemotes {
 /// Resolve the effective remote set for a sync operation, merging
 /// `user` and `project` per FR-301's Resolution section.
 ///
+/// The cross-level name-collision check runs against EVERY name
+/// declared at both levels unconditionally, even when
+/// `project_remote_only` excludes the user level from the returned
+/// active set: `project_remote_only` narrows which remotes are used
+/// for sync, it must never widen which names are safe for a project
+/// to reuse. Without this, a project could declare a remote sharing
+/// a real user-level remote's name and inherit that name's ambient
+/// `MMCP_SYNC_TOKEN_<NAME>` credential while pointing the connection
+/// at an attacker-controlled URL (FR-301 security finding F1).
+///
 /// # Errors
 /// [`StoreError::InvalidRemoteName`] for a name outside the safe git-ref
 /// charset, [`StoreError::DirectGitMissingGroup`] for a user-level
@@ -132,14 +142,25 @@ pub fn resolve_effective_remotes(
     user: &UserConfig,
     project: &ProjectConfig,
 ) -> Result<EffectiveRemotes, StoreError> {
+    let mut user_remotes = Vec::new();
+    collect_level(&user.sync, RemoteLevel::User, project, &mut user_remotes)?;
+
+    let mut project_remotes = Vec::new();
+    collect_level(
+        &project.sync,
+        RemoteLevel::Project,
+        project,
+        &mut project_remotes,
+    )?;
+
+    check_name_collisions(user_remotes.iter().chain(project_remotes.iter()))?;
+
     let mut remotes = Vec::new();
-
     if !project.project_remote_only {
-        collect_level(&user.sync, RemoteLevel::User, project, &mut remotes)?;
+        remotes.extend(user_remotes);
     }
-    collect_level(&project.sync, RemoteLevel::Project, project, &mut remotes)?;
+    remotes.extend(project_remotes);
 
-    check_name_collisions(&remotes)?;
     let default_index = resolve_default_index(&remotes)?;
 
     Ok(EffectiveRemotes {
@@ -256,7 +277,7 @@ fn validate_remote_name(name: &str) -> Result<(), StoreError> {
     }
 }
 
-/// Reject a name appearing more than once in the merged set, by
+/// Reject a name appearing more than once across `remotes`, by
 /// [`SyncConfig::normalized_remote_name`] rather than the raw string:
 /// a cross-level collision, or a declared remote colliding with a
 /// legacy shorthand's synthetic name, closes the same credential
@@ -268,10 +289,18 @@ fn validate_remote_name(name: &str) -> Result<(), StoreError> {
 /// (`SyncConfig::validate` rejected them at parse time); this only
 /// ever fires on a genuinely cross-cutting name.
 ///
+/// Takes an iterator rather than a single slice so the caller can
+/// chain the user-level and project-level entries even when they are
+/// never concatenated into one combined `Vec` (`project_remote_only`
+/// keeps them apart in the ACTIVE set, but this check must still see
+/// both, per [`resolve_effective_remotes`]'s doc comment).
+///
 /// The error still reports the colliding entry's own original,
 /// unnormalized `name`, matching [`SyncConfig::validate`]'s same
 /// readability choice.
-fn check_name_collisions(remotes: &[ResolvedRemote]) -> Result<(), StoreError> {
+fn check_name_collisions<'a>(
+    remotes: impl Iterator<Item = &'a ResolvedRemote>,
+) -> Result<(), StoreError> {
     let mut seen: HashSet<String> = HashSet::new();
     for entry in remotes {
         if !seen.insert(SyncConfig::normalized_remote_name(entry.name())) {
@@ -368,6 +397,12 @@ mod tests {
         assert!(effective.default_remote().is_none());
     }
 
+    /// Positive counterpart of
+    /// `project_remote_only_still_rejects_a_project_remote_colliding_with_a_user_remote_name`
+    /// below: `project_remote_only` still excludes the user remotes
+    /// from the ACTIVE set when the names genuinely do not collide,
+    /// proving the security fix only widens the collision CHECK, not
+    /// the active set it returns.
     #[test]
     fn project_remote_only_excludes_user_remotes() {
         let user = user_with(SyncConfig {
@@ -384,6 +419,39 @@ mod tests {
         let effective = resolve_effective_remotes(&user, &project).expect("resolve");
         assert_eq!(effective.remotes.len(), 1);
         assert_eq!(effective.remotes[0].name(), "proj");
+    }
+
+    /// FR-301 security finding F1 regression: `project_remote_only`
+    /// must narrow which remotes are ACTIVE, never widen which names
+    /// are safe to reuse. Before the fix, `project_remote_only`
+    /// skipped collecting the user's remotes entirely, so a project
+    /// could declare its own `primary` remote pointed at an
+    /// attacker-controlled URL and it would resolve successfully,
+    /// inheriting the operator's real `MMCP_SYNC_TOKEN_PRIMARY`
+    /// credential (derived purely from the name) for that attacker
+    /// URL. The name collision must still be a loud error even though
+    /// the user's `primary` is excluded from the returned active set.
+    #[test]
+    fn project_remote_only_still_rejects_a_project_remote_colliding_with_a_user_remote_name() {
+        let user = user_with(SyncConfig {
+            remotes: vec![mmcp_server("primary", true)],
+            ..SyncConfig::default()
+        });
+        let project = project_with(
+            SyncConfig {
+                remotes: vec![Remote::MmcpServer {
+                    name: "primary".to_string(),
+                    url: "https://attacker.example".to_string(),
+                    default: true,
+                    include_in_push_all: true,
+                }],
+                ..SyncConfig::default()
+            },
+            true,
+        );
+        let err = resolve_effective_remotes(&user, &project)
+            .expect_err("project_remote_only must not hide a cross-level name collision");
+        assert!(matches!(err, StoreError::RemoteNameCollision { name } if name == "primary"));
     }
 
     #[test]
