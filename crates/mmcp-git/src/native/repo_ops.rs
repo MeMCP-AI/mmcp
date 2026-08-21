@@ -17,6 +17,7 @@ use gix::bstr::BString;
 use gix::objs::tree::EntryKind;
 
 use crate::error::GitError;
+use crate::native::defaults;
 use crate::types::{CommitMeta, CommitSpec, Credentials, FastForwardOutcome, PushReport, Rev};
 
 /// Wrap a `gix` failure while resolving a revision to a commit, or
@@ -83,11 +84,14 @@ pub(crate) fn git_binary() -> OsString {
 /// [`suppress_interactive_prompts`].
 ///
 /// [`Credentials::None`] sets no credential of its own: the ambient
-/// git env (SSH agent, credential helper, `.netrc`) still decides
-/// *which* identity authenticates. Headless suppression still applies
-/// on this arm: an mmcp caller (an MCP server process, the sync
-/// engine) has no human present to answer an interactive prompt, so a
-/// missing explicit credential fails fast instead of hanging.
+/// git env (SSH agent, credential helper, `.netrc`, and an ambient
+/// `GIT_SSH_COMMAND` if one is set) still decides *which* identity
+/// authenticates. Headless suppression still applies on this arm: an
+/// mmcp caller (an MCP server process, the sync engine) has no human
+/// present to answer an interactive prompt, so a missing explicit
+/// credential fails fast instead of hanging. See
+/// [`suppress_interactive_prompts`] for exactly how an ambient
+/// `GIT_SSH_COMMAND` is preserved rather than replaced.
 ///
 /// For `BearerHttp`, sets `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/
 /// `GIT_CONFIG_VALUE_0` (git's environment-based config protocol,
@@ -126,16 +130,6 @@ fn apply_credentials(cmd: &mut Command, creds: &Credentials) {
     suppress_interactive_prompts(cmd);
 }
 
-/// Default value injected into `GIT_SSH_COMMAND` when the caller has
-/// not already set one.
-///
-/// Adds SSH's own `-o BatchMode=yes` flag on top of the plain `ssh`
-/// binary: SSH fails immediately instead of prompting for a host-key
-/// confirmation or a key passphrase, and `~/.ssh/config` still governs
-/// identity files and per-host options since this still invokes plain
-/// `ssh`.
-const DEFAULT_SSH_COMMAND_BATCH_MODE: &str = "ssh -o BatchMode=yes";
-
 /// Force every `git` subprocess headless: suppress the terminal
 /// prompt, `GIT_ASKPASS`, any configured `credential.helper` (on
 /// Windows, typically Git Credential Manager, which pops a real
@@ -155,23 +149,72 @@ const DEFAULT_SSH_COMMAND_BATCH_MODE: &str = "ssh -o BatchMode=yes";
 ///
 /// `GIT_TERMINAL_PROMPT`/`GIT_ASKPASS`/`credential.helper` cover only
 /// git's own prompt machinery, not the `ssh` subprocess git spawns for
-/// a `git@host:path` URL. When the caller has not already set
-/// `GIT_SSH_COMMAND` (checked via `Command::get_envs`, so
-/// [`Credentials::SshCommand`]'s own value is never overwritten), this
-/// defaults it to [`DEFAULT_SSH_COMMAND_BATCH_MODE`]. `BatchMode=yes`
-/// turns an unanswerable prompt into an immediate failure with a clear
-/// stderr message instead of an indefinite hang, without weakening
-/// host-key verification: no `StrictHostKeyChecking` override is
-/// added.
+/// a `git@host:path` URL. This function governs `GIT_SSH_COMMAND` in
+/// three tiers, checked in order:
+///
+/// 1. The caller already set `GIT_SSH_COMMAND` on this `Command`
+///    (checked via `Command::get_envs`): [`Credentials::SshCommand`]'s
+///    own value is left completely untouched.
+/// 2. No builder value, but the ambient process environment
+///    (`std::env::var_os`) already has a non-empty `GIT_SSH_COMMAND`:
+///    that value is preserved and extended with
+///    [`defaults::SSH_BATCH_MODE_FLAG`] appended, rather than replaced
+///    outright, so an operator's own custom identity or tool (a
+///    deploy key, a `plink`-based Windows setup) keeps working while
+///    the interactive-hang risk still closes for the common case.
+/// 3. Neither is set: defaults to
+///    [`defaults::DEFAULT_SSH_COMMAND_BATCH_MODE`].
+///
+/// `BatchMode=yes` turns an unanswerable prompt into an immediate
+/// failure with a clear stderr message instead of an indefinite hang,
+/// without weakening host-key verification: no `StrictHostKeyChecking`
+/// override is added.
+///
+/// Two known, deliberately unaddressed gaps. Appending an OpenSSH `-o`
+/// flag to a non-OpenSSH ambient command (tier 2) may not behave as
+/// intended, since `-o` is an OpenSSH-specific flag; there is no
+/// portable way to express `BatchMode` for an arbitrary ambient tool.
+/// `core.sshCommand` (the git-config-file equivalent of this same
+/// setting) is never consulted, only the environment variable, so a
+/// config-only override still races an unanswerable prompt undetected;
+/// closing that would need a `git config --get` shell-out before the
+/// real command is built, judged disproportionate scope for this
+/// suppression helper.
 fn suppress_interactive_prompts(cmd: &mut Command) {
     cmd.arg("-c").arg("credential.helper=");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd.env("GIT_ASKPASS", "");
-    let caller_set_ssh_command = cmd
+
+    let builder_set_ssh_command = cmd
         .get_envs()
         .any(|(key, _)| key == std::ffi::OsStr::new("GIT_SSH_COMMAND"));
-    if !caller_set_ssh_command {
-        cmd.env("GIT_SSH_COMMAND", DEFAULT_SSH_COMMAND_BATCH_MODE);
+    if builder_set_ssh_command {
+        return;
+    }
+
+    let resolved = resolve_default_ssh_command(std::env::var_os("GIT_SSH_COMMAND"));
+    cmd.env("GIT_SSH_COMMAND", resolved);
+}
+
+/// Resolve tiers 2 and 3 of [`suppress_interactive_prompts`]'s
+/// `GIT_SSH_COMMAND` logic: `ambient` is the caller's own
+/// `std::env::var_os("GIT_SSH_COMMAND")` read, taken as a parameter
+/// rather than read internally so this pure resolution step is
+/// testable without mutating real process environment state (this
+/// crate forbids `unsafe` code, and `std::env::set_var` requires it).
+///
+/// A non-empty `ambient` value is preserved and extended with
+/// [`defaults::SSH_BATCH_MODE_FLAG`] appended; `None` or an empty
+/// value falls back to [`defaults::DEFAULT_SSH_COMMAND_BATCH_MODE`].
+fn resolve_default_ssh_command(ambient: Option<OsString>) -> OsString {
+    match ambient {
+        Some(value) if !value.is_empty() => {
+            let mut extended = value;
+            extended.push(" ");
+            extended.push(defaults::SSH_BATCH_MODE_FLAG);
+            extended
+        }
+        _ => OsString::from(defaults::DEFAULT_SSH_COMMAND_BATCH_MODE),
     }
 }
 
@@ -1140,6 +1183,76 @@ mod credential_tests {
             Some("ssh -i /custom/key -o IdentitiesOnly=yes"),
             "a caller-supplied GIT_SSH_COMMAND must survive verbatim, with no \
              BatchMode=yes flag injected on top of it"
+        );
+    }
+
+    /// Falsification: an ambient `GIT_SSH_COMMAND` (simulated as the
+    /// `Some` input `resolve_default_ssh_command` receives, standing
+    /// in for a real `std::env::var_os` read) must be preserved and
+    /// extended with the batch-mode flag, never replaced outright, so
+    /// an operator's own custom identity/tool keeps working. This
+    /// crate forbids `unsafe` code, so the resolution logic is a pure
+    /// function taking the ambient value as a parameter rather than a
+    /// test that mutates the real process environment via
+    /// `std::env::set_var` (which requires `unsafe`).
+    #[test]
+    fn resolve_default_ssh_command_extends_an_ambient_value() {
+        let ambient = OsString::from("ssh -i /custom/ambient/key -o IdentitiesOnly=yes");
+
+        let resolved = resolve_default_ssh_command(Some(ambient));
+
+        assert_eq!(
+            resolved.to_str(),
+            Some("ssh -i /custom/ambient/key -o IdentitiesOnly=yes -o BatchMode=yes"),
+            "an ambient GIT_SSH_COMMAND must be preserved and extended, never replaced"
+        );
+    }
+
+    /// Falsification: with no ambient value at all (`None`, standing
+    /// in for an unset `GIT_SSH_COMMAND`), the bare default from
+    /// [`defaults::DEFAULT_SSH_COMMAND_BATCH_MODE`] applies verbatim.
+    #[test]
+    fn resolve_default_ssh_command_defaults_with_no_ambient_value() {
+        let resolved = resolve_default_ssh_command(None);
+
+        assert_eq!(
+            resolved.to_str(),
+            Some(defaults::DEFAULT_SSH_COMMAND_BATCH_MODE),
+            "with no ambient value, the bare default must apply verbatim"
+        );
+    }
+
+    /// Falsification: an ambient value that is set but empty (a
+    /// distinct case from unset) must be treated the same as no
+    /// ambient value, not extended into a leading-space command.
+    #[test]
+    fn resolve_default_ssh_command_defaults_on_empty_ambient_value() {
+        let resolved = resolve_default_ssh_command(Some(OsString::new()));
+
+        assert_eq!(
+            resolved.to_str(),
+            Some(defaults::DEFAULT_SSH_COMMAND_BATCH_MODE),
+            "an empty ambient value must fall back to the bare default, not extend nothing"
+        );
+    }
+
+    /// Falsification: `Credentials::None` end to end, through
+    /// `apply_credentials`, still lands a `GIT_SSH_COMMAND` containing
+    /// `BatchMode=yes` on the `Command` builder regardless of whatever
+    /// ambient value the real test-process environment happens to
+    /// carry, since `resolve_default_ssh_command` always appends or
+    /// defaults to a `BatchMode=yes`-bearing value.
+    #[test]
+    fn credentials_none_ssh_command_always_contains_batch_mode() {
+        let mut cmd = Command::new("git");
+        apply_credentials(&mut cmd, &Credentials::None);
+
+        let envs = envs_of(&cmd);
+        let ssh_command = envs.get("GIT_SSH_COMMAND").map(String::as_str);
+        assert!(
+            ssh_command.is_some_and(|v| v.contains("BatchMode=yes")),
+            "Credentials::None must always land a BatchMode=yes GIT_SSH_COMMAND, \
+             got: {ssh_command:?}"
         );
     }
 }

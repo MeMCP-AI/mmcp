@@ -164,12 +164,19 @@ impl CommitSpec {
 /// `-c http.extraHeader=...`, [`Credentials::SshCommand`] sets
 /// `GIT_SSH_COMMAND`, and [`Credentials::None`] supplies no explicit
 /// credential of its own, leaving the user's ambient environment (SSH
-/// agent, credential helper, `.netrc`) to decide which identity
-/// authenticates. Every variant still gets the backend's headless
-/// suppression (terminal prompt, askpass, credential helper, and a
-/// default `GIT_SSH_COMMAND` with SSH's own `BatchMode=yes`): an mmcp
-/// caller has no human present to answer a credential prompt, so a
-/// missing explicit credential fails fast instead of hanging.
+/// agent, credential helper, `.netrc`, an ambient `GIT_SSH_COMMAND`) to
+/// decide which identity authenticates. Every variant still gets the
+/// backend's headless suppression (terminal prompt, askpass,
+/// credential helper): an mmcp caller has no human present to answer a
+/// credential prompt, so a missing explicit credential fails fast
+/// instead of hanging. For `GIT_SSH_COMMAND` specifically, an ambient
+/// value is respected and extended with SSH's own `BatchMode=yes`
+/// flag rather than replaced; only a caller with neither an explicit
+/// [`Credentials::SshCommand`] nor an ambient `GIT_SSH_COMMAND` falls
+/// back to the backend's own bare `BatchMode=yes` default. Two
+/// disclosed gaps: `core.sshCommand` (the git-config-file equivalent
+/// of the same setting) is never consulted, and a non-OpenSSH ambient
+/// `GIT_SSH_COMMAND` may not accept the appended flag as intended.
 ///
 /// Keep the enum non-exhaustive so backends that understand richer
 /// credential shapes (mTLS, workload identity, forge-specific
@@ -178,11 +185,12 @@ impl CommitSpec {
 #[non_exhaustive]
 pub enum Credentials {
     /// No explicit credentials; the ambient git environment (SSH
-    /// agent, credential helper, `.netrc`, GCM) decides which identity
-    /// authenticates. The native backend still forces the subprocess
-    /// headless on this variant (see the enum-level doc above): a
-    /// missing prompt answer fails fast, it never hangs waiting for
-    /// one.
+    /// agent, credential helper, `.netrc`, GCM, an ambient
+    /// `GIT_SSH_COMMAND`) decides which identity authenticates. The
+    /// native backend still forces the subprocess headless on this
+    /// variant (see the enum-level doc above): a missing prompt answer
+    /// fails fast, it never hangs waiting for one, and an ambient
+    /// `GIT_SSH_COMMAND` is extended rather than replaced.
     #[default]
     None,
 

@@ -50,8 +50,12 @@ pub trait GitBackend: Send + Sync {
     /// without bringing in an HTTP client dependency.
     ///
     /// `creds` selects the authentication mechanism: see
-    /// [`Credentials`] for the variants. Use [`Credentials::None`]
-    /// to rely on the ambient git environment.
+    /// [`Credentials`] for the variants. Use [`Credentials::None`] to
+    /// rely on the ambient git environment; the native backend still
+    /// forces the subprocess headless on this variant, respecting and
+    /// extending (never replacing) an ambient `GIT_SSH_COMMAND`, so
+    /// only a fully unconfigured caller sees the backend's own bare
+    /// default.
     async fn clone_to(
         &self,
         remote_url: &str,

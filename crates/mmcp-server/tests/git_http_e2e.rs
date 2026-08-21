@@ -36,13 +36,13 @@ const TEST_TOKEN_LIFETIME_SECS: i64 = 3600;
 /// which blocks on (or pops) a real prompt with no human present to
 /// answer it in an automated test/CI run.
 ///
-/// Unconditional suppression is safe here specifically because
-/// nothing in a test process is ever a legitimate interactive CLI
-/// session; contrast `mmcp_git::native::repo_ops`'s own
-/// `apply_credentials`, which suppresses these same three things only
-/// for its `BearerHttp`/`SshCommand` arms and deliberately leaves
-/// `Credentials::None` untouched so production interactive use still
-/// works.
+/// This helper duplicates `mmcp_git::native::repo_ops`'s own
+/// suppression logic rather than calling it: these tests drive a
+/// stock `git` binary directly, never through that module's
+/// `apply_credentials`. Production code suppresses these same three
+/// things unconditionally on every `Credentials` arm, `None`
+/// included, for the identical reason: an automated caller has no
+/// human present to answer a prompt.
 fn suppressed_git_command(git_bin: &std::ffi::OsStr) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(git_bin);
     cmd.arg("-c").arg("credential.helper=");
