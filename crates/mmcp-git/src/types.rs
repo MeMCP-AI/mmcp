@@ -158,12 +158,18 @@ impl CommitSpec {
 
 /// Credentials for outbound git transport operations.
 ///
-/// The native backend applies these to the `git` subprocess it
-/// spawns: [`Credentials::BearerHttp`] maps to an HTTP bearer header
-/// via `-c http.extraHeader=...`, [`Credentials::SshCommand`] sets
-/// `GIT_SSH_COMMAND`, and [`Credentials::None`] lets the user's
-/// environment (SSH agent, credential helper, `.netrc`) decide:
-/// the sensible default when mmcp is a plain git CLI wrapper.
+/// The native backend applies these to the `git` subprocess it spawns,
+/// and forces every subprocess headless regardless of which variant is
+/// used: [`Credentials::BearerHttp`] maps to an HTTP bearer header via
+/// `-c http.extraHeader=...`, [`Credentials::SshCommand`] sets
+/// `GIT_SSH_COMMAND`, and [`Credentials::None`] supplies no explicit
+/// credential of its own, leaving the user's ambient environment (SSH
+/// agent, credential helper, `.netrc`) to decide which identity
+/// authenticates. Every variant still gets the backend's headless
+/// suppression (terminal prompt, askpass, credential helper, and a
+/// default `GIT_SSH_COMMAND` with SSH's own `BatchMode=yes`): an mmcp
+/// caller has no human present to answer a credential prompt, so a
+/// missing explicit credential fails fast instead of hanging.
 ///
 /// Keep the enum non-exhaustive so backends that understand richer
 /// credential shapes (mTLS, workload identity, forge-specific
@@ -171,9 +177,12 @@ impl CommitSpec {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Credentials {
-    /// No explicit credentials; rely on the ambient git environment
-    /// (SSH agent, credential helper, `.netrc`, GCM, etc.). This is
-    /// the default and the right choice for interactive use.
+    /// No explicit credentials; the ambient git environment (SSH
+    /// agent, credential helper, `.netrc`, GCM) decides which identity
+    /// authenticates. The native backend still forces the subprocess
+    /// headless on this variant (see the enum-level doc above): a
+    /// missing prompt answer fails fast, it never hangs waiting for
+    /// one.
     #[default]
     None,
 

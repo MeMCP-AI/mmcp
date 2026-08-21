@@ -79,13 +79,15 @@ pub(crate) fn git_binary() -> OsString {
 }
 
 /// Apply [`Credentials`] to a `git` command via environment variables,
-/// never argv. Does nothing for [`Credentials::None`] so the ambient
-/// git env (SSH agent, credential helper, `.netrc`) remains in charge,
-/// exactly matching [`Credentials::None`]'s own doc comment: "rely on
-/// the ambient git environment ... the right choice for interactive
-/// use". No interactive-prompt suppression is applied on this arm, on
-/// purpose — suppressing it here would silently break that documented
-/// contract for a legitimate interactive CLI caller.
+/// never argv, and unconditionally force the subprocess headless via
+/// [`suppress_interactive_prompts`].
+///
+/// [`Credentials::None`] sets no credential of its own: the ambient
+/// git env (SSH agent, credential helper, `.netrc`) still decides
+/// *which* identity authenticates. Headless suppression still applies
+/// on this arm: an mmcp caller (an MCP server process, the sync
+/// engine) has no human present to answer an interactive prompt, so a
+/// missing explicit credential fails fast instead of hanging.
 ///
 /// For `BearerHttp`, sets `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/
 /// `GIT_CONFIG_VALUE_0` (git's environment-based config protocol,
@@ -96,16 +98,12 @@ pub(crate) fn git_binary() -> OsString {
 /// lifetime; the environment-variable form keeps it out of argv. The
 /// token still appears in the child's environment block
 /// (`/proc/<pid>/environ`), the same exposure `SshCommand` below
-/// already accepts for its own value. Also calls
-/// [`suppress_interactive_prompts`]: mmcp already supplied the
-/// definitive credential on this arm, so any interactive fallback
-/// (a GCM popup, an SSH passphrase prompt) could only mask a genuine
-/// auth failure behind a hung subprocess, never serve a legitimate
-/// purpose, in an automated caller that has no human present to
-/// answer it.
+/// already accepts for its own value.
 ///
-/// For `SshCommand`, sets `GIT_SSH_COMMAND` and, for the same reason
-/// as `BearerHttp`, also calls [`suppress_interactive_prompts`].
+/// For `SshCommand`, sets `GIT_SSH_COMMAND` to the caller-supplied
+/// value before [`suppress_interactive_prompts`] runs, so that call's
+/// own default-`GIT_SSH_COMMAND` injection sees the variable already
+/// set and leaves it untouched.
 ///
 /// Any `-c` flags must appear *before* the git subcommand, so this
 /// helper is called on a freshly-constructed `Command` before its
@@ -120,24 +118,33 @@ fn apply_credentials(cmd: &mut Command, creds: &Credentials) {
                 "GIT_CONFIG_VALUE_0",
                 format!("Authorization: Bearer {token}"),
             );
-            suppress_interactive_prompts(cmd);
         }
         Credentials::SshCommand(value) => {
             cmd.env("GIT_SSH_COMMAND", value);
-            suppress_interactive_prompts(cmd);
         }
     }
+    suppress_interactive_prompts(cmd);
 }
 
-/// Suppress every interactive-credential fallback a `git` subprocess
-/// might otherwise reach for: the terminal prompt, `GIT_ASKPASS`, and
-/// any configured `credential.helper` (on Windows, typically Git
-/// Credential Manager, which pops a real desktop dialog). Called only
-/// from [`apply_credentials`]'s `BearerHttp` and `SshCommand` arms,
-/// where mmcp already supplied a definitive credential and an
-/// interactive fallback could only mask a real auth failure — never
-/// from the `Credentials::None` arm, whose whole documented purpose is
-/// to defer to that same ambient, interactive machinery.
+/// Default value injected into `GIT_SSH_COMMAND` when the caller has
+/// not already set one.
+///
+/// Adds SSH's own `-o BatchMode=yes` flag on top of the plain `ssh`
+/// binary: SSH fails immediately instead of prompting for a host-key
+/// confirmation or a key passphrase, and `~/.ssh/config` still governs
+/// identity files and per-host options since this still invokes plain
+/// `ssh`.
+const DEFAULT_SSH_COMMAND_BATCH_MODE: &str = "ssh -o BatchMode=yes";
+
+/// Force every `git` subprocess headless: suppress the terminal
+/// prompt, `GIT_ASKPASS`, any configured `credential.helper` (on
+/// Windows, typically Git Credential Manager, which pops a real
+/// desktop dialog), and OpenSSH's own interactive prompts (host-key
+/// confirmation, key-passphrase entry) for a `git@host:path`-style
+/// SSH URL. Called unconditionally from every [`apply_credentials`]
+/// arm, [`Credentials::None`] included: an mmcp caller has no human
+/// present to answer any of these, so every credential shape fails
+/// fast rather than hangs.
 ///
 /// `-c credential.helper=` (empty value) disables every configured
 /// helper for this invocation only, without touching the user's
@@ -145,10 +152,27 @@ fn apply_credentials(cmd: &mut Command, creds: &Credentials) {
 /// built-in terminal prompt. `GIT_ASKPASS=""` (empty program path)
 /// makes git treat askpass as unconfigured rather than trying to
 /// execute an empty command.
+///
+/// `GIT_TERMINAL_PROMPT`/`GIT_ASKPASS`/`credential.helper` cover only
+/// git's own prompt machinery, not the `ssh` subprocess git spawns for
+/// a `git@host:path` URL. When the caller has not already set
+/// `GIT_SSH_COMMAND` (checked via `Command::get_envs`, so
+/// [`Credentials::SshCommand`]'s own value is never overwritten), this
+/// defaults it to [`DEFAULT_SSH_COMMAND_BATCH_MODE`]. `BatchMode=yes`
+/// turns an unanswerable prompt into an immediate failure with a clear
+/// stderr message instead of an indefinite hang, without weakening
+/// host-key verification: no `StrictHostKeyChecking` override is
+/// added.
 fn suppress_interactive_prompts(cmd: &mut Command) {
     cmd.arg("-c").arg("credential.helper=");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd.env("GIT_ASKPASS", "");
+    let caller_set_ssh_command = cmd
+        .get_envs()
+        .any(|(key, _)| key == std::ffi::OsStr::new("GIT_SSH_COMMAND"));
+    if !caller_set_ssh_command {
+        cmd.env("GIT_SSH_COMMAND", DEFAULT_SSH_COMMAND_BATCH_MODE);
+    }
 }
 
 /// Initialize a bare repository at `path`, idempotent.
@@ -1002,31 +1026,36 @@ mod credential_tests {
             .collect()
     }
 
-    /// Falsification: `Credentials::None` must leave the subprocess
-    /// exactly as the ambient environment would — no suppression args,
-    /// no suppression env vars — matching its own doc comment's
-    /// promise that this is "the right choice for interactive use".
+    /// Falsification: `Credentials::None` must still suppress every
+    /// interactive fallback, including a default headless
+    /// `GIT_SSH_COMMAND`, even though it sets no explicit credential of
+    /// its own. An mmcp caller has no human present to answer a prompt,
+    /// so the ambient-environment default must still fail fast.
     #[test]
-    fn credentials_none_applies_no_suppression_and_no_credential_env() {
+    fn credentials_none_still_suppresses_interactive_prompts() {
         let mut cmd = Command::new("git");
         apply_credentials(&mut cmd, &Credentials::None);
 
+        let args = args_of(&cmd);
         assert!(
-            args_of(&cmd).is_empty(),
-            "Credentials::None must not add any -c flags"
+            args.windows(2).any(|w| w == ["-c", "credential.helper="]),
+            "Credentials::None must disable credential.helper via -c, got: {args:?}"
         );
         let envs = envs_of(&cmd);
-        assert!(
-            !envs.contains_key("GIT_TERMINAL_PROMPT"),
-            "Credentials::None must leave GIT_TERMINAL_PROMPT untouched"
+        assert_eq!(
+            envs.get("GIT_TERMINAL_PROMPT").map(String::as_str),
+            Some("0")
         );
-        assert!(
-            !envs.contains_key("GIT_ASKPASS"),
-            "Credentials::None must leave GIT_ASKPASS untouched"
-        );
+        assert_eq!(envs.get("GIT_ASKPASS").map(String::as_str), Some(""));
         assert!(
             !envs.contains_key("GIT_CONFIG_COUNT"),
             "Credentials::None must not set any bearer config env"
+        );
+        let ssh_command = envs.get("GIT_SSH_COMMAND").map(String::as_str);
+        assert!(
+            ssh_command.is_some_and(|v| v.contains("BatchMode=yes")),
+            "Credentials::None must default GIT_SSH_COMMAND to a BatchMode=yes ssh \
+             invocation, got: {ssh_command:?}"
         );
     }
 
@@ -1054,6 +1083,12 @@ mod credential_tests {
             envs.get("GIT_CONFIG_VALUE_0").map(String::as_str),
             Some("Authorization: Bearer s3cr3t"),
             "the bearer header itself must still be applied"
+        );
+        let ssh_command = envs.get("GIT_SSH_COMMAND").map(String::as_str);
+        assert!(
+            ssh_command.is_some_and(|v| v.contains("BatchMode=yes")),
+            "BearerHttp must default GIT_SSH_COMMAND to a BatchMode=yes ssh invocation, \
+             got: {ssh_command:?}"
         );
     }
 
@@ -1083,6 +1118,28 @@ mod credential_tests {
             envs.get("GIT_SSH_COMMAND").map(String::as_str),
             Some("ssh -i /key"),
             "the ssh command itself must still be applied"
+        );
+    }
+
+    /// Falsification: the default-`GIT_SSH_COMMAND` injection in
+    /// [`suppress_interactive_prompts`] must never overwrite a caller-
+    /// supplied `Credentials::SshCommand` value, even though that value
+    /// carries no `BatchMode=yes` flag of its own. The variant is the
+    /// caller's explicit escape hatch and stays fully caller-controlled.
+    #[test]
+    fn credentials_ssh_command_value_is_not_overwritten_by_the_batch_mode_default() {
+        let mut cmd = Command::new("git");
+        apply_credentials(
+            &mut cmd,
+            &Credentials::SshCommand("ssh -i /custom/key -o IdentitiesOnly=yes".to_string()),
+        );
+
+        let envs = envs_of(&cmd);
+        assert_eq!(
+            envs.get("GIT_SSH_COMMAND").map(String::as_str),
+            Some("ssh -i /custom/key -o IdentitiesOnly=yes"),
+            "a caller-supplied GIT_SSH_COMMAND must survive verbatim, with no \
+             BatchMode=yes flag injected on top of it"
         );
     }
 }

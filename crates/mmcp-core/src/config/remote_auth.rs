@@ -21,14 +21,18 @@ use serde::{Deserialize, Serialize};
 pub enum RemoteAuth {
     /// No credential; rely on ambient git/SSH environment (agent,
     /// known_hosts, netrc, whatever the user's own git is already
-    /// configured with). Correct default for a plain `ssh://` remote.
+    /// configured with) to decide which identity authenticates.
+    /// Correct default for a plain `ssh://` remote. The transport
+    /// layer (`mmcp_git::Credentials::None`) still forces the git
+    /// subprocess headless: an unanswerable credential prompt fails
+    /// fast instead of hanging.
     #[default]
     None,
     /// Same runtime effect as `None` today (maps to
-    /// `mmcp_git::Credentials::None`); kept as a distinct explicit
-    /// variant so a config can document intent (this remote
-    /// deliberately relies on the user's SSH agent) even though
-    /// there is nothing extra to configure.
+    /// `mmcp_git::Credentials::None`, headless by construction); kept
+    /// as a distinct explicit variant so a config can document intent
+    /// (this remote deliberately relies on the user's SSH agent) even
+    /// though there is nothing extra to configure.
     SshAgent,
     /// Bearer credential read from the derived
     /// `MMCP_SYNC_TOKEN_<NAME>` env var
