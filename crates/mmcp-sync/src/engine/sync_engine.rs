@@ -202,7 +202,9 @@ impl SyncEngine {
 
             let (pushed, failed) = partition_sync_outcomes(outcomes);
             // `push_one_group` reports `Ok(None)` for an out-of-scope
-            // or unresolved group; keep only the concrete pushes.
+            // group and `Err(GroupHandleUnresolved)` (already folded
+            // into `failed` above) for an unresolved one; keep only
+            // the concrete pushes here.
             let pushed = pushed.into_iter().flatten().collect();
             by_remote.push(RemotePushOutcome {
                 remote_name: remote.name.clone(),
@@ -215,9 +217,12 @@ impl SyncEngine {
     }
 
     /// Push one group's local `main` to one remote. `Ok(None)` means
-    /// the group was out of `filter`'s scope or had no local handle
-    /// (index refresh raced with push); the caller skips it rather
-    /// than treating either as an error.
+    /// the group was out of `filter`'s scope, the ordinary case for a
+    /// broad `SyncFilter::All`/`SyncFilter::Scope` candidate list. A
+    /// group whose local repo handle could not be resolved (index
+    /// race, removed group, or an explicitly named but never-indexed
+    /// group) is a genuine, reportable failure instead: see
+    /// [`SyncError::GroupHandleUnresolved`].
     async fn push_one_group(
         &self,
         remote: &BoundRemote,
@@ -230,7 +235,17 @@ impl SyncEngine {
             return Ok(None);
         }
         let Some(handle) = group_handles.resolve(group_id) else {
-            return Ok(None);
+            // Visible instead of a silent drop: the group was a real
+            // candidate (enumerated by `iter_group_ids` or explicitly
+            // named by `filter`) moments before this lookup ran, so an
+            // unresolved handle here is worth an operator's attention
+            // even though every other scheduled group still completes.
+            tracing::warn!(
+                group = %group_id,
+                remote = %remote.name,
+                "push skipped: no local repo handle resolved for group"
+            );
+            return Err(SyncError::GroupHandleUnresolved { group: group_id });
         };
         let refs = vec![RefSpec::new(
             mmcp_core::conventions::MAIN_BRANCH_REF,

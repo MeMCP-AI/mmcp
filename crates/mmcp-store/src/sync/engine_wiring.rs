@@ -179,19 +179,16 @@ pub struct IndexResolver {
 
 impl GroupHandleResolver for IndexResolver {
     fn resolve(&self, group_id: Uuid) -> Option<RepoHandle> {
-        // `resolve` runs from a sync context.
-        // A short-lived blocking call into the async RwLock is acceptable.
-        // The index updates rarely and contention stays minimal in practice.
-        // A hot path would require switching the trait method to an async signature.
-        tokio::runtime::Handle::try_current()
-            .ok()
-            .and_then(|handle| {
-                handle.block_on(async {
-                    self.index
-                        .get(&mmcp_core::id::GroupId::from_uuid(group_id))
-                        .await
-                })
-            })
+        // `try_get` is the non-blocking snapshot on `GroupIndex`.
+        // Same rationale as `scope_of`/`iter_group_ids`: the engine calls `resolve` from
+        // inside an async worker (every production caller reaches this via `push_one_group`,
+        // itself an async fn on the multi-thread runtime `mmcp-server`/`mmcp-client` start
+        // under), so a `block_on` bridge would panic with "Cannot start a runtime from
+        // within a runtime". A `None` result (group genuinely unindexed, or the index lock
+        // was held by a concurrent writer) is treated by the caller as a real, reportable
+        // failure to resolve rather than a silent skip; see `SyncError::GroupHandleUnresolved`.
+        self.index
+            .try_get(&mmcp_core::id::GroupId::from_uuid(group_id))
             .map(|entry| entry.handle)
     }
 
@@ -224,23 +221,16 @@ mod tests {
     use mmcp_git::GitBackend;
     use tempfile::TempDir;
 
-    /// Diagnostic regression test, pinned to the current (pre-fix)
-    /// behavior: `IndexResolver::resolve` bridges its `GroupIndex`
-    /// lookup with `Handle::block_on`. Tokio's own source documents
-    /// this as a panic hazard ("Cannot start a runtime from within a
-    /// runtime") whenever the calling thread has already entered a
-    /// runtime context, but no existing test exercised `resolve` from
-    /// a real async task to confirm whether that hazard is actually
-    /// live here or stays dormant in practice. `resolve`'s real
-    /// caller, `push_one_group`, is itself an async fn, and both
-    /// `mmcp-server` and `mmcp-client` start via plain
-    /// `#[tokio::main]`, whose default flavor is `multi_thread`; this
-    /// test drives `resolve` from exactly that shape of context.
-    /// Confirmed empirically: this panics with the message asserted
-    /// below, proving the hazard live rather than theoretical.
+    /// Regression test for the fixed `block_on` hazard (see this
+    /// module's history for the diagnostic test that first proved
+    /// it live): `resolve`'s real caller, `push_one_group`, is an
+    /// async fn on the production multi-thread runtime flavor
+    /// (`mmcp-server`/`mmcp-client` both start via plain
+    /// `#[tokio::main]`); this test drives `resolve` from exactly
+    /// that shape of context and asserts it now returns the
+    /// resolved handle without panicking.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[should_panic(expected = "Cannot start a runtime from within a runtime")]
-    async fn resolve_called_from_an_async_context_panics() {
+    async fn resolve_from_async_context_does_not_panic_and_returns_the_handle() {
         let tmp = TempDir::new().expect("tempdir");
         let home = MmcpHome::from_root(tmp.path().join("mmcp-home"));
         let (backend, index) = home.init_backend().await.expect("init backend");
@@ -251,7 +241,22 @@ mod tests {
         index.refresh().await.expect("refresh");
 
         let resolver = IndexResolver { index };
-        let _ = resolver.resolve(*group_id.as_uuid());
+        let resolved = resolver.resolve(*group_id.as_uuid());
+        assert!(resolved.is_some());
+    }
+
+    /// `resolve` returns `None` for a group id the index has never
+    /// heard of, the ordinary "not found" case distinguished from a
+    /// transient lock hold only by the caller's own retry/report
+    /// policy, never by this method panicking or blocking.
+    #[tokio::test]
+    async fn resolve_returns_none_for_an_unknown_group() {
+        let tmp = TempDir::new().expect("tempdir");
+        let home = MmcpHome::from_root(tmp.path().join("mmcp-home"));
+        let (_backend, index) = home.init_backend().await.expect("init backend");
+
+        let resolver = IndexResolver { index };
+        assert!(resolver.resolve(Uuid::now_v7()).is_none());
     }
 
     #[tokio::test]

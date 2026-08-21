@@ -46,6 +46,7 @@ fn sync_error_code(err: &mmcp_sync::SyncError) -> &'static str {
         mmcp_sync::SyncError::PushDiverged { .. } => "sync_push_diverged",
         mmcp_sync::SyncError::NoDefaultRemote => "sync_no_default_remote",
         mmcp_sync::SyncError::UnknownRemote { .. } => "sync_unknown_remote",
+        mmcp_sync::SyncError::GroupHandleUnresolved { .. } => "sync_group_handle_unresolved",
     }
 }
 

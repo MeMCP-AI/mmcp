@@ -297,11 +297,14 @@ async fn push_group_filter_restricts_to_matching_group() {
 }
 
 #[tokio::test]
-async fn push_unknown_group_is_a_silent_noop() {
+async fn push_unknown_group_is_reported_as_a_failure_not_a_silent_drop() {
     // Filter targets a uuid the resolver has never heard of. The
-    // engine skips it without erroring - symmetric with how
-    // `pull` reports unknown groups under `new_groups` rather
-    // than raising.
+    // top-level `push` call still returns `Ok` (one bad group never
+    // aborts the whole run), but the group itself is no longer
+    // silently dropped: it surfaces in `failed` as a typed
+    // `SyncError::GroupHandleUnresolved`, distinct from `pull`'s
+    // `new_groups` (a remote-advertised group the local index has
+    // never cloned, which is expected and not a failure at all).
     let server = MockServer::start().await;
     let (backend, resolver, _group_uuid, _tmp) = seeded_backend().await;
 
@@ -319,6 +322,57 @@ async fn push_unknown_group_is_a_silent_noop() {
         .expect("push ok");
 
     assert!(report.by_remote[0].pushed.is_empty());
+    assert_eq!(report.by_remote[0].failed.len(), 1);
+    assert_eq!(
+        report.by_remote[0].failed[0].group_id,
+        GroupId::from_uuid(ghost)
+    );
+    assert!(matches!(
+        report.by_remote[0].failed[0].error,
+        mmcp_sync::SyncError::GroupHandleUnresolved { group } if group == ghost
+    ));
+}
+
+/// An unresolved group's handle also emits a warn-level log line
+/// naming the group, mirroring the existing transport-failure
+/// logging convention rather than only surfacing through the
+/// returned report.
+#[tokio::test]
+async fn push_unresolved_group_logs_a_warning_instead_of_staying_silent() {
+    let captured = CapturedLog::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(captured.clone())
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .finish();
+
+    let server = MockServer::start().await;
+    let (backend, resolver, _group_uuid, _tmp) = seeded_backend().await;
+    let ghost = Uuid::now_v7();
+    let client = SyncClient::new(server.uri()).expect("client");
+    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, bound(client));
+
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let report = engine
+        .push(
+            mmcp_sync::SyncFilter::Group(ghost),
+            PushScope::Default,
+            &resolver,
+            &resolver,
+        )
+        .await
+        .expect("push ok");
+    drop(_guard);
+
+    assert_eq!(report.by_remote[0].failed.len(), 1);
+    assert!(
+        captured.contains("no local repo handle resolved for group"),
+        "the unresolved-group skip must emit a warn-level log line"
+    );
+    assert!(
+        captured.contains(&ghost.to_string()),
+        "the log line must name the affected group"
+    );
 }
 
 #[tokio::test]

@@ -81,6 +81,22 @@ pub enum SyncError {
         /// The name the caller asked for.
         name: String,
     },
+
+    /// [`crate::engine::resolver::GroupHandleResolver::resolve`]
+    /// returned `None` for a group `push` scheduled to send: the
+    /// group's local repo handle could not be resolved (the local
+    /// index was mid-refresh when the lookup ran, the group was
+    /// removed between candidate enumeration and this lookup, or the
+    /// caller named a group the local index has never indexed at
+    /// all). Surfaced as a per-group [`crate::GroupSyncFailure`]
+    /// instead of a silent skip, so an operator running `push` can
+    /// see exactly which group was dropped and why; every other
+    /// scheduled group still completes normally.
+    #[error("no local repo handle resolved for group {group}")]
+    GroupHandleUnresolved {
+        /// The group id `resolve` failed to resolve.
+        group: Uuid,
+    },
 }
 
 impl SyncError {

@@ -103,6 +103,26 @@ impl GroupIndex {
             .and_then(|guard| guard.get(group_id).map(|entry| entry.manifest.scope))
     }
 
+    /// Non-blocking entry lookup for use from sync contexts.
+    ///
+    /// Mirrors [`Self::try_scope_of`]: the sync engine's `GroupHandleResolver::resolve` impl
+    /// goes through this helper instead of bridging the async [`get`](Self::get) with
+    /// `Handle::block_on`, which panics with "Cannot start a runtime from within a
+    /// runtime" whenever the calling thread has already entered a tokio runtime context
+    /// (every production caller: `push_one_group` and friends are themselves async fns
+    /// driven by the multi-thread runtime `mmcp-server`/`mmcp-client` start under).
+    /// Returns `None` both when the group is genuinely unindexed and when the lock is
+    /// currently held by a writer (`refresh` is rare and never holds the lock across an
+    /// await point, so that case is uncommon); the caller cannot distinguish the two
+    /// from this return value alone and surfaces its own visible signal either way.
+    #[must_use]
+    pub fn try_get(&self, group_id: &GroupId) -> Option<GroupEntry> {
+        self.inner
+            .try_read()
+            .ok()
+            .and_then(|guard| guard.get(group_id).cloned())
+    }
+
     /// Non-blocking snapshot of every indexed group's UUID.
     ///
     /// Mirrors [`try_scope_of`]: the sync engine's `GroupHandleResolver::iter_group_ids` calls this from an async worker.
