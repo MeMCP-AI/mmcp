@@ -83,18 +83,32 @@ pub enum SyncError {
     },
 
     /// [`crate::engine::resolver::GroupHandleResolver::resolve`]
-    /// returned `None` for a group `push` scheduled to send: the
-    /// group's local repo handle could not be resolved (the local
-    /// index was mid-refresh when the lookup ran, the group was
-    /// removed between candidate enumeration and this lookup, or the
-    /// caller named a group the local index has never indexed at
-    /// all). Surfaced as a per-group [`crate::GroupSyncFailure`]
-    /// instead of a silent skip, so an operator running `push` can
-    /// see exactly which group was dropped and why; every other
-    /// scheduled group still completes normally.
-    #[error("no local repo handle resolved for group {group}")]
-    GroupHandleUnresolved {
-        /// The group id `resolve` failed to resolve.
+    /// returned `Ok(None)` for a group `push` scheduled to send: the
+    /// group is genuinely not indexed locally (the caller named a
+    /// group the local index has never seen, or it was removed
+    /// between candidate enumeration and this lookup). Not transient:
+    /// retrying without first re-indexing the group will not resolve
+    /// it. Surfaced as a per-group [`crate::GroupSyncFailure`] instead
+    /// of a silent skip, so an operator running `push` can see
+    /// exactly which group was dropped and why; every other scheduled
+    /// group still completes normally.
+    #[error("group {group} is not indexed locally")]
+    GroupNotIndexed {
+        /// The group id `resolve` reported as not indexed.
+        group: Uuid,
+    },
+
+    /// [`crate::engine::resolver::GroupHandleResolver::resolve`]
+    /// returned `Err(IndexContended)` for a group `push` scheduled to
+    /// send: the local index's lock was held by a concurrent writer
+    /// when the lookup ran. Transient: a retry on this same group is
+    /// expected to succeed once the concurrent index refresh
+    /// finishes. Surfaced as its own [`crate::GroupSyncFailure`],
+    /// distinct from [`SyncError::GroupNotIndexed`], so an operator
+    /// can tell "retry" from "investigate" without reading source.
+    #[error("local repo handle lookup for group {group} was contended, retry")]
+    GroupIndexContended {
+        /// The group id whose `resolve` call hit a contended index.
         group: Uuid,
     },
 }

@@ -76,8 +76,8 @@ impl MapResolver {
 }
 
 impl GroupHandleResolver for MapResolver {
-    fn resolve(&self, group_id: Uuid) -> Option<RepoHandle> {
-        self.entries.get(&group_id).cloned()
+    fn resolve(&self, group_id: Uuid) -> Result<Option<RepoHandle>, mmcp_sync::IndexContended> {
+        Ok(self.entries.get(&group_id).cloned())
     }
 
     fn iter_group_ids(&self) -> Vec<Uuid> {
@@ -91,6 +91,31 @@ impl mmcp_sync::ScopeIndex for MapResolver {
         // index for `SyncFilter::Scope`; the existing tests drive
         // the engine with `SyncFilter::All`, where `scope_of` is
         // never called, so a trivial None impl suffices.
+        None
+    }
+}
+
+/// Resolver whose `resolve` always reports a contended index lookup,
+/// never "not indexed" and never "resolved". Proves
+/// `SyncError::GroupIndexContended` is reachable and distinct from
+/// `SyncError::GroupNotIndexed`, which a resolver that always returns
+/// `Ok(None)` (indistinguishable from this one before the split)
+/// cannot demonstrate.
+#[derive(Default, Clone)]
+struct ContendedResolver;
+
+impl GroupHandleResolver for ContendedResolver {
+    fn resolve(&self, _group_id: Uuid) -> Result<Option<RepoHandle>, mmcp_sync::IndexContended> {
+        Err(mmcp_sync::IndexContended)
+    }
+
+    fn iter_group_ids(&self) -> Vec<Uuid> {
+        Vec::new()
+    }
+}
+
+impl mmcp_sync::ScopeIndex for ContendedResolver {
+    fn scope_of(&self, _group_id: Uuid) -> Option<mmcp_core::manifest::GroupScope> {
         None
     }
 }
@@ -110,11 +135,12 @@ impl OrderedResolver {
 }
 
 impl GroupHandleResolver for OrderedResolver {
-    fn resolve(&self, group_id: Uuid) -> Option<RepoHandle> {
-        self.entries
+    fn resolve(&self, group_id: Uuid) -> Result<Option<RepoHandle>, mmcp_sync::IndexContended> {
+        Ok(self
+            .entries
             .iter()
             .find(|(id, _)| *id == group_id)
-            .map(|(_, handle)| handle.clone())
+            .map(|(_, handle)| handle.clone()))
     }
 
     fn iter_group_ids(&self) -> Vec<Uuid> {
@@ -302,9 +328,10 @@ async fn push_unknown_group_is_reported_as_a_failure_not_a_silent_drop() {
     // top-level `push` call still returns `Ok` (one bad group never
     // aborts the whole run), but the group itself is no longer
     // silently dropped: it surfaces in `failed` as a typed
-    // `SyncError::GroupHandleUnresolved`, distinct from `pull`'s
+    // `SyncError::GroupNotIndexed`, distinct from `pull`'s
     // `new_groups` (a remote-advertised group the local index has
-    // never cloned, which is expected and not a failure at all).
+    // never cloned, which is expected and not a failure at all) and
+    // from `SyncError::GroupIndexContended` (a transient index race).
     let server = MockServer::start().await;
     let (backend, resolver, _group_uuid, _tmp) = seeded_backend().await;
 
@@ -329,7 +356,43 @@ async fn push_unknown_group_is_reported_as_a_failure_not_a_silent_drop() {
     );
     assert!(matches!(
         report.by_remote[0].failed[0].error,
-        mmcp_sync::SyncError::GroupHandleUnresolved { group } if group == ghost
+        mmcp_sync::SyncError::GroupNotIndexed { group } if group == ghost
+    ));
+}
+
+#[tokio::test]
+async fn push_contended_group_is_reported_distinctly_from_not_indexed() {
+    // Same shape as `push_unknown_group_is_reported_as_a_failure_not_a_silent_drop`,
+    // but with a resolver that reports the index lock was contended
+    // rather than the group being genuinely unindexed. Proves the two
+    // causes surface as distinct `SyncError` variants instead of both
+    // collapsing into one generic "unresolved" report.
+    let server = MockServer::start().await;
+    let tmp = TempDir::new().expect("tempdir");
+    let backend = Arc::new(NativeBackend::new(tmp.path()).expect("backend"));
+    let resolver = ContendedResolver;
+    let target = Uuid::now_v7();
+    let client = SyncClient::new(server.uri()).expect("client");
+    let engine = SyncEngine::new(backend as Arc<dyn GitBackend>, bound(client));
+    let report = engine
+        .push(
+            mmcp_sync::SyncFilter::Group(target),
+            PushScope::Default,
+            &resolver,
+            &resolver,
+        )
+        .await
+        .expect("push ok");
+
+    assert!(report.by_remote[0].pushed.is_empty());
+    assert_eq!(report.by_remote[0].failed.len(), 1);
+    assert_eq!(
+        report.by_remote[0].failed[0].group_id,
+        GroupId::from_uuid(target)
+    );
+    assert!(matches!(
+        report.by_remote[0].failed[0].error,
+        mmcp_sync::SyncError::GroupIndexContended { group } if group == target
     ));
 }
 
@@ -366,7 +429,7 @@ async fn push_unresolved_group_logs_a_warning_instead_of_staying_silent() {
 
     assert_eq!(report.by_remote[0].failed.len(), 1);
     assert!(
-        captured.contains("no local repo handle resolved for group"),
+        captured.contains("group not indexed locally"),
         "the unresolved-group skip must emit a warn-level log line"
     );
     assert!(

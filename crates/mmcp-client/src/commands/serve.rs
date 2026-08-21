@@ -6085,8 +6085,12 @@ fn sync_error_payload(err: &mmcp_sync::SyncError) -> serde_json::Value {
             "code": "sync_unknown_remote",
             "name": name,
         }),
-        SyncError::GroupHandleUnresolved { group } => json!({
-            "code": "sync_group_handle_unresolved",
+        SyncError::GroupNotIndexed { group } => json!({
+            "code": "sync_group_not_indexed",
+            "group": group.to_string(),
+        }),
+        SyncError::GroupIndexContended { group } => json!({
+            "code": "sync_group_index_contended",
             "group": group.to_string(),
         }),
     }

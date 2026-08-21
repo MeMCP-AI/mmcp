@@ -25,6 +25,18 @@ use uuid::Uuid;
 use crate::defaults::MAX_CONCURRENT_MANIFEST_SCANS;
 use crate::error::{FileOperation, StoreError};
 
+/// [`GroupIndex`]'s backing lock was held by a concurrent writer when
+/// a non-blocking lookup ran.
+///
+/// Transient by construction: [`GroupIndex::refresh`] never holds the
+/// lock across an await point, so this clears on the caller's next
+/// attempt. Distinct from "genuinely not indexed" (`Ok(None)` on
+/// [`GroupIndex::try_get`]): a caller that cannot tell the two apart
+/// cannot tell "retry, this will resolve itself" from "real problem,
+/// investigate" from the reported failure alone.
+#[derive(Debug, Clone, Copy)]
+pub struct IndexContended;
+
 /// One entry in the [`GroupIndex`].
 #[derive(Debug, Clone)]
 pub struct GroupEntry {
@@ -111,16 +123,17 @@ impl GroupIndex {
     /// runtime" whenever the calling thread has already entered a tokio runtime context
     /// (every production caller: `push_one_group` and friends are themselves async fns
     /// driven by the multi-thread runtime `mmcp-server`/`mmcp-client` start under).
-    /// Returns `None` both when the group is genuinely unindexed and when the lock is
-    /// currently held by a writer (`refresh` is rare and never holds the lock across an
-    /// await point, so that case is uncommon); the caller cannot distinguish the two
-    /// from this return value alone and surfaces its own visible signal either way.
-    #[must_use]
-    pub fn try_get(&self, group_id: &GroupId) -> Option<GroupEntry> {
+    ///
+    /// `Ok(None)`: the group is genuinely not indexed. `Err(IndexContended)`:
+    /// the lock is currently held by a writer (`refresh` is rare and never holds
+    /// the lock across an await point, so this is uncommon). Kept distinct, rather
+    /// than both collapsing to `None`, so a caller can tell a transient race from
+    /// a real "this group does not exist" result.
+    pub fn try_get(&self, group_id: &GroupId) -> Result<Option<GroupEntry>, IndexContended> {
         self.inner
             .try_read()
-            .ok()
-            .and_then(|guard| guard.get(group_id).cloned())
+            .map(|guard| guard.get(group_id).cloned())
+            .map_err(|_| IndexContended)
     }
 
     /// Non-blocking snapshot of every indexed group's UUID.

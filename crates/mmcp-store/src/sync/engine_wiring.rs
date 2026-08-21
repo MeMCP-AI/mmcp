@@ -14,7 +14,8 @@ use mmcp_core::config::{Remote, RemoteAuth, SyncConfig};
 use mmcp_core::manifest::GroupScope;
 use mmcp_git::{NativeBackend, RepoHandle};
 use mmcp_sync::{
-    BoundRemote, GroupHandleResolver, RemoteTransport, ScopeIndex, SyncClient, SyncEngine,
+    BoundRemote, GroupHandleResolver, IndexContended, RemoteTransport, ScopeIndex, SyncClient,
+    SyncEngine,
 };
 use uuid::Uuid;
 
@@ -178,18 +179,21 @@ pub struct IndexResolver {
 }
 
 impl GroupHandleResolver for IndexResolver {
-    fn resolve(&self, group_id: Uuid) -> Option<RepoHandle> {
+    fn resolve(&self, group_id: Uuid) -> Result<Option<RepoHandle>, IndexContended> {
         // `try_get` is the non-blocking snapshot on `GroupIndex`.
         // Same rationale as `scope_of`/`iter_group_ids`: the engine calls `resolve` from
         // inside an async worker (every production caller reaches this via `push_one_group`,
         // itself an async fn on the multi-thread runtime `mmcp-server`/`mmcp-client` start
         // under), so a `block_on` bridge would panic with "Cannot start a runtime from
-        // within a runtime". A `None` result (group genuinely unindexed, or the index lock
-        // was held by a concurrent writer) is treated by the caller as a real, reportable
-        // failure to resolve rather than a silent skip; see `SyncError::GroupHandleUnresolved`.
+        // within a runtime". `Ok(None)` (group genuinely unindexed) and
+        // `Err(IndexContended)` (the index lock was held by a concurrent writer) are kept
+        // distinct through this boundary, translating the store's own `groups::IndexContended`
+        // to the sync engine's decoupled marker of the same name: see
+        // `SyncError::GroupNotIndexed`/`SyncError::GroupIndexContended`.
         self.index
             .try_get(&mmcp_core::id::GroupId::from_uuid(group_id))
-            .map(|entry| entry.handle)
+            .map(|opt_entry| opt_entry.map(|entry| entry.handle))
+            .map_err(|crate::groups::IndexContended| IndexContended)
     }
 
     fn iter_group_ids(&self) -> Vec<Uuid> {
@@ -242,21 +246,27 @@ mod tests {
 
         let resolver = IndexResolver { index };
         let resolved = resolver.resolve(*group_id.as_uuid());
-        assert!(resolved.is_some());
+        assert!(resolved.expect("index must not be contended").is_some());
     }
 
-    /// `resolve` returns `None` for a group id the index has never
-    /// heard of, the ordinary "not found" case distinguished from a
-    /// transient lock hold only by the caller's own retry/report
-    /// policy, never by this method panicking or blocking.
+    /// `resolve` returns `Ok(None)` for a group id the index has
+    /// never heard of, distinct from `Err(IndexContended)` (a
+    /// transient lock hold) since [`SyncError::GroupNotIndexed`] and
+    /// [`SyncError::GroupIndexContended`] are reported differently to
+    /// an operator.
     #[tokio::test]
-    async fn resolve_returns_none_for_an_unknown_group() {
+    async fn resolve_returns_ok_none_for_an_unknown_group() {
         let tmp = TempDir::new().expect("tempdir");
         let home = MmcpHome::from_root(tmp.path().join("mmcp-home"));
         let (_backend, index) = home.init_backend().await.expect("init backend");
 
         let resolver = IndexResolver { index };
-        assert!(resolver.resolve(Uuid::now_v7()).is_none());
+        assert!(
+            resolver
+                .resolve(Uuid::now_v7())
+                .expect("index must not be contended")
+                .is_none()
+        );
     }
 
     #[tokio::test]

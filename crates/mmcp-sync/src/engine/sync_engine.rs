@@ -16,7 +16,7 @@ use super::reports::{
     FetchReport, FetchedGroup, GroupSyncFailure, PullReport, PushReport, PushedGroup,
     RemoteManifestFailure, RemotePushOutcome, SyncReport,
 };
-use super::resolver::GroupHandleResolver;
+use super::resolver::{GroupHandleResolver, IndexContended};
 use super::scope::group_matches;
 use crate::client::RemoteGroup;
 use crate::error::SyncError;
@@ -202,9 +202,9 @@ impl SyncEngine {
 
             let (pushed, failed) = partition_sync_outcomes(outcomes);
             // `push_one_group` reports `Ok(None)` for an out-of-scope
-            // group and `Err(GroupHandleUnresolved)` (already folded
-            // into `failed` above) for an unresolved one; keep only
-            // the concrete pushes here.
+            // group and `Err(GroupNotIndexed | GroupIndexContended)`
+            // (already folded into `failed` above) for an unresolved
+            // one; keep only the concrete pushes here.
             let pushed = pushed.into_iter().flatten().collect();
             by_remote.push(RemotePushOutcome {
                 remote_name: remote.name.clone(),
@@ -219,10 +219,11 @@ impl SyncEngine {
     /// Push one group's local `main` to one remote. `Ok(None)` means
     /// the group was out of `filter`'s scope, the ordinary case for a
     /// broad `SyncFilter::All`/`SyncFilter::Scope` candidate list. A
-    /// group whose local repo handle could not be resolved (index
-    /// race, removed group, or an explicitly named but never-indexed
-    /// group) is a genuine, reportable failure instead: see
-    /// [`SyncError::GroupHandleUnresolved`].
+    /// group whose local repo handle could not be resolved is a
+    /// genuine, reportable failure instead, split by cause: see
+    /// [`SyncError::GroupNotIndexed`] (removed group, or an explicitly
+    /// named but never-indexed group) and
+    /// [`SyncError::GroupIndexContended`] (transient index race).
     async fn push_one_group(
         &self,
         remote: &BoundRemote,
@@ -234,18 +235,33 @@ impl SyncEngine {
         if !group_matches(filter, group_id, scope_index) {
             return Ok(None);
         }
-        let Some(handle) = group_handles.resolve(group_id) else {
-            // Visible instead of a silent drop: the group was a real
-            // candidate (enumerated by `iter_group_ids` or explicitly
-            // named by `filter`) moments before this lookup ran, so an
-            // unresolved handle here is worth an operator's attention
-            // even though every other scheduled group still completes.
-            tracing::warn!(
-                group = %group_id,
-                remote = %remote.name,
-                "push skipped: no local repo handle resolved for group"
-            );
-            return Err(SyncError::GroupHandleUnresolved { group: group_id });
+        let handle = match group_handles.resolve(group_id) {
+            Ok(Some(handle)) => handle,
+            Ok(None) => {
+                // Visible instead of a silent drop: the group was a
+                // real candidate (enumerated by `iter_group_ids` or
+                // explicitly named by `filter`) moments before this
+                // lookup ran, so a genuinely unindexed group here is
+                // worth an operator's attention even though every
+                // other scheduled group still completes.
+                tracing::warn!(
+                    group = %group_id,
+                    remote = %remote.name,
+                    "push skipped: group not indexed locally"
+                );
+                return Err(SyncError::GroupNotIndexed { group: group_id });
+            }
+            Err(IndexContended) => {
+                // Same visibility rationale as the not-indexed arm
+                // above, but transient: the caller can retry this
+                // group without re-indexing anything.
+                tracing::warn!(
+                    group = %group_id,
+                    remote = %remote.name,
+                    "push skipped: local index lookup was contended"
+                );
+                return Err(SyncError::GroupIndexContended { group: group_id });
+            }
         };
         let refs = vec![RefSpec::new(
             mmcp_core::conventions::MAIN_BRANCH_REF,
@@ -361,7 +377,12 @@ impl SyncEngine {
             MAX_CONCURRENT_GROUP_TRANSFERS,
             |fetched_group| fetched_group.group_id,
             |fetched_group| {
-                let handle = group_handles.resolve(fetched_group.group_id);
+                // `.ok().flatten()`: this call site does not yet
+                // distinguish contended-vs-not-indexed (see
+                // `SyncError::GroupIndexContended`/`GroupNotIndexed`
+                // on the `push` path); both collapse to `None` here,
+                // matching this path's prior behavior exactly.
+                let handle = group_handles.resolve(fetched_group.group_id).ok().flatten();
                 async move { self.fast_forward_one_group(fetched_group, handle).await }
             },
         )
@@ -518,7 +539,10 @@ impl SyncEngine {
         let mut candidates: Vec<FetchCandidate<'_>> = Vec::new();
         for (remote, manifest) in &manifests {
             for remote_group in &manifest.groups {
-                match group_handles.resolve(remote_group.group_id) {
+                // `.ok().flatten()`: see the fast-forward call site
+                // above for why contended-vs-not-indexed is not yet
+                // distinguished on this discovery path.
+                match group_handles.resolve(remote_group.group_id).ok().flatten() {
                     None => {
                         if seen_new_groups.insert(remote_group.group_id) {
                             new_groups.push(remote_group.clone());
@@ -545,7 +569,7 @@ impl SyncEngine {
         // locally and in scope.
         for remote in &self.remotes {
             if let RemoteTransport::DirectGit { group_id, .. } = &remote.transport
-                && let Some(handle) = group_handles.resolve(*group_id)
+                && let Some(handle) = group_handles.resolve(*group_id).ok().flatten()
                 && group_matches(filter, *group_id, scope_index)
             {
                 candidates.push(FetchCandidate {
