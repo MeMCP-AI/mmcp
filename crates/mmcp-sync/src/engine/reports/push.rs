@@ -9,8 +9,7 @@ use super::GroupSyncFailure;
 ///
 /// One [`RemotePushOutcome`] per [`crate::PushScope`]-selected
 /// remote the push actually targeted, in the engine's own remote
-/// list order. Replaces the pre-multi-remote flat `pushed`/`failed`
-/// pair: every caller that needs a single combined view uses
+/// list order. Every caller that needs a single combined view uses
 /// [`PushReport::total_pushed`] / [`PushReport::total_failed`] /
 /// [`PushReport::iter_failures`] rather than re-flattening
 /// `by_remote` by hand at each call site.

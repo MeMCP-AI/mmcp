@@ -52,9 +52,9 @@ pub async fn run() -> Result<()> {
 }
 
 /// Print the effective remote-set section: every remote in the
-/// merged user+project set (`mmcp_store::resolve_effective_remotes`,
-/// per FR-301's precedence rules), naming each one's kind and origin
-/// level and marking the resolved default.
+/// merged user+project set (`mmcp_store::resolve_effective_remotes`),
+/// naming each one's kind and origin level and marking the resolved
+/// default.
 ///
 /// A resolution failure (name collision, ambiguous default, a
 /// user-level `direct-git` remote missing its required `group`) is

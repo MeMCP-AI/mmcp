@@ -308,9 +308,9 @@ fn default_probe_url(effective: &EffectiveRemotes) -> Option<String> {
 
 /// Load the project config at `reference_point` (or cwd when unset)
 /// plus `home`'s user config, and resolve the effective remote set
-/// per FR-301's precedence rules. `home` is caller-supplied (never
-/// re-discovered here) so a test can point it at a tempdir-rooted
-/// [`MmcpHome`] instead of the real `~/.mmcp`.
+/// via `mmcp_store::resolve_effective_remotes`. `home` is
+/// caller-supplied (never re-discovered here) so a test can point it
+/// at a tempdir-rooted [`MmcpHome`] instead of the real `~/.mmcp`.
 ///
 /// `Ok(None)` when no project config is found under the reference
 /// point, or when the resolved effective set is empty: the GUI treats
@@ -382,9 +382,10 @@ mod tests {
     /// End-to-end proof that `load_effective_remotes` actually reads
     /// AND merges both config files: a real tempdir-rooted user
     /// config plus a real project `.mmcp.toml`, each declaring their
-    /// own remote. Guards the exact dead-fallback bug FR-301
-    /// documents (`UserConfig.sync` never consulted for real sync
-    /// work) from recurring on the GUI's own load path.
+    /// own remote. Guards against a dead-fallback regression where
+    /// `UserConfig.sync` is loaded but never actually consulted, so a
+    /// user-level-only remote silently vanishes from the GUI's own
+    /// load path.
     /// The derived-field tests above (`summary_label`,
     /// `default_probe_url`) only cover formatting on an already-
     /// merged `EffectiveRemotes`, not the merge itself.
@@ -450,9 +451,9 @@ mod tests {
         assert_eq!(effective.summary_label(), "primary");
     }
 
-    /// A multi-remote effective set (the case FR-301 adds) must
-    /// format as a count plus the resolved default's name, not
-    /// collapse to a single legacy `server_url`-shaped string.
+    /// A multi-remote effective set must format as a count plus the
+    /// resolved default's name, not collapse to a single legacy
+    /// `server_url`-shaped string.
     #[test]
     fn summary_label_summarises_a_multi_remote_set_with_its_default() {
         let effective = EffectiveRemotes {

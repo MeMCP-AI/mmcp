@@ -28,8 +28,9 @@ use crate::config::{ConfigError, Remote};
 #[serde(default, deny_unknown_fields)]
 pub struct SyncConfig {
     /// Legacy shorthand for a single `mmcp-server` remote. Purely
-    /// additive: composed with `remotes` at resolution time (a later
-    /// wave), never validated as mutually exclusive with it.
+    /// additive: `mmcp_store::sync::remotes::resolve_effective_remotes`
+    /// composes it with `remotes` at resolution time, never
+    /// validating it as mutually exclusive with them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_url: Option<String>,
 
@@ -42,9 +43,9 @@ pub struct SyncConfig {
 
 impl SyncConfig {
     /// True when this config declares neither the legacy `server_url`
-    /// shorthand nor any `remotes` entry. Replaces the old
-    /// `Option<SyncConfig>::is_none()` check now that this struct is
-    /// always present and always defaulted.
+    /// shorthand nor any `remotes` entry, the empty state for a
+    /// struct that is always present and always defaulted rather
+    /// than `Option<SyncConfig>`.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.server_url.is_none() && self.remotes.is_empty()
@@ -53,8 +54,8 @@ impl SyncConfig {
     /// Env var name carrying the control-plane bearer token for the
     /// remote named `remote_name`, `MMCP_SYNC_TOKEN_<NAME>`.
     ///
-    /// Derivation rule, exact and stable (a later wave, mmcp-sync,
-    /// reads env vars produced by this exact rule): ASCII-uppercase
+    /// Derivation rule, exact and stable (`mmcp-sync` reads env vars
+    /// produced by this exact rule): ASCII-uppercase
     /// `remote_name`, then replace every `-` with `_` so a hyphenated
     /// remote name still yields a portable env var identifier. See
     /// [`SyncConfig::normalized_remote_name`], the single owning
@@ -118,8 +119,10 @@ impl SyncConfig {
     /// Cross-level validation, a project remote colliding with a user
     /// remote by name, or picking a winner between two
     /// `default = true` remotes declared at different levels, needs
-    /// both config files loaded together and is deliberately left to
-    /// the resolver, a later wave.
+    /// both config files loaded together:
+    /// `mmcp_store::sync::remotes::check_name_collisions` and
+    /// `resolve_default_index` own it, called from
+    /// `resolve_effective_remotes`.
     ///
     /// Called from every writer of `.mmcp.toml`/`config.toml`, not
     /// just the load path: [`crate::config::ProjectConfig::from_toml`]

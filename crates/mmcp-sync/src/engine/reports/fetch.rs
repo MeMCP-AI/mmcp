@@ -38,10 +38,10 @@ pub struct FetchReport {
     pub failed: Vec<GroupSyncFailure>,
     /// `mmcp-server`-transport remotes whose `/sync/manifest` poll
     /// itself errored, before any group-level candidate could even be
-    /// built for that remote. One unreachable remote no longer
-    /// aborts the whole `fetch`: every OTHER remote's manifest is
-    /// still polled and its groups still land in `groups` /
-    /// `new_groups` above. See [`RemoteManifestFailure`] and
+    /// built for that remote. One unreachable remote does not abort
+    /// the whole `fetch`: every OTHER remote's manifest is still
+    /// polled and its groups still land in `groups` / `new_groups`
+    /// above. See [`RemoteManifestFailure`] and
     /// [`crate::SyncEngine::fetch`]'s doc comment.
     pub manifest_failures: Vec<RemoteManifestFailure>,
 }

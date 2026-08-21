@@ -4243,8 +4243,8 @@ impl McpServer {
         .await
         .map_err(|e| McpError::internal_error(format!("failed to build sync engine: {e}"), None))?;
         // `mmcp-server`'s push scope is Default only, mirroring the
-        // CLI: a real `--all-remotes` / `--remote <name>` selector on
-        // this tool's arg surface is a later wave's job.
+        // CLI: this tool's arg surface exposes no `--all-remotes` /
+        // `--remote <name>` equivalent.
         let report = engine
             .push(filter, mmcp_sync::PushScope::Default, &resolver, &resolver)
             .await
@@ -5925,7 +5925,8 @@ impl McpServer {
 
 /// Resolve the project at `cwd` (walking parent dirs) and return its
 /// [`ProjectConfig`] plus its EFFECTIVE remote set (user config
-/// merged with project config, per FR-301's precedence rules).
+/// merged with project config via
+/// `mmcp_store::resolve_effective_remotes`).
 ///
 /// Factored out of [`McpServer::require_sync_configured`] so tests can
 /// feed a deterministic path without touching process-wide

@@ -137,7 +137,7 @@ mod tests {
     use super::*;
 
     /// A resolved `probe_url` respawns the probe against it. Covers
-    /// the ordinary `mmcp-server`-default case, unchanged by Fix 3.
+    /// the ordinary `mmcp-server`-default case.
     #[test]
     fn probe_action_for_some_url_spawns_a_fresh_probe() {
         assert_eq!(
@@ -146,12 +146,9 @@ mod tests {
         );
     }
 
-    /// Falsification target for the regression this fix closes: no
-    /// `probe_url` (no sync configured, or a `direct-git` default)
-    /// must produce `Reset`, not silently leave the previous probe's
-    /// last reading in place. Before this fix, `set_reference_point`
-    /// had no corresponding branch at all, the `None` case was a
-    /// silent no-op.
+    /// Falsification target: no `probe_url` (no sync configured, or
+    /// a `direct-git` default) must produce `Reset`, not silently
+    /// leave the previous probe's last reading in place.
     #[test]
     fn probe_action_for_no_url_resets_the_badge() {
         assert_eq!(probe_action_for(None), ProbeAction::Reset);

@@ -141,8 +141,8 @@
     const hasDefaults = defaultGroup !== null;
     const cfg: UserConfig = {
       // Always sent as a complete object (never dropped for
-      // emptiness): the exact save path FR-301's review fan-out
-      // flagged, a partial reconstruction silently losing `remotes`.
+      // emptiness): a partial reconstruction would silently lose
+      // `remotes`.
       sync: {
         server_url: emptyToNull(draftUserSyncServerUrl),
         remotes: draftUserRemotes.map(fromDraft)
@@ -153,7 +153,7 @@
       defaults: hasDefaults ? { group: defaultGroup } : null,
       // This form has no UI for limits; carry the loaded value through
       // unchanged so a save never silently erases an operator-set
-      // `[limits]` section (mmcp review finding, repair round 4).
+      // `[limits]` section.
       limits: userConfig?.limits ?? null
     };
     onSaveUser(cfg);

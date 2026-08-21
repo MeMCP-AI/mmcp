@@ -47,8 +47,9 @@ pub enum Remote {
         /// URL shared across every group, so pushing several
         /// unrelated groups' histories to the same repo's `main` is
         /// incoherent. At project level, `None` resolves to the
-        /// project's own group at resolution time (a later wave, not
-        /// this struct); at user level, `None` is a loud resolution
+        /// project's own group at resolution time
+        /// (`mmcp_store::sync::remotes::resolve_direct_git_group`,
+        /// not this struct); at user level, `None` is a loud resolution
         /// error there, never silently defaulted, since a group-less
         /// user-level entry would push whichever project is active
         /// into the same shared repo.

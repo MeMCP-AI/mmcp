@@ -528,12 +528,10 @@ async fn fetch_aggregates_two_remotes_dedupes_new_groups_and_attributes_each_gro
 async fn fetch_survives_one_remotes_unreachable_manifest_and_still_aggregates_the_other() {
     // `mirror_server` never mounts `/sync/manifest`, so wiremock's
     // default unmatched-route response (404) drives `get_manifest`
-    // into `SyncError::Remote`. Before this fix a single `?` on that
-    // call would have propagated the error and aborted the whole
-    // `fetch`, discarding `primary`'s already-successful manifest
-    // read too; this pins that `primary`'s groups still land in the
-    // report and `mirror`'s failure surfaces under
-    // `manifest_failures` instead.
+    // into `SyncError::Remote`. Pins that `primary`'s already-
+    // successful manifest read still lands in the report, and
+    // `mirror`'s failure surfaces under `manifest_failures` instead
+    // of aborting the whole `fetch`.
     let primary_server = MockServer::start().await;
     let mirror_server = MockServer::start().await;
     let (backend, resolver, group_uuid, _tmp) = seeded_backend().await;

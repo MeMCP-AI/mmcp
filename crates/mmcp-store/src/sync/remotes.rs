@@ -119,7 +119,7 @@ impl EffectiveRemotes {
 }
 
 /// Resolve the effective remote set for a sync operation, merging
-/// `user` and `project` per FR-301's Resolution section.
+/// `user` and `project` into one flat, precedence-ordered list.
 ///
 /// The cross-level name-collision check runs against EVERY name
 /// declared at both levels unconditionally, even when

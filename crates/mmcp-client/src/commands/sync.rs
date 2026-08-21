@@ -7,16 +7,15 @@
 //! resulting report for stdout.
 //!
 //! Every sync verb resolves against the EFFECTIVE remote set (user
-//! config plus project config, merged per FR-301's precedence rules
-//! by `mmcp_store::resolve_effective_remotes`), not a single
+//! config plus project config, merged by
+//! `mmcp_store::resolve_effective_remotes`), not a single
 //! `server_url`: a project may configure zero, one, or several
 //! remotes at either level. `mmcp push` and `mmcp sync`'s push half
 //! both default to `PushScope::Default` (the resolved default remote
 //! only); `--all-remotes` / `--remote <name>` on either subcommand
 //! (shared via [`RemoteScopeArgs`]) select `PushScope::All` /
 //! `PushScope::Named`. `mmcp fetch` and `mmcp pull` carry neither
-//! flag: they stay read-only and unaffected by push scoping, per
-//! FR-301's own Resolution section.
+//! flag: they stay read-only and unaffected by push scoping.
 
 use anyhow::{Context, Result, bail};
 use mmcp_core::manifest::GroupScope;

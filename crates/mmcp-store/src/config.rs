@@ -215,10 +215,10 @@ default = true
 
     /// A `ProjectConfig` built programmatically (never round-tripped
     /// through TOML text) with two `[[sync.remotes]]` entries sharing
-    /// a `name` must be REJECTED by `save`, not merely by `from_toml`
-    /// on a subsequent load: this is the write path itself, closing
-    /// the gap where the GUI's `save_project_config` command used to
-    /// persist a config it could then no longer load back.
+    /// a `name` must be REJECTED by `save` itself, not only by
+    /// `from_toml` on a later load: this is the write path, so
+    /// `save_project_config` never persists a config that then fails
+    /// to load back.
     #[test]
     fn save_rejects_a_programmatically_built_config_with_duplicate_remote_names() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
