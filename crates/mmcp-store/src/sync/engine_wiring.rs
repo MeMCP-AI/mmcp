@@ -224,6 +224,36 @@ mod tests {
     use mmcp_git::GitBackend;
     use tempfile::TempDir;
 
+    /// Diagnostic regression test, pinned to the current (pre-fix)
+    /// behavior: `IndexResolver::resolve` bridges its `GroupIndex`
+    /// lookup with `Handle::block_on`. Tokio's own source documents
+    /// this as a panic hazard ("Cannot start a runtime from within a
+    /// runtime") whenever the calling thread has already entered a
+    /// runtime context, but no existing test exercised `resolve` from
+    /// a real async task to confirm whether that hazard is actually
+    /// live here or stays dormant in practice. `resolve`'s real
+    /// caller, `push_one_group`, is itself an async fn, and both
+    /// `mmcp-server` and `mmcp-client` start via plain
+    /// `#[tokio::main]`, whose default flavor is `multi_thread`; this
+    /// test drives `resolve` from exactly that shape of context.
+    /// Confirmed empirically: this panics with the message asserted
+    /// below, proving the hazard live rather than theoretical.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[should_panic(expected = "Cannot start a runtime from within a runtime")]
+    async fn resolve_called_from_an_async_context_panics() {
+        let tmp = TempDir::new().expect("tempdir");
+        let home = MmcpHome::from_root(tmp.path().join("mmcp-home"));
+        let (backend, index) = home.init_backend().await.expect("init backend");
+
+        let group_id = GroupId::new();
+        let manifest = GroupManifest::new_user_owned(group_id, "probe", UserId::new());
+        backend.create_group_repo(&manifest).await.expect("seed");
+        index.refresh().await.expect("refresh");
+
+        let resolver = IndexResolver { index };
+        let _ = resolver.resolve(*group_id.as_uuid());
+    }
+
     #[tokio::test]
     async fn index_resolver_returns_scope_for_known_group() {
         // Seed a tempdir-rooted home with two groups at different
