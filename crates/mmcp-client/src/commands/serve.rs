@@ -4421,7 +4421,10 @@ impl McpServer {
             })));
         }
 
-        let mut payload = compose_status(&cwd, groups)?;
+        let home = MmcpHome::discover().map_err(|e| {
+            McpError::internal_error(format!("cannot resolve mmcp home: {e}"), None)
+        })?;
+        let mut payload = compose_status(&cwd, groups, &home)?;
         if let serde_json::Value::Object(map) = &mut payload {
             map.insert(
                 "mode".to_string(),
@@ -5620,10 +5623,14 @@ impl McpServer {
 /// Split out of [`McpServer::status`] so tests can feed a deterministic
 /// cwd without mutating process state. The caller gathers the groups
 /// (which needs access to the async backend) and this function
-/// handles the synchronous project-root + sync-config lookup.
+/// handles the synchronous project-root + sync-config lookup. `home`
+/// is caller-supplied (never [`MmcpHome::discover`] internally) so
+/// tests can point the user-level config lookup at a tempdir instead
+/// of the real OS home / `MMCP_HOME`.
 fn compose_status(
     cwd: &Path,
     groups: Vec<serde_json::Value>,
+    home: &MmcpHome,
 ) -> Result<serde_json::Value, McpError> {
     let Some(root) = find_project_root(cwd) else {
         return Ok(json!({
@@ -5637,19 +5644,7 @@ fn compose_status(
             Some(json!({ "code": "project_config_load_failed" })),
         )
     })?;
-    // Full effective-remote-set display (merging user config, naming
-    // each remote, flagging the default) is wave 3's job per FR-301;
-    // this mechanical adaptation only keeps `status` compiling
-    // against the now-always-defaulted `SyncConfig` shape.
-    let sync = if cfg.sync.is_empty() {
-        json!({ "configured": false })
-    } else {
-        json!({
-            "configured": true,
-            "server_url": cfg.sync.server_url,
-            "remotes_count": cfg.sync.remotes.len(),
-        })
-    };
+    let sync = compose_sync_section(&cfg, home);
     Ok(json!({
         "project_configured": true,
         "project_root": root.to_string_lossy(),
@@ -5657,6 +5652,55 @@ fn compose_status(
         "sync": sync,
         "groups": groups,
     }))
+}
+
+/// Resolve and render the `status` tool's `sync` field: the
+/// EFFECTIVE remote set merging `home`'s user config with `cfg`'s
+/// project config via `mmcp_store::resolve_effective_remotes`,
+/// matching `mmcp status` (the CLI command)'s own resolution instead
+/// of reading `cfg.sync` alone, which misses remotes declared only at
+/// user level. A resolution failure is reported inline as
+/// `{"configured": false, "error": ...}` instead of aborting the
+/// whole `status` call, mirroring the CLI's inline error line.
+fn compose_sync_section(
+    cfg: &mmcp_core::config::ProjectConfig,
+    home: &MmcpHome,
+) -> serde_json::Value {
+    let user_cfg = match home.load_user_config() {
+        Ok(user_cfg) => user_cfg,
+        Err(e) => {
+            return json!({
+                "configured": false,
+                "error": format!("failed to load user config: {e}"),
+            });
+        }
+    };
+    match mmcp_store::resolve_effective_remotes(&user_cfg, cfg) {
+        Ok(effective) if effective.remotes.is_empty() => json!({ "configured": false }),
+        Ok(effective) => json!({
+            "configured": true,
+            "remotes_count": effective.remotes.len(),
+            "default_remote": effective.default_remote().map(mmcp_store::ResolvedRemote::name),
+            "remotes": effective
+                .remotes
+                .iter()
+                .enumerate()
+                .map(|(index, remote)| json!({
+                    "name": remote.name(),
+                    "kind": remote.remote.kind(),
+                    "level": match remote.level {
+                        mmcp_store::RemoteLevel::User => "user",
+                        mmcp_store::RemoteLevel::Project => "project",
+                    },
+                    "default": effective.default_index == Some(index),
+                }))
+                .collect::<Vec<_>>(),
+        }),
+        Err(e) => json!({
+            "configured": false,
+            "error": e.to_string(),
+        }),
+    }
 }
 
 impl McpServer {
@@ -10973,7 +11017,8 @@ mod tests {
     #[test]
     fn compose_status_flags_project_missing_when_outside_any_mmcp_directory() {
         let tmp = TempDir::new().expect("tempdir");
-        let res = compose_status(tmp.path(), vec![]).expect("compose_status");
+        let home = empty_user_home(&tmp);
+        let res = compose_status(tmp.path(), vec![], &home).expect("compose_status");
         assert_eq!(
             res.get("project_configured").and_then(|v| v.as_bool()),
             Some(false)
@@ -10987,11 +11032,12 @@ mod tests {
     #[test]
     fn compose_status_reports_sync_not_configured_when_block_missing() {
         let tmp = TempDir::new().expect("tempdir");
+        let home = empty_user_home(&tmp);
         write_project_config(
             tmp.path(),
             "project_uuid = \"018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91\"\n",
         );
-        let res = compose_status(tmp.path(), vec![]).expect("compose_status");
+        let res = compose_status(tmp.path(), vec![], &home).expect("compose_status");
         assert_eq!(
             res.get("project_configured").and_then(|v| v.as_bool()),
             Some(true)
@@ -11000,17 +11046,18 @@ mod tests {
         assert_eq!(
             sync.get("configured").and_then(|v| v.as_bool()),
             Some(false),
-            "sync.configured must be false when no [sync] block is present",
+            "sync.configured must be false when neither project nor user config declares a remote",
         );
         assert!(
-            sync.get("server_url").is_none(),
-            "server_url must be absent when sync is not configured",
+            sync.get("remotes").is_none(),
+            "remotes must be absent when sync is not configured",
         );
     }
 
     #[test]
-    fn compose_status_surfaces_server_url_and_passes_groups_through() {
+    fn compose_status_surfaces_project_remotes_and_passes_groups_through() {
         let tmp = TempDir::new().expect("tempdir");
+        let home = empty_user_home(&tmp);
         write_project_config(
             tmp.path(),
             "project_uuid = \"018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91\"\n\n[sync]\nserver_url = \"http://localhost:8787\"\n",
@@ -11020,21 +11067,54 @@ mod tests {
             "uuid": "018f7c3e-0000-0000-0000-000000000001",
             "memory_count": 3,
         })];
-        let res = compose_status(tmp.path(), groups.clone()).expect("compose_status");
+        let res = compose_status(tmp.path(), groups.clone(), &home).expect("compose_status");
         assert_eq!(
             res.get("project_uuid").and_then(|v| v.as_str()),
             Some("018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91")
         );
         let sync = res.get("sync").expect("sync object");
         assert_eq!(sync.get("configured").and_then(|v| v.as_bool()), Some(true));
-        assert_eq!(
-            sync.get("server_url").and_then(|v| v.as_str()),
-            Some("http://localhost:8787")
-        );
+        assert_eq!(sync.get("remotes_count").and_then(|v| v.as_u64()), Some(1));
         assert_eq!(
             res.get("groups").cloned().unwrap_or_default(),
             json!(groups),
             "groups should pass through compose_status unchanged",
+        );
+    }
+
+    #[test]
+    fn compose_status_reports_configured_when_only_user_config_declares_a_remote() {
+        // A project with no `[sync]` block of its own still reports
+        // `configured: true` when `~/.mmcp/config.toml` declares a
+        // remote, matching `mmcp status` (the CLI command)'s
+        // resolution.
+        let tmp = TempDir::new().expect("tempdir");
+        let home = empty_user_home(&tmp);
+        std::fs::create_dir_all(home.root()).expect("mkdir mmcp home");
+        std::fs::write(
+            home.user_config_path(),
+            "[sync]\nserver_url = \"http://user-level.example.com\"\n",
+        )
+        .expect("write user config.toml");
+        write_project_config(
+            tmp.path(),
+            "project_uuid = \"018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91\"\n",
+        );
+        let res = compose_status(tmp.path(), vec![], &home).expect("compose_status");
+        let sync = res.get("sync").expect("sync object");
+        assert_eq!(
+            sync.get("configured").and_then(|v| v.as_bool()),
+            Some(true),
+            "a user-level-only remote must still report sync as configured",
+        );
+        assert_eq!(sync.get("remotes_count").and_then(|v| v.as_u64()), Some(1));
+        let remotes = sync
+            .get("remotes")
+            .and_then(|v| v.as_array())
+            .expect("remotes array");
+        assert_eq!(
+            remotes[0].get("level").and_then(|v| v.as_str()),
+            Some("user")
         );
     }
 
