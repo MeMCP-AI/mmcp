@@ -604,8 +604,13 @@ struct ReadMemoryBodySectionsArgs {
 }
 
 /// Args for `edit_memory_body`.
+/// `deny_unknown_fields` rejects a line-op field (e.g. `insert_at_line`,
+/// `content`) sent at the top level instead of nested inside `ops`;
+/// without it serde silently drops the stray field, `ops` resolves
+/// empty, and the call would commit a no-op body write.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct EditMemoryBodyArgs {
     /// Target group UUID.
     pub group: String,
@@ -618,6 +623,9 @@ struct EditMemoryBodyArgs {
     /// Ordered list of body edits. Each op is a tagged union
     /// whose `op` field names the variant. See the
     /// [`ToolMemoryEditOp`] enum for the per-variant fields.
+    /// Must not resolve empty: `edit_memory_body_unguarded` rejects
+    /// an empty list with a structured `empty_ops` error rather than
+    /// committing a no-op body write.
     #[serde(default)]
     pub ops: Vec<ToolMemoryEditOp>,
     /// Optional override for the git commit message.
@@ -3321,6 +3329,19 @@ impl McpServer {
         &self,
         args: EditMemoryBodyArgs,
     ) -> Result<CallToolResult, McpError> {
+        // Reject before any read/write: an empty `ops` (omitted,
+        // explicit `[]`, or resolved empty because the caller sent
+        // line-op fields at the top level instead of nested inside
+        // `ops`) would otherwise reach `apply_ops`, come back with
+        // the body byte-identical, and still commit that no-op as
+        // an ordinary successful write.
+        if args.ops.is_empty() {
+            return Err(McpError::invalid_params(
+                "ops must not be empty; nest every edit under `ops`, never as top-level fields",
+                Some(json!({ "code": "empty_ops" })),
+            ));
+        }
+
         let (entry, resolved) = self
             .resolve_memory_address(&args.group, args.slug.as_deref(), args.id.as_deref())
             .await?;
@@ -12865,6 +12886,66 @@ mod tests {
         assert_eq!(
             payload.get("path").and_then(|v| v.as_str()),
             Some("does-not-exist"),
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_memory_body_empty_ops_errors_with_structured_code() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "rules", SECTIONED_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let err = server
+            .edit_memory_body_unguarded(EditMemoryBodyArgs {
+                group: group.to_string(),
+                slug: Some("rules".into()),
+                id: None,
+                ops: vec![],
+                message: None,
+                force: false,
+            })
+            .await
+            .expect_err("empty ops must error, never commit a no-op");
+        let payload = err.data.as_ref().expect("error payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("empty_ops"),
+        );
+    }
+
+    #[test]
+    fn edit_memory_body_args_rejects_top_level_line_op_fields() {
+        // A caller that sends line-op fields at the top level instead
+        // of nested inside `ops` must fail to deserialize, never
+        // silently drop the stray fields and resolve `ops` empty.
+        let raw = json!({
+            "group": "019d955d-4cce-77f2-a0b3-0b79ed394612",
+            "slug": "rules",
+            "insert_at_line": 1,
+            "content": "stray top-level line op",
+        });
+        let result: Result<EditMemoryBodyArgs, _> = serde_json::from_value(raw);
+        assert!(
+            result.is_err(),
+            "top-level insert_at_line/content must be rejected, got: {result:?}",
+        );
+    }
+
+    #[test]
+    fn edit_memory_body_args_accepts_nested_ops() {
+        // Control case: the same fields, correctly nested under
+        // `ops`, must still deserialize.
+        let raw = json!({
+            "group": "019d955d-4cce-77f2-a0b3-0b79ed394612",
+            "slug": "rules",
+            "ops": [
+                { "op": "insert_at_line", "line": 1, "content": "nested line op" },
+            ],
+        });
+        let result: Result<EditMemoryBodyArgs, _> = serde_json::from_value(raw);
+        assert!(
+            result.is_ok(),
+            "nested ops must deserialize, got: {result:?}"
         );
     }
 
