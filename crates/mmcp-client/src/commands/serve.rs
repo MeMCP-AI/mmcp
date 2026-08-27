@@ -511,7 +511,8 @@ struct ImportMemoryArgs {
 /// the server reads the existing memory file, applies the supplied deltas, re-renders, and commits.
 /// `tags_add` / `tags_remove` compose cleanly under repeat calls,
 /// so callers don't have to fetch-merge-write the tag vector themselves.
-/// All-None args still produce a commit: the edit history stays explicit rather than collapsing no-op calls.
+/// `edit_memory_unguarded` rejects a call where every mutator field is absent or empty
+/// with a structured `no_changes_supplied` error, before any read, write, or commit is attempted.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
 struct EditMemoryArgs {
@@ -2952,7 +2953,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Apply partial frontmatter / body deltas to an existing memory and record the result as a new commit. Every mutator field is optional: omit it to leave that slice of the memory untouched. `tags_add` / `tags_remove` compose additively so repeated calls dedupe correctly. Errors with code `memory_not_found` when the slug has no file in the target group; use `write_memory` to create fresh memories.",
+        description = "Apply partial frontmatter / body deltas to an existing memory and record the result as a new commit. Every mutator field is optional: omit it to leave that slice of the memory untouched. `tags_add` / `tags_remove` compose additively so repeated calls dedupe correctly. Errors with code `memory_not_found` when the slug has no file in the target group (use `write_memory` to create fresh memories), and `no_changes_supplied` when every mutator field is omitted or empty.",
         annotations(
             title = "Edit memory (partial update)",
             read_only_hint = false,
@@ -2978,6 +2979,25 @@ impl McpServer {
         &self,
         args: EditMemoryArgs,
     ) -> Result<CallToolResult, McpError> {
+        // Reject before any read/write: an all-omitted (or all-empty)
+        // call would otherwise re-render the memory byte-identical
+        // and still commit that no-op as an ordinary successful write.
+        let has_any_change = args.body.is_some()
+            || args.name.is_some()
+            || args.description.is_some()
+            || args.kind.is_some()
+            || args.mandatory.is_some()
+            || !args.tags_add.is_empty()
+            || !args.tags_remove.is_empty()
+            || !args.refs_add.is_empty()
+            || !args.refs_remove.is_empty();
+        if !has_any_change {
+            return Err(McpError::invalid_params(
+                "edit_memory requires at least one mutator field; all fields were omitted or empty",
+                Some(json!({ "code": "no_changes_supplied" })),
+            ));
+        }
+
         let (entry, resolved) = self
             .resolve_memory_address(&args.group, args.slug.as_deref(), args.id.as_deref())
             .await?;
@@ -5148,7 +5168,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Apply partial updates to an existing issue and commit the result. Every mutator is optional, omit to leave untouched. `depends_on` and `blocks` are full-list replacements; pass `[]` to clear, omit to preserve. `status` takes the wire form of the status enum. Errors with `memory_not_found` when the slug has no issue, `not_an_issue` when the slug is a non-issue memory, and `invalid_issue_status` when `status` is not one of the seven variants.",
+        description = "Apply partial updates to an existing issue and commit the result. Every mutator is optional, omit to leave untouched. `depends_on` and `blocks` are full-list replacements; pass `[]` to clear, omit to preserve. `status` takes the wire form of the status enum. Errors with `memory_not_found` when the slug has no issue, `not_an_issue` when the slug is a non-issue memory, `invalid_issue_status` when `status` is not one of the seven variants, and `no_changes_supplied` when every mutator field is omitted or empty.",
         annotations(
             title = "Update issue",
             read_only_hint = false,
@@ -5546,7 +5566,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Apply partial updates to an existing milestone and commit the result. Every mutator is optional, omit to leave untouched. `status` is the operator's editorial state, not the computed rollup: see `read_milestone` for the live rollup. Errors with `memory_not_found` when the slug has no milestone, `not_a_milestone` when the slug is a non-milestone memory, and `invalid_milestone_status` when `status` is not one of the four variants.",
+        description = "Apply partial updates to an existing milestone and commit the result. Every mutator is optional, omit to leave untouched. `status` is the operator's editorial state, not the computed rollup: see `read_milestone` for the live rollup. Errors with `memory_not_found` when the slug has no milestone, `not_a_milestone` when the slug is a non-milestone memory, `invalid_milestone_status` when `status` is not one of the four variants, and `no_changes_supplied` when every mutator field is omitted.",
         annotations(
             title = "Update milestone",
             read_only_hint = false,
@@ -6639,6 +6659,9 @@ fn map_issue_error_to_mcp(err: mmcp_store::issues::IssueError) -> McpError {
                 })),
             })),
         ),
+        IssueError::NoChangesSupplied => {
+            McpError::invalid_params(message, Some(json!({ "code": "no_changes_supplied" })))
+        }
         IssueError::Memory(inner) => map_memory_error_to_mcp(inner),
     }
 }
@@ -6726,6 +6749,9 @@ fn map_milestone_error_to_mcp(err: mmcp_store::milestones::MilestoneError) -> Mc
         ),
         MilestoneError::TitleRequired => {
             McpError::invalid_params(message, Some(json!({ "code": "milestone_title_required" })))
+        }
+        MilestoneError::NoChangesSupplied => {
+            McpError::invalid_params(message, Some(json!({ "code": "no_changes_supplied" })))
         }
         MilestoneError::Memory(inner) => map_memory_error_to_mcp(inner),
         // The transparent `CacheError` wrapper's `Display` embeds raw
@@ -8393,6 +8419,38 @@ mod tests {
             Some("first-bug")
         );
         assert!(deleted.get("commit_id").and_then(|v| v.as_str()).is_some());
+    }
+
+    #[tokio::test]
+    async fn update_issue_all_fields_omitted_errors_with_structured_code() {
+        let (state, _tmp) = test_state().await;
+        let group =
+            seed_group_with_memory(&state, "issue-no-changes", "seed-only", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        server
+            .add_issue_unguarded(AddIssueArgs {
+                project: Some(group.to_string()),
+                slug: Some("untouched-bug".into()),
+                title: "Untouched bug".into(),
+                ..AddIssueArgs::default()
+            })
+            .await
+            .expect("add_issue");
+
+        let err = server
+            .update_issue_unguarded(UpdateIssueArgs {
+                project: Some(group.to_string()),
+                slug: "untouched-bug".into(),
+                ..UpdateIssueArgs::default()
+            })
+            .await
+            .expect_err("all-omitted update_issue must error, never commit a no-op");
+        let payload = err.data.as_ref().expect("error payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("no_changes_supplied"),
+        );
     }
 
     #[tokio::test]
@@ -10316,6 +10374,39 @@ mod tests {
         assert_eq!(
             updated.get("status").and_then(|v| v.as_str()),
             Some("active")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_milestone_all_fields_omitted_errors_with_structured_code() {
+        let (state, _tmp) = test_state().await;
+        let group =
+            seed_group_with_memory(&state, "milestone-no-changes", "seed-only", SAMPLE_MEMORY)
+                .await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        server
+            .add_milestone_unguarded(AddMilestoneArgs {
+                project: Some(group.to_string()),
+                slug: Some("untouched".into()),
+                title: "Untouched".into(),
+                ..AddMilestoneArgs::default()
+            })
+            .await
+            .expect("add_milestone");
+
+        let err = server
+            .update_milestone_unguarded(UpdateMilestoneArgs {
+                project: Some(group.to_string()),
+                slug: "untouched".into(),
+                ..UpdateMilestoneArgs::default()
+            })
+            .await
+            .expect_err("all-omitted update_milestone must error, never commit a no-op");
+        let payload = err.data.as_ref().expect("error payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("no_changes_supplied"),
         );
     }
 
@@ -12366,6 +12457,27 @@ mod tests {
             Some("memory_not_found")
         );
         assert_eq!(payload.get("slug").and_then(|v| v.as_str()), Some("ghost"));
+    }
+
+    #[tokio::test]
+    async fn edit_memory_all_fields_omitted_errors_with_structured_code() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "rules", "untouched", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+        let err = server
+            .edit_memory_unguarded(EditMemoryArgs {
+                group: group.to_string(),
+                slug: Some("untouched".into()),
+                id: None,
+                ..Default::default()
+            })
+            .await
+            .expect_err("all-omitted edit_memory must error, never commit a no-op");
+        let payload = err.data.as_ref().expect("error payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("no_changes_supplied"),
+        );
     }
 
     // ── delete_memory ──────────────────────────────────────────────

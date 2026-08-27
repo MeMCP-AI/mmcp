@@ -66,6 +66,13 @@ pub enum IssueError {
         status: IssueStatus,
         existing_link: Option<MemoryRef>,
     },
+
+    /// `update_issue` was called with every mutator field in
+    /// [`UpdateSpec`] absent or empty. Caught before `update_issue`
+    /// touches the lock chain or the backend, so no read, write, or
+    /// commit is ever attempted for the no-op call.
+    #[error("update_issue requires at least one mutator field; all fields were omitted or empty")]
+    NoChangesSupplied,
 }
 
 /// Input for [`add_issue`].
@@ -104,6 +111,23 @@ pub struct UpdateSpec {
     pub refs_remove: Option<Vec<Uuid>>,
     pub superseded_by: Option<MemoryRef>,
     pub message: Option<String>,
+}
+
+impl UpdateSpec {
+    /// True when at least one mutator field is set.
+    /// `message` only overrides the commit message text and never
+    /// counts as a change on its own.
+    fn has_any_change(&self) -> bool {
+        self.title.is_some()
+            || self.description.is_some()
+            || self.body.is_some()
+            || self.status.is_some()
+            || self.depends_on.is_some()
+            || self.blocks.is_some()
+            || self.refs_add.is_some()
+            || self.refs_remove.is_some()
+            || self.superseded_by.is_some()
+    }
 }
 
 /// Typed return shape for every read / write path on the issue surface.
@@ -387,6 +411,9 @@ pub async fn update_issue(
     spec: UpdateSpec,
     author: &ResolvedAuthor,
 ) -> Result<IssueRecord, IssueError> {
+    if !spec.has_any_change() {
+        return Err(IssueError::NoChangesSupplied);
+    }
     let group = *entry.manifest.group_id.as_uuid();
     let _ancestors = crate::lock::acquire_chain(&[
         (

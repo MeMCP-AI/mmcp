@@ -45,6 +45,15 @@ pub enum MilestoneError {
     /// slug.
     #[error("milestone title is required when no slug is provided")]
     TitleRequired,
+
+    /// `update_milestone` was called with every mutator field in
+    /// [`UpdateSpec`] absent. Caught before `update_milestone` touches
+    /// the lock chain or the backend, so no read, write, or commit
+    /// is ever attempted for the no-op call.
+    #[error(
+        "update_milestone requires at least one mutator field; all fields were omitted or empty"
+    )]
+    NoChangesSupplied,
 }
 
 /// Input for [`add_milestone`].
@@ -67,6 +76,18 @@ pub struct UpdateSpec {
     pub body: Option<String>,
     pub status: Option<MilestoneStatus>,
     pub message: Option<String>,
+}
+
+impl UpdateSpec {
+    /// True when at least one mutator field is set.
+    /// `message` only overrides the commit message text and never
+    /// counts as a change on its own.
+    fn has_any_change(&self) -> bool {
+        self.title.is_some()
+            || self.description.is_some()
+            || self.body.is_some()
+            || self.status.is_some()
+    }
 }
 
 /// Typed return shape for every read / write path on the milestone
@@ -229,6 +250,9 @@ pub async fn update_milestone(
     spec: UpdateSpec,
     author: &ResolvedAuthor,
 ) -> Result<MilestoneRecord, MilestoneError> {
+    if !spec.has_any_change() {
+        return Err(MilestoneError::NoChangesSupplied);
+    }
     let group = *entry.manifest.group_id.as_uuid();
     let _ancestors = crate::lock::acquire_chain(&[
         (
