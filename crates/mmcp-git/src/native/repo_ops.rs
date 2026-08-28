@@ -105,7 +105,8 @@ pub(crate) fn git_binary() -> OsString {
 /// present to answer an interactive prompt, so a missing explicit
 /// credential fails fast instead of hanging. See
 /// [`suppress_interactive_prompts`] for exactly how an ambient
-/// `GIT_SSH_COMMAND` is preserved rather than replaced.
+/// `GIT_SSH_COMMAND`, or a `core.sshCommand` git-config value, is
+/// preserved rather than replaced.
 ///
 /// For `BearerHttp`, sets `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/
 /// `GIT_CONFIG_VALUE_0` (git's environment-based config protocol,
@@ -126,7 +127,12 @@ pub(crate) fn git_binary() -> OsString {
 /// Any `-c` flags must appear *before* the git subcommand, so this
 /// helper is called on a freshly-constructed `Command` before its
 /// `.arg("clone")` / `.arg("fetch")` / etc.
-fn apply_credentials(cmd: &mut Command, creds: &Credentials) {
+///
+/// `repo_path` scopes [`suppress_interactive_prompts`]'s
+/// `core.sshCommand` lookup: `Some` for `fetch`/`push` against an
+/// already-cloned repo, `None` for `clone`, which has no repo yet to
+/// scope a local config lookup to.
+async fn apply_credentials(cmd: &mut Command, creds: &Credentials, repo_path: Option<&Path>) {
     match creds {
         Credentials::None => {}
         Credentials::BearerHttp(token) => {
@@ -141,7 +147,7 @@ fn apply_credentials(cmd: &mut Command, creds: &Credentials) {
             cmd.env("GIT_SSH_COMMAND", value);
         }
     }
-    suppress_interactive_prompts(cmd);
+    suppress_interactive_prompts(cmd, repo_path).await;
 }
 
 /// Force every `git` subprocess headless: suppress the terminal
@@ -167,7 +173,9 @@ fn apply_credentials(cmd: &mut Command, creds: &Credentials) {
 /// `GIT_TERMINAL_PROMPT`/`GIT_ASKPASS`/`credential.helper` cover only
 /// git's own prompt machinery, not the `ssh` subprocess git spawns for
 /// a `git@host:path` URL. This function governs `GIT_SSH_COMMAND` in
-/// three tiers, checked in order:
+/// four tiers, checked in order, mirroring git's own real precedence
+/// between the environment variable and the `core.sshCommand` config
+/// key:
 ///
 /// 1. The caller already set `GIT_SSH_COMMAND` on this `Command`
 ///    (checked via `Command::get_envs`): [`Credentials::SshCommand`]'s
@@ -179,7 +187,15 @@ fn apply_credentials(cmd: &mut Command, creds: &Credentials) {
 ///    outright, so an operator's own custom identity or tool (a
 ///    deploy key, a `plink`-based Windows setup) keeps working while
 ///    the interactive-hang risk still closes for the common case.
-/// 3. Neither is set: defaults to
+/// 3. No builder or ambient value, but `core.sshCommand` resolves to a
+///    non-empty value via [`read_core_ssh_command`], scoped to
+///    `repo_path` per that function's own doc comment: that value is
+///    preserved and extended the same way as tier 2, so a
+///    config-only SSH client override (for example a working native
+///    OpenSSH client pointed at by `core.sshCommand`, on a host where
+///    the bare `ssh` resolved via `PATH` is a different, non-working
+///    client) is honored instead of silently overridden.
+/// 4. None of the above: defaults to
 ///    [`defaults::DEFAULT_SSH_COMMAND_BATCH_MODE`].
 ///
 /// `BatchMode=yes` turns an unanswerable prompt into an immediate
@@ -187,17 +203,12 @@ fn apply_credentials(cmd: &mut Command, creds: &Credentials) {
 /// without weakening host-key verification: no `StrictHostKeyChecking`
 /// override is added.
 ///
-/// Two known, deliberately unaddressed gaps. Appending an OpenSSH `-o`
-/// flag to a non-OpenSSH ambient command (tier 2) may not behave as
-/// intended, since `-o` is an OpenSSH-specific flag; there is no
-/// portable way to express `BatchMode` for an arbitrary ambient tool.
-/// `core.sshCommand` (the git-config-file equivalent of this same
-/// setting) is never consulted, only the environment variable, so a
-/// config-only override still races an unanswerable prompt undetected;
-/// closing that would need a `git config --get` shell-out before the
-/// real command is built, judged disproportionate scope for this
-/// suppression helper.
-fn suppress_interactive_prompts(cmd: &mut Command) {
+/// One known, deliberately unaddressed gap: appending an OpenSSH `-o`
+/// flag to a non-OpenSSH ambient or `core.sshCommand` value (tiers 2
+/// and 3) may not behave as intended, since `-o` is an OpenSSH-specific
+/// flag; there is no portable way to express `BatchMode` for an
+/// arbitrary configured tool.
+async fn suppress_interactive_prompts(cmd: &mut Command, repo_path: Option<&Path>) {
     cmd.arg("-c").arg("credential.helper=");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd.env("GIT_ASKPASS", "");
@@ -210,29 +221,109 @@ fn suppress_interactive_prompts(cmd: &mut Command) {
         return;
     }
 
-    let resolved = resolve_default_ssh_command(std::env::var_os("GIT_SSH_COMMAND"));
+    let ambient = std::env::var_os("GIT_SSH_COMMAND");
+    // Tier 3 only runs a git-config subprocess when tier 2 has nothing:
+    // the common ambient/builder cases never pay the extra spawn.
+    let core_ssh_command = if ambient.as_ref().is_some_and(|v| !v.is_empty()) {
+        None
+    } else {
+        read_core_ssh_command(repo_path).await
+    };
+    let resolved = resolve_ssh_command(ambient, core_ssh_command);
     cmd.env("GIT_SSH_COMMAND", resolved);
 }
 
-/// Resolve tiers 2 and 3 of [`suppress_interactive_prompts`]'s
+/// Resolve tiers 2 through 4 of [`suppress_interactive_prompts`]'s
 /// `GIT_SSH_COMMAND` logic: `ambient` is the caller's own
-/// `std::env::var_os("GIT_SSH_COMMAND")` read, taken as a parameter
+/// `std::env::var_os("GIT_SSH_COMMAND")` read, `core_ssh_command` is
+/// [`read_core_ssh_command`]'s result; both are taken as parameters
 /// rather than read internally so this pure resolution step is
 /// testable without mutating real process environment state (this
-/// crate forbids `unsafe` code, and `std::env::set_var` requires it).
+/// crate forbids `unsafe` code, and `std::env::set_var` requires it)
+/// or spawning a real `git config` subprocess.
 ///
-/// A non-empty `ambient` value is preserved and extended with
-/// [`defaults::SSH_BATCH_MODE_FLAG`] appended; `None` or an empty
-/// value falls back to [`defaults::DEFAULT_SSH_COMMAND_BATCH_MODE`].
-fn resolve_default_ssh_command(ambient: Option<OsString>) -> OsString {
-    match ambient {
-        Some(value) if !value.is_empty() => {
-            let mut extended = value;
-            extended.push(" ");
-            extended.push(defaults::SSH_BATCH_MODE_FLAG);
-            extended
+/// The first non-empty value, checked `ambient` then
+/// `core_ssh_command`, is extended with
+/// [`defaults::SSH_BATCH_MODE_FLAG`] appended. With neither, falls
+/// back to [`defaults::DEFAULT_SSH_COMMAND_BATCH_MODE`].
+fn resolve_ssh_command(ambient: Option<OsString>, core_ssh_command: Option<OsString>) -> OsString {
+    for candidate in [ambient, core_ssh_command].into_iter().flatten() {
+        if !candidate.is_empty() {
+            return extend_with_batch_mode(candidate);
         }
-        _ => OsString::from(defaults::DEFAULT_SSH_COMMAND_BATCH_MODE),
+    }
+    OsString::from(defaults::DEFAULT_SSH_COMMAND_BATCH_MODE)
+}
+
+/// Append [`defaults::SSH_BATCH_MODE_FLAG`] to `value`, space-separated.
+fn extend_with_batch_mode(value: OsString) -> OsString {
+    let mut extended = value;
+    extended.push(" ");
+    extended.push(defaults::SSH_BATCH_MODE_FLAG);
+    extended
+}
+
+/// Read `core.sshCommand` the way `git` itself resolves it for
+/// `repo_path`: local repo config overriding global/system, via
+/// `git -C <repo_path> config --get core.sshCommand`. `None` (no repo
+/// exists yet, e.g. before a `clone`) scopes to `--global` only, so an
+/// unrelated current-working-directory repository's local config is
+/// never consulted.
+///
+/// Bounded by [`defaults::LOCAL_GIT_OP_TIMEOUT`], the same bound
+/// `ensure_remote`'s local `git remote` housekeeping uses: purely
+/// local config resolution, no network I/O. A spawn failure, a
+/// timeout, or `git config --get`'s own exit code `1` (the key is
+/// unset) all resolve to `None` alike: [`suppress_interactive_prompts`]
+/// falls through to its next tier either way, and a config lookup
+/// failing is never allowed to block or fail the git operation it
+/// exists to make headless.
+async fn read_core_ssh_command(repo_path: Option<&Path>) -> Option<OsString> {
+    let cmd = build_core_ssh_command_query(repo_path);
+    let output = run_git_subprocess(
+        cmd,
+        defaults::LOCAL_GIT_OP_TIMEOUT,
+        "config-get",
+        "core.sshCommand",
+    )
+    .await
+    .ok()?;
+    parse_core_ssh_command_output(output.status.success(), &output.stdout)
+}
+
+/// Build the `git config --get core.sshCommand` invocation
+/// [`read_core_ssh_command`] runs, scoped per `repo_path` per that
+/// function's own doc comment.
+fn build_core_ssh_command_query(repo_path: Option<&Path>) -> Command {
+    let mut cmd = Command::new(git_binary());
+    match repo_path {
+        Some(path) => {
+            cmd.arg("-C").arg(path).arg("config").arg("--get");
+        }
+        None => {
+            cmd.arg("config").arg("--get").arg("--global");
+        }
+    }
+    cmd.arg("core.sshCommand");
+    cmd
+}
+
+/// Parse `git config --get core.sshCommand`'s outcome: `success` is
+/// its exit status, `stdout` its captured output. A failed exit
+/// (`1` for an unset key, or any other nonzero code) yields `None`.
+/// A successful exit with empty or whitespace-only stdout also yields
+/// `None`; otherwise the trailing newline `git config --get` always
+/// emits is stripped and the remaining value returned.
+fn parse_core_ssh_command_output(success: bool, stdout: &[u8]) -> Option<OsString> {
+    if !success {
+        return None;
+    }
+    let text = String::from_utf8_lossy(stdout);
+    let trimmed = text.trim_end_matches(['\n', '\r']);
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(OsString::from(trimmed))
     }
 }
 
@@ -354,7 +445,7 @@ async fn wait_with_timeout(
 /// bounded by [`defaults::CLONE_TIMEOUT`].
 pub async fn clone(remote_url: &str, dst: &Path, creds: &Credentials) -> Result<(), GitError> {
     let mut cmd = Command::new(git_binary());
-    apply_credentials(&mut cmd, creds);
+    apply_credentials(&mut cmd, creds, None).await;
     cmd.arg("clone").arg(remote_url).arg(dst);
     let output = run_git_subprocess(cmd, defaults::CLONE_TIMEOUT, "clone", remote_url).await?;
     if !output.status.success() {
@@ -379,7 +470,7 @@ pub async fn fetch(
 ) -> Result<(), GitError> {
     ensure_remote(repo_path, remote_url).await?;
     let mut cmd = Command::new(git_binary());
-    apply_credentials(&mut cmd, creds);
+    apply_credentials(&mut cmd, creds, Some(repo_path)).await;
     cmd.arg("-C").arg(repo_path).arg("fetch").arg("origin");
     for spec in refspecs {
         cmd.arg(spec);
@@ -413,7 +504,7 @@ pub async fn push(
 ) -> Result<PushReport, GitError> {
     ensure_remote(repo_path, remote_url).await?;
     let mut cmd = Command::new(git_binary());
-    apply_credentials(&mut cmd, creds);
+    apply_credentials(&mut cmd, creds, Some(repo_path)).await;
     cmd.arg("-C").arg(repo_path).arg("push").arg("origin");
     for (local, remote, force) in refspecs {
         let spec = if *force {
@@ -1190,7 +1281,9 @@ pub fn walk_history(repo: &gix::Repository, path: &str) -> Result<Vec<CommitMeta
 
 #[cfg(test)]
 mod credential_tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
     use super::*;
+    use tempfile::TempDir;
 
     /// Collect every `(key, value)` env var `apply_credentials` set on
     /// `cmd`, so a test can assert presence/absence and value without
@@ -1218,15 +1311,28 @@ mod credential_tests {
             .collect()
     }
 
+    /// A repo path guaranteed not to exist on disk. `git -C <path>
+    /// config --get` fails to change directory and returns immediately,
+    /// before it would otherwise fall through to reading the host
+    /// machine's real global/system `core.sshCommand`. Every test in
+    /// this module that exercises `apply_credentials`/
+    /// `suppress_interactive_prompts` without itself caring about tier
+    /// 3's `core.sshCommand` resolution passes this, so those tests
+    /// stay hermetic and deterministic regardless of what the host
+    /// machine's own git config happens to contain.
+    fn nonexistent_repo_path() -> std::path::PathBuf {
+        std::env::temp_dir().join("mmcp-git-nonexistent-repo-for-ssh-command-tests")
+    }
+
     /// Falsification: `Credentials::None` must still suppress every
     /// interactive fallback, including a default headless
     /// `GIT_SSH_COMMAND`, even though it sets no explicit credential of
     /// its own. An mmcp caller has no human present to answer a prompt,
     /// so the ambient-environment default must still fail fast.
-    #[test]
-    fn credentials_none_still_suppresses_interactive_prompts() {
+    #[tokio::test]
+    async fn credentials_none_still_suppresses_interactive_prompts() {
         let mut cmd = Command::new("git");
-        apply_credentials(&mut cmd, &Credentials::None);
+        apply_credentials(&mut cmd, &Credentials::None, Some(&nonexistent_repo_path())).await;
 
         let args = args_of(&cmd);
         assert!(
@@ -1255,10 +1361,15 @@ mod credential_tests {
     /// bearer header AND suppress every interactive fallback, so an
     /// automated caller with a definitive (if possibly stale/invalid)
     /// token never blocks on a GCM/terminal/askpass prompt.
-    #[test]
-    fn credentials_bearer_http_suppresses_interactive_prompts() {
+    #[tokio::test]
+    async fn credentials_bearer_http_suppresses_interactive_prompts() {
         let mut cmd = Command::new("git");
-        apply_credentials(&mut cmd, &Credentials::BearerHttp("s3cr3t".to_string()));
+        apply_credentials(
+            &mut cmd,
+            &Credentials::BearerHttp("s3cr3t".to_string()),
+            Some(&nonexistent_repo_path()),
+        )
+        .await;
 
         let args = args_of(&cmd);
         assert!(
@@ -1287,13 +1398,15 @@ mod credential_tests {
     /// Falsification: `Credentials::SshCommand` must also suppress
     /// interactive fallbacks, for the same automated-caller reasoning
     /// as `BearerHttp`.
-    #[test]
-    fn credentials_ssh_command_suppresses_interactive_prompts() {
+    #[tokio::test]
+    async fn credentials_ssh_command_suppresses_interactive_prompts() {
         let mut cmd = Command::new("git");
         apply_credentials(
             &mut cmd,
             &Credentials::SshCommand("ssh -i /key".to_string()),
-        );
+            Some(&nonexistent_repo_path()),
+        )
+        .await;
 
         let args = args_of(&cmd);
         assert!(
@@ -1318,13 +1431,15 @@ mod credential_tests {
     /// supplied `Credentials::SshCommand` value, even though that value
     /// carries no `BatchMode=yes` flag of its own. The variant is the
     /// caller's explicit escape hatch and stays fully caller-controlled.
-    #[test]
-    fn credentials_ssh_command_value_is_not_overwritten_by_the_batch_mode_default() {
+    #[tokio::test]
+    async fn credentials_ssh_command_value_is_not_overwritten_by_the_batch_mode_default() {
         let mut cmd = Command::new("git");
         apply_credentials(
             &mut cmd,
             &Credentials::SshCommand("ssh -i /custom/key -o IdentitiesOnly=yes".to_string()),
-        );
+            Some(&nonexistent_repo_path()),
+        )
+        .await;
 
         let envs = envs_of(&cmd);
         assert_eq!(
@@ -1335,20 +1450,40 @@ mod credential_tests {
         );
     }
 
+    /// Falsification: `Credentials::None` end to end, through
+    /// `apply_credentials`, still lands a `GIT_SSH_COMMAND` containing
+    /// `BatchMode=yes` on the `Command` builder regardless of whatever
+    /// ambient value the real test-process environment happens to
+    /// carry, since `resolve_ssh_command` always appends or defaults to
+    /// a `BatchMode=yes`-bearing value.
+    #[tokio::test]
+    async fn credentials_none_ssh_command_always_contains_batch_mode() {
+        let mut cmd = Command::new("git");
+        apply_credentials(&mut cmd, &Credentials::None, Some(&nonexistent_repo_path())).await;
+
+        let envs = envs_of(&cmd);
+        let ssh_command = envs.get("GIT_SSH_COMMAND").map(String::as_str);
+        assert!(
+            ssh_command.is_some_and(|v| v.contains("BatchMode=yes")),
+            "Credentials::None must always land a BatchMode=yes GIT_SSH_COMMAND, \
+             got: {ssh_command:?}"
+        );
+    }
+
     /// Falsification: an ambient `GIT_SSH_COMMAND` (simulated as the
-    /// `Some` input `resolve_default_ssh_command` receives, standing
-    /// in for a real `std::env::var_os` read) must be preserved and
-    /// extended with the batch-mode flag, never replaced outright, so
-    /// an operator's own custom identity/tool keeps working. This
-    /// crate forbids `unsafe` code, so the resolution logic is a pure
+    /// `Some` input `resolve_ssh_command` receives, standing in for a
+    /// real `std::env::var_os` read) must be preserved and extended
+    /// with the batch-mode flag, never replaced outright, so an
+    /// operator's own custom identity/tool keeps working. This crate
+    /// forbids `unsafe` code, so the resolution logic is a pure
     /// function taking the ambient value as a parameter rather than a
     /// test that mutates the real process environment via
     /// `std::env::set_var` (which requires `unsafe`).
     #[test]
-    fn resolve_default_ssh_command_extends_an_ambient_value() {
+    fn resolve_ssh_command_ambient_wins_and_is_extended() {
         let ambient = OsString::from("ssh -i /custom/ambient/key -o IdentitiesOnly=yes");
 
-        let resolved = resolve_default_ssh_command(Some(ambient));
+        let resolved = resolve_ssh_command(Some(ambient), None);
 
         assert_eq!(
             resolved.to_str(),
@@ -1357,51 +1492,225 @@ mod credential_tests {
         );
     }
 
-    /// Falsification: with no ambient value at all (`None`, standing
-    /// in for an unset `GIT_SSH_COMMAND`), the bare default from
-    /// [`defaults::DEFAULT_SSH_COMMAND_BATCH_MODE`] applies verbatim.
+    /// Falsification: git's own real precedence between the
+    /// `GIT_SSH_COMMAND` environment variable and the `core.sshCommand`
+    /// config key must hold here too: an ambient value present
+    /// alongside a `core.sshCommand` value wins outright, the config
+    /// value is never even consulted.
     #[test]
-    fn resolve_default_ssh_command_defaults_with_no_ambient_value() {
-        let resolved = resolve_default_ssh_command(None);
+    fn resolve_ssh_command_ambient_wins_over_core_ssh_command() {
+        let ambient = OsString::from("ssh -i /ambient/key");
+        let core_ssh_command = OsString::from("C:/Windows/System32/OpenSSH/ssh.exe");
+
+        let resolved = resolve_ssh_command(Some(ambient), Some(core_ssh_command));
 
         assert_eq!(
             resolved.to_str(),
-            Some(defaults::DEFAULT_SSH_COMMAND_BATCH_MODE),
-            "with no ambient value, the bare default must apply verbatim"
+            Some("ssh -i /ambient/key -o BatchMode=yes"),
+            "an ambient GIT_SSH_COMMAND must win over a core.sshCommand value"
+        );
+    }
+
+    /// Falsification: with no ambient value, a `core.sshCommand` value
+    /// is picked up and extended with the batch-mode flag exactly like
+    /// an ambient value would be, closing the gap where mmcp used to
+    /// silently override a working `core.sshCommand` with the bare
+    /// default.
+    #[test]
+    fn resolve_ssh_command_uses_core_ssh_command_when_ambient_absent() {
+        let core_ssh_command = OsString::from("C:/Windows/System32/OpenSSH/ssh.exe");
+
+        let resolved = resolve_ssh_command(None, Some(core_ssh_command));
+
+        assert_eq!(
+            resolved.to_str(),
+            Some("C:/Windows/System32/OpenSSH/ssh.exe -o BatchMode=yes"),
+            "core.sshCommand must be picked up and extended when no ambient value exists"
         );
     }
 
     /// Falsification: an ambient value that is set but empty (a
-    /// distinct case from unset) must be treated the same as no
-    /// ambient value, not extended into a leading-space command.
+    /// distinct case from unset) must fall through to `core.sshCommand`
+    /// exactly like an absent ambient value, not extended into a
+    /// leading-space command of its own.
     #[test]
-    fn resolve_default_ssh_command_defaults_on_empty_ambient_value() {
-        let resolved = resolve_default_ssh_command(Some(OsString::new()));
+    fn resolve_ssh_command_uses_core_ssh_command_when_ambient_empty() {
+        let core_ssh_command = OsString::from("C:/Windows/System32/OpenSSH/ssh.exe");
+
+        let resolved = resolve_ssh_command(Some(OsString::new()), Some(core_ssh_command));
+
+        assert_eq!(
+            resolved.to_str(),
+            Some("C:/Windows/System32/OpenSSH/ssh.exe -o BatchMode=yes"),
+            "an empty ambient value must fall through to core.sshCommand, not block it"
+        );
+    }
+
+    /// Falsification: with neither an ambient value nor a
+    /// `core.sshCommand` value, the bare default from
+    /// [`defaults::DEFAULT_SSH_COMMAND_BATCH_MODE`] applies verbatim.
+    #[test]
+    fn resolve_ssh_command_defaults_with_neither_tier_set() {
+        let resolved = resolve_ssh_command(None, None);
 
         assert_eq!(
             resolved.to_str(),
             Some(defaults::DEFAULT_SSH_COMMAND_BATCH_MODE),
-            "an empty ambient value must fall back to the bare default, not extend nothing"
+            "with neither tier set, the bare default must apply verbatim"
         );
     }
 
-    /// Falsification: `Credentials::None` end to end, through
-    /// `apply_credentials`, still lands a `GIT_SSH_COMMAND` containing
-    /// `BatchMode=yes` on the `Command` builder regardless of whatever
-    /// ambient value the real test-process environment happens to
-    /// carry, since `resolve_default_ssh_command` always appends or
-    /// defaults to a `BatchMode=yes`-bearing value.
+    /// Falsification: an ambient value and a `core.sshCommand` value
+    /// that are both set but empty must be treated the same as neither
+    /// being set at all.
     #[test]
-    fn credentials_none_ssh_command_always_contains_batch_mode() {
+    fn resolve_ssh_command_defaults_when_both_tiers_empty() {
+        let resolved = resolve_ssh_command(Some(OsString::new()), Some(OsString::new()));
+
+        assert_eq!(
+            resolved.to_str(),
+            Some(defaults::DEFAULT_SSH_COMMAND_BATCH_MODE),
+            "two empty values must fall back to the bare default, not extend nothing"
+        );
+    }
+
+    /// Falsification: [`build_core_ssh_command_query`] scopes to the
+    /// given repo via `-C`, with no `--global` flag, for the
+    /// `fetch`/`push` case where a repo already exists.
+    #[test]
+    fn build_core_ssh_command_query_scopes_to_repo_for_fetch_and_push() {
+        let cmd = build_core_ssh_command_query(Some(Path::new("/some/repo")));
+
+        let args = args_of(&cmd);
+        assert_eq!(
+            args,
+            vec!["-C", "/some/repo", "config", "--get", "core.sshCommand"],
+            "a repo path must scope the lookup via -C, with no --global flag"
+        );
+    }
+
+    /// Falsification: [`build_core_ssh_command_query`] scopes to
+    /// `--global` only, with no `-C`, for the `clone` case where no
+    /// repo exists yet to scope a local lookup to.
+    #[test]
+    fn build_core_ssh_command_query_scopes_to_global_for_clone() {
+        let cmd = build_core_ssh_command_query(None);
+
+        let args = args_of(&cmd);
+        assert_eq!(
+            args,
+            vec!["config", "--get", "--global", "core.sshCommand"],
+            "no repo path must scope the lookup to --global only, with no -C"
+        );
+    }
+
+    /// Falsification: a successful exit with real stdout content yields
+    /// the trimmed value.
+    #[test]
+    fn parse_core_ssh_command_output_returns_value_on_success() {
+        let resolved = parse_core_ssh_command_output(true, b"ssh -i /key\n");
+
+        assert_eq!(resolved, Some(OsString::from("ssh -i /key")));
+    }
+
+    /// Falsification: a failed exit (git's own exit code `1` for an
+    /// unset key, or any other nonzero code) yields `None`, never the
+    /// raw stdout content.
+    #[test]
+    fn parse_core_ssh_command_output_none_on_failure() {
+        let resolved = parse_core_ssh_command_output(false, b"");
+
+        assert_eq!(resolved, None);
+    }
+
+    /// Falsification: a successful exit with empty stdout (git prints
+    /// nothing when the effective value itself is an empty string)
+    /// yields `None`, not `Some("")`.
+    #[test]
+    fn parse_core_ssh_command_output_none_on_empty_success() {
+        let resolved = parse_core_ssh_command_output(true, b"\n");
+
+        assert_eq!(resolved, None);
+    }
+
+    /// Write `core.sshCommand = value` to `repo_path`'s own local git
+    /// config, via a real `git config` subprocess, so
+    /// [`read_core_ssh_command`] tests below exercise the real
+    /// resolution path rather than a mocked stand-in.
+    async fn set_local_core_ssh_command(repo_path: &Path, value: &str) {
+        let mut cmd = Command::new(git_binary());
+        cmd.arg("-C")
+            .arg(repo_path)
+            .arg("config")
+            .arg("core.sshCommand")
+            .arg(value);
+        let output = run_git_subprocess(
+            cmd,
+            defaults::LOCAL_GIT_OP_TIMEOUT,
+            "config-set",
+            "core.sshCommand",
+        )
+        .await
+        .expect("git config core.sshCommand must spawn and complete");
+        assert!(
+            output.status.success(),
+            "git config core.sshCommand must succeed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Falsification: [`read_core_ssh_command`], given a repo whose own
+    /// LOCAL config carries `core.sshCommand`, returns that value via a
+    /// real `git config --get` subprocess. Uses a scratch bare repo's
+    /// own local config exclusively; the host machine's real
+    /// global/system `core.sshCommand` (if any) is irrelevant, since
+    /// local config always wins in git's own resolution order.
+    #[tokio::test]
+    async fn read_core_ssh_command_reads_repo_local_config_end_to_end() {
+        let tmp = TempDir::new().expect("tempdir");
+        let repo_path = tmp.path().join("scratch.git");
+        gix::init_bare(&repo_path).expect("init bare scratch repo");
+        set_local_core_ssh_command(&repo_path, "C:/Windows/System32/OpenSSH/ssh.exe").await;
+
+        let resolved = read_core_ssh_command(Some(&repo_path)).await;
+
+        assert_eq!(
+            resolved,
+            Some(OsString::from("C:/Windows/System32/OpenSSH/ssh.exe")),
+            "a repo-local core.sshCommand must be read back verbatim"
+        );
+    }
+
+    /// Falsification: `apply_credentials`/`suppress_interactive_prompts`
+    /// wire tier 3 end to end: with no builder-supplied credential and
+    /// no ambient `GIT_SSH_COMMAND`, a scratch repo's own local
+    /// `core.sshCommand` lands on the resulting `Command`'s
+    /// `GIT_SSH_COMMAND`, extended with `BatchMode=yes`, instead of the
+    /// bare `ssh -o BatchMode=yes` default this crate used to force
+    /// regardless of a working `core.sshCommand`.
+    #[tokio::test]
+    async fn apply_credentials_uses_repo_core_ssh_command_when_no_builder_or_ambient_value() {
+        if std::env::var_os("GIT_SSH_COMMAND").is_some_and(|v| !v.is_empty()) {
+            // An ambient GIT_SSH_COMMAND in this real test process's
+            // environment would legitimately win over core.sshCommand
+            // (tier 2 outranks tier 3): skip rather than assert a false
+            // failure against a machine-specific ambient value this
+            // test does not control.
+            return;
+        }
+        let tmp = TempDir::new().expect("tempdir");
+        let repo_path = tmp.path().join("scratch.git");
+        gix::init_bare(&repo_path).expect("init bare scratch repo");
+        set_local_core_ssh_command(&repo_path, "C:/Windows/System32/OpenSSH/ssh.exe").await;
+
         let mut cmd = Command::new("git");
-        apply_credentials(&mut cmd, &Credentials::None);
+        apply_credentials(&mut cmd, &Credentials::None, Some(&repo_path)).await;
 
         let envs = envs_of(&cmd);
-        let ssh_command = envs.get("GIT_SSH_COMMAND").map(String::as_str);
-        assert!(
-            ssh_command.is_some_and(|v| v.contains("BatchMode=yes")),
-            "Credentials::None must always land a BatchMode=yes GIT_SSH_COMMAND, \
-             got: {ssh_command:?}"
+        assert_eq!(
+            envs.get("GIT_SSH_COMMAND").map(String::as_str),
+            Some("C:/Windows/System32/OpenSSH/ssh.exe -o BatchMode=yes"),
+            "the repo's core.sshCommand must be used instead of the bare ssh default"
         );
     }
 }
