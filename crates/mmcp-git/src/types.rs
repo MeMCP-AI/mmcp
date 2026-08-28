@@ -171,12 +171,14 @@ impl CommitSpec {
 /// credential prompt, so a missing explicit credential fails fast
 /// instead of hanging. For `GIT_SSH_COMMAND` specifically, an ambient
 /// value is respected and extended with SSH's own `BatchMode=yes`
-/// flag rather than replaced; only a caller with neither an explicit
-/// [`Credentials::SshCommand`] nor an ambient `GIT_SSH_COMMAND` falls
-/// back to the backend's own bare `BatchMode=yes` default. Two
-/// disclosed gaps: `core.sshCommand` (the git-config-file equivalent
-/// of the same setting) is never consulted, and a non-OpenSSH ambient
-/// `GIT_SSH_COMMAND` may not accept the appended flag as intended.
+/// flag rather than replaced, and so is a `core.sshCommand` git-config
+/// value when no ambient value exists, matching git's own real
+/// precedence between the two; only a caller with none of an explicit
+/// [`Credentials::SshCommand`], an ambient `GIT_SSH_COMMAND`, or a
+/// `core.sshCommand` config value falls back to the backend's own bare
+/// `BatchMode=yes` default. One disclosed gap: a non-OpenSSH ambient
+/// or `core.sshCommand` value may not accept the appended flag as
+/// intended.
 ///
 /// Keep the enum non-exhaustive so backends that understand richer
 /// credential shapes (mTLS, workload identity, forge-specific

@@ -26,14 +26,13 @@ pub enum RemoteAuth {
     /// remote. The transport layer (`mmcp_git::Credentials::None`)
     /// still forces the git subprocess headless: an unanswerable
     /// credential prompt fails fast instead of hanging, and an
-    /// ambient `GIT_SSH_COMMAND` is respected and extended with a
-    /// batch-mode flag rather than replaced, so only a fully
+    /// ambient `GIT_SSH_COMMAND`, or a `core.sshCommand` git-config
+    /// value when no ambient value exists, is respected and extended
+    /// with a batch-mode flag rather than replaced, so only a fully
     /// unconfigured caller falls back to the transport layer's own
-    /// bare default. Two narrower, disclosed gaps: `core.sshCommand`
-    /// (the git-config-file equivalent of the same setting) is never
-    /// consulted, only the environment variable; and a non-OpenSSH
-    /// ambient `GIT_SSH_COMMAND` may not accept the appended flag as
-    /// intended.
+    /// bare default. One narrower, disclosed gap: a non-OpenSSH
+    /// ambient or `core.sshCommand` value may not accept the appended
+    /// flag as intended.
     #[default]
     None,
     /// Same runtime effect as `None` today (maps to
