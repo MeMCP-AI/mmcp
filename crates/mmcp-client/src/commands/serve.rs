@@ -4317,7 +4317,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Push the local pending-edit queue to the configured mmcp sync server. Returns each drained edit with the server-assigned version and tag, plus whether the content plane (git push) actually shipped bytes. A group whose push itself errors does not abort the call: it surfaces under `failed` (and as a `sync_group_failed` note) while every other group's push still ships. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block, and `sync_timeout` when the push does not complete within the call's bound.",
+        description = "Push the local pending-edit queue to the configured mmcp sync server. Returns each drained edit with the server-assigned version and tag, plus whether the content plane (git push) actually shipped bytes. A group whose push itself errors does not abort the call: it surfaces under `failed` (and as a `sync_group_failed` note) while every other group's push still ships. A group whose control-plane push succeeded but whose content plane did not ship bytes also surfaces at the top level under `partial_failures` (and as a `sync_partial_failure` note), not just as `content_transferred: false` buried in `pushed`. Errors with code `sync_not_configured` when `.mmcp.toml` has no `[sync]` block, and `sync_timeout` when the push does not complete within the call's bound.",
         annotations(
             title = "Push to sync server",
             read_only_hint = false,
@@ -4386,6 +4386,7 @@ impl McpServer {
             json!({
                 "pushed": pushed_json,
                 "failed": report.by_remote.iter().flat_map(|o| sync_failures_to_json(&o.failed)).collect::<Vec<_>>(),
+                "partial_failures": push_partial_failures_to_json(&report),
                 "project_uuid": cfg.project_uuid.to_string(),
                 "remotes": label,
             }),
@@ -4394,7 +4395,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Run a full sync (pull then push) against the configured mmcp server. Returns both report shapes nested under `pulled` and `pushed`, each carrying its own `failed` list for groups that errored without aborting the rest. Same error codes as `sync_pull` / `sync_push`, including `sync_timeout`; this tool's bound is the longest of the four since it runs a full pull before starting the push.",
+        description = "Run a full sync (pull then push) against the configured mmcp server. Returns both report shapes nested under `pulled` and `pushed`, each carrying its own `failed` list for groups that errored without aborting the rest. A group whose push control plane succeeded but whose content plane did not ship bytes surfaces at the top level under `partial_failures` (and as a `sync_partial_failure` note), the same signal `sync_push` surfaces on its own. Same error codes as `sync_pull` / `sync_push`, including `sync_timeout`; this tool's bound is the longest of the four since it runs a full pull before starting the push.",
         annotations(
             title = "Full sync (pull + push)",
             read_only_hint = false,
@@ -4435,6 +4436,13 @@ impl McpServer {
             &report.pulled.manifest_failures,
             "pull",
         ));
+        // Same `sync_partial_failure` populator `sync_push` already
+        // calls: `sync` runs the identical push underneath and must
+        // surface the same content-plane-skipped signal, not just
+        // the hard `failed` entries below.
+        notes.extend(crate::notes::sync_push_partial_failure_notes(
+            &report.pushed,
+        ));
         for outcome in &report.pushed.by_remote {
             notes.extend(sync_group_failure_notes(
                 &outcome.failed,
@@ -4468,6 +4476,7 @@ impl McpServer {
                     "pushed": pushed_json,
                     "failed": report.pushed.by_remote.iter().flat_map(|o| sync_failures_to_json(&o.failed)).collect::<Vec<_>>(),
                 },
+                "partial_failures": push_partial_failures_to_json(&report.pushed),
                 "project_uuid": cfg.project_uuid.to_string(),
                 "remotes": label,
             }),
@@ -6277,6 +6286,32 @@ fn sync_manifest_failures_to_json(
                 payload["message"] = json!(f.error.to_string());
             }
             payload
+        })
+        .collect()
+}
+
+/// Serialize a push report's content-plane partial failures into
+/// the root-level `partial_failures` wire shape: one `{group_id,
+/// remote_name, reason}` entry per group whose control-plane push
+/// succeeded but whose git content transfer did not ship bytes
+/// (`content_transferred: false`). `reason` carries the backend's
+/// own error text when the engine captured one, `null` otherwise.
+///
+/// Shared by the `sync_push` and `sync` tool responses so both
+/// surfaces promote this signal to a self-explanatory top-level
+/// field instead of requiring a caller to already know to scan
+/// `pushed[].content_transferred` (or `notes`) for it. Additive:
+/// `pushed[].content_transferred` keeps carrying the same per-entry
+/// flag it always has.
+fn push_partial_failures_to_json(report: &mmcp_sync::PushReport) -> Vec<serde_json::Value> {
+    report
+        .iter_partial_failures()
+        .map(|(remote_name, pushed_group)| {
+            json!({
+                "group_id": pushed_group.group_id.to_string(),
+                "remote_name": remote_name,
+                "reason": pushed_group.transport_error,
+            })
         })
         .collect()
 }
@@ -11318,6 +11353,60 @@ mod tests {
         assert_eq!(
             group_json[0].get("message").and_then(|v| v.as_str()),
             Some(expected_message.as_str())
+        );
+    }
+
+    /// Both `sync_push` and `sync` build their root-level
+    /// `partial_failures` array through this shared function, so a
+    /// direct test on it is a regression test for both tool
+    /// responses without spinning up a full sync engine: `sync`'s
+    /// handler feeds it `report.pushed`, whose type (`PushReport`)
+    /// is exactly what `sync_push`'s handler feeds it too.
+    #[test]
+    fn push_partial_failures_to_json_lists_only_untransferred_groups_with_reason() {
+        use mmcp_sync::{PushReport, PushedGroup, RemotePushOutcome};
+
+        let transferred_id = Uuid::now_v7();
+        let stalled_id = Uuid::now_v7();
+        let report = PushReport {
+            by_remote: vec![RemotePushOutcome {
+                remote_name: "origin".to_string(),
+                pushed: vec![
+                    PushedGroup {
+                        group_id: transferred_id,
+                        content_transferred: true,
+                        transport_error: None,
+                    },
+                    PushedGroup {
+                        group_id: stalled_id,
+                        content_transferred: false,
+                        transport_error: Some("Permission denied (publickey)".to_string()),
+                    },
+                ],
+                failed: vec![],
+            }],
+        };
+
+        let partial_failures = push_partial_failures_to_json(&report);
+
+        assert_eq!(
+            partial_failures.len(),
+            1,
+            "the fully-transferred group must not appear: {partial_failures:?}"
+        );
+        assert_eq!(
+            partial_failures[0].get("group_id").and_then(|v| v.as_str()),
+            Some(stalled_id.to_string().as_str())
+        );
+        assert_eq!(
+            partial_failures[0]
+                .get("remote_name")
+                .and_then(|v| v.as_str()),
+            Some("origin")
+        );
+        assert_eq!(
+            partial_failures[0].get("reason").and_then(|v| v.as_str()),
+            Some("Permission denied (publickey)")
         );
     }
 
