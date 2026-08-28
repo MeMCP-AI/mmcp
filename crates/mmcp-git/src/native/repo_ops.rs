@@ -272,22 +272,44 @@ fn extend_with_batch_mode(value: OsString) -> OsString {
 ///
 /// Bounded by [`defaults::LOCAL_GIT_OP_TIMEOUT`], the same bound
 /// `ensure_remote`'s local `git remote` housekeeping uses: purely
-/// local config resolution, no network I/O. A spawn failure, a
-/// timeout, or `git config --get`'s own exit code `1` (the key is
-/// unset) all resolve to `None` alike: [`suppress_interactive_prompts`]
-/// falls through to its next tier either way, and a config lookup
-/// failing is never allowed to block or fail the git operation it
-/// exists to make headless.
+/// local config resolution, no network I/O. Every outcome resolves to
+/// `None` on anything short of a genuine value, so
+/// [`suppress_interactive_prompts`] always falls through to its next
+/// tier rather than blocking or failing the git operation it exists
+/// to make headless, but the outcomes are not equally silent:
+/// `git config --get`'s own exit code `1` (the key is simply unset)
+/// is the normal case and logs nothing, while a spawn failure or a
+/// timeout is a genuine local malfunction and is logged at `warn`
+/// level, so a config read that silently eats the full timeout budget
+/// and falls back to the bare default stays visible to the operator.
 async fn read_core_ssh_command(repo_path: Option<&Path>) -> Option<OsString> {
     let cmd = build_core_ssh_command_query(repo_path);
-    let output = run_git_subprocess(
+    let output = match run_git_subprocess(
         cmd,
         defaults::LOCAL_GIT_OP_TIMEOUT,
         "config-get",
         "core.sshCommand",
     )
     .await
-    .ok()?;
+    {
+        Ok(output) => output,
+        Err(GitError::Timeout { timeout_secs, .. }) => {
+            tracing::warn!(
+                timeout_secs,
+                "git config --get core.sshCommand timed out; falling back to the next \
+                 GIT_SSH_COMMAND tier"
+            );
+            return None;
+        }
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "git config --get core.sshCommand failed to spawn or run; falling back \
+                 to the next GIT_SSH_COMMAND tier"
+            );
+            return None;
+        }
+    };
     parse_core_ssh_command_output(output.status.success(), &output.stdout)
 }
 
@@ -1513,9 +1535,8 @@ mod credential_tests {
 
     /// Falsification: with no ambient value, a `core.sshCommand` value
     /// is picked up and extended with the batch-mode flag exactly like
-    /// an ambient value would be, closing the gap where mmcp used to
-    /// silently override a working `core.sshCommand` with the bare
-    /// default.
+    /// an ambient value would be, so a working `core.sshCommand` is
+    /// honored rather than silently overridden by the bare default.
     #[test]
     fn resolve_ssh_command_uses_core_ssh_command_when_ambient_absent() {
         let core_ssh_command = OsString::from("C:/Windows/System32/OpenSSH/ssh.exe");
@@ -1686,8 +1707,7 @@ mod credential_tests {
     /// no ambient `GIT_SSH_COMMAND`, a scratch repo's own local
     /// `core.sshCommand` lands on the resulting `Command`'s
     /// `GIT_SSH_COMMAND`, extended with `BatchMode=yes`, instead of the
-    /// bare `ssh -o BatchMode=yes` default this crate used to force
-    /// regardless of a working `core.sshCommand`.
+    /// bare `ssh -o BatchMode=yes` default.
     #[tokio::test]
     async fn apply_credentials_uses_repo_core_ssh_command_when_no_builder_or_ambient_value() {
         if std::env::var_os("GIT_SSH_COMMAND").is_some_and(|v| !v.is_empty()) {
