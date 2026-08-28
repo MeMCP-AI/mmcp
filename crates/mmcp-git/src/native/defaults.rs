@@ -45,18 +45,20 @@ pub const LOCAL_GIT_OP_TIMEOUT: Duration = Duration::from_secs(30);
 /// limit.
 pub const REPO_CACHE_MAX_ENTRIES: u64 = 512;
 
-/// SSH flag appended to an ambient `GIT_SSH_COMMAND` value that
+/// SSH flag appended to an ambient `GIT_SSH_COMMAND` value, or to a
+/// `core.sshCommand` git-config value, that
 /// `crate::native::repo_ops::suppress_interactive_prompts` finds
 /// already set: SSH fails immediately instead of prompting for a
 /// host-key confirmation or a key passphrase. Appending, rather than
 /// replacing, keeps the operator's own custom identity or tool (a
-/// deploy key, `IdentitiesOnly=yes`) intact. Assumes the ambient
-/// command is OpenSSH-compatible; a non-OpenSSH ambient command (a
+/// deploy key, `IdentitiesOnly=yes`) intact. Assumes the ambient or
+/// configured command is OpenSSH-compatible; a non-OpenSSH command (a
 /// `plink`-based Windows setup) may not accept this flag as intended.
 pub const SSH_BATCH_MODE_FLAG: &str = "-o BatchMode=yes";
 
-/// Default value injected into `GIT_SSH_COMMAND` when neither the
-/// caller nor the ambient process environment already sets one.
+/// Default value injected into `GIT_SSH_COMMAND` when none of the
+/// caller, the ambient process environment, or the `core.sshCommand`
+/// git config sets one.
 ///
 /// Plain `ssh` plus [`SSH_BATCH_MODE_FLAG`]: `~/.ssh/config` still
 /// governs identity files and per-host options since this still
