@@ -1943,6 +1943,7 @@ fn validate_update_milestone_args(args: &UpdateMilestoneArgs) -> Result<(), McpE
 /// every memory.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct ArchiveFilterArgs {
     /// Include only memories with these slugs.
     #[serde(default)]
@@ -13223,6 +13224,59 @@ mod tests {
         assert!(
             result.is_ok(),
             "known fields must deserialize, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn export_archive_filter_rejects_unknown_facet() {
+        // A misspelled facet key (`tags` instead of `tag`) inside the
+        // nested `filter` object must fail to deserialize, never
+        // silently drop the facet and match every memory.
+        let raw = json!({
+            "output": "/tmp/archive.tar",
+            "filter": { "tags": ["misspelled"] },
+        });
+        let result: Result<ExportArchiveArgs, _> = serde_json::from_value(raw);
+        assert!(
+            result.is_err(),
+            "unrecognized nested filter facet must be rejected, got: {result:?}",
+        );
+    }
+
+    #[test]
+    fn import_archive_filter_rejects_unknown_facet() {
+        // Same nested-facet typo, on the sibling tool whose `filter`
+        // gates an `overwrite: true` import: a silently-ignored facet
+        // here would let an overwrite clobber memories the caller
+        // meant to exclude.
+        let raw = json!({
+            "input": "/tmp/archive.tar",
+            "overwrite": true,
+            "filter": { "kinds": ["rule"] },
+        });
+        let result: Result<ImportArchiveArgs, _> = serde_json::from_value(raw);
+        assert!(
+            result.is_err(),
+            "unrecognized nested filter facet must be rejected, got: {result:?}",
+        );
+    }
+
+    #[test]
+    fn export_archive_filter_accepts_known_facets() {
+        // Control case: the same nested filter, spelled with the
+        // real facet names, must still deserialize.
+        let raw = json!({
+            "output": "/tmp/archive.tar",
+            "filter": {
+                "tag": ["real"],
+                "kind": ["rule"],
+                "exclude_tag": ["skip"],
+            },
+        });
+        let result: Result<ExportArchiveArgs, _> = serde_json::from_value(raw);
+        assert!(
+            result.is_ok(),
+            "known nested filter facets must deserialize, got: {result:?}"
         );
     }
 
