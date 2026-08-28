@@ -271,10 +271,16 @@ impl SyncEngine {
             mmcp_core::conventions::MAIN_BRANCH_REF,
         )];
         let (remote_url, creds) = self.remote_endpoint(remote, group_id);
-        let content_transferred = match self.backend.push(&handle, &remote_url, &refs, &creds).await
+        let (content_transferred, transport_error) = match self
+            .backend
+            .push(&handle, &remote_url, &refs, &creds)
+            .await
         {
-            Ok(_) => true,
-            Err(mmcp_git::GitError::Unsupported(_)) => false,
+            Ok(_) => (true, None),
+            // `err.to_string()` renders `GitError::Unsupported`'s
+            // own `#[error(...)]` text; the note layer threads
+            // this through instead of a generic message.
+            Err(err @ mmcp_git::GitError::Unsupported(_)) => (false, Some(err.to_string())),
             Err(mmcp_git::GitError::Transport { stderr, .. })
                 if stderr_indicates_non_fast_forward(&stderr) =>
             {
@@ -287,28 +293,31 @@ impl SyncEngine {
                     stderr,
                 });
             }
-            Err(mmcp_git::GitError::Transport { op, url, stderr }) => {
+            Err(err @ mmcp_git::GitError::Transport { .. }) => {
                 // A credential mismatch, a network blip, or a
                 // rejecting remote all land here indistinguishably.
                 // Reported as content_transferred: false rather than
                 // raised (see `SyncEngine::push`'s doc comment), so
-                // this line is the only signal a caller gets that
-                // bytes did not ship.
-                tracing::warn!(
-                    group = %group_id,
-                    remote = %remote.name,
-                    op,
-                    url = %url,
-                    stderr = %stderr,
-                    "push content-plane transport failed, reporting content_transferred=false"
-                );
-                false
+                // this line and `transport_error` below are the only
+                // signal a caller gets that bytes did not ship.
+                if let mmcp_git::GitError::Transport { op, url, stderr } = &err {
+                    tracing::warn!(
+                        group = %group_id,
+                        remote = %remote.name,
+                        op = *op,
+                        url = %url,
+                        stderr = %stderr,
+                        "push content-plane transport failed, reporting content_transferred=false"
+                    );
+                }
+                (false, Some(err.to_string()))
             }
             Err(other) => return Err(SyncError::Git(other)),
         };
         Ok(Some(PushedGroup {
             group_id,
             content_transferred,
+            transport_error,
         }))
     }
 

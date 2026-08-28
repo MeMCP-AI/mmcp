@@ -88,6 +88,12 @@ pub struct PushedGroup {
     /// still appears in the report so operators can see what was
     /// attempted; retry on the next push picks it up.
     pub content_transferred: bool,
+    /// The backend's own error message when `content_transferred`
+    /// is `false` (the `GitError::Unsupported` or
+    /// `GitError::Transport` display text, the latter carrying the
+    /// git subprocess's real stderr). `None` when
+    /// `content_transferred` is `true`.
+    pub transport_error: Option<String>,
 }
 
 #[cfg(test)]
@@ -106,10 +112,15 @@ mod tests {
                         PushedGroup {
                             group_id: Uuid::nil(),
                             content_transferred: true,
+                            transport_error: None,
                         },
                         PushedGroup {
                             group_id: Uuid::max(),
                             content_transferred: false,
+                            transport_error: Some(
+                                "git push against https://example.test/g failed: connection reset"
+                                    .to_string(),
+                            ),
                         },
                     ],
                     failed: vec![GroupSyncFailure {

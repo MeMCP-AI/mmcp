@@ -234,6 +234,16 @@ async fn push_reports_each_in_scope_group_with_transport_status() {
     assert_eq!(report.by_remote[0].pushed.len(), 1);
     assert_eq!(report.by_remote[0].pushed[0].group_id, group_uuid);
     assert!(!report.by_remote[0].pushed[0].content_transferred);
+    // `transport_error` carries the backend's own message (here the
+    // `Unsupported` reason) instead of leaving callers to infer why
+    // from `content_transferred: false` alone.
+    assert!(
+        report.by_remote[0].pushed[0]
+            .transport_error
+            .as_deref()
+            .is_some_and(|msg| !msg.is_empty()),
+        "content_transferred=false must carry a non-empty transport_error"
+    );
 }
 
 /// A `GitError::Transport` collapses into `content_transferred: false`.
@@ -286,6 +296,18 @@ async fn push_transport_failure_logs_a_warning_instead_of_staying_silent() {
     assert!(
         captured.contains(&group_uuid.to_string()),
         "the log line must name the affected group"
+    );
+    // The discarded stderr this test's log assertions already prove
+    // was captured must also reach the report itself, not just the
+    // log line: `notes.rs`'s `sync_partial_failure` populator reads
+    // `transport_error` to render a real message instead of a
+    // generic "transport error or unsupported backend" placeholder.
+    assert!(
+        report.by_remote[0].pushed[0]
+            .transport_error
+            .as_deref()
+            .is_some_and(|msg| !msg.is_empty()),
+        "content_transferred=false must carry a non-empty transport_error"
     );
 }
 
