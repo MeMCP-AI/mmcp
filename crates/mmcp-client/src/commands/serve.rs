@@ -4437,10 +4437,10 @@ impl McpServer {
             &report.pulled.manifest_failures,
             "pull",
         ));
-        // Same `sync_partial_failure` populator `sync_push` already
-        // calls: `sync` runs the identical push underneath and must
-        // surface the same content-plane-skipped signal, not just
-        // the hard `failed` entries below.
+        // Surfaces a push group whose control plane succeeded but
+        // content plane did not ship bytes, alongside the hard
+        // `failed` entries above; see also:
+        // notes::sync_push_partial_failure_notes.
         notes.extend(crate::notes::sync_push_partial_failure_notes(
             &report.pushed,
         ));
