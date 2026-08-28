@@ -1,5 +1,6 @@
-//! [`PushReport`], its per-remote [`RemotePushOutcome`], and its
-//! per-group item [`PushedGroup`].
+//! [`PushReport`], its per-remote [`RemotePushOutcome`], its
+//! [`PushTransportError`] cause, and its per-group item
+//! [`PushedGroup`].
 
 use thiserror::Error;
 use uuid::Uuid;
