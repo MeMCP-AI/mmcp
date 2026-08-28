@@ -6311,7 +6311,7 @@ fn push_partial_failures_to_json(report: &mmcp_sync::PushReport) -> Vec<serde_js
             json!({
                 "group_id": pushed_group.group_id.to_string(),
                 "remote_name": remote_name,
-                "reason": pushed_group.transport_error,
+                "reason": pushed_group.transport_error.as_ref().map(ToString::to_string),
             })
         })
         .collect()
@@ -11365,7 +11365,7 @@ mod tests {
     /// is exactly what `sync_push`'s handler feeds it too.
     #[test]
     fn push_partial_failures_to_json_lists_only_untransferred_groups_with_reason() {
-        use mmcp_sync::{PushReport, PushedGroup, RemotePushOutcome};
+        use mmcp_sync::{PushReport, PushTransportError, PushedGroup, RemotePushOutcome};
 
         let transferred_id = Uuid::now_v7();
         let stalled_id = Uuid::now_v7();
@@ -11381,7 +11381,11 @@ mod tests {
                     PushedGroup {
                         group_id: stalled_id,
                         content_transferred: false,
-                        transport_error: Some("Permission denied (publickey)".to_string()),
+                        transport_error: Some(PushTransportError::Transport {
+                            op: "push",
+                            url: "<redacted>".to_string(),
+                            stderr: "Permission denied (publickey)".to_string(),
+                        }),
                     },
                 ],
                 failed: vec![],
@@ -11407,7 +11411,7 @@ mod tests {
         );
         assert_eq!(
             partial_failures[0].get("reason").and_then(|v| v.as_str()),
-            Some("Permission denied (publickey)")
+            Some("git push against <redacted> failed: Permission denied (publickey)")
         );
     }
 

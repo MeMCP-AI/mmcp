@@ -32,8 +32,8 @@ pub use client::{
 };
 pub use engine::{
     BoundRemote, FetchReport, FetchedGroup, GroupHandleResolver, GroupSyncFailure, PullReport,
-    PushReport, PushScope, PushedGroup, RemoteManifestFailure, RemotePushOutcome, RemoteTransport,
-    SyncEngine, SyncReport, run_bounded,
+    PushReport, PushScope, PushTransportError, PushedGroup, RemoteManifestFailure,
+    RemotePushOutcome, RemoteTransport, SyncEngine, SyncReport, run_bounded,
 };
 pub use error::{IndexContended, SyncError};
 pub use filter::{ScopeIndex, SyncFilter};

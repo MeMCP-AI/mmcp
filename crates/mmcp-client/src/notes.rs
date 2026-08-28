@@ -155,14 +155,16 @@ pub fn sync_push_partial_failure_notes(report: &PushReport) -> Vec<Note> {
     report
         .iter_partial_failures()
         .map(|(remote_name, p)| {
-            // `transport_error` carries the backend's own error text
-            // (git subprocess stderr, or the `Unsupported` reason)
-            // when the engine captured one; fall back to the generic
-            // wording only for the case where it did not.
+            // Every group here has content_transferred=false, and the
+            // sync engine's construction site always pairs that with
+            // a transport_error: an absent value is a broken
+            // invariant, not a normal outcome.
+            #[allow(clippy::expect_used)]
             let reason = p
                 .transport_error
-                .as_deref()
-                .unwrap_or("transport error or unsupported backend");
+                .as_ref()
+                .expect("content_transferred=false group must carry a transport_error")
+                .to_string();
             Note::warn(
                 "sync_partial_failure",
                 format!(
@@ -174,7 +176,7 @@ pub fn sync_push_partial_failure_notes(report: &PushReport) -> Vec<Note> {
                 "group": p.group_id.to_string(),
                 "stage": "push",
                 "remote": remote_name,
-                "transport_error": p.transport_error,
+                "transport_error": reason,
             }))
         })
         .collect()
@@ -390,7 +392,9 @@ mod tests {
         assert_eq!(n.level, NoteLevel::Info);
     }
 
-    fn push_report_with_one_partial_failure(transport_error: Option<&str>) -> PushReport {
+    fn push_report_with_one_partial_failure(
+        transport_error: Option<mmcp_sync::PushTransportError>,
+    ) -> PushReport {
         use mmcp_sync::{PushedGroup, RemotePushOutcome};
         PushReport {
             by_remote: vec![RemotePushOutcome {
@@ -398,7 +402,7 @@ mod tests {
                 pushed: vec![PushedGroup {
                     group_id: Uuid::nil(),
                     content_transferred: false,
-                    transport_error: transport_error.map(str::to_string),
+                    transport_error,
                 }],
                 failed: vec![],
             }],
@@ -407,9 +411,12 @@ mod tests {
 
     #[test]
     fn sync_push_partial_failure_notes_uses_the_real_transport_error_when_present() {
-        let report = push_report_with_one_partial_failure(Some(
-            "git push against <redacted> failed: Permission denied (publickey)",
-        ));
+        let report =
+            push_report_with_one_partial_failure(Some(mmcp_sync::PushTransportError::Transport {
+                op: "push",
+                url: "<redacted>".to_string(),
+                stderr: "Permission denied (publickey)".to_string(),
+            }));
         let notes = sync_push_partial_failure_notes(&report);
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].code, "sync_partial_failure");
@@ -429,16 +436,9 @@ mod tests {
     }
 
     #[test]
-    fn sync_push_partial_failure_notes_falls_back_to_generic_wording_when_absent() {
+    #[should_panic(expected = "content_transferred=false group must carry a transport_error")]
+    fn sync_push_partial_failure_notes_panics_when_transport_error_missing() {
         let report = push_report_with_one_partial_failure(None);
-        let notes = sync_push_partial_failure_notes(&report);
-        assert_eq!(notes.len(), 1);
-        assert!(
-            notes[0]
-                .message
-                .contains("transport error or unsupported backend"),
-            "note message must fall back to the generic wording, got: {}",
-            notes[0].message
-        );
+        let _ = sync_push_partial_failure_notes(&report);
     }
 }

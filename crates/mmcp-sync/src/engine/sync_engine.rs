@@ -13,8 +13,8 @@ use super::defaults::MAX_CONCURRENT_GROUP_TRANSFERS;
 use super::push_scope::PushScope;
 use super::remote::{BoundRemote, RemoteTransport};
 use super::reports::{
-    FetchReport, FetchedGroup, GroupSyncFailure, PullReport, PushReport, PushedGroup,
-    RemoteManifestFailure, RemotePushOutcome, SyncReport,
+    FetchReport, FetchedGroup, GroupSyncFailure, PullReport, PushReport, PushTransportError,
+    PushedGroup, RemoteManifestFailure, RemotePushOutcome, SyncReport,
 };
 use super::resolver::GroupHandleResolver;
 use super::scope::group_matches;
@@ -271,49 +271,48 @@ impl SyncEngine {
             mmcp_core::conventions::MAIN_BRANCH_REF,
         )];
         let (remote_url, creds) = self.remote_endpoint(remote, group_id);
-        let (content_transferred, transport_error) = match self
-            .backend
-            .push(&handle, &remote_url, &refs, &creds)
-            .await
-        {
-            Ok(_) => (true, None),
-            // `err.to_string()` renders `GitError::Unsupported`'s
-            // own `#[error(...)]` text; the note layer threads
-            // this through instead of a generic message.
-            Err(err @ mmcp_git::GitError::Unsupported(_)) => (false, Some(err.to_string())),
-            Err(mmcp_git::GitError::Transport { stderr, .. })
-                if stderr_indicates_non_fast_forward(&stderr) =>
-            {
-                // Git-symmetric signal: remote has commits we do not,
-                // `git push` refused to overwrite. Raised structured
-                // so the CLI and MCP surfaces can tell the operator
-                // to pull first.
-                return Err(SyncError::PushDiverged {
-                    group: group_id,
-                    stderr,
-                });
-            }
-            Err(err @ mmcp_git::GitError::Transport { .. }) => {
-                // A credential mismatch, a network blip, or a
-                // rejecting remote all land here indistinguishably.
-                // Reported as content_transferred: false rather than
-                // raised (see `SyncEngine::push`'s doc comment), so
-                // this line and `transport_error` below are the only
-                // signal a caller gets that bytes did not ship.
-                if let mmcp_git::GitError::Transport { op, url, stderr } = &err {
+        let (content_transferred, transport_error) =
+            match self.backend.push(&handle, &remote_url, &refs, &creds).await {
+                Ok(_) => (true, None),
+                // Backend declines the content-plane push outright; the
+                // group still counts as pushed with the transfer deferred.
+                Err(mmcp_git::GitError::Unsupported(reason)) => {
+                    (false, Some(PushTransportError::Unsupported { reason }))
+                }
+                Err(mmcp_git::GitError::Transport { stderr, .. })
+                    if stderr_indicates_non_fast_forward(&stderr) =>
+                {
+                    // Git-symmetric signal: remote has commits we do not,
+                    // `git push` refused to overwrite. Raised structured
+                    // so the CLI and MCP surfaces can tell the operator
+                    // to pull first.
+                    return Err(SyncError::PushDiverged {
+                        group: group_id,
+                        stderr,
+                    });
+                }
+                Err(mmcp_git::GitError::Transport { op, url, stderr }) => {
+                    // A credential mismatch, a network blip, or a
+                    // rejecting remote all land here indistinguishably.
+                    // Reported as content_transferred: false rather than
+                    // raised (see `SyncEngine::push`'s doc comment), so
+                    // this line and `transport_error` below are the only
+                    // signal a caller gets that bytes did not ship.
                     tracing::warn!(
                         group = %group_id,
                         remote = %remote.name,
-                        op = *op,
+                        op,
                         url = %url,
                         stderr = %stderr,
                         "push content-plane transport failed, reporting content_transferred=false"
                     );
+                    (
+                        false,
+                        Some(PushTransportError::Transport { op, url, stderr }),
+                    )
                 }
-                (false, Some(err.to_string()))
-            }
-            Err(other) => return Err(SyncError::Git(other)),
-        };
+                Err(other) => return Err(SyncError::Git(other)),
+            };
         Ok(Some(PushedGroup {
             group_id,
             content_transferred,

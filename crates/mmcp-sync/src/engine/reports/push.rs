@@ -1,6 +1,7 @@
 //! [`PushReport`], its per-remote [`RemotePushOutcome`], and its
 //! per-group item [`PushedGroup`].
 
+use thiserror::Error;
 use uuid::Uuid;
 
 use super::GroupSyncFailure;
@@ -79,6 +80,25 @@ pub struct RemotePushOutcome {
     pub failed: Vec<GroupSyncFailure>,
 }
 
+/// Why a [`PushedGroup`]'s content-plane transfer was skipped.
+/// Populated only when [`PushedGroup::content_transferred`] is
+/// `false`; mirrors the two backend conditions that can cause that
+/// (an unsupported operation, or a failed transport subprocess) as
+/// distinct variants rather than one flattened message.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum PushTransportError {
+    /// The backend declined the content-plane push outright.
+    #[error("operation not supported by this backend: {reason}")]
+    Unsupported { reason: &'static str },
+    /// The `git` subprocess driving the push exited non-zero.
+    #[error("git {op} against {url} failed: {stderr}")]
+    Transport {
+        op: &'static str,
+        url: String,
+        stderr: String,
+    },
+}
+
 /// One pushed group's before/after snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushedGroup {
@@ -88,12 +108,9 @@ pub struct PushedGroup {
     /// still appears in the report so operators can see what was
     /// attempted; retry on the next push picks it up.
     pub content_transferred: bool,
-    /// The backend's own error message when `content_transferred`
-    /// is `false` (the `GitError::Unsupported` or
-    /// `GitError::Transport` display text, the latter carrying the
-    /// git subprocess's real stderr). `None` when
-    /// `content_transferred` is `true`.
-    pub transport_error: Option<String>,
+    /// The reason the content-plane transfer was skipped. `None`
+    /// when `content_transferred` is `true`.
+    pub transport_error: Option<PushTransportError>,
 }
 
 #[cfg(test)]
@@ -117,10 +134,11 @@ mod tests {
                         PushedGroup {
                             group_id: Uuid::max(),
                             content_transferred: false,
-                            transport_error: Some(
-                                "git push against https://example.test/g failed: connection reset"
-                                    .to_string(),
-                            ),
+                            transport_error: Some(PushTransportError::Transport {
+                                op: "push",
+                                url: "https://example.test/g".to_string(),
+                                stderr: "connection reset".to_string(),
+                            }),
                         },
                     ],
                     failed: vec![GroupSyncFailure {

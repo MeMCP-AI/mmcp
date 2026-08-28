@@ -55,8 +55,8 @@ pub use concurrency::run_bounded;
 pub use push_scope::PushScope;
 pub use remote::{BoundRemote, RemoteTransport};
 pub use reports::{
-    FetchReport, FetchedGroup, GroupSyncFailure, PullReport, PushReport, PushedGroup,
-    RemoteManifestFailure, RemotePushOutcome, SyncReport,
+    FetchReport, FetchedGroup, GroupSyncFailure, PullReport, PushReport, PushTransportError,
+    PushedGroup, RemoteManifestFailure, RemotePushOutcome, SyncReport,
 };
 pub use resolver::GroupHandleResolver;
 pub use scope::NoScopeIndex;

@@ -17,8 +17,8 @@ use mmcp_core::id::{GroupId, UserId};
 use mmcp_core::manifest::GroupManifest;
 use mmcp_git::{GitBackend, NativeBackend, RepoHandle};
 use mmcp_sync::{
-    BoundRemote, GroupHandleResolver, ManifestResponse, PushScope, RemoteGroup, RemoteTransport,
-    SyncClient, SyncEngine,
+    BoundRemote, GroupHandleResolver, ManifestResponse, PushScope, PushTransportError, RemoteGroup,
+    RemoteTransport, SyncClient, SyncEngine,
 };
 use tempfile::TempDir;
 use tracing_subscriber::fmt::MakeWriter;
@@ -234,15 +234,16 @@ async fn push_reports_each_in_scope_group_with_transport_status() {
     assert_eq!(report.by_remote[0].pushed.len(), 1);
     assert_eq!(report.by_remote[0].pushed[0].group_id, group_uuid);
     assert!(!report.by_remote[0].pushed[0].content_transferred);
-    // `transport_error` carries the backend's own message (here the
-    // `Unsupported` reason) instead of leaving callers to infer why
-    // from `content_transferred: false` alone.
+    // `transport_error` carries the backend's own reason (the `git`
+    // subprocess's real stderr) instead of leaving callers to infer
+    // why from `content_transferred: false` alone.
     assert!(
-        report.by_remote[0].pushed[0]
-            .transport_error
-            .as_deref()
-            .is_some_and(|msg| !msg.is_empty()),
-        "content_transferred=false must carry a non-empty transport_error"
+        matches!(
+            &report.by_remote[0].pushed[0].transport_error,
+            Some(PushTransportError::Transport { stderr, .. }) if !stderr.is_empty()
+        ),
+        "content_transferred=false must carry a non-empty Transport transport_error, got: {:?}",
+        report.by_remote[0].pushed[0].transport_error
     );
 }
 
@@ -297,17 +298,16 @@ async fn push_transport_failure_logs_a_warning_instead_of_staying_silent() {
         captured.contains(&group_uuid.to_string()),
         "the log line must name the affected group"
     );
-    // The discarded stderr this test's log assertions already prove
-    // was captured must also reach the report itself, not just the
-    // log line: `notes.rs`'s `sync_partial_failure` populator reads
-    // `transport_error` to render a real message instead of a
-    // generic "transport error or unsupported backend" placeholder.
+    // The stderr this test's log assertions already prove was
+    // captured must also reach the report itself, not just the log
+    // line.
     assert!(
-        report.by_remote[0].pushed[0]
-            .transport_error
-            .as_deref()
-            .is_some_and(|msg| !msg.is_empty()),
-        "content_transferred=false must carry a non-empty transport_error"
+        matches!(
+            &report.by_remote[0].pushed[0].transport_error,
+            Some(PushTransportError::Transport { stderr, .. }) if !stderr.is_empty()
+        ),
+        "content_transferred=false must carry a non-empty Transport transport_error, got: {:?}",
+        report.by_remote[0].pushed[0].transport_error
     );
 }
 
