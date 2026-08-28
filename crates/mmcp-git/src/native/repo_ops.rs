@@ -272,16 +272,14 @@ fn extend_with_batch_mode(value: OsString) -> OsString {
 ///
 /// Bounded by [`defaults::LOCAL_GIT_OP_TIMEOUT`], the same bound
 /// `ensure_remote`'s local `git remote` housekeeping uses: purely
-/// local config resolution, no network I/O. Every outcome resolves to
-/// `None` on anything short of a genuine value, so
-/// [`suppress_interactive_prompts`] always falls through to its next
-/// tier rather than blocking or failing the git operation it exists
-/// to make headless, but the outcomes are not equally silent:
-/// `git config --get`'s own exit code `1` (the key is simply unset)
-/// is the normal case and logs nothing, while a spawn failure or a
-/// timeout is a genuine local malfunction and is logged at `warn`
-/// level, so a config read that silently eats the full timeout budget
-/// and falls back to the bare default stays visible to the operator.
+/// local config resolution, no network I/O.
+///
+/// Every outcome resolves to `None` short of a genuine value.
+/// [`suppress_interactive_prompts`] always falls through to its next tier.
+///
+/// `git config --get`'s exit code `1` means the key is unset and logs nothing.
+/// A spawn failure or a timeout is a genuine local malfunction, logged at `warn`.
+/// So a silently timed-out config read still surfaces to the operator.
 async fn read_core_ssh_command(repo_path: Option<&Path>) -> Option<OsString> {
     let cmd = build_core_ssh_command_query(repo_path);
     let output = match run_git_subprocess(
