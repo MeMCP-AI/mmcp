@@ -236,6 +236,7 @@ struct McpServer {
 
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct ListMemoriesArgs {
     /// Group UUID to list memories from.
     pub group: String,
@@ -274,6 +275,7 @@ struct ListMemoriesArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct ReadMemoryArgs {
     /// Group UUID that owns the memory.
     pub group: String,
@@ -307,6 +309,7 @@ struct ReadMemoryArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct ListVersionsArgs {
     /// Group UUID that owns the memory.
     pub group: String,
@@ -316,6 +319,7 @@ struct ListVersionsArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct GroupInfoArgs {
     /// Group UUID to inspect.
     pub group: String,
@@ -373,6 +377,7 @@ impl MemoryRefArg {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct WriteMemoryArgs {
     /// Target group UUID or slug.
     pub group: String,
@@ -454,6 +459,7 @@ impl ToolImportSourceFormat {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct ImportMemoryArgs {
     /// Target group UUID or slug.
     pub group: String,
@@ -515,6 +521,7 @@ struct ImportMemoryArgs {
 /// with a structured `no_changes_supplied` error, before any read, write, or commit is attempted.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct EditMemoryArgs {
     /// Target group UUID.
     pub group: String,
@@ -570,6 +577,7 @@ struct EditMemoryArgs {
 /// Argument shape for `delete_memory`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct DeleteMemoryArgs {
     /// Target group UUID.
     pub group: String,
@@ -593,6 +601,7 @@ struct DeleteMemoryArgs {
 /// Args for `read_memory_body_sections`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct ReadMemoryBodySectionsArgs {
     /// Target group UUID.
     pub group: String,
@@ -772,6 +781,7 @@ impl From<ToolMemoryEditOp> for mmcp_store::MemoryEditOp {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct SearchMemoriesArgs {
     /// Single substring matched against memory slug and frontmatter
     /// `name`, case-insensitive. Mutually exclusive with `queries`;
@@ -807,6 +817,7 @@ struct SearchMemoriesArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct CheckHealthArgs {
     /// Group UUID to check. If omitted, checks all groups.
     #[serde(default)]
@@ -815,6 +826,7 @@ struct CheckHealthArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct DebugToggleArgs {
     /// Set to true to enable debug tools, false to disable.
     pub enabled: bool,
@@ -822,6 +834,7 @@ struct DebugToggleArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct DebugReadFileArgs {
     /// Group UUID.
     pub group: String,
@@ -834,6 +847,7 @@ struct DebugReadFileArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct DebugListTreeArgs {
     /// Group UUID.
     pub group: String,
@@ -847,6 +861,7 @@ struct DebugListTreeArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct DebugGitLogArgs {
     /// Group UUID.
     pub group: String,
@@ -860,6 +875,7 @@ struct DebugGitLogArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct DebugWriteFileArgs {
     /// Group UUID.
     pub group: String,
@@ -874,6 +890,7 @@ struct DebugWriteFileArgs {
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct BootstrapContextArgs {
     /// Target project group (UUID or slug). When set, resolves
     /// against the local mirror without touching the filesystem;
@@ -929,6 +946,7 @@ enum InitClaudeConflict {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct InitClaudeArgs {
     /// Which action to apply.
     pub action: InitClaudeAction,
@@ -957,6 +975,7 @@ struct InitClaudeArgs {
 /// without a schema break.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct StatusArgs {
     /// Target project group (UUID or slug). When omitted, the
     /// server falls back to walking `cwd` for a `.mmcp.toml`.
@@ -974,10 +993,12 @@ struct StatusArgs {
 /// the wire contract since the field would default-serde in.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct ListGroupsArgs {}
 
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct DescribeToolsArgs {}
 
 /// Argument shape for `version`. Takes no parameters; kept as a
@@ -986,6 +1007,7 @@ struct DescribeToolsArgs {}
 /// `DescribeToolsArgs` precedent above.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct VersionArgs {}
 
 // ── Elicitation payload shapes ────────────────────────────────────
@@ -1046,6 +1068,7 @@ elicit_safe!(ProtectedWriteConfirm);
 /// a whole-mirror write.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct SyncToolArgs {
     /// Target a single group by UUID or slug. Mutually exclusive
     /// with `scope` and `all`.
@@ -1086,6 +1109,7 @@ struct SyncToolArgs {
 /// graceful degradation.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct InitProjectArgs {
     /// Group slug (kebab-case, 1-128 chars, no leading/trailing or
     /// consecutive hyphens). Same contract as memory slugs. Absent
@@ -1157,6 +1181,7 @@ fn group_scope_wire(scope: mmcp_core::manifest::GroupScope) -> &'static str {
 /// store.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct CreateGroupArgs {
     /// Group slug (kebab-case, 1-128 chars, no leading/trailing or
     /// consecutive hyphens). Must be unique across the local mirror;
@@ -1195,6 +1220,7 @@ struct CreateGroupArgs {
 /// Args for `add_feature`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct AddFeatureArgs {
     /// Target project group (UUID or slug). When omitted, the
     /// server falls back to walking `cwd` for a `.mmcp.toml` and
@@ -1279,6 +1305,7 @@ struct AddFeatureArgs {
 /// Args for `read_feature`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct ReadFeatureArgs {
     /// Target project group (UUID or slug). When omitted, the
     /// server falls back to walking `cwd` for a `.mmcp.toml`.
@@ -1297,6 +1324,7 @@ struct ReadFeatureArgs {
 /// Args for `update_feature`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct UpdateFeatureArgs {
     /// Target project group (UUID or slug). When omitted, the
     /// server falls back to walking `cwd` for a `.mmcp.toml`.
@@ -1371,6 +1399,7 @@ struct UpdateFeatureArgs {
 /// Args for `delete_feature`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct DeleteFeatureArgs {
     /// Target project group (UUID or slug). When omitted, the
     /// server falls back to walking `cwd` for a `.mmcp.toml`.
@@ -1394,6 +1423,7 @@ struct DeleteFeatureArgs {
 /// extension, adding an optional `target_group` later.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct MoveMemoryArgs {
     /// Target group UUID.
     pub group: String,
@@ -1416,6 +1446,7 @@ struct MoveMemoryArgs {
 /// Args for `rename_feature`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct RenameFeatureArgs {
     /// Target project group (UUID or slug). When omitted, the
     /// server falls back to walking `cwd` for a `.mmcp.toml`.
@@ -1438,6 +1469,7 @@ struct RenameFeatureArgs {
 /// Args for `list_features`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct ListFeaturesArgs {
     /// Target project group (UUID or slug). When omitted, the
     /// server falls back to walking `cwd` for a `.mmcp.toml`.
@@ -1471,6 +1503,7 @@ struct ListFeaturesArgs {
 /// Args for `add_issue`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct AddIssueArgs {
     /// Target project group (UUID or slug). When omitted, the
     /// server falls back to walking `cwd` for a `.mmcp.toml` and
@@ -1542,6 +1575,7 @@ struct AddIssueArgs {
 /// Args for `read_issue`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct ReadIssueArgs {
     /// Target project group (UUID or slug). When omitted, the
     /// server falls back to walking `cwd` for a `.mmcp.toml`.
@@ -1560,6 +1594,7 @@ struct ReadIssueArgs {
 /// Args for `update_issue`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct UpdateIssueArgs {
     /// Target project group (UUID or slug). When omitted, the
     /// server falls back to walking `cwd` for a `.mmcp.toml`.
@@ -1624,6 +1659,7 @@ struct UpdateIssueArgs {
 /// Args for `delete_issue`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct DeleteIssueArgs {
     /// Target project group (UUID or slug). When omitted, the
     /// server falls back to walking `cwd` for a `.mmcp.toml`.
@@ -1641,6 +1677,7 @@ struct DeleteIssueArgs {
 /// Args for `rename_issue`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct RenameIssueArgs {
     /// Target project group (UUID or slug). When omitted, the
     /// server falls back to walking `cwd` for a `.mmcp.toml`.
@@ -1663,6 +1700,7 @@ struct RenameIssueArgs {
 /// Args for `list_issues`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct ListIssuesArgs {
     /// Target project group (UUID or slug). When omitted, the
     /// server falls back to walking `cwd` for a `.mmcp.toml`.
@@ -1698,6 +1736,7 @@ struct ListIssuesArgs {
 /// Args for `add_milestone`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct AddMilestoneArgs {
     /// Target project group (UUID or slug). When omitted, the
     /// server falls back to walking `cwd` for a `.mmcp.toml`.
@@ -1735,6 +1774,7 @@ struct AddMilestoneArgs {
 /// Args for `read_milestone`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct ReadMilestoneArgs {
     /// Target project group (UUID or slug). When omitted, the
     /// server falls back to walking `cwd` for a `.mmcp.toml`.
@@ -1753,6 +1793,7 @@ struct ReadMilestoneArgs {
 /// Args for `update_milestone`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct UpdateMilestoneArgs {
     /// Target project group (UUID or slug). When omitted, the
     /// server falls back to walking `cwd` for a `.mmcp.toml`.
@@ -1787,6 +1828,7 @@ struct UpdateMilestoneArgs {
 /// Args for `list_milestones`.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct ListMilestonesArgs {
     /// Target project group (UUID or slug). When omitted, the
     /// server falls back to walking `cwd` for a `.mmcp.toml`.
@@ -1972,6 +2014,7 @@ fn parse_filter_kinds(values: &[String]) -> Result<Vec<mmcp_core::memory::Memory
 /// Arguments for the `export_archive` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct ExportArchiveArgs {
     /// Groups to export (UUID or slug). Repeatable. Mutually
     /// exclusive with `all`.
@@ -1994,6 +2037,7 @@ struct ExportArchiveArgs {
 /// Arguments for the `import_archive` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 struct ImportArchiveArgs {
     /// Path to the archive file on the server's filesystem.
     pub input: String,
@@ -13058,6 +13102,38 @@ mod tests {
         assert!(
             result.is_ok(),
             "nested ops must deserialize, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn add_issue_args_rejects_unknown_field() {
+        // A caller that misnames the project selector (`group`
+        // instead of `project`) must fail to deserialize, never
+        // silently drop the stray field and fall back to the
+        // server's own cwd project.
+        let raw = json!({
+            "group": "019d955d-4cce-77f2-a0b3-0b79ed394612",
+            "title": "misnamed selector",
+        });
+        let result: Result<AddIssueArgs, _> = serde_json::from_value(raw);
+        assert!(
+            result.is_err(),
+            "unrecognized top-level field must be rejected, got: {result:?}",
+        );
+    }
+
+    #[test]
+    fn add_issue_args_accepts_project_field() {
+        // Control case: the same call, spelled with the real field
+        // name, must still deserialize.
+        let raw = json!({
+            "project": "019d955d-4cce-77f2-a0b3-0b79ed394612",
+            "title": "correctly named selector",
+        });
+        let result: Result<AddIssueArgs, _> = serde_json::from_value(raw);
+        assert!(
+            result.is_ok(),
+            "known fields must deserialize, got: {result:?}"
         );
     }
 

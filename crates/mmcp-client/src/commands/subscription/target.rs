@@ -191,6 +191,7 @@ pub fn resolve_project_root(
 /// MCP wire form shared by `subscribe` and `unsubscribe`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 pub struct SubscribeMcpArgs {
     /// Which subscription axis to mutate.
     pub kind: SubscriptionKind,
