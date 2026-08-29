@@ -157,7 +157,7 @@ async fn run_git_log(args: GitLogArgs) -> Result<()> {
         .as_deref()
         .unwrap_or(mmcp_core::manifest::MANIFEST_FILENAME);
     let history = backend
-        .walk_history(&entry.handle, path)
+        .walk_history(&entry.handle, path, None)
         .await
         .map_err(anyhow::Error::from)?;
     if history.is_empty() {

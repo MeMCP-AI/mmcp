@@ -887,6 +887,9 @@ struct DebugListTreeArgs {
     pub rev: Option<String>,
 }
 
+/// Default `DebugGitLogArgs::limit` when the caller gives none.
+const DEFAULT_DEBUG_GIT_LOG_LIMIT: u32 = 20;
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
@@ -2508,7 +2511,7 @@ impl McpServer {
         let history = self
             .state
             .backend
-            .walk_history(&entry.handle, &resolved.path)
+            .walk_history(&entry.handle, &resolved.path, None)
             .await
             .map_err(git_error)?;
         let compact = args.compact.unwrap_or(false);
@@ -3876,16 +3879,15 @@ impl McpServer {
             .path
             .as_deref()
             .unwrap_or(mmcp_core::manifest::MANIFEST_FILENAME);
+        let limit = args.limit.unwrap_or(DEFAULT_DEBUG_GIT_LOG_LIMIT) as usize;
         let history = self
             .state
             .backend
-            .walk_history(&entry.handle, path)
+            .walk_history(&entry.handle, path, Some(limit))
             .await
             .map_err(git_error)?;
-        let limit = args.limit.unwrap_or(20) as usize;
         let commits: Vec<_> = history
             .into_iter()
-            .take(limit)
             .map(|c| {
                 json!({
                     "id": c.id,

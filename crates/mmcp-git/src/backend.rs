@@ -121,10 +121,15 @@ pub trait GitBackend: Send + Sync {
     ) -> Result<FastForwardOutcome, GitError>;
 
     /// Walk the commit history that touches `path`, most recent first.
+    ///
+    /// `limit` caps the number of returned commits: the walk stops
+    /// once that many are found instead of decoding the rest of the
+    /// ancestry. `None` walks every commit that touches `path`.
     async fn walk_history(
         &self,
         repo: &RepoHandle,
         path: &str,
+        limit: Option<usize>,
     ) -> Result<Vec<CommitMeta>, GitError>;
 
     /// List every blob directly under `path_prefix` at the given revision.

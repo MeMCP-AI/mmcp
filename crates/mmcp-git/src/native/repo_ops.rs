@@ -740,13 +740,24 @@ async fn ensure_remote(repo_path: &Path, remote_url: &str) -> Result<(), GitErro
 pub(crate) static RESOLVE_REV_CALLS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-/// Serializes every test that reads [`RESOLVE_REV_CALLS`]. This
-/// counter is process-wide, and Rust's default test harness runs
-/// `#[test]` functions on parallel threads, so any two
-/// counter-consuming tests running at the same time would race
-/// each other's increments. Acquire this guard as the first
-/// statement of a test that stores, loads, or asserts on the
-/// counter.
+/// Test-only count of full commit decodes performed by
+/// [`walk_history`]'s main loop (the `current` commit at each step,
+/// not a parent-only [`gix::Commit::tree_id`] lookup), so a unit
+/// test can prove a `limit` genuinely stops the walk instead of
+/// decoding the whole ancestry and truncating the result afterward.
+/// Compiled only under `#[cfg(test)]`: no production build ever pays
+/// this atomic increment.
+#[cfg(test)]
+pub(crate) static WALK_HISTORY_COMMITS_DECODED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Serializes every test that reads [`RESOLVE_REV_CALLS`] or
+/// [`WALK_HISTORY_COMMITS_DECODED`]. Both counters are process-wide,
+/// and Rust's default test harness runs `#[test]` functions on
+/// parallel threads, so any two counter-consuming tests running at
+/// the same time would race each other's increments. Acquire this
+/// guard as the first statement of a test that stores, loads, or
+/// asserts on either counter.
 #[cfg(test)]
 pub(crate) static COUNTER_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -1397,7 +1408,25 @@ pub fn tag(repo: &gix::Repository, name: &str, target_hex: &str) -> Result<(), G
 /// Reads start from whatever `HEAD` points at, so the walker works
 /// against repos whose default branch is not `main` (cloned from
 /// `master`-based forges, custom-named defaults, etc.).
-pub fn walk_history(repo: &gix::Repository, path: &str) -> Result<Vec<CommitMeta>, GitError> {
+///
+/// `limit` caps the number of returned entries: the walk stops as
+/// soon as that many modifying commits are found, instead of always
+/// decoding the whole ancestry. `None` walks every commit, matching
+/// `git log` with no `-n` given.
+///
+/// A commit's blob oid at `path` is cached by commit id for the
+/// duration of the walk, so a commit visited both as the current
+/// commit and as a later child's parent is only ever descended into
+/// once. A parent is looked up by [`gix::Commit::tree_id`] rather
+/// than the full owned-`Commit` decode `into_owned()` performs,
+/// since only its tree is needed to compare blobs; the current
+/// commit still needs the full decode for its parent list and, if
+/// it passes the filter, [`commit_meta`]'s message and author.
+pub fn walk_history(
+    repo: &gix::Repository,
+    path: &str,
+    limit: Option<usize>,
+) -> Result<Vec<CommitMeta>, GitError> {
     let head = match resolve_rev(repo, &Rev::Head) {
         Ok(id) => id,
         Err(GitError::RevNotFound(_)) => return Ok(Vec::new()),
@@ -1405,8 +1434,13 @@ pub fn walk_history(repo: &gix::Repository, path: &str) -> Result<Vec<CommitMeta
     };
 
     let mut out = Vec::new();
+    let mut blob_cache: std::collections::HashMap<gix::ObjectId, Option<gix::ObjectId>> =
+        std::collections::HashMap::new();
     let walk = repo.rev_walk([head]).all().map_err(resolve_rev_err)?;
     for info in walk {
+        if limit.is_some_and(|limit| out.len() >= limit) {
+            break;
+        }
         let info = info.map_err(resolve_rev_err)?;
         let commit_obj = repo.find_object(info.id).map_err(resolve_rev_err)?;
         let decoded_commit: gix::objs::Commit = commit_obj
@@ -1415,9 +1449,19 @@ pub fn walk_history(repo: &gix::Repository, path: &str) -> Result<Vec<CommitMeta
             .map_err(resolve_rev_err)?
             .into_owned()
             .map_err(resolve_rev_err)?;
+        #[cfg(test)]
+        WALK_HISTORY_COMMITS_DECODED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         // No blob at `path` → this commit can't be a modification of it.
-        let Some(current_blob) = find_blob_in_tree(repo, decoded_commit.tree, path)? else {
+        let current_blob = match blob_cache.get(&info.id) {
+            Some(cached) => *cached,
+            None => {
+                let blob = find_blob_in_tree(repo, decoded_commit.tree, path)?;
+                blob_cache.insert(info.id, blob);
+                blob
+            }
+        };
+        let Some(current_blob) = current_blob else {
             continue;
         };
 
@@ -1426,16 +1470,21 @@ pub fn walk_history(repo: &gix::Repository, path: &str) -> Result<Vec<CommitMeta
         // commit is not a modification of it.
         let mut matches_parent = false;
         for parent_id in &decoded_commit.parents {
-            let parent_obj = repo.find_object(*parent_id).map_err(resolve_rev_err)?;
-            let parent_commit: gix::objs::Commit = parent_obj
-                .into_commit()
-                .decode()
-                .map_err(resolve_rev_err)?
-                .into_owned()
-                .map_err(resolve_rev_err)?;
-            if let Some(parent_blob) = find_blob_in_tree(repo, parent_commit.tree, path)?
-                && parent_blob == current_blob
-            {
+            let parent_blob = match blob_cache.get(parent_id) {
+                Some(cached) => *cached,
+                None => {
+                    let parent_obj = repo.find_object(*parent_id).map_err(resolve_rev_err)?;
+                    let parent_tree_id = parent_obj
+                        .into_commit()
+                        .tree_id()
+                        .map_err(resolve_rev_err)?
+                        .detach();
+                    let blob = find_blob_in_tree(repo, parent_tree_id, path)?;
+                    blob_cache.insert(*parent_id, blob);
+                    blob
+                }
+            };
+            if parent_blob == Some(current_blob) {
                 matches_parent = true;
                 break;
             }
@@ -2192,6 +2241,8 @@ mod recursive_listing_tests {
 #[cfg(test)]
 mod tree_lookup_and_history_tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
+    use std::sync::atomic::Ordering;
+
     use super::*;
     use tempfile::TempDir;
 
@@ -2324,5 +2375,147 @@ mod tree_lookup_and_history_tests {
         let nested =
             read_file(&repo, "kind/thing.md", &rev).expect("descend into the directory entry");
         assert_eq!(nested.as_ref(), b"tree");
+    }
+
+    /// Falsification, two scenarios sharing one test function under
+    /// [`COUNTER_TEST_GUARD`] so neither races a concurrently-running
+    /// test thread that also calls [`walk_history`] or `resolve_rev`
+    /// and touches the process-wide [`WALK_HISTORY_COMMITS_DECODED`]
+    /// or [`RESOLVE_REV_CALLS`] counters:
+    ///
+    /// 1. `limit` must genuinely stop the ancestry walk, not decode
+    ///    every commit and truncate the result afterward. Five
+    ///    commits each modify the same path; asking for the 2 most
+    ///    recent must decode at most 2 commits and must return the
+    ///    same entries, in the same order, as the head of the
+    ///    unlimited walk.
+    /// 2. The parent-tree comparison driving the filtering (now via
+    ///    `tree_id()` for parents instead of a full owned decode)
+    ///    must still identify exactly the commits that actually
+    ///    changed the blob at a path, across a real add / unrelated
+    ///    carry-forward / modify / modify-again / delete sequence.
+    #[test]
+    fn walk_history_limit_and_parent_tree_comparison() {
+        let _guard = COUNTER_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = TempDir::new().expect("tempdir");
+        let repo_path = tmp.path().join("scratch.git");
+        gix::init_bare(&repo_path).expect("init bare scratch repo");
+        let repo = open_thread_local(&repo_path);
+        const PATH: &str = "memories/a.md";
+        const REVISION_COUNT: u8 = 5;
+        for revision in 0..REVISION_COUNT {
+            write_commit(
+                &repo,
+                CommitSpec::mmcp_commit(
+                    format!("revision {revision}"),
+                    vec![(PATH.to_string(), Some(vec![revision]))],
+                    "Test Author",
+                    "test@example.com",
+                ),
+            )
+            .expect("seed commit");
+        }
+
+        const LIMIT: usize = 2;
+        WALK_HISTORY_COMMITS_DECODED.store(0, Ordering::SeqCst);
+        let repo = open_thread_local(&repo_path);
+        let limited = walk_history(&repo, PATH, Some(LIMIT)).expect("walk_history with limit");
+        assert_eq!(
+            limited.len(),
+            LIMIT,
+            "must stop once LIMIT entries are found"
+        );
+        assert!(
+            WALK_HISTORY_COMMITS_DECODED.load(Ordering::SeqCst) <= LIMIT,
+            "must not fully decode a commit beyond the requested limit"
+        );
+
+        let repo = open_thread_local(&repo_path);
+        let unlimited = walk_history(&repo, PATH, None).expect("walk_history with no limit");
+        assert_eq!(
+            unlimited.len(),
+            REVISION_COUNT as usize,
+            "the existing no-limit behavior must still return every modifying commit"
+        );
+        assert_eq!(
+            limited,
+            unlimited[..LIMIT],
+            "a limited walk must return the same entries, in the same order, \
+             as the head of the unlimited walk"
+        );
+
+        // Second scenario: a real add / carry-forward / modify /
+        // modify-again / delete sequence, in its own scratch repo.
+        let tmp2 = TempDir::new().expect("tempdir");
+        let repo2_path = tmp2.path().join("scratch2.git");
+        gix::init_bare(&repo2_path).expect("init bare scratch repo");
+        let repo = open_thread_local(&repo2_path);
+
+        let add = write_commit(
+            &repo,
+            CommitSpec::mmcp_commit(
+                "add",
+                vec![(PATH.to_string(), Some(b"v1".to_vec()))],
+                "Test Author",
+                "test@example.com",
+            ),
+        )
+        .expect("add commit");
+        // Carried forward unchanged: touches an unrelated file only,
+        // must not appear in `path`'s history.
+        write_commit(
+            &repo,
+            CommitSpec::mmcp_commit(
+                "unrelated",
+                vec![("memories/other.md".to_string(), Some(b"x".to_vec()))],
+                "Test Author",
+                "test@example.com",
+            ),
+        )
+        .expect("unrelated commit");
+        let modify = write_commit(
+            &repo,
+            CommitSpec::mmcp_commit(
+                "modify",
+                vec![(PATH.to_string(), Some(b"v2".to_vec()))],
+                "Test Author",
+                "test@example.com",
+            ),
+        )
+        .expect("modify commit");
+        let modify_again = write_commit(
+            &repo,
+            CommitSpec::mmcp_commit(
+                "modify again",
+                vec![(PATH.to_string(), Some(b"v3".to_vec()))],
+                "Test Author",
+                "test@example.com",
+            ),
+        )
+        .expect("modify again commit");
+        // Deletes the path: no blob to report, so `walk_history`'s
+        // existing early-`continue` on a missing blob excludes this
+        // commit regardless of what its parent held.
+        write_commit(
+            &repo,
+            CommitSpec::mmcp_commit(
+                "delete",
+                vec![(PATH.to_string(), None)],
+                "Test Author",
+                "test@example.com",
+            ),
+        )
+        .expect("delete commit");
+
+        let repo = open_thread_local(&repo2_path);
+        let history = walk_history(&repo, PATH, None).expect("walk_history");
+        let ids: Vec<&str> = history.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![modify_again.as_str(), modify.as_str(), add.as_str()],
+            "history must list exactly the commits that changed the blob, \
+             most recent first, skipping the unrelated carry-forward commit \
+             and the deleting commit"
+        );
     }
 }

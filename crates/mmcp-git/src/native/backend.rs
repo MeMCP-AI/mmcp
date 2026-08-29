@@ -426,13 +426,14 @@ impl GitBackend for NativeBackend {
         &self,
         repo: &RepoHandle,
         path: &str,
+        limit: Option<usize>,
     ) -> Result<Vec<CommitMeta>, GitError> {
         let repo_path = Self::handle_path(repo).to_path_buf();
         let path = path.to_string();
         let backend = self.clone();
         tokio::task::spawn_blocking(move || {
             let handle = backend.open_repo(&repo_path)?;
-            repo_ops::walk_history(&Self::thread_local_with_object_cache(&handle), &path)
+            repo_ops::walk_history(&Self::thread_local_with_object_cache(&handle), &path, limit)
         })
         .await?
     }

@@ -555,7 +555,7 @@ async fn run_versions(args: VersionsArgs) -> Result<()> {
         .await
         .map_err(anyhow::Error::from)?;
     let history = backend
-        .walk_history(&entry.handle, &resolved.path)
+        .walk_history(&entry.handle, &resolved.path, None)
         .await
         .map_err(anyhow::Error::from)?;
     if history.is_empty() {

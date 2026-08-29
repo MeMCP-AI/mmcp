@@ -261,7 +261,7 @@ async fn push_and_fetch_round_trip_through_file_url() {
 
     // Spot-check the commit id matches what we pushed.
     let history = backend_dst
-        .walk_history(&handle_dst, "memories/a.md")
+        .walk_history(&handle_dst, "memories/a.md", None)
         .await
         .expect("walk history");
     assert!(
