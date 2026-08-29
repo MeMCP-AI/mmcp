@@ -18,14 +18,16 @@
 //! flag: they stay read-only and unaffected by push scoping.
 
 use anyhow::{Context, Result, bail};
+use mmcp_core::id::GroupId;
 use mmcp_core::manifest::GroupScope;
 use mmcp_store::config::{find_project_root, load};
 use mmcp_store::home::MmcpHome;
 use mmcp_store::memory::resolve_group;
 use mmcp_store::sync::build_engine;
-use mmcp_store::{EffectiveRemotes, resolve_effective_remotes};
+use mmcp_store::{EffectiveRemotes, GroupIndex, resolve_effective_remotes};
 use mmcp_sync::{PushScope, SyncError, SyncFilter};
 
+use crate::commands::sync_table::{SyncRowAction, SyncTableRow, render_sync_table};
 use crate::notes::{
     render_notes_tail, sync_group_failure_notes, sync_manifest_failure_notes,
     sync_push_partial_failure_notes,
@@ -121,7 +123,7 @@ impl RemoteScopeArgs {
 /// This matches the selector's own documented default.
 pub async fn resolve_sync_filter(
     selector: &SyncSelector,
-    groups: &mmcp_store::GroupIndex,
+    groups: &GroupIndex,
 ) -> Result<SyncFilter> {
     if selector.all {
         return Ok(SyncFilter::All);
@@ -185,14 +187,15 @@ pub async fn run_fetch(selector: SyncSelector) -> Result<()> {
         "fetch completed"
     );
     println!(
-        "fetch from {} completed: {} groups tracked, {} new groups advertised, {} groups \
-         failed, {} remote manifests unreachable",
+        "fetch from {}: {} groups tracked, {} failed",
         label,
         report.groups.len(),
-        report.new_groups.len(),
-        report.failed.len(),
-        report.manifest_failures.len()
+        report.failed.len() + report.manifest_failures.len()
     );
+    let rows = fetch_table_rows(&report, &resolver.index).await;
+    if let Some(table) = render_sync_table(&rows) {
+        println!("{table}");
+    }
     let mut notes = sync_group_failure_notes(&report.failed, "fetch", &label);
     notes.extend(sync_manifest_failure_notes(
         &report.manifest_failures,
@@ -273,14 +276,15 @@ pub async fn run_pull(selector: SyncSelector) -> Result<()> {
         "pull completed"
     );
     println!(
-        "pull from {} completed: {} groups updated, {} new groups, {} groups failed, {} remote \
-         manifests unreachable",
+        "pull from {}: {} groups updated, {} failed",
         label,
         report.updated.len(),
-        report.new_groups.len(),
-        report.failed.len(),
-        report.manifest_failures.len()
+        report.failed.len() + report.manifest_failures.len()
     );
+    let rows = pull_table_rows(&report, &resolver.index, &label).await;
+    if let Some(table) = render_sync_table(&rows) {
+        println!("{table}");
+    }
     let mut notes = sync_group_failure_notes(&report.failed, "pull", &label);
     notes.extend(sync_manifest_failure_notes(
         &report.manifest_failures,
@@ -317,11 +321,15 @@ pub async fn run_push(selector: SyncSelector, remote_scope: RemoteScopeArgs) -> 
         "push completed"
     );
     println!(
-        "push to {} completed: {} groups pushed, {} groups failed",
+        "push to {}: {} groups pushed, {} failed",
         label,
         report.total_pushed(),
         report.total_failed()
     );
+    let rows = push_table_rows(&report, &resolver.index).await;
+    if let Some(table) = render_sync_table(&rows) {
+        println!("{table}");
+    }
     let mut notes = sync_push_partial_failure_notes(&report);
     for (remote_name, failures) in report
         .by_remote
@@ -382,15 +390,17 @@ pub async fn run_sync(selector: SyncSelector, remote_scope: RemoteScopeArgs) -> 
         "sync completed"
     );
     println!(
-        "sync against {} completed: pulled {} groups ({} new), pushed {} groups, {} groups \
-         failed, {} remote manifests unreachable",
+        "sync against {}: {} pulled, {} pushed, {} failed",
         label,
         report.pulled.updated.len(),
-        report.pulled.new_groups.len(),
         report.pushed.total_pushed(),
-        total_failed,
-        report.pulled.manifest_failures.len()
+        total_failed
     );
+    let mut rows = pull_table_rows(&report.pulled, &resolver.index, &label).await;
+    rows.extend(push_table_rows(&report.pushed, &resolver.index).await);
+    if let Some(table) = render_sync_table(&rows) {
+        println!("{table}");
+    }
     let mut notes = sync_push_partial_failure_notes(&report.pushed);
     notes.extend(sync_group_failure_notes(
         &report.pulled.failed,
@@ -424,13 +434,115 @@ fn to_anyhow(err: SyncError) -> anyhow::Error {
     anyhow::Error::from(err)
 }
 
+/// Table row group-column label.
+/// The group's own indexed manifest slug wins; `advertised` is next; the raw UUID is the final fallback.
+async fn group_label(index: &GroupIndex, group_id: uuid::Uuid, advertised: Option<&str>) -> String {
+    if let Some(entry) = index.get(&GroupId::from_uuid(group_id)).await {
+        return entry.manifest.slug;
+    }
+    advertised
+        .map(str::to_string)
+        .unwrap_or_else(|| group_id.to_string())
+}
+
+/// Build `mmcp fetch`'s per-group / per-remote outcome rows.
+async fn fetch_table_rows(
+    report: &mmcp_sync::FetchReport,
+    index: &GroupIndex,
+) -> Vec<SyncTableRow> {
+    let mut rows = Vec::new();
+    for g in &report.groups {
+        let label = group_label(index, g.group_id, g.slug.as_deref()).await;
+        let action = if g.ref_updated {
+            SyncRowAction::Updated
+        } else {
+            SyncRowAction::Skipped
+        };
+        rows.push(SyncTableRow::new(label, action).with_remote(g.remote_name.clone()));
+    }
+    for g in &report.new_groups {
+        rows.push(SyncTableRow::new(g.slug.clone(), SyncRowAction::New));
+    }
+    for f in &report.failed {
+        let label = group_label(index, *f.group_id.as_uuid(), None).await;
+        rows.push(SyncTableRow::new(label, SyncRowAction::Failed).with_detail(f.error.to_string()));
+    }
+    for m in &report.manifest_failures {
+        rows.push(
+            SyncTableRow::new("-", SyncRowAction::Unreachable)
+                .with_remote(m.remote_name.clone())
+                .with_detail(m.error.to_string()),
+        );
+    }
+    rows
+}
+
+/// Build `mmcp pull`'s per-group outcome rows.
+/// Every row belongs to the same implicit remote (`remote_label`).
+/// See [`mmcp_sync::PullReport`]'s own doc comment for why the report carries no per-row remote.
+async fn pull_table_rows(
+    report: &mmcp_sync::PullReport,
+    index: &GroupIndex,
+    remote_label: &str,
+) -> Vec<SyncTableRow> {
+    let mut rows = Vec::new();
+    for g in &report.updated {
+        let label = group_label(index, g.group_id, Some(&g.slug)).await;
+        rows.push(SyncTableRow::new(label, SyncRowAction::Updated).with_remote(remote_label));
+    }
+    for g in &report.new_groups {
+        rows.push(SyncTableRow::new(g.slug.clone(), SyncRowAction::New).with_remote(remote_label));
+    }
+    for f in &report.failed {
+        let label = group_label(index, *f.group_id.as_uuid(), None).await;
+        rows.push(SyncTableRow::new(label, SyncRowAction::Failed).with_detail(f.error.to_string()));
+    }
+    for m in &report.manifest_failures {
+        rows.push(
+            SyncTableRow::new("-", SyncRowAction::Unreachable)
+                .with_remote(m.remote_name.clone())
+                .with_detail(m.error.to_string()),
+        );
+    }
+    rows
+}
+
+/// Build `mmcp push`'s per-group, per-remote outcome rows.
+async fn push_table_rows(report: &mmcp_sync::PushReport, index: &GroupIndex) -> Vec<SyncTableRow> {
+    let mut rows = Vec::new();
+    for outcome in &report.by_remote {
+        for g in &outcome.pushed {
+            let label = group_label(index, g.group_id, None).await;
+            let action = if g.content_transferred {
+                SyncRowAction::Pushed
+            } else {
+                SyncRowAction::Skipped
+            };
+            let mut row = SyncTableRow::new(label, action).with_remote(outcome.remote_name.clone());
+            if let Some(err) = &g.transport_error {
+                row = row.with_detail(err.to_string());
+            }
+            rows.push(row);
+        }
+        for f in &outcome.failed {
+            let label = group_label(index, *f.group_id.as_uuid(), None).await;
+            rows.push(
+                SyncTableRow::new(label, SyncRowAction::Failed)
+                    .with_remote(outcome.remote_name.clone())
+                    .with_detail(f.error.to_string()),
+            );
+        }
+    }
+    rows
+}
+
 /// Pull-trigger wiring for the local content cache: re-index
 /// exactly the groups `report` says advanced. Best-effort via
 /// [`mmcp_store::cache::notify_pull`]: never fails the `pull` /
 /// `sync` command it observes.
 async fn notify_cache_of_pull(
     backend: &mmcp_git::NativeBackend,
-    groups: &mmcp_store::GroupIndex,
+    groups: &GroupIndex,
     report: &mmcp_sync::PullReport,
 ) {
     let updated: Vec<uuid::Uuid> = report.updated.iter().map(|g| g.group_id).collect();

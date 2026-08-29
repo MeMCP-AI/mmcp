@@ -20,6 +20,7 @@ pub mod status;
 pub mod subscribe;
 pub mod subscription;
 pub mod sync;
+mod sync_table;
 pub mod tool_metadata_cli;
 pub mod tools;
 pub mod tracker_cli;
