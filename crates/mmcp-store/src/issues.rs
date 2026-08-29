@@ -679,33 +679,38 @@ pub async fn list_issues(
     status_filter: Option<IssueStatus>,
     show_all: bool,
 ) -> Result<(Vec<IssueRecord>, Vec<Finding>), IssueError> {
-    // Walk recursively so nested slug paths surface alongside flat ones.
-    let slug_dirs = crate::memory::list_memory_slug_dirs(backend, &entry.handle, &Rev::head())
+    // One batched walk-and-read instead of a `list_tree` + `read_file` pair per slug:
+    // see `crate::tracker::read_all_slug_files` for the O(2N) -> O(1) rationale.
+    let files = crate::tracker::read_all_slug_files(backend, entry, Rev::head())
         .await
-        .map_err(|e| IssueError::Memory(ImportError::Git(e)))?;
+        .map_err(IssueError::Memory)?;
 
     let mut out = Vec::new();
     let mut findings = Vec::new();
-    for slug_dir in slug_dirs {
-        match read_issue(backend, entry, &slug_dir.slug, None).await {
-            Ok(record) => {
-                if crate::tracker::listing_keeps_status(record.status, status_filter, show_all) {
-                    out.push(record);
+    for (slug, outcome) in files {
+        match outcome {
+            Ok(file) => match record_from_file(&slug, file, String::new()) {
+                Ok(record) => {
+                    if crate::tracker::listing_keeps_status(record.status, status_filter, show_all)
+                    {
+                        out.push(record);
+                    }
                 }
-            }
-            // `NotAnIssue` is an *expected* non-match:
-            // the slug is a rule/snapshot/log/reference/scratch/pure feature memory, not a corruption signal.
-            Err(IssueError::NotAnIssue { .. }) => {}
+                // `NotAnIssue` is an *expected* non-match:
+                // the slug is a rule/snapshot/log/reference/scratch/pure feature memory, not a corruption signal.
+                Err(IssueError::NotAnIssue { .. }) => {}
+                Err(other) => return Err(other),
+            },
             // A genuine parse error does NOT silently drop the memory from view:
             // it is surfaced as a finding so a corrupt-on-disk issue is loud instead of invisible.
-            Err(IssueError::Memory(ImportError::Parse(err))) => {
+            Err(ImportError::Parse(err)) => {
                 findings.push(crate::tracker::parse_failed_finding(
                     &entry.manifest.group_id.to_string(),
-                    &slug_dir.slug,
+                    &slug,
                     &err,
                 ));
             }
-            Err(other) => return Err(other),
+            Err(other) => return Err(IssueError::Memory(other)),
         }
     }
     out.sort_by(|a, b| match (a.number, b.number) {
@@ -1013,6 +1018,121 @@ mod tests {
         );
         assert_eq!(findings[0].code, "frontmatter_parse_failed");
         assert_eq!(findings[0].slug.as_deref(), Some("corrupt"));
+    }
+
+    /// `list_issues` reads every slug through one batched
+    /// `tracker::read_all_slug_files` call (one `list_memory_slug_dirs`
+    /// walk plus one batched `read_files`) instead of a `list_tree` +
+    /// `read_file` pair per slug. Seeding enough issues to span many
+    /// slug directories confirms the batched path returns exactly the
+    /// same records a per-slug loop would, not merely that it compiles.
+    #[tokio::test]
+    async fn list_issues_batches_many_issues_correctly() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("issue-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        const ISSUE_COUNT: u32 = 25;
+        for i in 0..ISSUE_COUNT {
+            add_issue(
+                scratch.backend(),
+                &entry,
+                AddSpec {
+                    slug: Some(format!("bulk-issue-{i}")),
+                    title: format!("Bulk issue {i}"),
+                    description: "bulk listing test".into(),
+                    body: "b".into(),
+                    status: IssueStatus::Open,
+                    ..AddSpec::default()
+                },
+                scratch.author(),
+            )
+            .await
+            .expect("seed bulk issue");
+        }
+
+        let (records, findings) = list_issues(scratch.backend(), &entry, None, true)
+            .await
+            .expect("list all bulk issues");
+        assert!(findings.is_empty());
+        assert_eq!(records.len(), ISSUE_COUNT as usize);
+        let numbers: Vec<u32> = records.iter().filter_map(|r| r.number).collect();
+        let expected: Vec<u32> = (1..=ISSUE_COUNT).collect();
+        assert_eq!(
+            numbers, expected,
+            "listing must stay sorted by number ascending"
+        );
+        let slugs: std::collections::HashSet<&str> =
+            records.iter().map(|r| r.slug.as_str()).collect();
+        for i in 0..ISSUE_COUNT {
+            assert!(slugs.contains(format!("bulk-issue-{i}").as_str()));
+        }
+    }
+
+    /// Two UUID-named files under one slug directory reproduce the same
+    /// `MemoryAmbiguous` a per-slug `resolve_by_slug` call would raise.
+    /// The batched read path must still abort the whole listing on it,
+    /// unchanged from the pre-batching behavior, instead of silently
+    /// dropping or partially resolving the ambiguous slug.
+    #[tokio::test]
+    async fn list_issues_aborts_whole_listing_on_ambiguous_slug() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("issue-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        add_issue(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("good".into()),
+                title: "Good".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed good issue");
+
+        let metadata = IssueMetadata {
+            status: IssueStatus::Open,
+            number: Some(50),
+            ..IssueMetadata::default()
+        };
+        let file = build_memory_file("Ambiguous".into(), "d".into(), "b".into(), metadata);
+        let rendered = file.to_string().expect("render ambiguous issue");
+        let id_a = mmcp_core::id::MemoryId::new();
+        let id_b = mmcp_core::id::MemoryId::new();
+        let author = scratch.author();
+        scratch
+            .backend()
+            .write_commit(
+                &entry.handle,
+                mmcp_git::CommitSpec::mmcp_commit(
+                    "seed ambiguous issue".to_string(),
+                    vec![
+                        (
+                            mmcp_core::conventions::memory_path("ambiguous-issue", id_a),
+                            Some(rendered.clone().into_bytes()),
+                        ),
+                        (
+                            mmcp_core::conventions::memory_path("ambiguous-issue", id_b),
+                            Some(rendered.into_bytes()),
+                        ),
+                    ],
+                    &author.name,
+                    &author.email,
+                ),
+            )
+            .await
+            .expect("seed ambiguous memory");
+
+        let err = list_issues(scratch.backend(), &entry, None, true)
+            .await
+            .expect_err("ambiguous slug must abort the whole listing");
+        assert!(matches!(
+            err,
+            IssueError::Memory(ImportError::MemoryAmbiguous { .. })
+        ));
     }
 
     #[tokio::test]
