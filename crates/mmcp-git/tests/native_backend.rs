@@ -786,3 +786,79 @@ async fn write_commit_nested_slug_path_round_trips() {
         .unwrap();
     assert_eq!(&bytes[..], b"nested content");
 }
+
+/// A path committed as a blob in an EARLIER, separate commit, then
+/// targeted as an intermediate directory by a LATER commit, must be
+/// rejected. `editor.get()` alone only sees trees already
+/// materialized by an edit earlier in the SAME batch, so without an
+/// on-disk fallback lookup this collision against prior history
+/// would slip through and silently coerce the blob into a tree.
+#[tokio::test]
+async fn write_commit_rejects_deep_write_through_a_previously_committed_blob() {
+    let (backend, _tmp) = backend_in_tempdir();
+    let manifest = sample_manifest();
+    let repo = backend.create_group_repo(&manifest).await.unwrap();
+
+    backend
+        .write_commit(
+            &repo,
+            sample_commit("alice", "main", "memories/note", "blob content"),
+        )
+        .await
+        .unwrap();
+
+    let err = backend
+        .write_commit(
+            &repo,
+            sample_commit("alice", "main", "memories/note/x.md", "deep content"),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, mmcp_git::GitError::Commit { .. }),
+        "expected a Commit error for the blob/directory collision, got {err:?}"
+    );
+
+    // The pre-existing blob must survive untouched: the rejected
+    // write must not have partially applied.
+    let bytes = backend
+        .read_file(&repo, "memories/note", &Rev::Branch("main".into()))
+        .await
+        .unwrap();
+    assert_eq!(&bytes[..], b"blob content");
+}
+
+/// The same collision, but the colliding blob is created earlier in
+/// the SAME commit's file list rather than in prior history. This
+/// is the case `editor.get()` alone already caught before the
+/// on-disk fallback was added; kept as a standing regression test.
+#[tokio::test]
+async fn write_commit_rejects_intra_commit_write_through_a_blob() {
+    let (backend, _tmp) = backend_in_tempdir();
+    let manifest = sample_manifest();
+    let repo = backend.create_group_repo(&manifest).await.unwrap();
+
+    let err = backend
+        .write_commit(
+            &repo,
+            CommitSpec {
+                branch: "main".to_string(),
+                author_name: "alice".to_string(),
+                author_email: "alice@example.com".to_string(),
+                message: "blob then deeper write in one commit".to_string(),
+                files: vec![
+                    ("memories/note".to_string(), Some(b"blob content".to_vec())),
+                    (
+                        "memories/note/x.md".to_string(),
+                        Some(b"deep content".to_vec()),
+                    ),
+                ],
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, mmcp_git::GitError::Commit { .. }),
+        "expected a Commit error for the blob/directory collision, got {err:?}"
+    );
+}

@@ -1059,19 +1059,42 @@ impl ToComponents for ComponentsRef<'_> {
 
 /// Reject a path whose intermediate directory component already
 /// exists as a non-tree entry (a prior blob committed at that exact
-/// path). The tree editor itself would silently coerce the blob
-/// into a tree instead of treating this as the invariant violation
-/// it is, so the check is performed explicitly before editing.
+/// path), either freshly edited earlier in this same batch or
+/// already committed to `root_id`'s history. The tree editor itself
+/// would silently coerce the blob into a tree instead of treating
+/// this as the invariant violation it is, so the check is performed
+/// explicitly before editing.
+///
+/// `editor.get()` only sees trees already materialized by an
+/// earlier edit in this batch, so a component it hasn't loaded yet
+/// falls back to looking up the ORIGINAL tree at `root_id`: without
+/// that fallback a blob committed in a prior, separate commit is
+/// never seen by this guard at all.
 fn reject_blob_directory_collision(
+    repo: &gix::Repository,
     editor: &gix::object::tree::Editor<'_>,
+    root_id: gix::ObjectId,
     path: &str,
     components: &[&str],
 ) -> Result<(), GitError> {
     for depth in 1..components.len() {
-        let prefix = ComponentsRef(&components[..depth]);
-        if let Some(entry) = editor.get(prefix)
-            && !entry.mode().is_tree()
-        {
+        let prefix = &components[..depth];
+        let is_tree = match editor.get(ComponentsRef(prefix)) {
+            Some(entry) => entry.mode().is_tree(),
+            None => {
+                let root = repo.find_tree(root_id).map_err(commit_err)?;
+                match root
+                    .lookup_entry(prefix.iter().copied())
+                    .map_err(commit_err)?
+                {
+                    Some(entry) => entry.mode().is_tree(),
+                    // Absent on disk too: this edit will create it
+                    // as a fresh tree, which is not a collision.
+                    None => true,
+                }
+            }
+        };
+        if !is_tree {
             return Err(commit_msg_err(format!(
                 "path component collides with an existing blob: {path}"
             )));
@@ -1101,7 +1124,7 @@ fn build_tree(
         if components.0.is_empty() {
             return Err(GitError::PathNotFound(path.clone()));
         }
-        reject_blob_directory_collision(&editor, path, &components.0)?;
+        reject_blob_directory_collision(repo, &editor, root_id, path, &components.0)?;
         match contents {
             Some(bytes) => {
                 let blob_id = repo
