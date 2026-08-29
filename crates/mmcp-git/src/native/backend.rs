@@ -86,7 +86,7 @@ impl NativeBackend {
     }
 
     /// Open (or reuse a cached handle for) the bare repository at
-    /// `path`.
+    /// `path`, given its cache directly instead of a whole `&self`.
     ///
     /// The first call per path pays the full `gix` discovery,
     /// config-parse, and ODB-mount cost and caches the resulting
@@ -103,12 +103,25 @@ impl NativeBackend {
     /// vanished path evicts the stale entry and reports
     /// [`GitError::RepoNotFound`] instead of serving that stale
     /// state.
-    fn open_repo(&self, path: &Path) -> Result<gix::ThreadSafeRepository, GitError> {
-        if let Some(repo) = self.repo_cache.get(path) {
+    ///
+    /// Taking `cache` directly, rather than `&self`, matters because
+    /// every `GitBackend` method below moves its work into a
+    /// `spawn_blocking` closure that needs nothing from `NativeBackend`
+    /// except this cache: `repo_path` is already computed and moved in
+    /// separately, and `self.root` never crosses that boundary. Cloning
+    /// the cache alone (`moka::sync::Cache` is `Arc`-backed, so this is
+    /// one atomic increment) instead of the whole backend (which also
+    /// heap-allocates a fresh `PathBuf` copy of `root` on every call)
+    /// avoids that unused allocation per dispatched operation.
+    fn open_repo_with_cache(
+        cache: &Cache<PathBuf, gix::ThreadSafeRepository>,
+        path: &Path,
+    ) -> Result<gix::ThreadSafeRepository, GitError> {
+        if let Some(repo) = cache.get(path) {
             if path.exists() {
                 return Ok(repo);
             }
-            self.repo_cache.invalidate(path);
+            cache.invalidate(path);
             return Err(GitError::RepoNotFound(path.to_string_lossy().into_owned()));
         }
         if !path.exists() {
@@ -118,7 +131,7 @@ impl NativeBackend {
             path: path.to_string_lossy().into_owned(),
             source: Box::new(e),
         })?;
-        self.repo_cache.insert(path.to_path_buf(), repo.clone());
+        cache.insert(path.to_path_buf(), repo.clone());
         Ok(repo)
     }
 
@@ -141,12 +154,12 @@ impl NativeBackend {
 
     /// Evict `path`'s cached repository handle, if any.
     ///
-    /// `open_repo`'s cache-validity check only catches deletion (`open_repo`'s `path.exists()` check).
+    /// `open_repo_with_cache`'s cache-validity check only catches deletion (its `path.exists()` check).
     /// It cannot detect an in-place replacement where a new bare repository is renamed onto the same path,
     /// because the path still exists throughout the swap.
     /// This is exactly the sequence `mmcp_store::archive::import` uses to restore a bare repository in place.
     /// Callers that replace a repository's contents in place must call this immediately after the swap.
-    /// The next `open_repo` re-opens fresh,
+    /// The next `open_repo_with_cache` call re-opens fresh,
     /// instead of relying on the cached `gix::ThreadSafeRepository` to notice the replacement on its own.
     /// Under the pinned gix build and mmcp's loose-object-only write path, this self-heals today.
     /// Verified empirically by `crates/mmcp-git/tests/native_backend.rs`,
@@ -173,9 +186,9 @@ impl NativeBackend {
     ) -> Result<repo_ops::BatchReadResult, GitError> {
         let repo_path = Self::handle_path(repo).to_path_buf();
         let rev = rev.clone();
-        let backend = self.clone();
+        let repo_cache = self.repo_cache.clone();
         tokio::task::spawn_blocking(move || {
-            let handle = backend.open_repo(&repo_path)?;
+            let handle = Self::open_repo_with_cache(&repo_cache, &repo_path)?;
             repo_ops::read_files(&Self::thread_local_with_object_cache(&handle), &paths, &rev)
         })
         .await?
@@ -189,9 +202,9 @@ impl NativeBackend {
     pub async fn tip_commit(&self, repo: &RepoHandle, rev: &Rev) -> Result<CommitMeta, GitError> {
         let repo_path = Self::handle_path(repo).to_path_buf();
         let rev = rev.clone();
-        let backend = self.clone();
+        let repo_cache = self.repo_cache.clone();
         tokio::task::spawn_blocking(move || {
-            let handle = backend.open_repo(&repo_path)?;
+            let handle = Self::open_repo_with_cache(&repo_cache, &repo_path)?;
             repo_ops::tip_commit(&Self::thread_local_with_object_cache(&handle), &rev)
         })
         .await?
@@ -218,9 +231,9 @@ impl NativeBackend {
         let repo_path = Self::handle_path(repo).to_path_buf();
         let prefix = path_prefix.to_string();
         let rev = rev.clone();
-        let backend = self.clone();
+        let repo_cache = self.repo_cache.clone();
         tokio::task::spawn_blocking(move || {
-            let handle = backend.open_repo(&repo_path)?;
+            let handle = Self::open_repo_with_cache(&repo_cache, &repo_path)?;
             repo_ops::list_tree_recursive(
                 &Self::thread_local_with_object_cache(&handle),
                 &prefix,
@@ -341,7 +354,7 @@ impl GitBackend for NativeBackend {
             .iter()
             .map(|r| (r.local.clone(), r.remote.clone(), r.force))
             .collect();
-        let backend = self.clone();
+        let repo_cache = self.repo_cache.clone();
         // The local-ref preflight check needs the synchronous `gix`
         // view, so it still runs inside `spawn_blocking`; the actual
         // network push below no longer holds a `gix::Repository` at
@@ -349,7 +362,7 @@ impl GitBackend for NativeBackend {
         let preflight_path = repo_path.clone();
         let preflight_refspecs = refspecs.clone();
         tokio::task::spawn_blocking(move || {
-            let handle = backend.open_repo(&preflight_path)?;
+            let handle = Self::open_repo_with_cache(&repo_cache, &preflight_path)?;
             repo_ops::preflight_local_refs(
                 &Self::thread_local_with_object_cache(&handle),
                 &preflight_refspecs,
@@ -363,9 +376,9 @@ impl GitBackend for NativeBackend {
         let repo_path = Self::handle_path(repo).to_path_buf();
         let path_owned = path.to_string();
         let rev = rev.clone();
-        let backend = self.clone();
+        let repo_cache = self.repo_cache.clone();
         tokio::task::spawn_blocking(move || {
-            let handle = backend.open_repo(&repo_path)?;
+            let handle = Self::open_repo_with_cache(&repo_cache, &repo_path)?;
             repo_ops::read_file(
                 &Self::thread_local_with_object_cache(&handle),
                 &path_owned,
@@ -377,9 +390,9 @@ impl GitBackend for NativeBackend {
 
     async fn write_commit(&self, repo: &RepoHandle, spec: CommitSpec) -> Result<String, GitError> {
         let repo_path = Self::handle_path(repo).to_path_buf();
-        let backend = self.clone();
+        let repo_cache = self.repo_cache.clone();
         tokio::task::spawn_blocking(move || {
-            let handle = backend.open_repo(&repo_path)?;
+            let handle = Self::open_repo_with_cache(&repo_cache, &repo_path)?;
             repo_ops::write_commit(&Self::thread_local_with_object_cache(&handle), spec)
         })
         .await?
@@ -389,9 +402,9 @@ impl GitBackend for NativeBackend {
         let repo_path = Self::handle_path(repo).to_path_buf();
         let name = name.to_string();
         let target = target.to_string();
-        let backend = self.clone();
+        let repo_cache = self.repo_cache.clone();
         tokio::task::spawn_blocking(move || {
-            let handle = backend.open_repo(&repo_path)?;
+            let handle = Self::open_repo_with_cache(&repo_cache, &repo_path)?;
             repo_ops::tag(
                 &Self::thread_local_with_object_cache(&handle),
                 &name,
@@ -410,9 +423,9 @@ impl GitBackend for NativeBackend {
         let repo_path = Self::handle_path(repo).to_path_buf();
         let local_ref = local_ref.to_string();
         let target_ref = target_ref.to_string();
-        let backend = self.clone();
+        let repo_cache = self.repo_cache.clone();
         tokio::task::spawn_blocking(move || {
-            let handle = backend.open_repo(&repo_path)?;
+            let handle = Self::open_repo_with_cache(&repo_cache, &repo_path)?;
             repo_ops::fast_forward(
                 &Self::thread_local_with_object_cache(&handle),
                 &local_ref,
@@ -430,9 +443,9 @@ impl GitBackend for NativeBackend {
     ) -> Result<Vec<CommitMeta>, GitError> {
         let repo_path = Self::handle_path(repo).to_path_buf();
         let path = path.to_string();
-        let backend = self.clone();
+        let repo_cache = self.repo_cache.clone();
         tokio::task::spawn_blocking(move || {
-            let handle = backend.open_repo(&repo_path)?;
+            let handle = Self::open_repo_with_cache(&repo_cache, &repo_path)?;
             repo_ops::walk_history(&Self::thread_local_with_object_cache(&handle), &path, limit)
         })
         .await?
@@ -447,9 +460,9 @@ impl GitBackend for NativeBackend {
         let repo_path = Self::handle_path(repo).to_path_buf();
         let prefix = path_prefix.to_string();
         let rev = rev.clone();
-        let backend = self.clone();
+        let repo_cache = self.repo_cache.clone();
         tokio::task::spawn_blocking(move || {
-            let handle = backend.open_repo(&repo_path)?;
+            let handle = Self::open_repo_with_cache(&repo_cache, &repo_path)?;
             repo_ops::list_tree(
                 &Self::thread_local_with_object_cache(&handle),
                 &prefix,
@@ -468,9 +481,9 @@ impl GitBackend for NativeBackend {
         let repo_path = Self::handle_path(repo).to_path_buf();
         let prefix = path_prefix.to_string();
         let rev = rev.clone();
-        let backend = self.clone();
+        let repo_cache = self.repo_cache.clone();
         tokio::task::spawn_blocking(move || {
-            let handle = backend.open_repo(&repo_path)?;
+            let handle = Self::open_repo_with_cache(&repo_cache, &repo_path)?;
             repo_ops::list_subtrees(
                 &Self::thread_local_with_object_cache(&handle),
                 &prefix,
@@ -503,11 +516,12 @@ mod tests {
 
         // `gix::ThreadSafeRepository` has no cheap standalone test
         // constructor, so the cache is populated the real way: init a
-        // bare repo and open it through `open_repo`.
+        // bare repo and open it through `open_repo_with_cache`.
         let repo_path = backend.repo_path(uuid::Uuid::now_v7());
         std::fs::create_dir_all(&repo_path).expect("mkdir");
         gix::init_bare(&repo_path).expect("init bare");
-        backend.open_repo(&repo_path).expect("populate cache");
+        NativeBackend::open_repo_with_cache(&backend.repo_cache, &repo_path)
+            .expect("populate cache");
         assert!(
             backend.repo_cache.contains_key(&repo_path),
             "precondition: open_repo must have cached the entry"
@@ -542,7 +556,8 @@ mod tests {
         std::fs::create_dir_all(&repo_path).expect("mkdir");
         gix::init_bare(&repo_path).expect("init bare");
 
-        let handle = backend.open_repo(&repo_path).expect("open repo");
+        let handle = NativeBackend::open_repo_with_cache(&backend.repo_cache, &repo_path)
+            .expect("open repo");
         let repo = NativeBackend::thread_local_with_object_cache(&handle);
 
         assert!(
