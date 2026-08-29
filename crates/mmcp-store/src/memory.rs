@@ -183,6 +183,10 @@ pub struct MemorySlugDir {
 /// Walk the `memories/` tree recursively and surface every leaf slug directory under it.
 /// A directory counts as a leaf iff it holds at least one direct `.md` blob;
 /// intermediate path nodes (only subtrees, no direct files) are traversed transparently.
+/// A leaf may also have child slug paths of its own
+/// (e.g. `feedback/<uuid>.md` and `feedback/git/<uuid>.md` can coexist);
+/// [`NativeBackend::list_tree_recursive`] already reaches every directory regardless of
+/// its own leaf status, so every nested leaf still surfaces here.
 ///
 /// Slug paths may contain `/`-separated segments; this helper is the shared enumeration primitive,
 /// every listing surface (memories, features, issues, tracker, diagnostics) routes through,
@@ -194,33 +198,16 @@ pub async fn list_memory_slug_dirs(
 ) -> Result<Vec<MemorySlugDir>, GitError> {
     let root = mmcp_core::conventions::MEMORIES_DIR;
     let ext = mmcp_core::conventions::MEMORY_EXTENSION;
-    let mut out = Vec::new();
-    // Iterative DFS so async recursion doesn't need Box::pin per descent.
-    // Each frame holds (full git path, accumulated slug).
-    let mut stack: Vec<(String, String)> = vec![(root.to_string(), String::new())];
-    while let Some((prefix, slug_prefix)) = stack.pop() {
-        let files = backend.list_tree(handle, &prefix, rev).await?;
-        if !slug_prefix.is_empty() && files.iter().any(|f| f.ends_with(ext)) {
-            out.push(MemorySlugDir {
-                slug: slug_prefix.clone(),
-                dir: prefix.clone(),
-                filenames: files,
-            });
-        }
-        // Always recurse: a leaf may also have child slug paths,
-        // (e.g. `feedback/<uuid>.md` and `feedback/git/<uuid>.md` can coexist).
-        // Skipping recursion on `has_md` would hide the children.
-        let subs = backend.list_subtrees(handle, &prefix, rev).await?;
-        for name in subs {
-            let child_prefix = format!("{prefix}/{name}");
-            let child_slug = if slug_prefix.is_empty() {
-                name
-            } else {
-                format!("{slug_prefix}/{name}")
-            };
-            stack.push((child_prefix, child_slug));
-        }
-    }
+    let dirs = backend.list_tree_recursive(handle, root, rev).await?;
+    let mut out: Vec<MemorySlugDir> = dirs
+        .into_iter()
+        .filter(|(slug, filenames)| !slug.is_empty() && filenames.iter().any(|f| f.ends_with(ext)))
+        .map(|(slug, filenames)| MemorySlugDir {
+            dir: format!("{root}/{slug}"),
+            slug,
+            filenames,
+        })
+        .collect();
     out.sort_by(|a, b| a.slug.cmp(&b.slug));
     Ok(out)
 }
