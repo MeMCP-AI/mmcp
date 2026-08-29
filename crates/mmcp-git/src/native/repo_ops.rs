@@ -617,6 +617,20 @@ pub fn fast_forward(
 /// True when `ancestor` appears in the commit graph reachable from
 /// `descendant`. Equality counts as ancestry, matching git's
 /// `merge-base --is-ancestor`.
+///
+/// Delegates to [`gix::Repository::merge_base`] instead of walking
+/// the full ancestry of `descendant` and searching each commit for
+/// `ancestor`: `ancestor` is an ancestor of (or equal to) `descendant`
+/// exactly when their best merge-base is `ancestor` itself. This lets
+/// a non-fast-forward check (`ancestor` on a diverged branch, the
+/// exact negative case this function exists to detect) return as soon
+/// as the merge-base algorithm's own generation-number-aware pruning
+/// converges, instead of always decoding every reachable commit; it
+/// also transparently exploits a commit-graph file when the
+/// repository has one. A manual commit-timestamp cutoff was
+/// considered instead, but committer clocks are not guaranteed
+/// monotonic across parent/child commits, so pruning on timestamp
+/// alone risks a false negative; `merge_base` carries no such risk.
 fn is_ancestor(
     repo: &gix::Repository,
     ancestor: gix::ObjectId,
@@ -625,14 +639,13 @@ fn is_ancestor(
     if ancestor == descendant {
         return Ok(true);
     }
-    let walk = repo.rev_walk([descendant]).all().map_err(resolve_rev_err)?;
-    for info in walk {
-        let info = info.map_err(resolve_rev_err)?;
-        if info.id == ancestor {
-            return Ok(true);
-        }
+    match repo.merge_base(ancestor, descendant) {
+        Ok(base) => Ok(base.detach() == ancestor),
+        // No common history at all: `ancestor` cannot be reachable
+        // from `descendant` either.
+        Err(gix::repository::merge_base::Error::NotFound { .. }) => Ok(false),
+        Err(other) => Err(resolve_rev_err(other)),
     }
-    Ok(false)
 }
 
 /// Verify every local ref named in the outgoing refspecs actually
@@ -951,29 +964,28 @@ pub fn list_tree(
         Err(other) => return Err(other),
     };
     let commit_obj = repo.find_object(commit_id).map_err(resolve_rev_err)?;
-    let commit: gix::objs::Commit = commit_obj
+    let root_tree_id = commit_obj
         .into_commit()
-        .decode()
+        .tree_id()
         .map_err(resolve_rev_err)?
-        .into_owned()
-        .map_err(resolve_rev_err)?;
+        .detach();
 
     // Walk from the commit's root tree down into `path_prefix`.
-    let target_tree_id = match resolve_tree_prefix(repo, commit.tree, path_prefix)? {
+    let target_tree_id = match resolve_tree_prefix(repo, root_tree_id, path_prefix)? {
         Some(id) => id,
         None => return Ok(Vec::new()),
     };
 
     let obj = repo.find_object(target_tree_id).map_err(read_blob_err)?;
-    let tree: gix::objs::Tree = obj.into_tree().decode().map_err(read_blob_err)?.into();
+    let tree = obj.into_tree();
+    let tree_ref = tree.decode().map_err(read_blob_err)?;
     let mut out = Vec::new();
-    for entry in tree.entries {
+    for entry in &tree_ref.entries {
         if matches!(
             entry.mode.kind(),
             EntryKind::Blob | EntryKind::BlobExecutable
         ) {
-            let name = String::from_utf8_lossy(&entry.filename).into_owned();
-            out.push(name);
+            out.push(String::from_utf8_lossy(entry.filename).into_owned());
         }
     }
     out.sort();
@@ -994,25 +1006,24 @@ pub fn list_subtrees(
         Err(other) => return Err(other),
     };
     let commit_obj = repo.find_object(commit_id).map_err(resolve_rev_err)?;
-    let commit: gix::objs::Commit = commit_obj
+    let root_tree_id = commit_obj
         .into_commit()
-        .decode()
+        .tree_id()
         .map_err(resolve_rev_err)?
-        .into_owned()
-        .map_err(resolve_rev_err)?;
+        .detach();
 
-    let target_tree_id = match resolve_tree_prefix(repo, commit.tree, path_prefix)? {
+    let target_tree_id = match resolve_tree_prefix(repo, root_tree_id, path_prefix)? {
         Some(id) => id,
         None => return Ok(Vec::new()),
     };
 
     let obj = repo.find_object(target_tree_id).map_err(read_blob_err)?;
-    let tree: gix::objs::Tree = obj.into_tree().decode().map_err(read_blob_err)?.into();
+    let tree = obj.into_tree();
+    let tree_ref = tree.decode().map_err(read_blob_err)?;
     let mut out = Vec::new();
-    for entry in tree.entries {
+    for entry in &tree_ref.entries {
         if entry.mode.kind() == EntryKind::Tree {
-            let name = String::from_utf8_lossy(&entry.filename).into_owned();
-            out.push(name);
+            out.push(String::from_utf8_lossy(entry.filename).into_owned());
         }
     }
     out.sort();
@@ -1050,14 +1061,13 @@ pub fn list_tree_recursive(
         Err(other) => return Err(other),
     };
     let commit_obj = repo.find_object(commit_id).map_err(resolve_rev_err)?;
-    let commit: gix::objs::Commit = commit_obj
+    let root_tree_id = commit_obj
         .into_commit()
-        .decode()
+        .tree_id()
         .map_err(resolve_rev_err)?
-        .into_owned()
-        .map_err(resolve_rev_err)?;
+        .detach();
 
-    let target_tree_id = match resolve_tree_prefix(repo, commit.tree, path_prefix)? {
+    let target_tree_id = match resolve_tree_prefix(repo, root_tree_id, path_prefix)? {
         Some(id) => id,
         None => return Ok(Vec::new()),
     };
@@ -1112,15 +1122,19 @@ fn resolve_tree_prefix(
     let mut current = root_tree_id;
     for name in components {
         let obj = repo.find_object(current).map_err(read_blob_err)?;
-        let tree: gix::objs::Tree = obj.into_tree().decode().map_err(read_blob_err)?.into();
+        let tree = obj.into_tree();
+        let tree_ref = tree.decode().map_err(read_blob_err)?;
         // Every component here is a directory (the last resolved
         // node is the prefix itself, never a blob), so the search
-        // target is always expected to be a tree.
-        let entry = find_tree_entry(&tree.entries, name.as_bytes(), true);
+        // target is always expected to be a tree. `bisect_entry` is
+        // `gix_object`'s own binary search over a borrowed `TreeRef`,
+        // so this never materializes an owned `Tree` (one allocated
+        // filename per entry) just to look up a single component.
+        let entry = tree_ref.bisect_entry(BStr::new(name.as_bytes()), true);
         match entry {
             None => return Ok(None),
             Some(entry) if entry.mode.kind() == EntryKind::Tree => {
-                current = entry.oid;
+                current = entry.oid.to_owned();
             }
             Some(_) => return Ok(None),
         }
@@ -1149,13 +1163,12 @@ fn read_blob_at_tree(
 pub fn read_file(repo: &gix::Repository, path: &str, rev: &Rev) -> Result<Bytes, GitError> {
     let commit_id = resolve_rev(repo, rev)?;
     let commit_obj = repo.find_object(commit_id).map_err(resolve_rev_err)?;
-    let commit: gix::objs::Commit = commit_obj
+    let tree_id = commit_obj
         .into_commit()
-        .decode()
+        .tree_id()
         .map_err(resolve_rev_err)?
-        .into_owned()
-        .map_err(resolve_rev_err)?;
-    read_blob_at_tree(repo, commit.tree, path)
+        .detach();
+    read_blob_at_tree(repo, tree_id, path)
 }
 
 /// Per-path outcome of a [`read_files`] batch: the requested path
@@ -1181,23 +1194,23 @@ pub fn read_files(
 ) -> Result<BatchReadResult, GitError> {
     let commit_id = resolve_rev(repo, rev)?;
     let commit_obj = repo.find_object(commit_id).map_err(resolve_rev_err)?;
-    let commit: gix::objs::Commit = commit_obj
+    let tree_id = commit_obj
         .into_commit()
-        .decode()
+        .tree_id()
         .map_err(resolve_rev_err)?
-        .into_owned()
-        .map_err(resolve_rev_err)?;
+        .detach();
 
     let mut tree_cache = std::collections::HashMap::new();
     Ok(paths
         .iter()
         .map(|path| {
-            let outcome = find_blob_in_tree_cached(repo, &mut tree_cache, commit.tree, path)
-                .and_then(|blob_id| {
+            let outcome = find_blob_in_tree_cached(repo, &mut tree_cache, tree_id, path).and_then(
+                |blob_id| {
                     let blob_id =
                         blob_id.ok_or_else(|| GitError::PathNotFound(path.to_string()))?;
                     blob_bytes(repo, blob_id)
-                });
+                },
+            );
             (path.clone(), outcome)
         })
         .collect())
@@ -1329,13 +1342,12 @@ pub fn write_commit(repo: &gix::Repository, spec: CommitSpec) -> Result<String, 
         Ok(reference) => {
             let parent_commit_id = reference.id().detach();
             let commit_obj = repo.find_object(parent_commit_id).map_err(commit_err)?;
-            let commit: gix::objs::Commit = commit_obj
+            let parent_tree_id = commit_obj
                 .into_commit()
-                .decode()
+                .tree_id()
                 .map_err(commit_err)?
-                .into_owned()
-                .map_err(commit_err)?;
-            (Some(parent_commit_id), Some(commit.tree))
+                .detach();
+            (Some(parent_commit_id), Some(parent_tree_id))
         }
         Err(_) => (None, None),
     };
@@ -2516,6 +2528,114 @@ mod tree_lookup_and_history_tests {
             "history must list exactly the commits that changed the blob, \
              most recent first, skipping the unrelated carry-forward commit \
              and the deleting commit"
+        );
+    }
+}
+
+#[cfg(test)]
+mod ancestry_tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Open the freshly committed scratch repo the way `NativeBackend`
+    /// does: a `ThreadSafeRepository` handed out as a thread-local
+    /// view.
+    fn open_thread_local(repo_path: &Path) -> gix::Repository {
+        gix::ThreadSafeRepository::open(repo_path)
+            .expect("open scratch repo")
+            .to_thread_local()
+    }
+
+    /// Falsification: `is_ancestor` now delegates to
+    /// [`gix::Repository::merge_base`] instead of walking the whole
+    /// ancestry of `descendant` and searching each commit for
+    /// `ancestor`. A real fork (`commit_a` is the fork point,
+    /// `commit_b` is `main`'s child of it, `commit_c` is a sibling
+    /// child committed to a different branch from the same fork
+    /// point) exercises the genuinely negative case this function
+    /// exists to detect: two diverged siblings share a common
+    /// ancestor, but neither is an ancestor of the other, which is
+    /// exactly the case a naive "found somewhere in descendant's
+    /// history" bug could get backwards. Every direction is checked
+    /// so a merge-base mixup (returning the wrong side of the pair)
+    /// cannot pass by accident.
+    #[test]
+    fn is_ancestor_reports_fork_ancestry_correctly() {
+        let tmp = TempDir::new().expect("tempdir");
+        let repo_path = tmp.path().join("scratch.git");
+        gix::init_bare(&repo_path).expect("init bare scratch repo");
+        let repo = open_thread_local(&repo_path);
+
+        let commit_a = write_commit(
+            &repo,
+            CommitSpec::mmcp_commit(
+                "fork point",
+                vec![("a.md".to_string(), Some(b"a".to_vec()))],
+                "Test Author",
+                "test@example.com",
+            ),
+        )
+        .expect("commit a");
+        let commit_a_id = gix::ObjectId::from_hex(commit_a.as_bytes()).expect("parse commit a id");
+
+        // Fork a second branch from `commit_a` before either side
+        // gets its own child.
+        repo.reference(
+            "refs/heads/feature",
+            commit_a_id,
+            gix::refs::transaction::PreviousValue::MustNotExist,
+            "test: fork feature from main",
+        )
+        .expect("create feature branch");
+
+        let commit_b = write_commit(
+            &repo,
+            CommitSpec::mmcp_commit(
+                "main child",
+                vec![("b.md".to_string(), Some(b"b".to_vec()))],
+                "Test Author",
+                "test@example.com",
+            ),
+        )
+        .expect("commit b");
+        let commit_b_id = gix::ObjectId::from_hex(commit_b.as_bytes()).expect("parse commit b id");
+
+        let commit_c = write_commit(
+            &repo,
+            CommitSpec {
+                branch: "feature".to_string(),
+                ..CommitSpec::mmcp_commit(
+                    "feature child",
+                    vec![("c.md".to_string(), Some(b"c".to_vec()))],
+                    "Test Author",
+                    "test@example.com",
+                )
+            },
+        )
+        .expect("commit c");
+        let commit_c_id = gix::ObjectId::from_hex(commit_c.as_bytes()).expect("parse commit c id");
+
+        assert!(
+            is_ancestor(&repo, commit_a_id, commit_b_id).expect("is_ancestor a->b"),
+            "the fork point must be an ancestor of main's child"
+        );
+        assert!(
+            is_ancestor(&repo, commit_a_id, commit_c_id).expect("is_ancestor a->c"),
+            "the fork point must be an ancestor of feature's child too"
+        );
+        assert!(
+            !is_ancestor(&repo, commit_b_id, commit_c_id).expect("is_ancestor b->c"),
+            "diverged siblings: main's child must not read as an ancestor of feature's child"
+        );
+        assert!(
+            !is_ancestor(&repo, commit_c_id, commit_b_id).expect("is_ancestor c->b"),
+            "diverged siblings: feature's child must not read as an ancestor of main's \
+             child either"
+        );
+        assert!(
+            is_ancestor(&repo, commit_b_id, commit_b_id).expect("is_ancestor self"),
+            "a commit must count as its own ancestor"
         );
     }
 }
