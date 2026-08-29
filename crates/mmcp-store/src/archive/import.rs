@@ -2,22 +2,23 @@
 //! store, recreating groups and writing each memory through the same
 //! `import_memory` primitive the loose-file import path uses.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::path::{Component, Path};
 
-use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION};
-use mmcp_core::id::GroupId;
+use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION, memory_path};
+use mmcp_core::id::{GroupId, MemoryId};
 use mmcp_core::manifest::{GroupManifest, GroupScope, MANIFEST_FILENAME};
 use mmcp_core::memory::MemoryFile;
-use mmcp_git::{GitBackend, NativeBackend, Rev};
+use mmcp_git::{CommitSpec, GitBackend, NativeBackend, RepoHandle, Rev};
 use uuid::Uuid;
 
 use crate::groups::{GroupEntry, GroupIndex};
 use crate::home::ResolvedAuthor;
 use crate::lock;
 use crate::memory::{
-    ImportError, WriteFileOptions, import_memory, resolve_group, resolve_memory, write_file_at_path,
+    AddressingMode, ImportError, filename_uuid_from_path, list_memory_slug_dirs, resolve_group,
+    validate_id_mismatch, validate_memory_slug, validate_write_content_lengths,
 };
 
 use super::error::ArchiveError;
@@ -445,6 +446,14 @@ fn is_safe_relpath(rel: &str) -> bool {
 
 /// Import every memory belonging to one archived group, recreating or
 /// merging the target group as needed.
+///
+/// Snapshots the target group's existing memories ONCE (via
+/// [`snapshot_existing_memories`]) instead of running a `resolve_memory(.., None, Some(id))`
+/// full-corpus walk per imported memory, and accumulates every create/overwrite into ONE
+/// [`CommitSpec::mmcp_commit`] instead of one commit per memory: an M-memory import into an
+/// N-memory group used to cost M full-corpus walks plus M commits; this costs one walk
+/// (plus one batched read of every existing file) and one commit for the whole group.
+/// An all-skip/all-conflict group produces no commit at all.
 #[allow(clippy::too_many_arguments)]
 async fn import_one_group(
     backend: &NativeBackend,
@@ -472,6 +481,17 @@ async fn import_one_group(
         conflicts: Vec::new(),
     };
 
+    // One exclusive view of the whole group for the entire batch below, in place of
+    // `import_memory`/`write_file_at_path`'s own per-memory `create_chain` lock: every
+    // accumulated memory commits together in the ONE `write_commit` at the end of this
+    // function, so a lock held for the whole batch already covers what a per-memory
+    // lock/unlock cycle would, without the added contention.
+    let _guards = lock::acquire_chain(&lock::create_chain(target.handle.group_id)).await;
+
+    let mut existing = snapshot_existing_memories(backend, &target.handle).await?;
+    let mut commit_files: Vec<(String, Option<Vec<u8>>)> = Vec::new();
+    let mut pending: Vec<PendingCacheNotify> = Vec::new();
+
     let prefix = format!("{ARCHIVE_GROUPS_DIR}/{source_group_id}/{MEMORIES_DIR}/");
     for (path, data) in entries {
         if !path.starts_with(&prefix) || !path.ends_with(MEMORY_EXTENSION) {
@@ -498,17 +518,52 @@ async fn import_one_group(
         let filename_id = filename
             .strip_suffix(MEMORY_EXTENSION)
             .and_then(|stem| Uuid::parse_str(stem).ok());
-        import_one_memory(
-            backend,
-            &target,
-            author,
+        accumulate_one_memory(
             memory_slug,
             filename_id,
             content,
             options,
+            &mut existing,
+            &mut commit_files,
+            &mut pending,
             &mut outcome,
+        )?;
+    }
+
+    if commit_files.is_empty() {
+        return Ok(outcome);
+    }
+
+    let memory_word = if commit_files.len() == 1 {
+        "memory"
+    } else {
+        "memories"
+    };
+    let commit_message = format!(
+        "import {} {memory_word} into {}",
+        commit_files.len(),
+        target.manifest.slug
+    );
+    let commit_id = backend
+        .write_commit(
+            &target.handle,
+            CommitSpec::mmcp_commit(commit_message, commit_files, &author.name, &author.email),
         )
         .await?;
+
+    // Write-trigger for the local content cache (see `crate::cache`), mirroring
+    // `write_file_at_path`'s per-write hook: best-effort, one notification per
+    // accumulated memory, all sharing the single commit id the batch produced above.
+    for note in pending {
+        crate::cache::notify_write(
+            target.handle.group_id,
+            note.id,
+            &note.slug,
+            &note.path,
+            &commit_id,
+            &note.rendered,
+        )
+        .await;
     }
 
     Ok(outcome)
@@ -565,26 +620,189 @@ async fn resolve_or_create_target(
     }
 }
 
-/// Write one archived memory into `target`, applying the new-ids /
-/// overwrite / skip policy and tallying the result on `outcome`.
-#[allow(clippy::too_many_arguments)]
-async fn import_one_memory(
+/// One pre-existing memory in a target group, snapshotted once per
+/// [`import_one_group`] call.
+///
+/// Keyed by its FRONTMATTER id, the same source of truth
+/// [`crate::memory::resolve_memory`]'s `resolve_by_id` fallback scans for,
+/// not its filename stem: a hand-crafted or filename-drifted file is found
+/// exactly like a per-memory `resolve_memory(.., None, Some(id))` call would find it.
+struct ExistingMemory {
+    slug: String,
+    path: String,
+    text: String,
+    addressing_mode: AddressingMode,
+}
+
+/// Snapshot of every memory currently in a target group, built once per
+/// [`import_one_group`] call instead of once per imported memory.
+struct ExistingSnapshot {
+    by_frontmatter_id: HashMap<Uuid, ExistingMemory>,
+    occupied_paths: HashSet<String>,
+}
+
+impl ExistingSnapshot {
+    /// Record a memory this same import run just staged for creation, so a LATER
+    /// duplicate id or canonical-path collision within the same archive is caught
+    /// against it exactly like a pre-existing one, without a second git round trip.
+    fn record(&mut self, id: Uuid, entry: ExistingMemory) {
+        self.occupied_paths.insert(entry.path.clone());
+        self.by_frontmatter_id.insert(id, entry);
+    }
+}
+
+/// Snapshot every memory in `handle` in one walk plus one batched read.
+///
+/// Replaces the per-imported-memory `resolve_memory(.., None, Some(id))` call: that walked
+/// the whole group's memory files sequentially for every imported memory, so an M-memory
+/// import into an N-memory group cost M full-corpus walks. This walks the group exactly
+/// once (mirroring `resolve_by_id`'s own candidate enumeration, not `list_all_memory_files`,
+/// so a hand-crafted non-UUID-named file is snapshotted too) and folds every later id lookup
+/// through the resulting map instead of a git round trip.
+async fn snapshot_existing_memories(
     backend: &NativeBackend,
-    target: &GroupEntry,
-    author: &ResolvedAuthor,
+    handle: &RepoHandle,
+) -> Result<ExistingSnapshot, ArchiveError> {
+    let rev = Rev::head();
+    let slug_dirs = list_memory_slug_dirs(backend, handle, &rev).await?;
+    let candidates: Vec<(String, String)> = slug_dirs
+        .iter()
+        .flat_map(|dir| {
+            dir.filenames
+                .iter()
+                .filter(|filename| filename.ends_with(MEMORY_EXTENSION))
+                .map(move |filename| (dir.slug.clone(), format!("{}/{filename}", dir.dir)))
+        })
+        .collect();
+
+    let occupied_paths: HashSet<String> = candidates.iter().map(|(_, path)| path.clone()).collect();
+    let mut by_frontmatter_id = HashMap::new();
+    if !candidates.is_empty() {
+        let paths: Vec<String> = candidates.iter().map(|(_, path)| path.clone()).collect();
+        // One resolve of the commit and root tree, reused for every path below,
+        // instead of the former per-memory resolve_by_id's repeated walks.
+        let batch = backend.read_files(handle, paths, &rev).await?;
+        for ((slug, path), (_batch_path, outcome)) in candidates.iter().zip(batch) {
+            let Ok(bytes) = outcome else { continue };
+            let Ok(text) = std::str::from_utf8(&bytes) else {
+                continue;
+            };
+            let Ok(parsed) = MemoryFile::parse(text) else {
+                continue;
+            };
+            let Some(id) = parsed.frontmatter.id else {
+                continue;
+            };
+            let addressing_mode = if filename_uuid_from_path(path) == Some(id) {
+                AddressingMode::ByFilename
+            } else {
+                AddressingMode::ByFrontmatter
+            };
+            by_frontmatter_id.insert(
+                id,
+                ExistingMemory {
+                    slug: slug.clone(),
+                    path: path.clone(),
+                    text: text.to_string(),
+                    addressing_mode,
+                },
+            );
+        }
+    }
+    Ok(ExistingSnapshot {
+        by_frontmatter_id,
+        occupied_paths,
+    })
+}
+
+/// One accumulated write pending the group's single batched commit,
+/// staged so [`import_one_group`] can fire the cache write-trigger
+/// hook once the real commit id exists.
+struct PendingCacheNotify {
+    id: Uuid,
+    slug: String,
+    path: String,
+    rendered: String,
+}
+
+/// Re-parse `content`, stamp `id` into its frontmatter, and render: the exact pipeline
+/// `import_memory` runs on create, so the batched path commits byte-identical content
+/// to the per-memory primitive it replaces.
+fn mint_and_render(content: &str, id: Uuid) -> Result<String, ArchiveError> {
+    let mut parsed = MemoryFile::parse(content).map_err(ImportError::Parse)?;
+    parsed.frontmatter = parsed.frontmatter.clone().with_id(id);
+    let rendered = parsed
+        .to_string()
+        .map_err(|e| ImportError::Render(e.to_string()))?;
+    Ok(rendered)
+}
+
+/// Stage a brand-new memory at its canonical `memories/<slug>/<id>.md` path, rejecting a
+/// path collision exactly like [`crate::memory::write_memory_by_id`]'s exists-probe does
+/// with `override_existing = false`.
+#[allow(clippy::too_many_arguments)]
+fn stage_create(
+    slug: &str,
+    id: Uuid,
+    rendered: String,
+    existing: &mut ExistingSnapshot,
+    commit_files: &mut Vec<(String, Option<Vec<u8>>)>,
+    pending: &mut Vec<PendingCacheNotify>,
+    outcome: &mut GroupImportOutcome,
+) -> Result<(), ArchiveError> {
+    validate_memory_slug(slug)?;
+    validate_write_content_lengths(&rendered)?;
+    let path = memory_path(slug, MemoryId::from_uuid(id));
+    if existing.occupied_paths.contains(&path) {
+        return Err(ImportError::MemoryAlreadyExists {
+            slug: slug.to_string(),
+        }
+        .into());
+    }
+    commit_files.push((path.clone(), Some(rendered.as_bytes().to_vec())));
+    existing.record(
+        id,
+        ExistingMemory {
+            slug: slug.to_string(),
+            path: path.clone(),
+            text: rendered.clone(),
+            addressing_mode: AddressingMode::ByFilename,
+        },
+    );
+    pending.push(PendingCacheNotify {
+        id,
+        slug: slug.to_string(),
+        path,
+        rendered,
+    });
+    outcome.created += 1;
+    Ok(())
+}
+
+/// Accumulate one archived memory's effect into the batch's pending commit state,
+/// applying the new-ids / overwrite / skip policy and tallying the result on `outcome`.
+///
+/// Does no I/O: every existing-content read the former per-memory
+/// `resolve_memory` + `read_file` pair performed was already folded into `existing`
+/// by [`snapshot_existing_memories`] before the caller's loop began.
+#[allow(clippy::too_many_arguments)]
+fn accumulate_one_memory(
     slug: &str,
     filename_id: Option<Uuid>,
     content: &str,
     options: &ImportArchiveOptions,
+    existing: &mut ExistingSnapshot,
+    commit_files: &mut Vec<(String, Option<Vec<u8>>)>,
+    pending: &mut Vec<PendingCacheNotify>,
     outcome: &mut GroupImportOutcome,
 ) -> Result<(), ArchiveError> {
     // Fork semantics: drop the archived id so a fresh one is minted and
     // the memory always lands as a new sibling.
     if options.new_ids {
         let forked = content_without_id(content)?;
-        import_memory(backend, &target.handle, slug, &forked, None, author, false).await?;
-        outcome.created += 1;
-        return Ok(());
+        let id = Uuid::now_v7();
+        let rendered = mint_and_render(&forked, id)?;
+        return stage_create(slug, id, rendered, existing, commit_files, pending, outcome);
     }
 
     // Identity-preserving import.
@@ -597,57 +815,54 @@ async fn import_one_memory(
         });
     };
 
-    match resolve_memory(backend, &target.handle, None, Some(id)).await {
-        Err(ImportError::MemoryNotFound { .. }) => {
-            import_memory(
-                backend,
-                &target.handle,
-                slug,
-                &prepared,
-                None,
-                author,
-                false,
-            )
-            .await?;
-            outcome.created += 1;
+    match existing.by_frontmatter_id.get(&id) {
+        None => {
+            let rendered = mint_and_render(&prepared, id)?;
+            stage_create(slug, id, rendered, existing, commit_files, pending, outcome)
         }
-        Err(other) => return Err(other.into()),
-        Ok(existing) => {
-            let existing_bytes = backend
-                .read_file(&target.handle, &existing.path, &Rev::Head)
-                .await?;
-            let existing_text = utf8(&existing.path, &existing_bytes)?;
-            if normalize(existing_text)? == normalize(&prepared)? {
+        Some(found) => {
+            if normalize(&found.text)? == normalize(&prepared)? {
                 outcome.skipped += 1;
-            } else if options.overwrite {
-                // Replace at the existing on-disk path so a drifted
-                // memory (filename uuid != frontmatter id) is replaced in
-                // place rather than duplicated under a canonical name.
-                let _guards =
-                    lock::acquire_chain(&lock::create_chain(target.handle.group_id)).await;
-                write_file_at_path(
-                    backend,
-                    &target.handle,
-                    &existing.path,
-                    &prepared,
-                    author,
-                    WriteFileOptions {
-                        addressing_mode: existing.addressing_mode,
-                        force: true,
-                        ..Default::default()
-                    },
-                )
-                .await?;
-                outcome.overwritten += 1;
-            } else {
+                return Ok(());
+            }
+            if !options.overwrite {
                 outcome.conflicts.push(MemoryConflict {
-                    slug: existing.slug,
+                    slug: found.slug.clone(),
                     id,
                 });
+                return Ok(());
             }
+            // Replace at the existing on-disk path so a drifted memory (filename
+            // uuid != frontmatter id) is replaced in place rather than duplicated
+            // under a canonical name. `force = true` mirrors the original overwrite
+            // branch's `WriteFileOptions { force: true, .. }`; the mismatch check
+            // can only return an accepted/forced outcome, never an error, once
+            // `force` is set, so this cannot fail on a genuine drift.
+            let found_path = found.path.clone();
+            let found_slug = found.slug.clone();
+            let found_mode = found.addressing_mode;
+            validate_id_mismatch(&found_path, &prepared, found_mode, true)?;
+            validate_write_content_lengths(&prepared)?;
+            commit_files.push((found_path.clone(), Some(prepared.as_bytes().to_vec())));
+            existing.by_frontmatter_id.insert(
+                id,
+                ExistingMemory {
+                    slug: found_slug.clone(),
+                    path: found_path.clone(),
+                    text: prepared.clone(),
+                    addressing_mode: found_mode,
+                },
+            );
+            pending.push(PendingCacheNotify {
+                id,
+                slug: found_slug,
+                path: found_path,
+                rendered: prepared,
+            });
+            outcome.overwritten += 1;
+            Ok(())
         }
     }
-    Ok(())
 }
 
 /// Error before any write when an archive targets a protected existing
@@ -810,6 +1025,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::super::manifest::{ArchiveMode, ArchivedGroupMeta};
     use super::*;
+    use crate::memory::{import_memory, resolve_memory};
     use crate::testing::ScratchHome;
     use crate::{ExportOptions, export_archive, list_all_memory_files};
 
@@ -1595,6 +1811,225 @@ mod tests {
         assert!(
             dst.groups().get(&seeded.group_id).await.is_none(),
             "source group must not be recreated under --into",
+        );
+    }
+
+    /// Count commits reachable from `HEAD` in the bare repo at `repo_path`, via
+    /// `git rev-list --count HEAD` against the repo directly.
+    ///
+    /// No [`mmcp_git::GitBackend`]/[`NativeBackend`] primitive returns a whole-repo
+    /// commit count: [`GitBackend::walk_history`] is scoped to one path's own
+    /// modification history, not the repo as a whole. This is a test-only
+    /// verification helper, not a change to `mmcp-git`.
+    fn commit_count(repo_path: &Path) -> usize {
+        let output = std::process::Command::new("git")
+            .args(["rev-list", "--count", "HEAD"])
+            .current_dir(repo_path)
+            .output()
+            .expect("git rev-list");
+        assert!(output.status.success(), "git rev-list failed: {output:?}");
+        String::from_utf8(output.stdout)
+            .expect("utf8 count")
+            .trim()
+            .parse()
+            .expect("integer commit count")
+    }
+
+    /// Memory count large enough that a per-memory commit loop and a single
+    /// batched commit are trivially distinguishable by commit-count delta.
+    const BULK_IMPORT_MEMORY_COUNT: usize = 12;
+
+    /// Importing many memories into an EXISTING target group produces exactly ONE
+    /// new commit on the target's main branch, not one per imported memory.
+    /// The regression this guards: `import_one_group`'s former per-memory
+    /// `import_memory`/`write_file_at_path` calls, each of which ran its own
+    /// `write_commit`.
+    #[tokio::test]
+    async fn batched_import_of_many_memories_produces_one_commit() {
+        let src = ScratchHome::new().await.expect("src home");
+        let seeded = src.seed_group("origin").await.expect("seed");
+        let entry = src.groups().get(&seeded.group_id).await.expect("entry");
+        for i in 0..BULK_IMPORT_MEMORY_COUNT {
+            import_memory(
+                src.backend(),
+                &entry.handle,
+                &format!("note-{i}"),
+                &memory_doc(Uuid::now_v7(), &format!("Body {i}.")),
+                None,
+                src.author(),
+                false,
+            )
+            .await
+            .expect("seed memory");
+        }
+        let buf = export_group(&src, seeded.group_id).await;
+
+        let dst = ScratchHome::new().await.expect("dst home");
+        // Pre-existing target group (via `--into`) so this exercises "import into
+        // an existing group", not the group-creation path.
+        let target = dst.seed_group("target").await.expect("seed target");
+        let repo_path = dst.backend().repo_path(*target.group_id.as_uuid());
+        let before = commit_count(&repo_path);
+
+        let report = import_archive(
+            dst.backend(),
+            dst.groups(),
+            dst.author(),
+            &buf,
+            &ImportArchiveOptions {
+                into_group: Some(target.group_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("batched import");
+
+        assert_eq!(
+            report.groups[0].created, BULK_IMPORT_MEMORY_COUNT as u32,
+            "every memory must still be tallied as created"
+        );
+        let after = commit_count(&repo_path);
+        assert_eq!(
+            after - before,
+            1,
+            "importing {BULK_IMPORT_MEMORY_COUNT} memories into an existing group \
+             must add exactly ONE commit, not one per memory"
+        );
+
+        let target_entry = dst.groups().get(&target.group_id).await.expect("target");
+        let files = list_all_memory_files(dst.backend(), &target_entry.handle, &Rev::Head)
+            .await
+            .expect("list");
+        assert_eq!(files.len(), BULK_IMPORT_MEMORY_COUNT);
+    }
+
+    /// Re-importing an archive whose every memory already exists identically
+    /// skips them all and adds NO commit: an all-skip batch must not produce
+    /// an empty commit just because the import ran.
+    #[tokio::test]
+    async fn reimport_of_all_identical_memories_produces_no_commit() {
+        let src = ScratchHome::new().await.expect("src home");
+        let seeded = src.seed_group("origin").await.expect("seed");
+        let entry = src.groups().get(&seeded.group_id).await.expect("entry");
+        for i in 0..BULK_IMPORT_MEMORY_COUNT {
+            import_memory(
+                src.backend(),
+                &entry.handle,
+                &format!("note-{i}"),
+                &memory_doc(Uuid::now_v7(), &format!("Body {i}.")),
+                None,
+                src.author(),
+                false,
+            )
+            .await
+            .expect("seed memory");
+        }
+        let buf = export_group(&src, seeded.group_id).await;
+
+        let dst = ScratchHome::new().await.expect("dst home");
+        import_archive(
+            dst.backend(),
+            dst.groups(),
+            dst.author(),
+            &buf,
+            &ImportArchiveOptions::default(),
+        )
+        .await
+        .expect("first import");
+
+        let repo_path = dst.backend().repo_path(*seeded.group_id.as_uuid());
+        let before = commit_count(&repo_path);
+
+        let second = import_archive(
+            dst.backend(),
+            dst.groups(),
+            dst.author(),
+            &buf,
+            &ImportArchiveOptions::default(),
+        )
+        .await
+        .expect("second import");
+        assert_eq!(second.groups[0].skipped, BULK_IMPORT_MEMORY_COUNT as u32);
+        assert_eq!(second.groups[0].created, 0);
+
+        let after = commit_count(&repo_path);
+        assert_eq!(
+            after, before,
+            "an all-skip re-import must not add an empty commit"
+        );
+    }
+
+    /// The batched snapshot must find a hand-crafted existing memory (non-UUID
+    /// filename) by its FRONTMATTER id, exactly like a per-memory
+    /// `resolve_memory(.., None, Some(id))` scan would, not only a canonical
+    /// `memories/<slug>/<uuid>.md` file. A snapshot keyed on filename stems
+    /// (e.g. built from `list_all_memory_files` instead of the full
+    /// `list_memory_slug_dirs` walk) would miss this file entirely and mint a
+    /// duplicate identity instead of reporting the collision.
+    #[tokio::test]
+    async fn batched_import_finds_hand_crafted_existing_memory_by_frontmatter_id() {
+        let id = Uuid::now_v7();
+        let home = ScratchHome::new().await.expect("home");
+        let seeded = home.seed_group("origin").await.expect("seed");
+        let entry = home.groups().get(&seeded.group_id).await.expect("entry");
+
+        // Hand-crafted target-side memory: filename stem is not a UUID, but
+        // frontmatter carries the id the incoming archive entry will also carry.
+        home.backend()
+            .write_commit(
+                &entry.handle,
+                CommitSpec::mmcp_commit(
+                    "seed hand-crafted memory",
+                    vec![(
+                        "memories/note/hand.md".to_string(),
+                        Some(memory_doc(id, "Hand-crafted body.").into_bytes()),
+                    )],
+                    &home.author().name,
+                    &home.author().email,
+                ),
+            )
+            .await
+            .expect("seed hand-crafted memory");
+
+        let group_id = *seeded.group_id.as_uuid();
+        let buf = build_archive(
+            group_id,
+            &seeded.manifest,
+            "note",
+            id,
+            &memory_doc(id, "Archived body, differs from hand-crafted."),
+        );
+
+        let report = import_archive(
+            home.backend(),
+            home.groups(),
+            home.author(),
+            &buf,
+            &ImportArchiveOptions::default(),
+        )
+        .await
+        .expect("import");
+
+        assert_eq!(
+            report.groups[0].created, 0,
+            "must not mint a duplicate sibling under the same id"
+        );
+        assert_eq!(
+            report.groups[0].conflicts.len(),
+            1,
+            "differing content at the same id must surface as a conflict"
+        );
+        assert_eq!(report.groups[0].conflicts[0].id, id);
+
+        let files = list_all_memory_files(home.backend(), &entry.handle, &Rev::Head)
+            .await
+            .expect("list");
+        assert_eq!(
+            files.len(),
+            0,
+            "the hand-crafted file has a non-UUID filename and is invisible to \
+             list_all_memory_files, confirming it was found by the frontmatter-id \
+             snapshot instead"
         );
     }
 

@@ -344,7 +344,11 @@ pub fn validate_id_mismatch(
 
 /// Extract the trailing `<uuid>.md` stem from a `memories/<slug>/<uuid>.md` path.
 /// Returns `None` for hand-crafted filenames whose stem is not a UUID.
-fn filename_uuid_from_path(path: &str) -> Option<Uuid> {
+///
+/// `pub(crate)`: also used by [`crate::archive::import`]'s batched import path
+/// to classify a snapshotted existing memory's addressing mode without
+/// re-deriving the filename/frontmatter comparison rule.
+pub(crate) fn filename_uuid_from_path(path: &str) -> Option<Uuid> {
     let stem = path
         .rsplit('/')
         .next()
@@ -726,15 +730,17 @@ pub struct WriteFileOptions<'a> {
 /// that reaches [`write_file_at_path`]: parse `rendered` and check its frontmatter
 /// (`name`, `description`, `tags`) and body against `mmcp_core::memory`'s named maxima.
 ///
-/// This is the single choke point every memory write with rendered content,
-/// create, update, `edit_memory_body`, feature/issue create and update, and archive import,
-/// commits through (see [`write_file_at_path`] and [`write_memory_by_id`]),
-/// so the check runs exactly once per write regardless of which higher-level entry point triggered it,
+/// This is the single choke point every memory write with rendered content commits through,
+/// create, update, `edit_memory_body`, feature/issue create and update (see [`write_file_at_path`]
+/// and [`write_memory_by_id`]), plus [`crate::archive::import`]'s batched multi-memory commit,
+/// which calls this directly per accumulated file since it builds one [`CommitSpec`] for the
+/// whole group instead of routing each memory through [`write_file_at_path`].
+/// The check still runs exactly once per write regardless of which entry point triggered it,
 /// per the SSOT/DRY rule and the "validation runs at the boundary" clause of `global-security-rules`.
 /// Commit-message validation is a separate concern handled uniformly by [`resolve_commit_message`],
 /// which every commit-producing entry point in this crate (including the ones with no rendered content,
 /// like delete and move) calls instead of building its message inline.
-fn validate_write_content_lengths(rendered: &str) -> Result<(), ImportError> {
+pub(crate) fn validate_write_content_lengths(rendered: &str) -> Result<(), ImportError> {
     let file = MemoryFile::parse(rendered)?;
     mmcp_core::memory::validate_frontmatter_lengths(&file.frontmatter)?;
     mmcp_core::memory::validate_body_length(&file.body)?;
