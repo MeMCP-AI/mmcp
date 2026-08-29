@@ -16,14 +16,16 @@
 //! Naming: `Finding` is the per-check record, avoiding a lexical collision with `MemoryKind::Issue`.
 
 use mmcp_core::manifest::{GroupScope, MANIFEST_SCHEMA_VERSION};
-use mmcp_core::memory::{MemoryFile, MemoryKind, parse_sections};
-use mmcp_git::{GitBackend, NativeBackend, Rev};
+use mmcp_core::memory::{
+    MemoryFile, MemoryFrontmatter, MemoryKind, parse_frontmatter, parse_sections,
+};
+use mmcp_git::{GitBackend, GitError, NativeBackend, RepoHandle, Rev};
 use serde::Serialize;
 use uuid::Uuid;
 
 use crate::groups::{GroupEntry, GroupIndex};
 use crate::home::{MmcpHome, read_git_global};
-use crate::memory::slugify_filename;
+use crate::memory::{MemoryFileRef, slugify_filename};
 
 // ── Shared types ────────────────────────────────────────────
 
@@ -615,6 +617,82 @@ fn scope_str(scope: GroupScope) -> &'static str {
     }
 }
 
+// ── Shared frontmatter corpus for diagnose_all's cross-group passes ────
+
+/// One memory file failed to read, decode as UTF-8, or parse while building
+/// a [`GroupFrontmatterCorpus`] entry. Carries no payload: every downstream
+/// pass skips a failed entry silently, matching the per-file
+/// `let Ok(x) = ... else { continue }` guard each pass used before this
+/// corpus existed, so the specific cause is never inspected.
+#[derive(Debug)]
+struct CorpusEntryError;
+
+/// Every memory in one group, paired with its frontmatter-parse outcome.
+/// Built by exactly one [`crate::memory::list_all_memory_files`] listing, one
+/// batched [`NativeBackend::read_files`] read, and one [`parse_frontmatter`]
+/// call per file. The slug-dup, by-id, cross-ref, and milestone-rollup
+/// passes in [`diagnose_all`] each need only frontmatter fields (kind,
+/// feature, milestone, id), never the body, so they share this corpus
+/// instead of each re-walking and re-reading the same files with its own
+/// full [`MemoryFile::parse`].
+///
+/// Materializes every memory's frontmatter for the group at once, the same
+/// whole-corpus-in-RAM trade `mmcp_store::tracker::read_all_slug_files`
+/// documents on its own doc comment.
+type GroupFrontmatterCorpus = Vec<(MemoryFileRef, Result<MemoryFrontmatter, CorpusEntryError>)>;
+
+/// Build a [`GroupFrontmatterCorpus`] from an already-listed set of memory
+/// files, given a caller-supplied batch-read seam. The seam is called
+/// exactly once, with every file's path in one request, regardless of how
+/// many of `diagnose_all`'s four frontmatter-only passes end up consuming
+/// the returned corpus afterward: the fault this corpus replaces was each
+/// of those passes running its own `read_file`-per-path loop.
+async fn build_frontmatter_corpus<F, Fut>(
+    files: Vec<MemoryFileRef>,
+    mut read_batch: F,
+) -> GroupFrontmatterCorpus
+where
+    F: FnMut(Vec<String>) -> Fut,
+    Fut: Future<Output = Result<Vec<(String, Result<bytes::Bytes, GitError>)>, GitError>>,
+{
+    let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+    let bytes_by_path: std::collections::HashMap<String, Result<bytes::Bytes, GitError>> =
+        match read_batch(paths).await {
+            Ok(batch) => batch.into_iter().collect(),
+            // A batch-level failure (e.g. the revision does not resolve)
+            // fails every file identically, matching the pre-refactor
+            // per-file `read_file` loop, where the same failure would have
+            // hit every individual call the same way.
+            Err(_) => std::collections::HashMap::new(),
+        };
+
+    files
+        .into_iter()
+        .map(|file_ref| {
+            let outcome = match bytes_by_path.get(&file_ref.path) {
+                Some(Ok(bytes)) => match std::str::from_utf8(bytes) {
+                    Ok(text) => parse_frontmatter(text).map_err(|_| CorpusEntryError),
+                    Err(_) => Err(CorpusEntryError),
+                },
+                _ => Err(CorpusEntryError),
+            };
+            (file_ref, outcome)
+        })
+        .collect()
+}
+
+/// Build a [`GroupFrontmatterCorpus`] for one group at `rev`: one
+/// [`crate::memory::list_all_memory_files`] listing feeding one
+/// [`NativeBackend::read_files`] batch read via [`build_frontmatter_corpus`].
+async fn read_group_frontmatter_corpus(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    rev: &Rev,
+) -> Result<GroupFrontmatterCorpus, GitError> {
+    let files = crate::memory::list_all_memory_files(backend, handle, rev).await?;
+    Ok(build_frontmatter_corpus(files, |paths| backend.read_files(handle, paths, rev)).await)
+}
+
 pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagReport {
     let mut project_findings = Vec::new();
 
@@ -628,22 +706,34 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
     let mut slug_groups: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
 
+    // One shared frontmatter corpus per group, indexed in lockstep with
+    // `entries`, feeding the slug-dup, by-id, cross-ref, and
+    // milestone-rollup passes below without any of them re-listing or
+    // re-reading the group's memory files on their own.
+    let mut corpora: Vec<GroupFrontmatterCorpus> = Vec::with_capacity(entries.len());
+
     for entry in &entries {
         let report = diagnose_group(backend, entry).await;
         let gid = report.group_id.clone();
         let rev = Rev::head();
-        if let Ok(files) = crate::memory::list_all_memory_files(backend, &entry.handle, &rev).await
-        {
-            // Dedupe per-group: under the two-level layout a slug
-            // with multiple UUIDs is still one slug from the
-            // cross-group-duplicate perspective.
-            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-            for file in files {
-                if seen.insert(file.slug.clone()) {
-                    slug_groups.entry(file.slug).or_default().push(gid.clone());
-                }
+        let corpus = read_group_frontmatter_corpus(backend, &entry.handle, &rev)
+            .await
+            .unwrap_or_default();
+
+        // Dedupe per-group: under the two-level layout a slug
+        // with multiple UUIDs is still one slug from the
+        // cross-group-duplicate perspective.
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (file_ref, _) in &corpus {
+            if seen.insert(file_ref.slug.clone()) {
+                slug_groups
+                    .entry(file_ref.slug.clone())
+                    .or_default()
+                    .push(gid.clone());
             }
         }
+
+        corpora.push(corpus);
         reports.push(report);
     }
 
@@ -679,27 +769,16 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
     }
     let mut by_id: std::collections::HashMap<Uuid, Vec<MemoryRecord>> =
         std::collections::HashMap::new();
-    for entry in &entries {
+    for (entry, corpus) in entries.iter().zip(&corpora) {
         let gid = entry.handle.group_id.to_string();
-        let rev = Rev::head();
-        let Ok(files) = crate::memory::list_all_memory_files(backend, &entry.handle, &rev).await
-        else {
-            continue;
-        };
-        for file_ref in files {
-            let Ok(bytes) = backend.read_file(&entry.handle, &file_ref.path, &rev).await else {
-                continue;
-            };
-            let Ok(text) = std::str::from_utf8(&bytes) else {
-                continue;
-            };
-            let Ok(mf) = MemoryFile::parse(text) else {
+        for (file_ref, outcome) in corpus {
+            let Ok(fm) = outcome else {
                 continue;
             };
             by_id.entry(file_ref.id).or_default().push(MemoryRecord {
                 group_id: gid.clone(),
                 slug: file_ref.slug.clone(),
-                kind: mf.frontmatter.kind,
+                kind: fm.kind,
             });
         }
     }
@@ -740,27 +819,16 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
     // Cross-ref validation for features: `depends_on` / `blocks`
     // must resolve to an existing memory, and that memory must
     // itself be a feature.
-    for entry in &entries {
-        let rev = Rev::head();
+    for (entry, corpus) in entries.iter().zip(&corpora) {
         let gid = entry.handle.group_id.to_string();
-        let Ok(files) = crate::memory::list_all_memory_files(backend, &entry.handle, &rev).await
-        else {
-            continue;
-        };
-        for file_ref in files {
-            let Ok(bytes) = backend.read_file(&entry.handle, &file_ref.path, &rev).await else {
+        for (file_ref, outcome) in corpus {
+            let Ok(fm) = outcome else {
                 continue;
             };
-            let Ok(text) = std::str::from_utf8(&bytes) else {
-                continue;
-            };
-            let Ok(mf) = MemoryFile::parse(text) else {
-                continue;
-            };
-            if mf.frontmatter.kind != MemoryKind::Feature {
+            if fm.kind != MemoryKind::Feature {
                 continue;
             }
-            let Some(feat) = mf.frontmatter.feature else {
+            let Some(feat) = fm.feature.as_ref() else {
                 continue;
             };
             let Some(report) = reports.iter_mut().find(|r| r.group_id == gid) else {
@@ -846,31 +914,19 @@ pub async fn diagnose_all(backend: &NativeBackend, groups: &GroupIndex) -> DiagR
     // never called `cache::init_from_home`) is never a reason to
     // fail the rest of `diagnose`.
     if let Some(pool) = crate::cache::active_pool() {
-        for entry in &entries {
-            let rev = Rev::head();
+        for (entry, corpus) in entries.iter().zip(&corpora) {
             let gid = entry.handle.group_id.to_string();
-            let Ok(files) =
-                crate::memory::list_all_memory_files(backend, &entry.handle, &rev).await
-            else {
-                continue;
-            };
-            for file_ref in files {
-                let Ok(bytes) = backend.read_file(&entry.handle, &file_ref.path, &rev).await else {
+            for (file_ref, outcome) in corpus {
+                let Ok(fm) = outcome else {
                     continue;
                 };
-                let Ok(text) = std::str::from_utf8(&bytes) else {
-                    continue;
-                };
-                let Ok(mf) = MemoryFile::parse(text) else {
-                    continue;
-                };
-                if mf.frontmatter.kind != MemoryKind::Milestone {
+                if fm.kind != MemoryKind::Milestone {
                     continue;
                 }
-                let Some(meta) = mf.frontmatter.milestone else {
+                let Some(meta) = fm.milestone.as_ref() else {
                     continue;
                 };
-                let Some(id) = mf.frontmatter.id else {
+                let Some(id) = fm.id else {
                     continue;
                 };
                 let Ok(computed) = crate::milestones::rollup::compute(
@@ -1072,6 +1128,109 @@ fn tokens_overlap(a: &str, b: &str) -> bool {
     let at = tokenize(a);
     let bt = tokenize(b);
     at.iter().any(|t| bt.iter().any(|u| u == t))
+}
+
+#[cfg(test)]
+mod frontmatter_corpus_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    /// File count large enough that a per-file `read_file` loop and a
+    /// single batched call are trivially distinguishable.
+    const BULK_FILE_COUNT: usize = 12;
+
+    fn bulk_files() -> Vec<MemoryFileRef> {
+        (0..BULK_FILE_COUNT)
+            .map(|i| MemoryFileRef {
+                slug: format!("bulk-{i}"),
+                id: Uuid::now_v7(),
+                path: format!("memories/bulk-{i}/dummy.md"),
+            })
+            .collect()
+    }
+
+    /// A minimal, well-formed memory file body so `parse_frontmatter`
+    /// succeeds for every seeded file.
+    fn sample_memory_body(id: Uuid) -> String {
+        format!(
+            "+++\nid = \"{id}\"\nname = \"n\"\ndescription = \"d\"\nkind = \"rule\"\n+++\nbody\n"
+        )
+    }
+
+    /// [`build_frontmatter_corpus`] calls its `read_batch` seam exactly
+    /// once, independent of file count, and the resulting corpus is then
+    /// consumed by simulated stand-ins for all four of `diagnose_all`'s
+    /// frontmatter-only passes (slug-dup, by-id, cross-ref,
+    /// milestone-rollup) without the seam firing again. The regression
+    /// this guards is each pass running its own `read_file`-per-path
+    /// loop, which called the seam once per file per pass instead of
+    /// once for the whole group.
+    #[tokio::test]
+    async fn build_frontmatter_corpus_reads_the_batch_exactly_once_across_all_four_passes() {
+        let files = bulk_files();
+        let requested_len = files.len();
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&call_count);
+
+        let corpus = build_frontmatter_corpus(files, move |batched_paths| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(
+                batched_paths.len(),
+                requested_len,
+                "every file must land in the single batch call"
+            );
+            async move {
+                let batch = batched_paths
+                    .into_iter()
+                    .map(|path| {
+                        let id = Uuid::now_v7();
+                        (path, Ok(bytes::Bytes::from(sample_memory_body(id))))
+                    })
+                    .collect();
+                Ok(batch)
+            }
+        })
+        .await;
+
+        // Stand in for the four downstream passes, each walking the same
+        // corpus independently the way `diagnose_all` does.
+        let slug_dup_pass = corpus.len();
+        let by_id_pass = corpus.iter().filter(|(_, o)| o.is_ok()).count();
+        let cross_ref_pass = corpus.iter().filter(|(_, o)| o.is_ok()).count();
+        let milestone_pass = corpus.iter().filter(|(_, o)| o.is_ok()).count();
+
+        assert_eq!(slug_dup_pass, BULK_FILE_COUNT);
+        assert_eq!(by_id_pass, BULK_FILE_COUNT);
+        assert_eq!(cross_ref_pass, BULK_FILE_COUNT);
+        assert_eq!(milestone_pass, BULK_FILE_COUNT);
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "the read seam must be called exactly once no matter how many passes consume the corpus"
+        );
+    }
+
+    /// A batch-level failure (revision does not resolve) fails every file
+    /// in the group identically, matching the pre-refactor per-file loop
+    /// where the same failure hit every individual `read_file` call.
+    #[tokio::test]
+    async fn build_frontmatter_corpus_batch_failure_fails_every_file() {
+        let files = bulk_files();
+
+        let corpus = build_frontmatter_corpus(files, |_paths| async {
+            Err(GitError::RevNotFound("HEAD".to_string()))
+        })
+        .await;
+
+        assert_eq!(corpus.len(), BULK_FILE_COUNT);
+        assert!(
+            corpus.iter().all(|(_, outcome)| outcome.is_err()),
+            "every file must be marked unread when the batch call itself fails"
+        );
+    }
 }
 
 #[cfg(test)]
