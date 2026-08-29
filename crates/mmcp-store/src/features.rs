@@ -916,57 +916,61 @@ pub async fn list_features(
     status_filter: Option<FeatureStatus>,
     show_all: bool,
 ) -> Result<(Vec<FeatureRecord>, Vec<Finding>), FeatureError> {
-    // Every memory lives at `memories/<slug>/<uuid>.md`, so slug leaf directories are the enumeration surface.
-    // Nested slug paths surface alongside flat ones.
-    let slug_dirs = crate::memory::list_memory_slug_dirs(backend, &entry.handle, &Rev::head())
+    // One batched walk-and-read instead of a `list_tree` + `read_file` pair per slug:
+    // see `crate::tracker::read_all_slug_files` for the O(2N) -> O(1) rationale.
+    let files = crate::tracker::read_all_slug_files(backend, entry, Rev::head())
         .await
-        .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?;
+        .map_err(FeatureError::Memory)?;
 
     let mut out = Vec::new();
     let mut findings = Vec::new();
-    for slug_dir in slug_dirs {
-        match read_feature(backend, entry, &slug_dir.slug, None).await {
-            Ok(record) => {
-                if crate::tracker::listing_keeps_status(record.status, status_filter, show_all) {
-                    out.push(record);
+    for (slug, outcome) in files {
+        match outcome {
+            Ok(file) => match record_from_file(&slug, file, String::new()) {
+                Ok(record) => {
+                    if crate::tracker::listing_keeps_status(record.status, status_filter, show_all)
+                    {
+                        out.push(record);
+                    }
                 }
-            }
-            // `NotAFeature` covers two different situations that
-            // `require_block` cannot tell apart by variant alone:
-            // a genuinely unrelated kind (expected non-match, no
-            // finding) versus a self-declared kind = feature memory
-            // missing its [feature] block (a corruption signal the
-            // module's contract says must never be silently hidden).
-            // `kind` carries the memory's real frontmatter kind
-            // string, so branch on it here.
-            Err(FeatureError::NotAFeature { slug, kind })
-                if kind == MemoryKind::Feature.as_str() =>
-            {
-                findings.push(Finding {
-                    group: entry.manifest.group_id.to_string(),
-                    message: format!(
-                        "memory '{slug}' declares kind 'feature' but carries no [feature] block"
-                    ),
-                    slug: Some(slug),
-                    severity: "error",
-                    code: "feature_block_missing",
-                });
-            }
-            // A genuinely unrelated kind is an *expected* non-match:
-            // the slug is a rule/snapshot/log/reference/scratch memory, not a corruption signal,
-            // so the loop continues past it without a finding.
-            Err(FeatureError::NotAFeature { .. }) => {}
+                // `NotAFeature` covers two different situations that
+                // `require_block` cannot tell apart by variant alone:
+                // a genuinely unrelated kind (expected non-match, no
+                // finding) versus a self-declared kind = feature memory
+                // missing its [feature] block (a corruption signal the
+                // module's contract says must never be silently hidden).
+                // `kind` carries the memory's real frontmatter kind
+                // string, so branch on it here.
+                Err(FeatureError::NotAFeature { slug, kind })
+                    if kind == MemoryKind::Feature.as_str() =>
+                {
+                    findings.push(Finding {
+                        group: entry.manifest.group_id.to_string(),
+                        message: format!(
+                            "memory '{slug}' declares kind 'feature' but carries no [feature] block"
+                        ),
+                        slug: Some(slug),
+                        severity: "error",
+                        code: "feature_block_missing",
+                    });
+                }
+                // A genuinely unrelated kind is an *expected* non-match:
+                // the slug is a rule/snapshot/log/reference/scratch memory, not a corruption signal,
+                // so the loop continues past it without a finding.
+                Err(FeatureError::NotAFeature { .. }) => {}
+                Err(other) => return Err(other),
+            },
             // A genuine parse error does NOT silently drop the memory from view:
             // it is surfaced as a finding so a corrupt-on-disk FR is loud instead of invisible,
             // while one bad memory still does not take the whole group's listing down.
-            Err(FeatureError::Memory(ImportError::Parse(err))) => {
+            Err(ImportError::Parse(err)) => {
                 findings.push(crate::tracker::parse_failed_finding(
                     &entry.manifest.group_id.to_string(),
-                    &slug_dir.slug,
+                    &slug,
                     &err,
                 ));
             }
-            Err(other) => return Err(other),
+            Err(other) => return Err(FeatureError::Memory(other)),
         }
     }
     // Sort by sequential number ascending so the listing keeps a
@@ -1465,6 +1469,54 @@ mod tests {
         );
         assert_eq!(findings[0].code, "frontmatter_parse_failed");
         assert_eq!(findings[0].slug.as_deref(), Some("corrupt"));
+    }
+
+    /// `list_features` reads every slug through one batched
+    /// `tracker::read_all_slug_files` call (one `list_memory_slug_dirs`
+    /// walk plus one batched `read_files`) instead of a `list_tree` +
+    /// `read_file` pair per slug. Seeding enough FRs to span many slug
+    /// directories confirms the batched path returns exactly the same
+    /// records a per-slug loop would, not merely that it compiles.
+    #[tokio::test]
+    async fn list_features_batches_many_features_correctly() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        const FEATURE_COUNT: u32 = 25;
+        for i in 0..FEATURE_COUNT {
+            add_feature(
+                scratch.backend(),
+                &entry,
+                AddSpec {
+                    slug: Some(format!("bulk-feature-{i}")),
+                    title: format!("Bulk feature {i}"),
+                    description: "bulk listing test".into(),
+                    body: "b".into(),
+                    ..AddSpec::default()
+                },
+                scratch.author(),
+            )
+            .await
+            .expect("seed bulk feature");
+        }
+
+        let (records, findings) = list_features(scratch.backend(), &entry, None, true)
+            .await
+            .expect("list all bulk features");
+        assert!(findings.is_empty());
+        assert_eq!(records.len(), FEATURE_COUNT as usize);
+        let numbers: Vec<u32> = records.iter().filter_map(|r| r.number).collect();
+        let expected: Vec<u32> = (1..=FEATURE_COUNT).collect();
+        assert_eq!(
+            numbers, expected,
+            "listing must stay sorted by number ascending"
+        );
+        let slugs: std::collections::HashSet<&str> =
+            records.iter().map(|r| r.slug.as_str()).collect();
+        for i in 0..FEATURE_COUNT {
+            assert!(slugs.contains(format!("bulk-feature-{i}").as_str()));
+        }
     }
 
     #[tokio::test]
