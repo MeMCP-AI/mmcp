@@ -4,6 +4,16 @@ version = "0.0.0"
 publish = false
 edition = "2024"
 
+# Excluded from the root workspace (see its `exclude` entry and
+# accompanying comment) because libfuzzer-sys only compiles under
+# libFuzzer on Linux/macOS. An empty table here is required so cargo
+# stops walking upward for an enclosing workspace when invoked
+# directly against this manifest, which is exactly how `cargo fuzz
+# run` (and CI's `working-directory: crates/mmcp-core/fuzz`) invokes
+# it; without it cargo sees this package listed in the root's
+# `exclude` rather than `members` and refuses to build.
+[workspace]
+
 [package.metadata]
 cargo-fuzz = true
 
