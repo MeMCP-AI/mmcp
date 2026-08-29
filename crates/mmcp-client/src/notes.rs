@@ -26,6 +26,29 @@ use mmcp_sync::{GroupSyncFailure, PushReport, RemoteManifestFailure};
 use serde_json::json;
 use uuid::Uuid;
 
+// Counts `collect_known_memory_ids` invocations, one counter per OS thread.
+// A listing call site must collect the known-id set once per listing, never once per listed record.
+// Thread-local rather than a global: concurrent tests on other OS threads never perturb this one.
+// Every `#[tokio::test]` here runs to completion on the single thread that calls it,
+// so the count observed is that test's own.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static COLLECT_KNOWN_MEMORY_IDS_CALLS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// Zero this thread's [`collect_known_memory_ids`] call counter.
+#[cfg(test)]
+pub(crate) fn reset_collect_known_memory_ids_calls() {
+    COLLECT_KNOWN_MEMORY_IDS_CALLS.with(|c| c.set(0));
+}
+
+/// Read this thread's [`collect_known_memory_ids`] call counter.
+#[cfg(test)]
+pub(crate) fn collect_known_memory_ids_call_count() -> usize {
+    COLLECT_KNOWN_MEMORY_IDS_CALLS.with(std::cell::Cell::get)
+}
+
 /// Print every note on its own line, prefixed by its severity.
 ///
 /// Called at the tail of every CLI subcommand that has notes to
@@ -86,16 +109,44 @@ pub async fn dangling_ref_notes_for(
     blocks: &[Uuid],
     superseded_by: Option<&MemoryRef>,
 ) -> Vec<Note> {
-    let files = match list_all_memory_files(backend, &entry.handle, &Rev::head()).await {
-        Ok(files) => files,
+    let known = match collect_known_memory_ids(backend, entry).await {
+        Ok(known) => known,
         // Git failure on enumeration is unusual; surface nothing
         // rather than inventing a fake dangling-ref storm. The
         // per-memory reads in the tool body would have failed too
         // and landed as a real error response upstream.
         Err(_) => return Vec::new(),
     };
-    let known: std::collections::HashSet<Uuid> = files.iter().map(|f| f.id).collect();
+    dangling_ref_notes_with_known(&known, entry, slug, depends_on, blocks, superseded_by)
+}
 
+/// Walk the group's whole memory index once and return the set of every live memory id.
+///
+/// A listing endpoint calls this once before its per-record loop.
+/// It reuses the result via [`dangling_ref_notes_with_known`] instead of re-walking the group per record.
+pub(crate) async fn collect_known_memory_ids(
+    backend: &NativeBackend,
+    entry: &GroupEntry,
+) -> Result<std::collections::HashSet<Uuid>, mmcp_git::GitError> {
+    #[cfg(test)]
+    COLLECT_KNOWN_MEMORY_IDS_CALLS.with(|c| c.set(c.get() + 1));
+    let files = list_all_memory_files(backend, &entry.handle, &Rev::head()).await?;
+    Ok(files.iter().map(|f| f.id).collect())
+}
+
+/// Pure, no-I/O half of the `dangling_ref` populator.
+/// Compares one record's cross-refs against an already-collected known-id set.
+///
+/// Callers that list many records collect the known-id set once via [`collect_known_memory_ids`].
+/// They call this per record instead of re-walking the group index for every one.
+pub(crate) fn dangling_ref_notes_with_known(
+    known: &std::collections::HashSet<Uuid>,
+    entry: &GroupEntry,
+    slug: &str,
+    depends_on: &[Uuid],
+    blocks: &[Uuid],
+    superseded_by: Option<&MemoryRef>,
+) -> Vec<Note> {
     let mut notes = Vec::new();
     for (field, uuid) in depends_on
         .iter()
@@ -440,5 +491,126 @@ mod tests {
     fn sync_push_partial_failure_notes_panics_when_transport_error_missing() {
         let report = push_report_with_one_partial_failure(None);
         let _ = sync_push_partial_failure_notes(&report);
+    }
+
+    async fn seed_one_feature(
+        scratch: &mmcp_store::testing::ScratchHome,
+        group_slug: &str,
+    ) -> GroupEntry {
+        let seeded = scratch.seed_group(group_slug).await.expect("seed group");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+        mmcp_store::features::add_feature(
+            scratch.backend(),
+            &entry,
+            mmcp_store::features::AddSpec {
+                slug: Some("alpha".into()),
+                title: "alpha".into(),
+                ..mmcp_store::features::AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("add alpha");
+        entry
+    }
+
+    #[tokio::test]
+    async fn dangling_ref_notes_with_known_flags_only_the_unresolved_target() {
+        let scratch = mmcp_store::testing::ScratchHome::new()
+            .await
+            .expect("scratch home");
+        let entry = seed_one_feature(&scratch, "dangling-fixture").await;
+
+        let known = collect_known_memory_ids(scratch.backend(), &entry)
+            .await
+            .expect("collect known ids");
+        let known_id = *known.iter().next().expect("one known id");
+        let missing_id = Uuid::now_v7();
+
+        let notes = dangling_ref_notes_with_known(
+            &known,
+            &entry,
+            "consumer",
+            &[known_id, missing_id],
+            &[],
+            None,
+        );
+
+        assert_eq!(
+            notes.len(),
+            1,
+            "only the unresolved target must produce a note: {notes:?}"
+        );
+        assert_eq!(notes[0].code, "dangling_ref");
+        assert_eq!(
+            notes[0]
+                .context
+                .as_ref()
+                .and_then(|c| c.get("target"))
+                .and_then(|v| v.as_str()),
+            Some(missing_id.to_string()).as_deref()
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_known_memory_ids_serves_every_listed_record_from_one_call() {
+        let scratch = mmcp_store::testing::ScratchHome::new()
+            .await
+            .expect("scratch home");
+        let seeded = scratch
+            .seed_group("dangling-fixture-many")
+            .await
+            .expect("seed group");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        const RECORD_COUNT: usize = 20;
+        for i in 0..RECORD_COUNT {
+            mmcp_store::features::add_feature(
+                scratch.backend(),
+                &entry,
+                mmcp_store::features::AddSpec {
+                    slug: Some(format!("f-{i}")),
+                    title: format!("f-{i}"),
+                    depends_on: vec![Uuid::now_v7()],
+                    ..mmcp_store::features::AddSpec::default()
+                },
+                scratch.author(),
+            )
+            .await
+            .expect("add feature");
+        }
+
+        let (summaries, _findings) =
+            mmcp_store::features::list_feature_summaries(scratch.backend(), &entry, None, true)
+                .await
+                .expect("list summaries");
+        assert_eq!(summaries.len(), RECORD_COUNT);
+
+        reset_collect_known_memory_ids_calls();
+        let known = collect_known_memory_ids(scratch.backend(), &entry)
+            .await
+            .expect("collect known ids");
+        let mut notes = Vec::new();
+        for summary in &summaries {
+            notes.extend(dangling_ref_notes_with_known(
+                &known,
+                &entry,
+                &summary.slug,
+                &summary.depends_on,
+                &summary.blocks,
+                summary.superseded_by.as_ref(),
+            ));
+        }
+
+        assert_eq!(
+            collect_known_memory_ids_call_count(),
+            1,
+            "collecting the known-id set once must serve every one of the {RECORD_COUNT} listed records"
+        );
+        assert_eq!(
+            notes.len(),
+            RECORD_COUNT,
+            "each feature's random depends_on target must still be flagged exactly once"
+        );
     }
 }

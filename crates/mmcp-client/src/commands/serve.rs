@@ -46,8 +46,9 @@ use crate::commands::tool_metadata_cli::{
     shared_output_schema, tool_icon_category,
 };
 use crate::notes::{
-    dangling_ref_notes_for, finding_to_note, findings_to_notes, id_validation_to_notes,
-    malformed_frontmatter_notes, sync_group_failure_notes, sync_manifest_failure_notes,
+    collect_known_memory_ids, dangling_ref_notes_for, dangling_ref_notes_with_known,
+    finding_to_note, findings_to_notes, id_validation_to_notes, malformed_frontmatter_notes,
+    sync_group_failure_notes, sync_manifest_failure_notes,
 };
 use crate::state::{WatcherHandle, spawn_watcher};
 use mmcp_store::config::{PROJECT_MANIFEST, find_project_root, load as load_project_config};
@@ -5063,25 +5064,25 @@ impl McpServer {
         )
         .await
         .map_err(map_feature_error_to_mcp)?;
-        // The `dangling_ref` populator: aggregate dangling-ref notes
-        // across every record in the listing so callers see a
-        // single pane of reference-integrity warnings alongside
-        // the listing itself. Per-memory parse-error findings
-        // (frontmatter_parse_failed) ride the same channel so a
-        // corrupt memory is loud instead of silently vanishing.
+        // The `dangling_ref` populator aggregates every listed record's dangling-ref notes into one pane.
+        // Per-memory parse-error findings (frontmatter_parse_failed) ride the same channel.
+        // A corrupt memory stays loud instead of silently vanishing.
+        // The known-id set is walked once for the whole listing and reused per record, not once per summary.
         let mut notes = findings_to_notes(&findings);
+        let known = collect_known_memory_ids(&self.state.backend, &entry)
+            .await
+            .ok();
         for summary in &summaries {
-            notes.extend(
-                dangling_ref_notes_for(
-                    &self.state.backend,
+            if let Some(known) = &known {
+                notes.extend(dangling_ref_notes_with_known(
+                    known,
                     &entry,
                     &summary.slug,
                     &summary.depends_on,
                     &summary.blocks,
                     summary.superseded_by.as_ref(),
-                )
-                .await,
-            );
+                ));
+            }
         }
         let features: Vec<_> = summaries
             .iter()
@@ -5473,27 +5474,28 @@ impl McpServer {
         .map_err(map_feature_error_to_mcp)?;
         let status = parse_issue_status_arg(args.status.as_deref())?;
         let show_all = args.all.unwrap_or(false);
-        // Per-memory parse-error findings (frontmatter_parse_failed)
-        // ride the same notes channel as the feature-tool listing so
-        // a corrupt issue memory is loud instead of silently
-        // vanishing.
+        // Per-memory parse-error findings (frontmatter_parse_failed) ride the same notes channel as the feature-tool listing.
+        // A corrupt issue memory stays loud instead of silently vanishing.
+        // The known-id set is walked once for the whole listing and reused per record, not once per summary.
         let (summaries, findings) =
             mmcp_store::issues::list_issue_summaries(&self.state.backend, &entry, status, show_all)
                 .await
                 .map_err(map_issue_error_to_mcp)?;
         let mut notes = findings_to_notes(&findings);
+        let known = collect_known_memory_ids(&self.state.backend, &entry)
+            .await
+            .ok();
         for summary in &summaries {
-            notes.extend(
-                dangling_ref_notes_for(
-                    &self.state.backend,
+            if let Some(known) = &known {
+                notes.extend(dangling_ref_notes_with_known(
+                    known,
                     &entry,
                     &summary.slug,
                     &summary.depends_on,
                     &summary.blocks,
                     summary.superseded_by.as_ref(),
-                )
-                .await,
-            );
+                ));
+            }
         }
         let issues: Vec<_> = summaries
             .iter()
@@ -8415,6 +8417,58 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn list_features_collects_known_memory_ids_once_regardless_of_record_count() {
+        // `list_features` collects the dangling-ref known-id set once and reuses it across every listed record.
+        // This asserts that invariant against the real MCP tool call site, not only the shared helper in isolation.
+        let (state, _tmp) = test_state().await;
+        let group =
+            seed_group_with_memory(&state, "fr-known-ids-once", "seed-only", SAMPLE_MEMORY).await;
+        let entry = state.groups.get(&group).await.expect("group entry");
+
+        const RECORD_COUNT: u32 = 15;
+        for i in 0..RECORD_COUNT {
+            let spec = mmcp_store::features::AddSpec {
+                slug: Some(format!("fr-{i}")),
+                title: format!("Title {i}"),
+                number: Some(i + 1),
+                depends_on: vec![Uuid::now_v7()],
+                ..mmcp_store::features::AddSpec::default()
+            };
+            mmcp_store::features::add_feature(&state.backend, &entry, spec, &state.author)
+                .await
+                .expect("seed feature");
+        }
+        state.groups.refresh().await.expect("refresh");
+
+        let server = McpServer::new(state, ServeMode::Full);
+        crate::notes::reset_collect_known_memory_ids_calls();
+        let res = server
+            .list_features(Parameters(ListFeaturesArgs {
+                project: Some(group.to_string()),
+                status: None,
+                all: Some(true),
+            }))
+            .await
+            .expect("list_features");
+        let parsed = parse_ok_json(res);
+
+        assert_eq!(
+            crate::notes::collect_known_memory_ids_call_count(),
+            1,
+            "the known-id set must be collected exactly once for the whole listing"
+        );
+        let notes = parsed
+            .get("notes")
+            .and_then(|v| v.as_array())
+            .expect("dangling depends_on must surface a note per record");
+        assert_eq!(
+            notes.len(),
+            RECORD_COUNT as usize,
+            "each record's random depends_on target must still be flagged"
+        );
+    }
+
     // ── Issue-tracker tools ─────────────────────────────────────
     //
     // Sister block to the feature-tracker tests above. Exercises
@@ -8617,6 +8671,58 @@ mod tests {
             .collect();
         assert!(slugs.contains(&"issue-open"));
         assert!(!slugs.contains(&"issue-closed"));
+    }
+
+    #[tokio::test]
+    async fn list_issues_collects_known_memory_ids_once_regardless_of_record_count() {
+        // Sister test to `list_features_collects_known_memory_ids_once_regardless_of_record_count`.
+        // `list_issues` needs the same direct assertion against its own MCP tool call site.
+        let (state, _tmp) = test_state().await;
+        let group =
+            seed_group_with_memory(&state, "issue-known-ids-once", "seed-only", SAMPLE_MEMORY)
+                .await;
+        let entry = state.groups.get(&group).await.expect("group entry");
+
+        const RECORD_COUNT: usize = 15;
+        for i in 0..RECORD_COUNT {
+            let spec = mmcp_store::issues::AddSpec {
+                slug: Some(format!("issue-{i}")),
+                title: format!("Title {i}"),
+                depends_on: vec![Uuid::now_v7()],
+                ..mmcp_store::issues::AddSpec::default()
+            };
+            mmcp_store::issues::add_issue(&state.backend, &entry, spec, &state.author)
+                .await
+                .expect("seed issue");
+        }
+        state.groups.refresh().await.expect("refresh");
+
+        let server = McpServer::new(state, ServeMode::Full);
+        crate::notes::reset_collect_known_memory_ids_calls();
+        let res = server
+            .list_issues(Parameters(ListIssuesArgs {
+                project: Some(group.to_string()),
+                status: None,
+                all: Some(true),
+            }))
+            .await
+            .expect("list_issues");
+        let parsed = parse_ok_json(res);
+
+        assert_eq!(
+            crate::notes::collect_known_memory_ids_call_count(),
+            1,
+            "the known-id set must be collected exactly once for the whole listing"
+        );
+        let notes = parsed
+            .get("notes")
+            .and_then(|v| v.as_array())
+            .expect("dangling depends_on must surface a note per record");
+        assert_eq!(
+            notes.len(),
+            RECORD_COUNT,
+            "each record's random depends_on target must still be flagged"
+        );
     }
 
     #[tokio::test]

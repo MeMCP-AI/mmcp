@@ -18,7 +18,10 @@ use mmcp_store::features::{
 use mmcp_store::home::MmcpHome;
 
 use crate::commands::tracker_cli::{join_uuids, read_body};
-use crate::notes::{dangling_ref_notes_for, findings_to_notes, render_notes_tail};
+use crate::notes::{
+    collect_known_memory_ids, dangling_ref_notes_for, dangling_ref_notes_with_known,
+    findings_to_notes, render_notes_tail,
+};
 
 // ── Clap surface ────────────────────────────────────────────────
 
@@ -431,18 +434,18 @@ async fn run_list(args: ListArgs) -> Result<()> {
     println!("\n{} feature(s)", summaries.len());
 
     let mut notes: Vec<Note> = findings_to_notes(&findings);
+    let known = collect_known_memory_ids(&backend, &entry).await.ok();
     for summary in &summaries {
-        notes.extend(
-            dangling_ref_notes_for(
-                &backend,
+        if let Some(known) = &known {
+            notes.extend(dangling_ref_notes_with_known(
+                known,
                 &entry,
                 &summary.slug,
                 &summary.depends_on,
                 &summary.blocks,
                 summary.superseded_by.as_ref(),
-            )
-            .await,
-        );
+            ));
+        }
     }
     render_notes_tail(&notes);
     Ok(())
