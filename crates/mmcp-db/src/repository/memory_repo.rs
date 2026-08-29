@@ -53,14 +53,30 @@ pub async fn find_by_group_and_slug(
         .await?)
 }
 
+/// List memories in `group_id`, optionally narrowed by mandatory
+/// flag and/or kind before the row ever leaves SQLite.
+///
+/// Both filters are pushed into the `WHERE` clause rather than
+/// applied by the caller after `.all()` materializes every row:
+/// `group_id` alone can return an unbounded number of rows for a
+/// large group, and filtering in Rust still pays that full fetch
+/// cost. An empty `kinds` disables the kind filter entirely (matches
+/// every kind), mirroring the "no filter" meaning callers already
+/// give an empty kind list.
 pub async fn list_in_group(
     conn: &sea_orm::DatabaseConnection,
     group_id: Uuid,
+    only_mandatory: Option<bool>,
+    kinds: &[MemoryKind],
 ) -> Result<Vec<Model>, DbError> {
-    Ok(Entity::find()
-        .filter(Column::GroupId.eq(group_id))
-        .all(conn)
-        .await?)
+    let mut query = Entity::find().filter(Column::GroupId.eq(group_id));
+    if let Some(mandatory) = only_mandatory {
+        query = query.filter(Column::Mandatory.eq(mandatory));
+    }
+    if !kinds.is_empty() {
+        query = query.filter(Column::Kind.is_in(kinds.iter().copied()));
+    }
+    Ok(query.all(conn).await?)
 }
 
 /// Count of memories in `group_id`, via `SELECT COUNT(*)` rather than
@@ -108,14 +124,25 @@ pub async fn record_version(
     Ok(active.insert(conn).await?)
 }
 
+/// List every published version row for `memory_id`.
+///
+/// `limit` is opt-in: `None` preserves the historical unbounded
+/// behavior every existing caller relies on, matching the per-caller
+/// approach `walk_history`'s own `limit` parameter took (limiting is
+/// something only a caller that has decided it wants pagination
+/// requests, never a silently-changed default).
 pub async fn list_versions(
     conn: &sea_orm::DatabaseConnection,
     memory_id: Uuid,
+    limit: Option<u64>,
 ) -> Result<Vec<memory_version::Model>, DbError> {
-    Ok(memory_version::Entity::find()
-        .filter(memory_version::Column::MemoryId.eq(memory_id))
-        .all(conn)
-        .await?)
+    use sea_orm::QuerySelect;
+    let mut query =
+        memory_version::Entity::find().filter(memory_version::Column::MemoryId.eq(memory_id));
+    if let Some(limit) = limit {
+        query = query.limit(limit);
+    }
+    Ok(query.all(conn).await?)
 }
 
 /// Case-insensitive substring search over memory slugs.

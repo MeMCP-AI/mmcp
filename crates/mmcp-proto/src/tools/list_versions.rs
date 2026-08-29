@@ -7,6 +7,13 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListVersionsRequest {
     pub memory: Uuid,
+
+    /// Cap the number of returned rows. `None` (the default, and
+    /// what every request omitting the field deserializes to)
+    /// preserves the historical unbounded response; a caller opts
+    /// into pagination explicitly by setting this.
+    #[serde(default)]
+    pub limit: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

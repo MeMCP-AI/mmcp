@@ -130,6 +130,52 @@ async fn memories_group_id_filter_uses_index_not_full_scan() {
     );
 }
 
+/// The `list_memories` MCP route (`memory_repo::list_in_group`)
+/// builds exactly this shape once `only_mandatory`/`kinds` are
+/// pushed into SQL: `group_id` plus an additional equality
+/// predicate. `kind` and `mandatory` carry no index of their own, so
+/// this proves the compound filter still reaches SQLite through
+/// `idx_memories_group_id` for the `group_id` half rather than
+/// degrading to a full `SCAN memories` once a second predicate is
+/// added to the `WHERE` clause.
+#[tokio::test]
+async fn memories_group_id_and_kind_filter_uses_index_not_full_scan() {
+    let conn = fresh_database().await;
+    let plan = query_plan(
+        &conn,
+        "SELECT * FROM memories WHERE group_id = 'g' AND kind = 0",
+    )
+    .await;
+    assert!(
+        plan.contains("USING INDEX idx_memories_group_id"),
+        "expected the group_id+kind filter to use idx_memories_group_id, got: {plan}"
+    );
+    assert!(
+        !plan.contains("SCAN memories"),
+        "expected no full table scan of memories, got: {plan}"
+    );
+}
+
+/// Same compound-predicate shape as above, but for the
+/// `only_mandatory` filter instead of `kinds`.
+#[tokio::test]
+async fn memories_group_id_and_mandatory_filter_uses_index_not_full_scan() {
+    let conn = fresh_database().await;
+    let plan = query_plan(
+        &conn,
+        "SELECT * FROM memories WHERE group_id = 'g' AND mandatory = 1",
+    )
+    .await;
+    assert!(
+        plan.contains("USING INDEX idx_memories_group_id"),
+        "expected the group_id+mandatory filter to use idx_memories_group_id, got: {plan}"
+    );
+    assert!(
+        !plan.contains("SCAN memories"),
+        "expected no full table scan of memories, got: {plan}"
+    );
+}
+
 #[tokio::test]
 async fn memory_versions_memory_id_filter_uses_index_not_full_scan() {
     let conn = fresh_database().await;

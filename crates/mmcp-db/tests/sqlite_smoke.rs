@@ -193,8 +193,197 @@ async fn memory_versions_and_latest_version_update() {
         .unwrap();
     assert_eq!(updated.latest_version.as_deref(), Some("0.1.0"));
 
-    let history = memory_repo::list_versions(conn, memory_id).await.unwrap();
+    let history = memory_repo::list_versions(conn, memory_id, None)
+        .await
+        .unwrap();
     assert_eq!(history.len(), 1);
+}
+
+/// `list_versions`'s `limit` is opt-in: `None` still returns every
+/// row, and `Some(n)` caps the result at `n` without the caller
+/// having to slice a fully materialized `Vec` afterward.
+#[tokio::test]
+async fn list_versions_limit_caps_rows_when_set_and_is_unbounded_when_none() {
+    let db = fresh_database().await;
+    let conn = db.connection();
+
+    let alice = Uuid::now_v7();
+    user_repo::create(
+        conn,
+        user_repo::NewUser {
+            id: alice,
+            handle: "alice".into(),
+            display_name: None,
+            password_hash: None,
+            email: None,
+            created_at: 1,
+        },
+    )
+    .await
+    .unwrap();
+
+    let group_id = Uuid::now_v7();
+    group_repo::create(
+        conn,
+        group_repo::NewGroup {
+            id: group_id,
+            slug: "g".into(),
+            owner_kind: OwnerKind::User,
+            owner_id: alice,
+            display_name: None,
+            created_at: 1,
+        },
+    )
+    .await
+    .unwrap();
+
+    let memory_id = Uuid::now_v7();
+    memory_repo::create(
+        conn,
+        memory_repo::NewMemory {
+            id: memory_id,
+            group_id,
+            slug: "rules".into(),
+            kind: MemoryKind::Rule,
+            mandatory: true,
+            created_at: 1,
+            updated_at: 1,
+        },
+    )
+    .await
+    .unwrap();
+
+    const VERSIONS_RECORDED: usize = 3;
+    for i in 0..VERSIONS_RECORDED {
+        memory_repo::record_version(
+            conn,
+            memory_version::Model {
+                id: Uuid::now_v7(),
+                memory_id,
+                version: format!("0.1.{i}"),
+                commit: format!("commit{i}"),
+                author_id: alice,
+                published_at: i as i64,
+                summary: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    let unbounded = memory_repo::list_versions(conn, memory_id, None)
+        .await
+        .unwrap();
+    assert_eq!(unbounded.len(), VERSIONS_RECORDED);
+
+    const CAPPED_LIMIT: u64 = 2;
+    let capped = memory_repo::list_versions(conn, memory_id, Some(CAPPED_LIMIT))
+        .await
+        .unwrap();
+    assert_eq!(capped.len(), CAPPED_LIMIT as usize);
+}
+
+/// `list_in_group`'s `only_mandatory` and `kinds` filters are pushed
+/// into the SQL `WHERE` clause: this proves the row selection itself
+/// is correct, independent of the index-usage proof in
+/// `migration_indexes.rs`.
+#[tokio::test]
+async fn list_in_group_pushes_mandatory_and_kind_filters_into_sql() {
+    let db = fresh_database().await;
+    let conn = db.connection();
+
+    let alice = Uuid::now_v7();
+    user_repo::create(
+        conn,
+        user_repo::NewUser {
+            id: alice,
+            handle: "alice".into(),
+            display_name: None,
+            password_hash: None,
+            email: None,
+            created_at: 1,
+        },
+    )
+    .await
+    .unwrap();
+
+    let group_id = Uuid::now_v7();
+    group_repo::create(
+        conn,
+        group_repo::NewGroup {
+            id: group_id,
+            slug: "g".into(),
+            owner_kind: OwnerKind::User,
+            owner_id: alice,
+            display_name: None,
+            created_at: 1,
+        },
+    )
+    .await
+    .unwrap();
+
+    let mandatory_rule = Uuid::now_v7();
+    memory_repo::create(
+        conn,
+        memory_repo::NewMemory {
+            id: mandatory_rule,
+            group_id,
+            slug: "rules".into(),
+            kind: MemoryKind::Rule,
+            mandatory: true,
+            created_at: 1,
+            updated_at: 1,
+        },
+    )
+    .await
+    .unwrap();
+
+    let optional_reference = Uuid::now_v7();
+    memory_repo::create(
+        conn,
+        memory_repo::NewMemory {
+            id: optional_reference,
+            group_id,
+            slug: "notes".into(),
+            kind: MemoryKind::Reference,
+            mandatory: false,
+            created_at: 1,
+            updated_at: 1,
+        },
+    )
+    .await
+    .unwrap();
+
+    let all = memory_repo::list_in_group(conn, group_id, None, &[])
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 2);
+
+    let only_mandatory = memory_repo::list_in_group(conn, group_id, Some(true), &[])
+        .await
+        .unwrap();
+    assert_eq!(only_mandatory.len(), 1);
+    assert_eq!(only_mandatory[0].id, mandatory_rule);
+
+    let only_reference_kind =
+        memory_repo::list_in_group(conn, group_id, None, &[MemoryKind::Reference])
+            .await
+            .unwrap();
+    assert_eq!(only_reference_kind.len(), 1);
+    assert_eq!(only_reference_kind[0].id, optional_reference);
+
+    let mandatory_and_rule_kind =
+        memory_repo::list_in_group(conn, group_id, Some(true), &[MemoryKind::Rule])
+            .await
+            .unwrap();
+    assert_eq!(mandatory_and_rule_kind.len(), 1);
+    assert_eq!(mandatory_and_rule_kind[0].id, mandatory_rule);
+
+    let mandatory_reference_kind_matches_nothing =
+        memory_repo::list_in_group(conn, group_id, Some(true), &[MemoryKind::Reference])
+            .await
+            .unwrap();
+    assert!(mandatory_reference_kind_matches_nothing.is_empty());
 }
 
 #[tokio::test]
