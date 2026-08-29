@@ -45,6 +45,19 @@ pub const LOCAL_GIT_OP_TIMEOUT: Duration = Duration::from_secs(30);
 /// limit.
 pub const REPO_CACHE_MAX_ENTRIES: u64 = 512;
 
+/// Size, in bytes, of the `gix` decoded-object cache set on every
+/// thread-local [`gix::Repository`] derived from a cached repo handle.
+///
+/// `gix::Repository::object_cache_size_if_unset` takes a byte budget
+/// for a `MemoryCappedHashmap` of fully decoded objects (unset by
+/// default in the pinned fork). A single operation here (a `read_files`
+/// batch, a recursive tree listing) re-decodes the same root tree and
+/// `memories/` tree from the on-disk object database on every visit;
+/// this budget comfortably holds a few hundred small tree and blob
+/// objects at this project's own repo scale, so those re-visits become
+/// cache hits within one `spawn_blocking` call.
+pub const OBJECT_CACHE_SIZE_BYTES: usize = 1024 * 1024;
+
 /// SSH flag appended to an ambient `GIT_SSH_COMMAND` value, or to a
 /// `core.sshCommand` git-config value, that
 /// `crate::native::repo_ops::suppress_interactive_prompts` finds

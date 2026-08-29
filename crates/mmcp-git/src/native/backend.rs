@@ -9,7 +9,7 @@ use moka::sync::Cache;
 
 use crate::backend::GitBackend;
 use crate::error::GitError;
-use crate::native::defaults::REPO_CACHE_MAX_ENTRIES;
+use crate::native::defaults::{OBJECT_CACHE_SIZE_BYTES, REPO_CACHE_MAX_ENTRIES};
 use crate::native::repo_ops;
 use crate::types::{
     CommitMeta, CommitSpec, Credentials, FastForwardOutcome, PushReport, RefSpec, RepoHandle, Rev,
@@ -36,7 +36,8 @@ pub struct NativeBackend {
     /// cheap to clone and safe to hold for the process lifetime, so
     /// the first open per path is cached here and reused; each
     /// caller derives its own thread-local `gix::Repository` from it
-    /// with `to_thread_local()` inside its own `spawn_blocking`.
+    /// via [`Self::thread_local_with_object_cache`] inside its own
+    /// `spawn_blocking`.
     ///
     /// Bounded by [`REPO_CACHE_MAX_ENTRIES`] instead of an unbounded
     /// `HashMap`: a long-lived server process touching many distinct
@@ -121,6 +122,23 @@ impl NativeBackend {
         Ok(repo)
     }
 
+    /// Derive a thread-local [`gix::Repository`] from a cached handle,
+    /// with its decoded-object cache enabled.
+    ///
+    /// `to_thread_local()` produces a fresh `Repository` per call, so
+    /// this only pays off within the single `spawn_blocking` closure
+    /// that calls it: the same root tree and `memories/` tree get
+    /// decoded once per operation instead of once per access inside
+    /// that operation (a `read_files` batch, a recursive tree
+    /// descent). It does not need to persist beyond that closure, so
+    /// there is no invalidation concern beyond the cache's own normal
+    /// eviction.
+    fn thread_local_with_object_cache(handle: &gix::ThreadSafeRepository) -> gix::Repository {
+        let mut repo = handle.to_thread_local();
+        repo.object_cache_size_if_unset(OBJECT_CACHE_SIZE_BYTES);
+        repo
+    }
+
     /// Evict `path`'s cached repository handle, if any.
     ///
     /// `open_repo`'s cache-validity check only catches deletion (`open_repo`'s `path.exists()` check).
@@ -158,7 +176,7 @@ impl NativeBackend {
         let backend = self.clone();
         tokio::task::spawn_blocking(move || {
             let handle = backend.open_repo(&repo_path)?;
-            repo_ops::read_files(&handle.to_thread_local(), &paths, &rev)
+            repo_ops::read_files(&Self::thread_local_with_object_cache(&handle), &paths, &rev)
         })
         .await?
     }
@@ -174,7 +192,7 @@ impl NativeBackend {
         let backend = self.clone();
         tokio::task::spawn_blocking(move || {
             let handle = backend.open_repo(&repo_path)?;
-            repo_ops::tip_commit(&handle.to_thread_local(), &rev)
+            repo_ops::tip_commit(&Self::thread_local_with_object_cache(&handle), &rev)
         })
         .await?
     }
@@ -203,7 +221,11 @@ impl NativeBackend {
         let backend = self.clone();
         tokio::task::spawn_blocking(move || {
             let handle = backend.open_repo(&repo_path)?;
-            repo_ops::list_tree_recursive(&handle.to_thread_local(), &prefix, &rev)
+            repo_ops::list_tree_recursive(
+                &Self::thread_local_with_object_cache(&handle),
+                &prefix,
+                &rev,
+            )
         })
         .await?
     }
@@ -328,7 +350,10 @@ impl GitBackend for NativeBackend {
         let preflight_refspecs = refspecs.clone();
         tokio::task::spawn_blocking(move || {
             let handle = backend.open_repo(&preflight_path)?;
-            repo_ops::preflight_local_refs(&handle.to_thread_local(), &preflight_refspecs)
+            repo_ops::preflight_local_refs(
+                &Self::thread_local_with_object_cache(&handle),
+                &preflight_refspecs,
+            )
         })
         .await??;
         repo_ops::push(&repo_path, remote_url, &refspecs, creds).await
@@ -341,7 +366,11 @@ impl GitBackend for NativeBackend {
         let backend = self.clone();
         tokio::task::spawn_blocking(move || {
             let handle = backend.open_repo(&repo_path)?;
-            repo_ops::read_file(&handle.to_thread_local(), &path_owned, &rev)
+            repo_ops::read_file(
+                &Self::thread_local_with_object_cache(&handle),
+                &path_owned,
+                &rev,
+            )
         })
         .await?
     }
@@ -351,7 +380,7 @@ impl GitBackend for NativeBackend {
         let backend = self.clone();
         tokio::task::spawn_blocking(move || {
             let handle = backend.open_repo(&repo_path)?;
-            repo_ops::write_commit(&handle.to_thread_local(), spec)
+            repo_ops::write_commit(&Self::thread_local_with_object_cache(&handle), spec)
         })
         .await?
     }
@@ -363,7 +392,11 @@ impl GitBackend for NativeBackend {
         let backend = self.clone();
         tokio::task::spawn_blocking(move || {
             let handle = backend.open_repo(&repo_path)?;
-            repo_ops::tag(&handle.to_thread_local(), &name, &target)
+            repo_ops::tag(
+                &Self::thread_local_with_object_cache(&handle),
+                &name,
+                &target,
+            )
         })
         .await?
     }
@@ -380,7 +413,11 @@ impl GitBackend for NativeBackend {
         let backend = self.clone();
         tokio::task::spawn_blocking(move || {
             let handle = backend.open_repo(&repo_path)?;
-            repo_ops::fast_forward(&handle.to_thread_local(), &local_ref, &target_ref)
+            repo_ops::fast_forward(
+                &Self::thread_local_with_object_cache(&handle),
+                &local_ref,
+                &target_ref,
+            )
         })
         .await?
     }
@@ -395,7 +432,7 @@ impl GitBackend for NativeBackend {
         let backend = self.clone();
         tokio::task::spawn_blocking(move || {
             let handle = backend.open_repo(&repo_path)?;
-            repo_ops::walk_history(&handle.to_thread_local(), &path)
+            repo_ops::walk_history(&Self::thread_local_with_object_cache(&handle), &path)
         })
         .await?
     }
@@ -412,7 +449,11 @@ impl GitBackend for NativeBackend {
         let backend = self.clone();
         tokio::task::spawn_blocking(move || {
             let handle = backend.open_repo(&repo_path)?;
-            repo_ops::list_tree(&handle.to_thread_local(), &prefix, &rev)
+            repo_ops::list_tree(
+                &Self::thread_local_with_object_cache(&handle),
+                &prefix,
+                &rev,
+            )
         })
         .await?
     }
@@ -429,7 +470,11 @@ impl GitBackend for NativeBackend {
         let backend = self.clone();
         tokio::task::spawn_blocking(move || {
             let handle = backend.open_repo(&repo_path)?;
-            repo_ops::list_subtrees(&handle.to_thread_local(), &prefix, &rev)
+            repo_ops::list_subtrees(
+                &Self::thread_local_with_object_cache(&handle),
+                &prefix,
+                &rev,
+            )
         })
         .await?
     }
@@ -476,5 +521,32 @@ mod tests {
 
         // A path never cached is a harmless no-op, not a panic.
         backend.invalidate(&path);
+    }
+
+    /// Mechanism-level falsification check for
+    /// `thread_local_with_object_cache`: `gix::Repository::objects`
+    /// exposes `has_object_cache()`, which is the only public signal
+    /// the pinned `gix` fork gives for whether the decoded-object
+    /// cache is actually configured (no hit-rate counter exists to
+    /// assert against). Red check performed manually: removing the
+    /// `repo.object_cache_size_if_unset(...)` call from
+    /// `thread_local_with_object_cache` makes this fail with
+    /// `assert!(repo.objects.has_object_cache())`; restoring the call
+    /// makes it pass again.
+    #[test]
+    fn thread_local_with_object_cache_enables_the_cache() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let backend = NativeBackend::new(tmp.path()).expect("backend");
+        let repo_path = backend.repo_path(uuid::Uuid::now_v7());
+        std::fs::create_dir_all(&repo_path).expect("mkdir");
+        gix::init_bare(&repo_path).expect("init bare");
+
+        let handle = backend.open_repo(&repo_path).expect("open repo");
+        let repo = NativeBackend::thread_local_with_object_cache(&handle);
+
+        assert!(
+            repo.objects.has_object_cache(),
+            "thread_local_with_object_cache must leave the decoded-object cache enabled"
+        );
     }
 }
