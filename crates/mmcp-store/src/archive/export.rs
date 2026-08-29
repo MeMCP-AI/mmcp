@@ -118,6 +118,12 @@ pub async fn export_archive<W: Write>(
 
 /// Pack a group's HEAD memory files (filtered) under `base`, returning the count packed.
 /// The snapshot half of [`export_archive`].
+///
+/// Reads every file through one [`NativeBackend::read_files`] batch call, resolving the
+/// commit and root tree once for the whole group instead of once per memory: an export
+/// legitimately needs every full body, so this is a pure round-trip-count optimization,
+/// not a scope reduction. A single unreadable path still aborts the export, matching the
+/// former per-file `read_file` loop's `?`-propagates-immediately behavior.
 async fn pack_snapshot_memories(
     backend: &NativeBackend,
     group: &GroupEntry,
@@ -126,11 +132,17 @@ async fn pack_snapshot_memories(
     entries: &mut Vec<(String, Vec<u8>)>,
 ) -> Result<u32, ArchiveError> {
     let files = list_all_memory_files(backend, &group.handle, &Rev::Head).await?;
+    if files.is_empty() {
+        return Ok(0);
+    }
+    let paths: Vec<String> = files.iter().map(|file| file.path.clone()).collect();
+    // `read_files` returns outcomes in request order, so zipping back onto `files` is safe.
+    let batch = backend
+        .read_files(&group.handle, paths, &Rev::head())
+        .await?;
     let mut packed: u32 = 0;
-    for file in &files {
-        let bytes = backend
-            .read_file(&group.handle, &file.path, &Rev::Head)
-            .await?;
+    for (file, (_path, outcome)) in files.iter().zip(batch) {
+        let bytes = outcome?;
         if !filter.is_empty() {
             let text = std::str::from_utf8(&bytes).map_err(|source| ArchiveError::NotUtf8 {
                 path: file.path.clone(),
@@ -393,6 +405,80 @@ mod tests {
         let parsed = ArchiveManifest::from_toml(&toc).expect("parse toc");
         assert_eq!(parsed.format_version, ARCHIVE_FORMAT_VERSION);
         assert_eq!(parsed.total_memory_count(), 1);
+    }
+
+    /// Memory count large enough that a per-file `read_file` loop and a single
+    /// `read_files` batch call would be trivially distinguishable by round-trip count.
+    /// [`pack_snapshot_memories`] reads every path through its own concrete
+    /// [`NativeBackend`] rather than an injectable seam (unlike [`crate::tracker`]'s
+    /// batched helpers), so there is no call-counting stub to substitute here; this
+    /// test instead proves the batched read still packs every memory, in full, with
+    /// none dropped or corrupted, which is the correctness property a batching
+    /// regression would actually break.
+    #[tokio::test]
+    async fn export_packs_every_memory_when_batched_over_many_files() {
+        const BULK_MEMORY_COUNT: usize = 12;
+        let home = ScratchHome::new().await.expect("scratch home");
+        let seeded = home.seed_group("bulk").await.expect("seed group");
+        let entry = home
+            .groups()
+            .get(&seeded.group_id)
+            .await
+            .expect("group entry");
+
+        for i in 0..BULK_MEMORY_COUNT {
+            import_memory(
+                home.backend(),
+                &entry.handle,
+                &format!("note-{i}"),
+                &format!("Body {i}."),
+                Some(SynthFrontmatter {
+                    name: format!("Note {i}"),
+                    description: "desc".to_string(),
+                    kind: MemoryKind::Reference,
+                }),
+                home.author(),
+                false,
+            )
+            .await
+            .expect("import memory");
+        }
+
+        let mut buf = Vec::new();
+        let manifest = export_archive(
+            home.backend(),
+            &[entry],
+            &ExportOptions::default(),
+            &mut buf,
+        )
+        .await
+        .expect("export");
+
+        assert_eq!(manifest.groups[0].memory_count, BULK_MEMORY_COUNT as u32);
+
+        let mut archive = tar::Archive::new(&buf[..]);
+        let mut bodies = Vec::new();
+        for archive_entry in archive.entries().expect("entries") {
+            let mut e = archive_entry.expect("entry");
+            let path = e.path().expect("path").to_string_lossy().into_owned();
+            if path.contains("/memories/note-") {
+                let mut content = String::new();
+                e.read_to_string(&mut content).expect("read memory entry");
+                bodies.push(content);
+            }
+        }
+        assert_eq!(
+            bodies.len(),
+            BULK_MEMORY_COUNT,
+            "every memory must survive the batched read, none dropped"
+        );
+        for i in 0..BULK_MEMORY_COUNT {
+            let needle = format!("Body {i}.");
+            assert!(
+                bodies.iter().any(|b| b.contains(&needle)),
+                "memory {i}'s body must round-trip intact through the batch"
+            );
+        }
     }
 
     #[tokio::test]
