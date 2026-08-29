@@ -740,6 +740,16 @@ async fn ensure_remote(repo_path: &Path, remote_url: &str) -> Result<(), GitErro
 pub(crate) static RESOLVE_REV_CALLS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+/// Serializes every test that reads [`RESOLVE_REV_CALLS`]. This
+/// counter is process-wide, and Rust's default test harness runs
+/// `#[test]` functions on parallel threads, so any two
+/// counter-consuming tests running at the same time would race
+/// each other's increments. Acquire this guard as the first
+/// statement of a test that stores, loads, or asserts on the
+/// counter.
+#[cfg(test)]
+pub(crate) static COUNTER_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Resolve a `Rev` to a concrete commit object id.
 fn resolve_rev(repo: &gix::Repository, rev: &Rev) -> Result<gix::ObjectId, GitError> {
     #[cfg(test)]
@@ -822,10 +832,62 @@ fn commit_meta(id: gix::ObjectId, commit: &gix::objs::Commit) -> CommitMeta {
     }
 }
 
+/// Locate the entry named `name` in a tree's already-sorted
+/// `entries`, via binary search instead of a linear scan.
+///
+/// A git tree's entries are sorted, but not by plain filename byte
+/// order: a directory's name compares as if it carried a trailing
+/// `/`, which can place it on either side of an unrelated entry that
+/// shares its name as a byte prefix (`gix_object::Tree::entries`'s
+/// own doc comment: "the sort order isn't quite by name, so one may
+/// bisect only with a `tree::Entry` to handle ordering correctly").
+/// `expect_tree` supplies that missing half of the comparison for
+/// `name`, since a bare name cannot otherwise say whether the caller
+/// is resolving a directory component or a file's final component.
+fn find_tree_entry<'a>(
+    entries: &'a [gix::objs::tree::Entry],
+    name: &[u8],
+    expect_tree: bool,
+) -> Option<&'a gix::objs::tree::Entry> {
+    entries
+        .binary_search_by(|entry| {
+            let common = entry.filename.len().min(name.len());
+            entry.filename[..common].cmp(&name[..common]).then_with(|| {
+                let entry_tail = entry
+                    .filename
+                    .get(common)
+                    .or_else(|| entry.mode.is_tree().then_some(&b'/'));
+                let name_tail = name.get(common).or_else(|| expect_tree.then_some(&b'/'));
+                entry_tail.cmp(&name_tail)
+            })
+        })
+        .ok()
+        .map(|idx| &entries[idx])
+}
+
 /// Walk `path` inside `tree`, returning the object id of the blob if
 /// any. Handles nested directories separated by `/`.
+///
+/// Decodes each intermediate tree on every call; [`read_files`]'s
+/// batch uses [`find_blob_in_tree_cached`] instead so paths sharing
+/// a directory prefix decode that directory's tree only once.
 fn find_blob_in_tree(
     repo: &gix::Repository,
+    root_tree_id: gix::ObjectId,
+    path: &str,
+) -> Result<Option<gix::ObjectId>, GitError> {
+    let mut tree_cache = std::collections::HashMap::new();
+    find_blob_in_tree_cached(repo, &mut tree_cache, root_tree_id, path)
+}
+
+/// Same lookup as [`find_blob_in_tree`], reusing `tree_cache` across
+/// calls so a tree object already decoded for an earlier path (for
+/// example the shared parent directory of a batch of paths) is
+/// looked up by binary search directly instead of being re-fetched
+/// from the repository and re-decoded into its owned form.
+fn find_blob_in_tree_cached(
+    repo: &gix::Repository,
+    tree_cache: &mut std::collections::HashMap<gix::ObjectId, gix::objs::Tree>,
     root_tree_id: gix::ObjectId,
     path: &str,
 ) -> Result<Option<gix::ObjectId>, GitError> {
@@ -835,27 +897,26 @@ fn find_blob_in_tree(
     }
     let mut current_tree_id = root_tree_id;
     for (idx, name) in components.iter().enumerate() {
-        let tree_obj = repo.find_object(current_tree_id).map_err(read_blob_err)?;
-        let tree: gix::objs::Tree = tree_obj.into_tree().decode().map_err(read_blob_err)?.into();
-        let name_bytes = name.as_bytes();
-        let entry = tree
-            .entries
-            .iter()
-            .find(|e| AsRef::<[u8]>::as_ref(&e.filename) == name_bytes);
+        if let std::collections::hash_map::Entry::Vacant(slot) = tree_cache.entry(current_tree_id) {
+            let tree_obj = repo.find_object(current_tree_id).map_err(read_blob_err)?;
+            let tree: gix::objs::Tree =
+                tree_obj.into_tree().decode().map_err(read_blob_err)?.into();
+            slot.insert(tree);
+        }
+        let tree = &tree_cache[&current_tree_id];
+        let is_last = idx == components.len() - 1;
+        let entry = find_tree_entry(&tree.entries, name.as_bytes(), !is_last);
         match entry {
             None => return Ok(None),
-            Some(entry) => {
-                let is_last = idx == components.len() - 1;
-                match entry.mode.kind() {
-                    EntryKind::Blob | EntryKind::BlobExecutable if is_last => {
-                        return Ok(Some(entry.oid));
-                    }
-                    EntryKind::Tree if !is_last => {
-                        current_tree_id = entry.oid;
-                    }
-                    _ => return Ok(None),
+            Some(entry) => match entry.mode.kind() {
+                EntryKind::Blob | EntryKind::BlobExecutable if is_last => {
+                    return Ok(Some(entry.oid));
                 }
-            }
+                EntryKind::Tree if !is_last => {
+                    current_tree_id = entry.oid;
+                }
+                _ => return Ok(None),
+            },
         }
     }
     Ok(None)
@@ -1041,11 +1102,10 @@ fn resolve_tree_prefix(
     for name in components {
         let obj = repo.find_object(current).map_err(read_blob_err)?;
         let tree: gix::objs::Tree = obj.into_tree().decode().map_err(read_blob_err)?.into();
-        let name_bytes = name.as_bytes();
-        let entry = tree
-            .entries
-            .iter()
-            .find(|e| AsRef::<[u8]>::as_ref(&e.filename) == name_bytes);
+        // Every component here is a directory (the last resolved
+        // node is the prefix itself, never a blob), so the search
+        // target is always expected to be a tree.
+        let entry = find_tree_entry(&tree.entries, name.as_bytes(), true);
         match entry {
             None => return Ok(None),
             Some(entry) if entry.mode.kind() == EntryKind::Tree => {
@@ -1057,6 +1117,12 @@ fn resolve_tree_prefix(
     Ok(Some(current))
 }
 
+/// Fetch the raw bytes of the blob object `blob_id`.
+fn blob_bytes(repo: &gix::Repository, blob_id: gix::ObjectId) -> Result<Bytes, GitError> {
+    let blob = repo.find_object(blob_id).map_err(read_blob_err)?;
+    Ok(Bytes::from(blob.data.clone()))
+}
+
 /// Read the blob at `path` inside `tree_id`.
 fn read_blob_at_tree(
     repo: &gix::Repository,
@@ -1065,8 +1131,7 @@ fn read_blob_at_tree(
 ) -> Result<Bytes, GitError> {
     let blob_id = find_blob_in_tree(repo, tree_id, path)?
         .ok_or_else(|| GitError::PathNotFound(path.to_string()))?;
-    let blob = repo.find_object(blob_id).map_err(read_blob_err)?;
-    Ok(Bytes::from(blob.data.clone()))
+    blob_bytes(repo, blob_id)
 }
 
 /// Read the contents of `path` inside the commit at `rev`.
@@ -1091,8 +1156,12 @@ pub type BatchReadResult = Vec<(String, Result<Bytes, GitError>)>;
 ///
 /// The commit and its root tree are resolved once and reused for
 /// every lookup, instead of paying the resolve cost per file like
-/// calling [`read_file`] in a loop would. Each path keeps its own
-/// outcome, in request order, so one missing or unreadable path
+/// calling [`read_file`] in a loop would. A tree decoded while
+/// resolving one path (for example a shared parent directory) stays
+/// in `tree_cache` for the rest of the batch, so a directory common
+/// to several requested paths is fetched and decoded once rather
+/// than once per path that descends through it. Each path keeps its
+/// own outcome, in request order, so one missing or unreadable path
 /// never aborts the batch.
 pub fn read_files(
     repo: &gix::Repository,
@@ -1108,10 +1177,16 @@ pub fn read_files(
         .into_owned()
         .map_err(resolve_rev_err)?;
 
+    let mut tree_cache = std::collections::HashMap::new();
     Ok(paths
         .iter()
         .map(|path| {
-            let outcome = read_blob_at_tree(repo, commit.tree, path);
+            let outcome = find_blob_in_tree_cached(repo, &mut tree_cache, commit.tree, path)
+                .and_then(|blob_id| {
+                    let blob_id =
+                        blob_id.ok_or_else(|| GitError::PathNotFound(path.to_string()))?;
+                    blob_bytes(repo, blob_id)
+                });
             (path.clone(), outcome)
         })
         .collect())
@@ -2050,17 +2125,18 @@ mod recursive_listing_tests {
     /// `list_tree` then `list_subtrees` per directory (the shape
     /// `list_memory_slug_dirs` used before migrating to this
     /// primitive), which pays `resolve_rev` twice per node. Both
-    /// shapes run in this one test function, sharing
-    /// [`RESOLVE_REV_CALLS`] sequentially, so neither call-count
-    /// assertion races a concurrently-running test thread touching
-    /// the same process-wide counter. Red check performed manually:
-    /// replacing the single-traversal body with the per-node loop
-    /// below makes the first assertion fail (`10` instead of `1`),
-    /// and the second assertion proves the counter is genuinely
-    /// capable of reading a value above `1` on this fixture, not
-    /// just always `1` regardless of what ran.
+    /// shapes run in this one test function under
+    /// [`COUNTER_TEST_GUARD`], so neither call-count assertion races
+    /// a concurrently-running test thread touching the same
+    /// process-wide [`RESOLVE_REV_CALLS`] counter. Red check
+    /// performed manually: replacing the single-traversal body with
+    /// the per-node loop below makes the first assertion fail (`10`
+    /// instead of `1`), and the second assertion proves the counter
+    /// is genuinely capable of reading a value above `1` on this
+    /// fixture, not just always `1` regardless of what ran.
     #[test]
     fn list_tree_recursive_resolves_the_commit_exactly_once() {
+        let _guard = COUNTER_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = fixture_repo_with_nested_memories();
         let repo_path = tmp.path().join("scratch.git");
         let rev = Rev::head();
@@ -2110,5 +2186,143 @@ mod recursive_listing_tests {
             visited * 2,
             "the per-node shape must pay 2 resolve_rev calls per directory node"
         );
+    }
+}
+
+#[cfg(test)]
+mod tree_lookup_and_history_tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Open the freshly committed scratch repo the way `NativeBackend`
+    /// does: a `ThreadSafeRepository` handed out as a thread-local
+    /// view.
+    fn open_thread_local(repo_path: &Path) -> gix::Repository {
+        gix::ThreadSafeRepository::open(repo_path)
+            .expect("open scratch repo")
+            .to_thread_local()
+    }
+
+    /// Number of sibling files seeded under `bucket/` by
+    /// [`fixture_repo_with_many_sorted_entries`], wide enough that a
+    /// linear scan and a binary search could disagree on a boundary
+    /// entry if the binary search comparator were off by one.
+    const BUCKET_ENTRY_COUNT: usize = 60;
+
+    /// Build a scratch bare repo with `BUCKET_ENTRY_COUNT` files
+    /// under `bucket/`, named so byte order matches numeric order
+    /// (`entry-000.md` .. `entry-059.md`), each holding its own index
+    /// as content. Returns the temp dir (kept alive by the caller)
+    /// and the last committed hex commit id.
+    fn fixture_repo_with_many_sorted_entries() -> (TempDir, String) {
+        let tmp = TempDir::new().expect("tempdir");
+        let repo_path = tmp.path().join("scratch.git");
+        gix::init_bare(&repo_path).expect("init bare scratch repo");
+        let repo = open_thread_local(&repo_path);
+        let files = (0..BUCKET_ENTRY_COUNT)
+            .map(|i| {
+                (
+                    format!("bucket/entry-{i:03}.md"),
+                    Some(i.to_string().into_bytes()),
+                )
+            })
+            .collect();
+        let commit_id = write_commit(
+            &repo,
+            CommitSpec::mmcp_commit(
+                "seed sorted bucket",
+                files,
+                "Test Author",
+                "test@example.com",
+            ),
+        )
+        .expect("seed commit");
+        (tmp, commit_id)
+    }
+
+    /// Falsification: a binary search with an off-by-one boundary
+    /// error typically still finds middle entries but misses the
+    /// first or last one, so the start/middle/end spread of indices
+    /// checked here would not all pass a broken implementation the
+    /// way a plain "does it find something" test could.
+    #[test]
+    fn find_blob_in_tree_binary_search_resolves_start_middle_end_entries() {
+        // `read_files` calls `resolve_rev`, which increments the
+        // shared `RESOLVE_REV_CALLS` counter another test asserts an
+        // exact value against; see `COUNTER_TEST_GUARD`.
+        let _guard = COUNTER_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        let (tmp, _commit_id) = fixture_repo_with_many_sorted_entries();
+        let repo = open_thread_local(&tmp.path().join("scratch.git"));
+        let rev = Rev::head();
+
+        let checked_indices = [0usize, BUCKET_ENTRY_COUNT / 2, BUCKET_ENTRY_COUNT - 1];
+        let paths: Vec<String> = checked_indices
+            .iter()
+            .map(|i| format!("bucket/entry-{i:03}.md"))
+            .collect();
+
+        let results = read_files(&repo, &paths, &rev).expect("read_files");
+        assert_eq!(results.len(), checked_indices.len());
+        for (i, (path, outcome)) in checked_indices.iter().zip(results.iter()) {
+            let bytes = outcome
+                .as_ref()
+                .unwrap_or_else(|e| panic!("expected {path} to resolve, got {e}"));
+            assert_eq!(
+                bytes.as_ref(),
+                i.to_string().as_bytes(),
+                "entry at index {i} must resolve to its own content"
+            );
+        }
+
+        // A name that sorts inside the fixture's range but was never
+        // committed must still report not-found rather than
+        // resolving to a neighboring entry.
+        let missing =
+            read_files(&repo, &["bucket/entry-030x.md".to_string()], &rev).expect("read_files");
+        assert!(
+            matches!(missing[0].1, Err(GitError::PathNotFound(_))),
+            "a name absent from the tree must not resolve via a mis-navigated search"
+        );
+    }
+
+    /// Falsification: git's tree sort order is not plain byte order
+    /// on the filename alone, a directory's name compares as though
+    /// suffixed with `/`. A tree holding both a blob `kind.txt` and a
+    /// directory `kind/...` places `kind.txt` before `kind` in true
+    /// sort order (`.` = 0x2E sorts before `/` = 0x2F) even though
+    /// plain byte comparison of the two strings (`"kind"` is a prefix
+    /// of `"kind.txt"`) would say the opposite. A binary search using
+    /// the wrong comparator navigates to the wrong half of the array
+    /// and never finds one of the two entries.
+    #[test]
+    fn find_blob_in_tree_binary_search_handles_directory_file_prefix_collision() {
+        // `read_file` calls `resolve_rev`; see `COUNTER_TEST_GUARD`.
+        let _guard = COUNTER_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = TempDir::new().expect("tempdir");
+        let repo_path = tmp.path().join("scratch.git");
+        gix::init_bare(&repo_path).expect("init bare scratch repo");
+        let repo = open_thread_local(&repo_path);
+        write_commit(
+            &repo,
+            CommitSpec::mmcp_commit(
+                "seed name-prefix collision",
+                vec![
+                    ("kind.txt".to_string(), Some(b"blob".to_vec())),
+                    ("kind/thing.md".to_string(), Some(b"tree".to_vec())),
+                ],
+                "Test Author",
+                "test@example.com",
+            ),
+        )
+        .expect("seed commit");
+        let rev = Rev::head();
+
+        let blob = read_file(&repo, "kind.txt", &rev).expect("read the blob entry");
+        assert_eq!(blob.as_ref(), b"blob");
+
+        let nested =
+            read_file(&repo, "kind/thing.md", &rev).expect("descend into the directory entry");
+        assert_eq!(nested.as_ref(), b"tree");
     }
 }
