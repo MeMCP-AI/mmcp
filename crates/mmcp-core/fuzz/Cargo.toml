@@ -21,6 +21,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "memory_frontmatter_parse"
+path = "fuzz_targets/memory_frontmatter_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "project_config_from_toml"
 path = "fuzz_targets/project_config_from_toml.rs"
 test = false

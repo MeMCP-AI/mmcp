@@ -39,7 +39,7 @@ pub use limits::{
     validate_frontmatter_lengths, validate_message_length, validate_tags,
 };
 pub use milestone::{MilestoneMetadata, MilestoneStatus, MilestoneStatusParseError};
-pub use parser::{FrontmatterFormat, MemoryFile, MemoryParseError};
+pub use parser::{FrontmatterFormat, MemoryFile, MemoryParseError, parse_frontmatter};
 pub use refs::{COMMIT_SHA_HEX_LEN, InvalidCommit, MemoryRef, looks_like_commit_sha};
 pub use response_budget::{
     COMPACT_RECORD_ESTIMATED_BYTES, DEFAULT_LIST_MEMORIES_LIMIT, DEFAULT_RESPONSE_BUDGET_BYTES,

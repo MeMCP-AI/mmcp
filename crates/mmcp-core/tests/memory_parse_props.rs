@@ -13,7 +13,9 @@
 //! 3. `to_toml_string` always produces TOML-fenced output that
 //!    re-parses to a TOML-formatted `MemoryFile`.
 
-use mmcp_core::memory::{BumpIntent, FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryKind};
+use mmcp_core::memory::{
+    BumpIntent, FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryKind, parse_frontmatter,
+};
 use proptest::prelude::*;
 
 // ── Generators ───────────────────────────────────────────────────────
@@ -178,5 +180,28 @@ proptest! {
         prop_assert_eq!(normalized.format, FrontmatterFormat::TomlPlus);
         prop_assert_eq!(&normalized.frontmatter, &file.frontmatter);
         prop_assert_eq!(&normalized.body, &file.body);
+    }
+
+    /// `parse_frontmatter` on *any* byte sequence (treated as UTF-8)
+    /// must return a `Result` rather than panic, same as `parse`.
+    #[test]
+    fn parse_frontmatter_never_panics_on_arbitrary_text(
+        raw in prop::string::string_regex(".{0,512}").unwrap()
+    ) {
+        let _ = parse_frontmatter(&raw);
+    }
+
+    /// `parse_frontmatter` must return the identical frontmatter
+    /// `MemoryFile::parse(..).frontmatter` produces for the same
+    /// input, across every supported delimiter/engine combination
+    /// this generator covers.
+    #[test]
+    fn parse_frontmatter_matches_full_parse(
+        original in memory_file_strategy()
+    ) {
+        let rendered = original.to_string().expect("render should succeed for valid frontmatter");
+        let full = MemoryFile::parse(&rendered).expect("full parse should succeed on our own output");
+        let fast = parse_frontmatter(&rendered).expect("frontmatter parse should succeed on our own output");
+        prop_assert_eq!(fast, full.frontmatter);
     }
 }
