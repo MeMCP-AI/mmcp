@@ -11,15 +11,21 @@
 //!
 //! The helper lives in its own concern-named module so neither tracker surface owns it.
 
+use std::future::Future;
+
 use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION, memory_path};
 use mmcp_core::id::MemoryId;
 use mmcp_core::memory::{MemoryFile, MemoryRef, Status};
-use mmcp_git::{GitBackend, NativeBackend, Rev};
+use mmcp_git::{GitBackend, GitError, NativeBackend, Rev};
 use uuid::Uuid;
 
 use crate::diagnostics::Finding;
 use crate::groups::GroupEntry;
 use crate::memory::{ImportError, list_memory_slug_dirs, validate_memory_slug};
+
+/// Batched-read outcome shape [`NativeBackend::read_files`] returns.
+/// Spelled out locally because its own alias sits in a private module of `mmcp-git`.
+type BatchOutcome = Vec<(String, Result<bytes::Bytes, GitError>)>;
 
 /// Compute the next ticket number for the group.
 ///
@@ -28,6 +34,9 @@ use crate::memory::{ImportError, list_memory_slug_dirs, validate_memory_slug};
 /// and returns one more than the maximum observed value.
 /// Returns `1` for an empty group.
 /// Nested slug paths are walked recursively via [`list_memory_slug_dirs`].
+///
+/// Deliberately not [`read_all_slug_files`]: that helper errors on an ambiguous slug.
+/// This counter folds every file of an ambiguous slug; skipping one could reissue an allocated number.
 ///
 /// Errors only on a hard list / read failure on the underlying git tree;
 /// per-memory parse errors are ignored so a single malformed file does not stall the counter.
@@ -39,36 +48,65 @@ pub async fn next_ticket_number(
     let slug_dirs = list_memory_slug_dirs(backend, &entry.handle, &rev)
         .await
         .map_err(ImportError::Git)?;
-    let mut max = 0u32;
-    for slug_dir in slug_dirs {
-        for filename in &slug_dir.filenames {
-            let path = format!("{}/{filename}", slug_dir.dir);
-            let Ok(bytes) = backend.read_file(&entry.handle, &path, &rev).await else {
-                continue;
-            };
-            let Ok(text) = std::str::from_utf8(&bytes) else {
-                continue;
-            };
-            let Ok(mf) = MemoryFile::parse(text) else {
-                continue;
-            };
-            if let Some(meta) = mf.frontmatter.feature.as_ref()
-                && let Some(n) = meta.number
-            {
-                max = max.max(n);
-            }
-            if let Some(meta) = mf.frontmatter.issue.as_ref()
-                && let Some(n) = meta.number
-            {
-                max = max.max(n);
-            }
-        }
-    }
+
+    let paths: Vec<String> = slug_dirs
+        .iter()
+        .flat_map(|slug_dir| {
+            slug_dir
+                .filenames
+                .iter()
+                .map(|filename| format!("{}/{filename}", slug_dir.dir))
+        })
+        .collect();
+
+    // One resolve of the commit and root tree, reused for every path below,
+    // instead of once per file like a `read_file`-per-file loop would pay.
+    let max = max_ticket_number_over(paths, |paths| {
+        backend.read_files(&entry.handle, paths, &rev)
+    })
+    .await?;
     // `max` is accumulated from frontmatter `meta.number`, a value any client can write into a
     // memory file without an upper bound enforced at write time. A plain `max + 1` would wrap to
     // `0` in a release build (overflow-checks off) or panic in debug, either way reissuing an
     // already-allocated ticket number instead of surfacing the exhausted counter.
     max.checked_add(1).ok_or(ImportError::TicketCounterOverflow)
+}
+
+/// Fold `feature.number` / `issue.number` out of every path in `paths`, via one call to `read_batch`.
+/// `read_batch` is the batched-read seam: production passes [`NativeBackend::read_files`] directly.
+/// A test can pass a call-counting stub instead, to prove this folds without a per-path round trip.
+/// A per-path read or parse failure is skipped, never aborts the fold.
+/// A hard failure of `read_batch` itself (the whole batch call) is the only error this raises.
+async fn max_ticket_number_over<F, Fut>(
+    paths: Vec<String>,
+    read_batch: F,
+) -> Result<u32, ImportError>
+where
+    F: FnOnce(Vec<String>) -> Fut,
+    Fut: Future<Output = Result<BatchOutcome, GitError>>,
+{
+    let batch = read_batch(paths).await.map_err(ImportError::Git)?;
+    let mut max = 0u32;
+    for (_path, outcome) in batch {
+        let Ok(bytes) = outcome else { continue };
+        let Ok(text) = std::str::from_utf8(&bytes) else {
+            continue;
+        };
+        let Ok(mf) = MemoryFile::parse(text) else {
+            continue;
+        };
+        if let Some(meta) = mf.frontmatter.feature.as_ref()
+            && let Some(n) = meta.number
+        {
+            max = max.max(n);
+        }
+        if let Some(meta) = mf.frontmatter.issue.as_ref()
+            && let Some(n) = meta.number
+        {
+            max = max.max(n);
+        }
+    }
+    Ok(max)
 }
 
 /// Compose the merged cross-reference list for an update.
@@ -351,12 +389,10 @@ pub(crate) async fn read_all_slug_files(
                     let text = String::from_utf8_lossy(&bytes).into_owned();
                     MemoryFile::parse(&text).map_err(ImportError::Parse)
                 }
-                Some(Err(mmcp_git::GitError::PathNotFound(_))) => {
-                    Err(ImportError::MemoryNotFound {
-                        slug: Some(slug.clone()),
-                        id: Some(id),
-                    })
-                }
+                Some(Err(GitError::PathNotFound(_))) => Err(ImportError::MemoryNotFound {
+                    slug: Some(slug.clone()),
+                    id: Some(id),
+                }),
                 Some(Err(err)) => Err(ImportError::Git(err)),
                 // `read_files` returns exactly one outcome per requested path; a path built
                 // from this same loop missing from its own result is a broken batching
@@ -452,5 +488,141 @@ mod tests {
             .await
             .expect("next ticket number");
         assert_eq!(next, 6);
+    }
+
+    /// Two files under one slug directory (an ambiguous slug, reachable via direct git surgery
+    /// or an externally imported repo) both contribute their `feature.number` to the counter.
+    /// The higher number sits in the lexicographically LARGER filename: git tree listings are
+    /// name-sorted, so a wrong fix that reads only the first listed file per slug (the
+    /// [`read_all_slug_files`] collapse this fix must not reuse) would cap the counter at the
+    /// lower number and fail this assertion, instead of passing by luck on a random UUID order.
+    #[tokio::test]
+    async fn next_ticket_number_folds_every_file_of_an_ambiguous_slug() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("ambiguous-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        let baseline = MemoryFile {
+            frontmatter: MemoryFrontmatter::new("Low ticket", "baseline", MemoryKind::Feature)
+                .with_feature(FeatureMetadata {
+                    status: FeatureStatus::Requested,
+                    number: Some(3),
+                    ..FeatureMetadata::default()
+                }),
+            body: "## Need\n\nBaseline.\n".to_string(),
+            format: FrontmatterFormat::TomlPlus,
+        };
+        import_memory(
+            scratch.backend(),
+            &entry.handle,
+            "low-ticket",
+            &baseline.to_string().expect("render baseline feature"),
+            None,
+            scratch.author(),
+            false,
+        )
+        .await
+        .expect("seed baseline feature");
+
+        let smaller_filename_id = MemoryId::from_uuid(
+            Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("valid uuid"),
+        );
+        let larger_filename_id = MemoryId::from_uuid(
+            Uuid::parse_str("ffffffff-ffff-ffff-ffff-ffffffffffff").expect("valid uuid"),
+        );
+        let low_number_file = MemoryFile {
+            frontmatter: MemoryFrontmatter::new("Ambiguous low", "d", MemoryKind::Feature)
+                .with_feature(FeatureMetadata {
+                    status: FeatureStatus::Requested,
+                    number: Some(20),
+                    ..FeatureMetadata::default()
+                }),
+            body: "b".to_string(),
+            format: FrontmatterFormat::TomlPlus,
+        };
+        let high_number_file = MemoryFile {
+            frontmatter: MemoryFrontmatter::new("Ambiguous high", "d", MemoryKind::Feature)
+                .with_feature(FeatureMetadata {
+                    status: FeatureStatus::Requested,
+                    number: Some(99),
+                    ..FeatureMetadata::default()
+                }),
+            body: "b".to_string(),
+            format: FrontmatterFormat::TomlPlus,
+        };
+        let author = scratch.author();
+        scratch
+            .backend()
+            .write_commit(
+                &entry.handle,
+                mmcp_git::CommitSpec::mmcp_commit(
+                    "seed ambiguous slug".to_string(),
+                    vec![
+                        (
+                            memory_path("ambiguous-feature", smaller_filename_id),
+                            Some(
+                                low_number_file
+                                    .to_string()
+                                    .expect("render low-number file")
+                                    .into_bytes(),
+                            ),
+                        ),
+                        (
+                            memory_path("ambiguous-feature", larger_filename_id),
+                            Some(
+                                high_number_file
+                                    .to_string()
+                                    .expect("render high-number file")
+                                    .into_bytes(),
+                            ),
+                        ),
+                    ],
+                    &author.name,
+                    &author.email,
+                ),
+            )
+            .await
+            .expect("seed ambiguous slug files");
+
+        let next = next_ticket_number(scratch.backend(), &entry)
+            .await
+            .expect("an ambiguous slug must not abort the counter");
+        assert_eq!(next, 100, "must fold both files, not just the first listed");
+    }
+
+    /// Path count the batch-count test below seeds, large enough that a per-path
+    /// `read_file` loop and a single `read_files` batch call are trivially distinguishable.
+    const BULK_PATH_COUNT: usize = 25;
+
+    /// [`max_ticket_number_over`] calls its `read_batch` seam exactly once, independent of how
+    /// many paths it folds. The regression this guards is a per-path `read_file` loop, which
+    /// would call the seam once per path instead of once for the whole group.
+    #[tokio::test]
+    async fn max_ticket_number_over_reads_the_batch_exactly_once() {
+        let paths: Vec<String> = (0..BULK_PATH_COUNT)
+            .map(|i| format!("memories/bulk-{i}/dummy.md"))
+            .collect();
+        let requested_len = paths.len();
+        let call_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = std::sync::Arc::clone(&call_count);
+
+        let max = max_ticket_number_over(paths, move |batched_paths| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(
+                batched_paths.len(),
+                requested_len,
+                "every path must land in the single batch call"
+            );
+            async { Ok(BatchOutcome::new()) }
+        })
+        .await
+        .expect("an empty batch still resolves to max = 0");
+
+        assert_eq!(
+            call_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the read seam must be called exactly once regardless of path count"
+        );
+        assert_eq!(max, 0);
     }
 }

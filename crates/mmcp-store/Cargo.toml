@@ -18,6 +18,11 @@ mmcp-sync = { workspace = true }
 gix = { workspace = true }
 toml = { workspace = true }
 
+# Names the element type `NativeBackend::read_files` returns (tracker.rs's `BatchOutcome`);
+# mmcp-git also depends on bytes so the transitive dep already compiles,
+# listing it directly keeps the crate-level dep set explicit.
+bytes = { workspace = true }
+
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
