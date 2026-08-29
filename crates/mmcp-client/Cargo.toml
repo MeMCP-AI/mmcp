@@ -17,6 +17,12 @@ mmcp-proto = { workspace = true }
 mmcp-sync = { workspace = true }
 mmcp-store = { workspace = true }
 
+# Names the element type `NativeBackend::read_files` returns (serve.rs's
+# `BatchReadOutcome`, list_memories' batched-descriptor seam); mmcp-git
+# also depends on bytes so the transitive dep already compiles, listing
+# it directly keeps the crate-level dep set explicit.
+bytes = { workspace = true }
+
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

@@ -2218,12 +2218,23 @@ impl McpServer {
         let entries = self.state.groups.list().await;
         let mut groups = Vec::with_capacity(entries.len());
         for entry in entries {
-            let files = list_memory_files(&self.state.backend, &entry).await?;
+            // `memory_count` only needs a total, so this counts leaf
+            // UUID.md files directly instead of building a full
+            // `Vec<MemoryFileRef>` (slug clone, formatted path, parsed
+            // id) per file, the way `list_memory_files` would for a
+            // listing that actually returns each file.
+            let count = mmcp_store::memory::count_all_memory_files(
+                &self.state.backend,
+                &entry.handle,
+                &Rev::head(),
+            )
+            .await
+            .map_err(git_error)?;
             let uuid = entry.manifest.group_id;
             groups.push(json!({
                 "slug":         entry.manifest.slug,
                 "uuid":         uuid.to_string(),
-                "memory_count": files.len(),
+                "memory_count": count,
                 "protected":    entry.manifest.protected,
                 "is_project":   project_uuid == Some(*uuid.as_uuid()),
             }));
@@ -2282,17 +2293,15 @@ impl McpServer {
             SlugRecursion::AnchorAndImmediateChildren
         };
         let prefix = args.path_prefix.as_deref().map(|p| p.trim_end_matches('/'));
-        let mut memories = Vec::with_capacity(files.len());
-        // A memory whose frontmatter fails to parse is never
-        // fabricated as a `kind: "rule"`, `name: null`,
-        // `description: null` record, since that shape is
-        // indistinguishable from a real minimal rule memory. It is
-        // excluded from `memories` and reported as a
-        // `frontmatter_parse_failed` note instead, so one corrupt
-        // file never takes down the rest of the group's listing.
-        let mut notes = Vec::new();
+        // Filtered BEFORE any read: a `path_prefix` query only pays git
+        // I/O for the files it can possibly return, never the rest of
+        // the group.
+        let matching: Vec<mmcp_store::MemoryFileRef> = files
+            .into_iter()
+            .filter(|file| slug_matches_filter(&file.slug, prefix, recursion))
+            .collect();
         // Detail level is selected once, up front, and threaded into
-        // `read_memory_descriptor` itself: it builds only the fields
+        // the batched descriptor builder: it builds only the fields
         // the requested shape needs instead of building the full
         // descriptor and immediately projecting most of it away.
         let detail = if args.compact.unwrap_or(false) {
@@ -2300,49 +2309,32 @@ impl McpServer {
         } else {
             DescriptorDetail::Full
         };
-        for file in files {
-            if !slug_matches_filter(&file.slug, prefix, recursion) {
-                continue;
-            }
-            match read_memory_descriptor(
-                &self.state.backend,
-                &entry,
-                &file.path,
-                &file.slug,
-                None,
-                detail,
-            )
-            .await
-            {
-                Ok(MemoryDescriptorOutcome::Parsed(descriptor)) => memories.push(descriptor),
-                Ok(MemoryDescriptorOutcome::ParseFailed(err)) => {
-                    notes.push(finding_to_note(&mmcp_store::tracker::parse_failed_finding(
-                        &entry.manifest.group_id.to_string(),
-                        &file.slug,
-                        &err,
-                    )));
-                }
-                // A single non-UTF8 memory file must never abort the
-                // rest of the group's listing: mirrors
-                // `search_memories`'s handling of the same
-                // `GitError::Utf8` case just below, and reuses the
-                // exact SAME construction (not just the same code
-                // string) via `mmcp_store::tracker::not_utf8_finding`,
-                // the shared constructor `read_memory_file_for_subscription`
-                // (`commands::subscription`) also builds its
-                // `memory_not_utf8` finding through, rather than each
-                // call site hand-rolling its own `Finding` literal.
-                // Every other sibling file still lists normally.
-                Err(mmcp_git::GitError::Utf8(err)) => {
-                    notes.push(finding_to_note(&mmcp_store::tracker::not_utf8_finding(
-                        &entry.manifest.group_id.to_string(),
-                        &file.slug,
-                        &err,
-                    )));
-                }
-                Err(err) => return Err(git_error(err)),
-            }
-        }
+        // One batched read for every matching file, instead of one
+        // `read_file` round trip per file: the mandatory/non-mandatory
+        // partition below needs every match's frontmatter before
+        // pagination can apply, so the read COUNT cannot shrink with
+        // `limit`, but the round-trip count can, from one per file to
+        // one for the whole call.
+        let backend = &self.state.backend;
+        let rev = Rev::head();
+        // A memory whose frontmatter fails to parse is never
+        // fabricated as a `kind: "rule"`, `name: null`,
+        // `description: null` record, since that shape is
+        // indistinguishable from a real minimal rule memory. It is
+        // excluded from `memories` and reported as a
+        // `frontmatter_parse_failed` note instead, so one corrupt
+        // file never takes down the rest of the group's listing.
+        let (memories, notes) = build_memory_descriptors_batched(&entry, matching, detail, {
+            let handle = &entry.handle;
+            // `rev` moves into this `async move` block itself rather
+            // than staying borrowed from the outer closure's captured
+            // state: `read_files` only needs `&Rev` for the call, but
+            // the returned future must own everything it references
+            // once it outlives the closure invocation that produced it.
+            move |paths| async move { backend.read_files(handle, paths, &rev).await }
+        })
+        .await
+        .map_err(git_error)?;
 
         // `offset`/`limit` activate pagination. The
         // single most important correctness property: a caller must
@@ -7835,6 +7827,140 @@ async fn read_memory_descriptor(
     Ok(MemoryDescriptorOutcome::Parsed(descriptor))
 }
 
+/// Batched-read outcome shape [`NativeBackend::read_files`] returns.
+/// Spelled out locally because its own alias sits in a private module of
+/// `mmcp-git` (mirrors `mmcp_store::tracker`'s identical local alias).
+type BatchReadOutcome = Vec<(String, Result<bytes::Bytes, mmcp_git::GitError>)>;
+
+/// Build every matching memory's descriptor from ONE batched read,
+/// instead of one `read_file` round trip per file. `read_batch` is the
+/// batched-read seam: production passes [`NativeBackend::read_files`]
+/// directly; a test can pass a call-counting stub to prove
+/// `list_memories` collapses a group's git reads into a single round
+/// trip regardless of how many files match the listing.
+///
+/// Every descriptor field [`DescriptorDetail::Compact`] and
+/// [`DescriptorDetail::Full`] build is a frontmatter field, never the
+/// Markdown body, so this parses with
+/// [`mmcp_core::memory::parse_frontmatter`] instead of the full
+/// `MemoryFile::parse`, skipping the body copies that function pays for
+/// a field this call path never reads. `read_memory_descriptor` itself
+/// is untouched: its other callers (`search_memories`, single-file
+/// lookups) keep reading one file at a time via `MemoryFile::parse`.
+///
+/// A per-file UTF-8 decode failure or frontmatter parse failure becomes
+/// a note and that file is skipped; every other sibling still lists
+/// normally, matching `read_memory_descriptor`'s per-file contract. A
+/// hard failure of `read_batch` itself, or a per-path git error other
+/// than the UTF-8 decode (checked after retrieval, same as the
+/// pre-batching `read_file` contract), aborts the whole call, matching
+/// the pre-batching semantics where any such error propagated out of
+/// the per-file `read_file` loop.
+async fn build_memory_descriptors_batched<F, Fut>(
+    entry: &GroupEntry,
+    files: Vec<mmcp_store::MemoryFileRef>,
+    detail: DescriptorDetail,
+    read_batch: F,
+) -> Result<(Vec<serde_json::Value>, Vec<mmcp_proto::Note>), mmcp_git::GitError>
+where
+    F: FnOnce(Vec<String>) -> Fut,
+    Fut: Future<Output = Result<BatchReadOutcome, mmcp_git::GitError>>,
+{
+    let mut memories = Vec::with_capacity(files.len());
+    let mut notes = Vec::new();
+    if files.is_empty() {
+        // `repo_ops::read_files` resolves `rev` unconditionally and has
+        // no empty-input short-circuit, unlike `list_tree`'s
+        // `RevNotFound -> empty` grace; skipping the call outright for
+        // zero matching files preserves the old per-file loop's
+        // behavior (zero reads for zero files) by construction.
+        return Ok((memories, notes));
+    }
+    let paths: Vec<String> = files.iter().map(|file| file.path.clone()).collect();
+    let batch = read_batch(paths).await?;
+    let mut bytes_by_path: std::collections::HashMap<
+        String,
+        Result<bytes::Bytes, mmcp_git::GitError>,
+    > = batch.into_iter().collect();
+
+    for file in files {
+        let bytes = match bytes_by_path.remove(&file.path) {
+            Some(Ok(bytes)) => bytes,
+            Some(Err(err)) => return Err(err),
+            // `read_files` returns exactly one outcome per requested
+            // path; a path built from this same loop missing from its
+            // own result is a broken batching invariant, not a
+            // reachable runtime state.
+            None => unreachable!("read_files omitted a requested path"),
+        };
+        let text = match std::str::from_utf8(&bytes) {
+            Ok(text) => text,
+            Err(err) => {
+                notes.push(finding_to_note(&mmcp_store::tracker::not_utf8_finding(
+                    &entry.manifest.group_id.to_string(),
+                    &file.slug,
+                    &err,
+                )));
+                continue;
+            }
+        };
+        match mmcp_core::memory::parse_frontmatter(text) {
+            Ok(frontmatter) => {
+                memories.push(build_descriptor_json(
+                    entry,
+                    &file.slug,
+                    &frontmatter,
+                    detail,
+                ));
+            }
+            Err(err) => {
+                notes.push(finding_to_note(&mmcp_store::tracker::parse_failed_finding(
+                    &entry.manifest.group_id.to_string(),
+                    &file.slug,
+                    &err,
+                )));
+            }
+        }
+    }
+    Ok((memories, notes))
+}
+
+/// Build one memory descriptor's JSON shape from already-parsed
+/// frontmatter. Pure (no I/O); the field set matches
+/// [`read_memory_descriptor`]'s exactly, just fed from a
+/// [`mmcp_core::memory::MemoryFrontmatter`] instead of a full
+/// [`MemoryFile`].
+fn build_descriptor_json(
+    entry: &GroupEntry,
+    slug: &str,
+    frontmatter: &MemoryFrontmatter,
+    detail: DescriptorDetail,
+) -> serde_json::Value {
+    let path: Vec<&str> = slug.split('/').filter(|s| !s.is_empty()).collect();
+    let leaf = path.last().copied().unwrap_or(slug);
+    match detail {
+        DescriptorDetail::Compact => json!({
+            "slug": leaf,
+            "path": path,
+            "name": frontmatter.name,
+            "kind": frontmatter.kind.as_str(),
+            "mandatory": frontmatter.mandatory,
+        }),
+        DescriptorDetail::Full => json!({
+            "group": entry.manifest.group_id,
+            "slug": leaf,
+            "path": path,
+            "name": frontmatter.name,
+            "description": frontmatter.description,
+            "kind": frontmatter.kind.as_str(),
+            "mandatory": frontmatter.mandatory,
+            "latest_version": frontmatter.version.as_ref().map(ToString::to_string),
+            "tags": frontmatter.tags,
+            "source": frontmatter.source,
+        }),
+    }
+}
+
 /// Read the `mandatory` flag back off a descriptor built by
 /// [`read_memory_descriptor`] (compact or full; both carry the
 /// field). Missing/non-boolean is treated as `false` rather than
@@ -8329,6 +8455,81 @@ mod tests {
         )
         .await;
         group_id
+    }
+
+    /// Regression guard for [`build_memory_descriptors_batched`]: it
+    /// reads a group's matching files with exactly ONE batched call,
+    /// independent of how many files match, instead of the per-file
+    /// `read_file` loop `list_memories` used to pay before this fix
+    /// (one round trip per file, so `limit: 1` on a large group still
+    /// executed a read for every file before pagination discarded
+    /// most of them).
+    #[tokio::test]
+    async fn build_memory_descriptors_batched_reads_in_one_round_trip() {
+        const FILE_COUNT: usize = 25;
+        let owner = UserId::new();
+        let group_id = GroupId::new();
+        let manifest = GroupManifest::new_user_owned(group_id, "bulk", owner);
+        let entry = GroupEntry::new(
+            mmcp_git::RepoHandle::new(*group_id.as_uuid(), "unused-in-this-test"),
+            manifest,
+            0,
+        );
+        let files: Vec<mmcp_store::MemoryFileRef> = (0..FILE_COUNT)
+            .map(|i| {
+                let slug = format!("bulk-{i}");
+                let id = Uuid::now_v7();
+                mmcp_store::MemoryFileRef {
+                    path: mmcp_core::conventions::memory_path(&slug, MemoryId::from_uuid(id)),
+                    slug,
+                    id,
+                }
+            })
+            .collect();
+        let requested_len = files.len();
+
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&call_count);
+
+        let (memories, notes) = build_memory_descriptors_batched(
+            &entry,
+            files,
+            DescriptorDetail::Compact,
+            move |paths| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(
+                    paths.len(),
+                    requested_len,
+                    "every path must land in the single batch call"
+                );
+                async move {
+                    let outcomes = paths
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, path)| {
+                            let body = format!(
+                                "+++\nname = \"Entry {i}\"\ndescription = \"d\"\nkind = \"rule\"\nmandatory = false\n+++\n\nBody.\n"
+                            );
+                            (path, Ok(bytes::Bytes::from(body)))
+                        })
+                        .collect();
+                    Ok(outcomes)
+                }
+            },
+        )
+        .await
+        .expect("batched descriptor build");
+
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "the batch seam must be called exactly once regardless of file count"
+        );
+        assert_eq!(memories.len(), FILE_COUNT);
+        assert!(
+            notes.is_empty(),
+            "well-formed fixtures must not raise notes: {notes:?}"
+        );
     }
 
     /// Falsification test for the strict-UTF-8 read at
