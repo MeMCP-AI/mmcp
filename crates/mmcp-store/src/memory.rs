@@ -251,6 +251,44 @@ pub async fn list_all_memory_files(
     Ok(out)
 }
 
+/// Count every memory file [`list_all_memory_files`] would return, without
+/// materializing a [`MemoryFileRef`] (slug clone, parsed id, formatted
+/// path) for each one; used where only the total is needed (`list_groups`'
+/// `memory_count`), so a group with many files pays for one recursive tree
+/// walk and a `usize` filter/count, never `N` per-file `String` allocations.
+pub async fn count_all_memory_files(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    rev: &Rev,
+) -> Result<usize, GitError> {
+    count_all_memory_files_over(|| list_memory_slug_dirs(backend, handle, rev)).await
+}
+
+/// [`count_all_memory_files`]'s walk, factored out behind a seam so a test
+/// can inject a call-counting stub. `walk` is expected to behave like
+/// [`list_memory_slug_dirs`]: production passes it directly. Proves this
+/// makes exactly one recursive tree walk regardless of how many slug
+/// directories the group holds, guarding against a regression that loops
+/// [`crate::tracker::count_slug_entries`]'s single-slug, single-`list_tree`
+/// shape once per slug instead of walking the whole tree in one call.
+async fn count_all_memory_files_over<F, Fut>(walk: F) -> Result<usize, GitError>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<Vec<MemorySlugDir>, GitError>>,
+{
+    let ext = mmcp_core::conventions::MEMORY_EXTENSION;
+    let slug_dirs = walk().await?;
+    Ok(slug_dirs
+        .iter()
+        .flat_map(|dir| &dir.filenames)
+        .filter(|filename| {
+            filename
+                .strip_suffix(ext)
+                .is_some_and(|stem| Uuid::parse_str(stem).is_ok())
+        })
+        .count())
+}
+
 /// How a [`ResolvedMemory`] was reached.
 /// Branches the write enforcement rule:
 /// filename-addressed writes reject on id mismatch unless `force`,
@@ -2276,6 +2314,99 @@ mod tests {
             .expect("nested memory surfaces in flat enumeration");
         assert_eq!(hit.slug, "feedback/git");
         assert_eq!(hit.path, path);
+    }
+
+    #[tokio::test]
+    async fn count_all_memory_files_matches_list_all_memory_files_len() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        // Nested slug.
+        let nested_id = Uuid::now_v7();
+        seed_raw(
+            &backend,
+            &handle,
+            &format!("memories/feedback/git/{nested_id}.md"),
+            "+++\nname = \"n\"\ndescription = \"d\"\nkind = \"rule\"\n+++\n\n",
+            &author,
+        )
+        .await;
+        // Flat slug with a stray non-UUID sibling that must not count.
+        let flat_id = Uuid::now_v7();
+        seed_raw(
+            &backend,
+            &handle,
+            &format!("memories/legacy/{flat_id}.md"),
+            "+++\nname = \"f\"\ndescription = \"f\"\nkind = \"rule\"\n+++\n\n",
+            &author,
+        )
+        .await;
+        seed_raw(
+            &backend,
+            &handle,
+            "memories/legacy/not-a-uuid.md",
+            "+++\nname = \"stray\"\ndescription = \"stray\"\nkind = \"rule\"\n+++\n\n",
+            &author,
+        )
+        .await;
+        // Hand-crafted root-level file: `list_all_memory_files` never
+        // surfaces it (`list_memory_slug_dirs` filters `!slug.is_empty()`),
+        // so the count must agree by construction, not by a parallel
+        // filter that could silently diverge from it.
+        let root_id = Uuid::now_v7();
+        seed_raw(
+            &backend,
+            &handle,
+            &format!("memories/{root_id}.md"),
+            "+++\nname = \"r\"\ndescription = \"r\"\nkind = \"rule\"\n+++\n\n",
+            &author,
+        )
+        .await;
+
+        let files = list_all_memory_files(&backend, &handle, &Rev::head())
+            .await
+            .expect("list");
+        let count = count_all_memory_files(&backend, &handle, &Rev::head())
+            .await
+            .expect("count");
+
+        assert_eq!(
+            count,
+            files.len(),
+            "count must match the full listing's length exactly"
+        );
+        assert_eq!(count, 2, "only the two UUID-named leaf files count");
+    }
+
+    /// Regression guard for [`count_all_memory_files_over`]: it walks the
+    /// group's memory tree exactly once, regardless of how many slug
+    /// directories exist, instead of looping a per-slug `list_tree` call
+    /// (`count_slug_entries`'s shape) once per slug.
+    #[tokio::test]
+    async fn count_all_memory_files_over_walks_the_tree_exactly_once() {
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&call_count);
+        let synthetic_dirs = (0..25)
+            .map(|i| MemorySlugDir {
+                slug: format!("bulk-{i}"),
+                dir: format!("memories/bulk-{i}"),
+                filenames: vec![format!("{}.md", Uuid::now_v7())],
+            })
+            .collect::<Vec<_>>();
+        let expected_len = synthetic_dirs.len();
+
+        let count = count_all_memory_files_over(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async move { Ok(synthetic_dirs) }
+        })
+        .await
+        .expect("count");
+
+        assert_eq!(
+            call_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the walk seam must be called exactly once regardless of slug directory count"
+        );
+        assert_eq!(count, expected_len);
     }
 
     #[tokio::test]
