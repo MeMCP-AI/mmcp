@@ -543,3 +543,246 @@ async fn fast_forward_reports_not_fast_forward_on_divergence() {
         other => panic!("expected NotFastForward, got {other:?}"),
     }
 }
+
+/// Recursively collect every tree object reachable from `tree_id`,
+/// keyed by its path from the root (the root itself keyed by `""`).
+/// Used to prove the sparse tree editor rewrites only the trees on
+/// an edited path, leaving every sibling tree's object id untouched.
+fn collect_tree_oids(
+    repo: &gix::Repository,
+    tree_id: gix::ObjectId,
+    path: String,
+    out: &mut std::collections::BTreeMap<String, gix::ObjectId>,
+) {
+    out.insert(path.clone(), tree_id);
+    let tree = repo.find_tree(tree_id).expect("find tree");
+    for entry in tree.iter() {
+        let entry = entry.expect("decode tree entry");
+        if entry.mode().is_tree() {
+            let child_path = if path.is_empty() {
+                entry.filename().to_string()
+            } else {
+                format!("{path}/{}", entry.filename())
+            };
+            collect_tree_oids(repo, entry.object_id(), child_path, out);
+        }
+    }
+}
+
+/// Path of the loose object file `oid` would be stored at under a
+/// bare repo rooted at `repo_path`, following git's standard
+/// 2-hex-char fanout directory layout.
+fn loose_object_path(repo_path: &std::path::Path, oid: gix::ObjectId) -> std::path::PathBuf {
+    let hex = oid.to_string();
+    repo_path.join("objects").join(&hex[..2]).join(&hex[2..])
+}
+
+/// Snapshot every tree object on `main`'s current commit, by path.
+fn tree_oids_by_path(
+    repo_path: &std::path::Path,
+) -> std::collections::BTreeMap<String, gix::ObjectId> {
+    let repo = gix::open(repo_path).expect("open repo for oid inspection");
+    let commit_id = repo
+        .find_reference("refs/heads/main")
+        .expect("main ref")
+        .id()
+        .detach();
+    let tree = repo
+        .find_commit(commit_id)
+        .expect("find commit")
+        .tree()
+        .expect("commit tree");
+    let mut out = std::collections::BTreeMap::new();
+    collect_tree_oids(&repo, tree.id().detach(), String::new(), &mut out);
+    out
+}
+
+/// The highest-severity finding of the mmcp-git perf audit: a
+/// single-file commit used to reload and rewrite every tree object
+/// in the repo. This proves the sparse tree editor fix actually
+/// stopped that: a sibling directory untouched by the edit, and an
+/// unrelated top-level directory, keep the EXACT SAME tree object id
+/// across the commit, while every tree on the edited path legitimately
+/// changes.
+#[tokio::test]
+async fn write_commit_single_file_edit_leaves_sibling_trees_byte_identical() {
+    let (backend, _tmp) = backend_in_tempdir();
+    let manifest = sample_manifest();
+    let repo = backend.create_group_repo(&manifest).await.unwrap();
+
+    backend
+        .write_commit(
+            &repo,
+            CommitSpec {
+                branch: "main".to_string(),
+                author_name: "alice".to_string(),
+                author_email: "alice@example.com".to_string(),
+                message: "seed sibling trees".to_string(),
+                files: vec![
+                    (
+                        "memories/alpha/one.md".to_string(),
+                        Some(b"one-v1".to_vec()),
+                    ),
+                    ("memories/beta/two.md".to_string(), Some(b"two".to_vec())),
+                    ("issues/1.md".to_string(), Some(b"issue-one".to_vec())),
+                ],
+            },
+        )
+        .await
+        .unwrap();
+
+    let repo_path = backend.repo_path(*manifest.group_id.as_uuid());
+    let before = tree_oids_by_path(&repo_path);
+
+    // `gix::Repository::write_object` itself skips the write when the
+    // computed OID already exists, so an untouched loose object file's
+    // mtime not moving is corroborating evidence, not on its own proof
+    // that the tree was never recomputed. The OID-equality assertions
+    // below are the load-bearing check; this mtime capture just adds a
+    // second, independent signal that nothing touched this file.
+    let beta_object_path = loose_object_path(&repo_path, before["memories/beta"]);
+    let beta_mtime_before = std::fs::metadata(&beta_object_path)
+        .expect("sibling tree object exists on disk before the edit")
+        .modified()
+        .expect("filesystem supports mtime");
+
+    backend
+        .write_commit(
+            &repo,
+            CommitSpec {
+                branch: "main".to_string(),
+                author_name: "alice".to_string(),
+                author_email: "alice@example.com".to_string(),
+                message: "edit one leaf file".to_string(),
+                files: vec![(
+                    "memories/alpha/one.md".to_string(),
+                    Some(b"one-v2".to_vec()),
+                )],
+            },
+        )
+        .await
+        .unwrap();
+
+    let after = tree_oids_by_path(&repo_path);
+
+    // Untouched sibling trees are never rewritten: same object id.
+    assert_eq!(
+        before["memories/beta"], after["memories/beta"],
+        "untouched sibling subtree must keep its exact tree object id"
+    );
+    assert_eq!(
+        before["issues"], after["issues"],
+        "unrelated top-level subtree must keep its exact tree object id"
+    );
+
+    // The edited path's own ancestry legitimately changes.
+    assert_ne!(before[""], after[""]);
+    assert_ne!(before["memories"], after["memories"]);
+    assert_ne!(before["memories/alpha"], after["memories/alpha"]);
+
+    // Corroborating signal: the sibling's loose object file on disk
+    // was not replaced by the second commit either.
+    let beta_mtime_after = std::fs::metadata(&beta_object_path)
+        .expect("sibling tree object still exists on disk after the edit")
+        .modified()
+        .expect("filesystem supports mtime");
+    assert_eq!(
+        beta_mtime_before, beta_mtime_after,
+        "untouched sibling tree's loose object file must not be rewritten to disk"
+    );
+}
+
+/// A single commit that adds a new file, modifies an existing one,
+/// and deletes a third all land correctly together.
+#[tokio::test]
+async fn write_commit_add_modify_delete_in_one_commit() {
+    let (backend, _tmp) = backend_in_tempdir();
+    let manifest = sample_manifest();
+    let repo = backend.create_group_repo(&manifest).await.unwrap();
+
+    backend
+        .write_commit(
+            &repo,
+            CommitSpec {
+                branch: "main".to_string(),
+                author_name: "alice".to_string(),
+                author_email: "alice@example.com".to_string(),
+                message: "seed two files".to_string(),
+                files: vec![
+                    ("keep.md".to_string(), Some(b"keep-v1".to_vec())),
+                    ("drop.md".to_string(), Some(b"drop-me".to_vec())),
+                ],
+            },
+        )
+        .await
+        .unwrap();
+
+    backend
+        .write_commit(
+            &repo,
+            CommitSpec {
+                branch: "main".to_string(),
+                author_name: "alice".to_string(),
+                author_email: "alice@example.com".to_string(),
+                message: "add, modify, delete together".to_string(),
+                files: vec![
+                    ("new.md".to_string(), Some(b"new-file".to_vec())),
+                    ("keep.md".to_string(), Some(b"keep-v2".to_vec())),
+                    ("drop.md".to_string(), None),
+                ],
+            },
+        )
+        .await
+        .unwrap();
+
+    let new_file = backend
+        .read_file(&repo, "new.md", &Rev::Branch("main".into()))
+        .await
+        .unwrap();
+    assert_eq!(&new_file[..], b"new-file");
+
+    let kept = backend
+        .read_file(&repo, "keep.md", &Rev::Branch("main".into()))
+        .await
+        .unwrap();
+    assert_eq!(&kept[..], b"keep-v2");
+
+    let dropped = backend
+        .read_file(&repo, "drop.md", &Rev::Branch("main".into()))
+        .await
+        .unwrap_err();
+    assert!(matches!(dropped, mmcp_git::GitError::PathNotFound(_)));
+}
+
+/// A deeply nested path (mirroring `memories/<slug>/<uuid>.md`) round
+/// trips through the sparse tree editor's intermediate directory
+/// creation and lookup.
+#[tokio::test]
+async fn write_commit_nested_slug_path_round_trips() {
+    let (backend, _tmp) = backend_in_tempdir();
+    let manifest = sample_manifest();
+    let repo = backend.create_group_repo(&manifest).await.unwrap();
+
+    backend
+        .write_commit(
+            &repo,
+            sample_commit(
+                "alice",
+                "main",
+                "memories/some-slug/11111111-1111-1111-1111-111111111111.md",
+                "nested content",
+            ),
+        )
+        .await
+        .unwrap();
+
+    let bytes = backend
+        .read_file(
+            &repo,
+            "memories/some-slug/11111111-1111-1111-1111-111111111111.md",
+            &Rev::Branch("main".into()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(&bytes[..], b"nested content");
+}

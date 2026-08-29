@@ -22,7 +22,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.114"
+version = "0.1.115"
 edition = "2024"
 rust-version = "1.94"
 authors = ["Gabriel GRONDIN"]
@@ -150,6 +150,7 @@ gix = { version = "0.81", default-features = false, features = [
     "blocking-http-transport-reqwest-rust-tls",
     "serve-upload-pack",
     "serve-receive-pack",
+    "tree-editor",
 ] }
 
 # Bytes container

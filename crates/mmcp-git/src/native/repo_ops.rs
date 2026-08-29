@@ -25,7 +25,8 @@ use std::process::{Output, Stdio};
 use std::time::Duration;
 
 use bytes::Bytes;
-use gix::bstr::BString;
+use gix::bstr::{BStr, BString};
+use gix::object::tree::editor::ToComponents;
 use gix::objs::tree::EntryKind;
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
@@ -1026,137 +1027,98 @@ pub fn read_files(
         .collect())
 }
 
-/// Node in the in-memory tree we build before flushing to git.
+/// A path pre-split into non-empty components.
 ///
-/// Directories hold a map from child name to another node. Leaves
-/// hold a blob object id. Pending deletes are represented as
-/// `Option::None` blob nodes that the flusher drops.
-enum TreeNode {
-    Dir(std::collections::BTreeMap<BString, TreeNode>),
-    Blob(Option<gix::ObjectId>),
-}
+/// Normalizes leading, trailing, and repeated `/` separators the
+/// same way the old manual tree walk did, so a path like `a//b/`
+/// still resolves to the two components `a`, `b` instead of
+/// tripping the tree editor's rejection of empty path components.
+struct PathComponents<'a>(Vec<&'a str>);
 
-impl TreeNode {
-    fn empty_dir() -> Self {
-        TreeNode::Dir(std::collections::BTreeMap::new())
+impl<'a> PathComponents<'a> {
+    fn split(path: &'a str) -> Self {
+        PathComponents(path.split('/').filter(|c| !c.is_empty()).collect())
     }
 }
 
-/// Load `tree_id` into an in-memory [`TreeNode::Dir`] recursively.
-fn load_tree(repo: &gix::Repository, tree_id: gix::ObjectId) -> Result<TreeNode, GitError> {
-    let obj = repo.find_object(tree_id).map_err(commit_err)?;
-    let tree: gix::objs::Tree = obj.into_tree().decode().map_err(commit_err)?.into();
-    let mut entries = std::collections::BTreeMap::new();
-    for entry in tree.entries {
-        let node = match entry.mode.kind() {
-            EntryKind::Tree => load_tree(repo, entry.oid)?,
-            EntryKind::Blob | EntryKind::BlobExecutable => TreeNode::Blob(Some(entry.oid)),
-            _ => continue,
-        };
-        entries.insert(entry.filename.clone(), node);
+impl ToComponents for PathComponents<'_> {
+    fn to_components(&self) -> impl Iterator<Item = &BStr> {
+        self.0.iter().map(|c| BStr::new(c.as_bytes()))
     }
-    Ok(TreeNode::Dir(entries))
 }
 
-/// Walk `node` (must be a dir) following `components`, creating
-/// intermediate directories as needed, and apply the given leaf edit.
-fn apply_edit(node: &mut TreeNode, components: &[&str], leaf: TreeNode) -> Result<(), GitError> {
-    let TreeNode::Dir(map) = node else {
-        return Err(commit_msg_err(
-            "path component collides with an existing blob",
-        ));
-    };
-    let Some((head, rest)) = components.split_first() else {
-        return Err(commit_msg_err("empty path component in commit file list"));
-    };
-    let key = BString::from(*head);
-    if rest.is_empty() {
-        if matches!(leaf, TreeNode::Blob(None)) {
-            map.remove(&key);
-        } else {
-            map.insert(key, leaf);
-        }
-        return Ok(());
+/// Borrowed view over a prefix of a [`PathComponents`] list, for
+/// probing one intermediate directory at a time.
+struct ComponentsRef<'a>(&'a [&'a str]);
+
+impl ToComponents for ComponentsRef<'_> {
+    fn to_components(&self) -> impl Iterator<Item = &BStr> {
+        self.0.iter().map(|c| BStr::new(c.as_bytes()))
     }
-    let child = map.entry(key).or_insert_with(TreeNode::empty_dir);
-    apply_edit(child, rest, leaf)
 }
 
-/// Recursively flush an in-memory tree to the object database.
-fn flush_tree(repo: &gix::Repository, node: &TreeNode) -> Result<Option<gix::ObjectId>, GitError> {
-    let TreeNode::Dir(map) = node else {
-        return Err(commit_msg_err("flush_tree expects a Dir"));
-    };
-    let mut entries: Vec<gix::objs::tree::Entry> = Vec::new();
-    for (name, child) in map {
-        match child {
-            TreeNode::Blob(Some(oid)) => {
-                entries.push(gix::objs::tree::Entry {
-                    mode: EntryKind::Blob.into(),
-                    filename: name.clone(),
-                    oid: *oid,
-                });
-            }
-            TreeNode::Blob(None) => {}
-            TreeNode::Dir(_) => {
-                if let Some(sub_id) = flush_tree(repo, child)? {
-                    entries.push(gix::objs::tree::Entry {
-                        mode: EntryKind::Tree.into(),
-                        filename: name.clone(),
-                        oid: sub_id,
-                    });
-                }
-            }
+/// Reject a path whose intermediate directory component already
+/// exists as a non-tree entry (a prior blob committed at that exact
+/// path). The tree editor itself would silently coerce the blob
+/// into a tree instead of treating this as the invariant violation
+/// it is, so the check is performed explicitly before editing.
+fn reject_blob_directory_collision(
+    editor: &gix::object::tree::Editor<'_>,
+    path: &str,
+    components: &[&str],
+) -> Result<(), GitError> {
+    for depth in 1..components.len() {
+        let prefix = ComponentsRef(&components[..depth]);
+        if let Some(entry) = editor.get(prefix)
+            && !entry.mode().is_tree()
+        {
+            return Err(commit_msg_err(format!(
+                "path component collides with an existing blob: {path}"
+            )));
         }
     }
-    if entries.is_empty() {
-        return Ok(None);
-    }
-    entries.sort();
-    let tree = gix::objs::Tree { entries };
-    Ok(Some(repo.write_object(&tree).map_err(commit_err)?.detach()))
+    Ok(())
 }
 
 /// Construct a new tree by applying the edits in `files` on top of
 /// the parent tree. Returns the new tree object id.
+///
+/// Uses `gix`'s sparse tree editor instead of a full recursive
+/// rebuild: it loads and rewrites only the trees on each edited
+/// path, so a sibling subtree untouched by any edit keeps its
+/// original object id and is never re-read, re-serialized, or
+/// rewritten to the object database.
 fn build_tree(
     repo: &gix::Repository,
     parent_tree_id: Option<gix::ObjectId>,
     files: &[(String, Option<Vec<u8>>)],
 ) -> Result<gix::ObjectId, GitError> {
-    let mut root = match parent_tree_id {
-        Some(parent) => load_tree(repo, parent)?,
-        None => TreeNode::empty_dir(),
-    };
+    let root_id = parent_tree_id.unwrap_or_else(|| gix::ObjectId::empty_tree(repo.object_hash()));
+    let mut editor = repo.edit_tree(root_id).map_err(commit_err)?;
 
     for (path, contents) in files {
-        let components: Vec<&str> = path.split('/').filter(|c| !c.is_empty()).collect();
-        if components.is_empty() {
+        let components = PathComponents::split(path);
+        if components.0.is_empty() {
             return Err(GitError::PathNotFound(path.clone()));
         }
-        let leaf = match contents {
+        reject_blob_directory_collision(&editor, path, &components.0)?;
+        match contents {
             Some(bytes) => {
                 let blob_id = repo
                     .write_blob(bytes.as_slice())
                     .map_err(commit_err)?
                     .detach();
-                TreeNode::Blob(Some(blob_id))
+                editor
+                    .upsert(components, EntryKind::Blob, blob_id)
+                    .map_err(commit_err)?;
             }
-            None => TreeNode::Blob(None),
-        };
-        apply_edit(&mut root, &components, leaf)?;
-    }
-
-    match flush_tree(repo, &root)? {
-        Some(id) => Ok(id),
-        None => {
-            // Empty tree: write a zero-entry tree object.
-            let empty = gix::objs::Tree {
-                entries: Vec::new(),
-            };
-            Ok(repo.write_object(&empty).map_err(commit_err)?.detach())
+            None => {
+                editor.remove(components).map_err(commit_err)?;
+            }
         }
     }
+
+    Ok(editor.write().map_err(commit_err)?.detach())
 }
 
 /// Create a new commit on the given branch applying a set of file
