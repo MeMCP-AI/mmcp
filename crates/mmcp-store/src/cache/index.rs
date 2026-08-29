@@ -126,17 +126,16 @@ async fn index_group(
     .await
 }
 
-/// Upsert every file in `files` into `tx`, resolving all of their contents through exactly one
-/// call to `read_batch` before the per-file upsert loop starts.
+/// Upsert every file in `files` into `tx`.
+/// Reads every file's contents through one batched `read_batch` call before the per-file upsert loop starts.
 ///
-/// `read_batch` is the batched-read seam: production passes [`NativeBackend::read_files`]
-/// directly, resolving the commit and root tree once and reusing them for every path, in place
-/// of a per-file `read_file` loop that used to re-resolve both on every iteration while holding
-/// `tx`'s write transaction open across all of those sequential round trips. A test can pass a
-/// call-counting stub instead, to prove this folds without a per-file round trip.
+/// `read_batch` is the batched-read seam: production passes [`NativeBackend::read_files`] directly.
+/// One batched call resolves the commit and root tree once and reuses them for every path.
+/// `tx`'s write transaction therefore stays open for one round trip, not N per-file round trips.
+/// A test can pass a call-counting stub instead, to prove the batch seam runs exactly once.
 ///
-/// A per-file `PathNotFound` (raced with a concurrent delete/move between the listing and the
-/// read) or parse failure is skipped, never aborts the whole group.
+/// A per-file `PathNotFound` is skipped: it raced with a concurrent delete/move between the listing and the read.
+/// A per-file parse failure is skipped too; neither aborts the whole group.
 async fn index_group_files<F, Fut>(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     group_id: Uuid,
@@ -427,14 +426,12 @@ mod tests {
         assert_eq!(row_count.0, 1);
     }
 
-    /// File count large enough that a per-file `read_file` loop and a single `read_files`
-    /// batch call are trivially distinguishable.
+    /// File count large enough to trivially distinguish a per-file `read_file` loop from one batched `read_files` call.
     const BULK_FILE_COUNT: usize = 25;
 
-    /// [`index_group_files`] calls its `read_batch` seam exactly once, independent of how many
-    /// files the group holds. The regression this guards is a per-file `read_file` loop, which
-    /// would call the seam once per file instead of once for the whole group, holding `tx`'s
-    /// write transaction open across every one of those sequential round trips.
+    /// [`index_group_files`] calls its `read_batch` seam exactly once, independent of how many files the group holds.
+    /// The regression this guards is a per-file `read_file` loop.
+    /// Such a loop would call the seam once per file and hold `tx`'s write transaction open across every round trip.
     #[tokio::test]
     async fn index_group_files_reads_the_batch_exactly_once() {
         let files: Vec<MemoryFileRef> = (0..BULK_FILE_COUNT)
@@ -461,8 +458,8 @@ mod tests {
                 requested_len,
                 "every path must land in the single batch call"
             );
-            // Every file "raced with a concurrent delete" so the upsert loop
-            // skips it without needing a real parseable body or a real DB write.
+            // Every file here simulates a concurrent delete, so the upsert loop skips it.
+            // No file needs a parseable body or triggers a real DB write.
             let outcomes: BatchOutcome = paths
                 .into_iter()
                 .map(|path| {
