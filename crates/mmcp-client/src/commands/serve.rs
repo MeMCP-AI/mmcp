@@ -308,7 +308,16 @@ struct ReadMemoryArgs {
     pub max_bytes: Option<usize>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+/// Default page size for `list_versions` pagination when the caller
+/// sets `offset` and/or `limit` but omits an explicit `limit` value.
+/// A commit-history entry can carry a large `message` field, so this
+/// default sits well below `DEFAULT_LIST_GROUPS_LIMIT`.
+const DEFAULT_LIST_VERSIONS_LIMIT: usize = 50;
+/// Hard upper clamp on a caller-supplied `list_versions` `limit`,
+/// independent of `DEFAULT_LIST_VERSIONS_LIMIT`.
+const MAX_LIST_VERSIONS_LIMIT: usize = 500;
+
+#[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 struct ListVersionsArgs {
@@ -316,6 +325,24 @@ struct ListVersionsArgs {
     pub group: String,
     /// Memory slug.
     pub slug: String,
+    /// When `true`, drop `message` (the full, potentially multi-line
+    /// commit message; the single largest per-entry field), returning
+    /// only `commit`, `subject`, `author_name`, `author_email`, and
+    /// `timestamp`. Defaults to `false`, the full entry.
+    #[serde(default)]
+    pub compact: Option<bool>,
+    /// Zero-based offset into the commit history, most-recent-first.
+    /// Setting either `offset` or `limit` activates pagination: the
+    /// response adds an `envelope` field `{truncated, total, returned,
+    /// next_offset}`. Leaving both unset returns the full history in
+    /// one flat array, no envelope.
+    #[serde(default)]
+    pub offset: Option<usize>,
+    /// Page size. See `offset` for the pagination-activation rule.
+    /// Defaults to `DEFAULT_LIST_VERSIONS_LIMIT`, clamps to
+    /// `MAX_LIST_VERSIONS_LIMIT`.
+    #[serde(default)]
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -989,13 +1016,36 @@ struct StatusArgs {
     pub project: Option<String>,
 }
 
-/// Argument shape for `list_groups`. Takes no parameters today;
-/// a future `owner_scope` filter would land here without breaking
+/// Default page size for `list_groups` pagination when the caller
+/// sets `offset` and/or `limit` but omits an explicit `limit` value.
+/// A mirrored group set is typically small (manifest-only rows, no
+/// memory bodies), so this default is generous relative to
+/// `DEFAULT_LIST_MILESTONES_LIMIT` / `DEFAULT_LIST_VERSIONS_LIMIT`.
+const DEFAULT_LIST_GROUPS_LIMIT: usize = 200;
+/// Hard upper clamp on a caller-supplied `list_groups` `limit`,
+/// independent of `DEFAULT_LIST_GROUPS_LIMIT`.
+const MAX_LIST_GROUPS_LIMIT: usize = 2000;
+
+/// Argument shape for `list_groups`.
+/// A future `owner_scope` filter would land here without breaking
 /// the wire contract since the field would default-serde in.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
-struct ListGroupsArgs {}
+struct ListGroupsArgs {
+    /// Zero-based offset into the listing.
+    /// Setting either `offset` or `limit` activates pagination: the
+    /// response adds an `envelope` field `{truncated, total, returned,
+    /// next_offset}`. Leaving both unset returns every mirrored group
+    /// in one flat array, no envelope.
+    #[serde(default)]
+    pub offset: Option<usize>,
+    /// Page size. See `offset` for the pagination-activation rule.
+    /// Defaults to `DEFAULT_LIST_GROUPS_LIMIT`, clamps to
+    /// `MAX_LIST_GROUPS_LIMIT`.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
 
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
@@ -1840,7 +1890,36 @@ struct ListMilestonesArgs {
     /// `completed`. Defaults to `false`.
     #[serde(default)]
     pub all: Option<bool>,
+
+    /// When `true`, drop `description` and `body` (the largest
+    /// per-record fields), returning only `slug`, `title`, `status`,
+    /// `rollup`, and `commit_id`. Defaults to `false`, the full record.
+    #[serde(default)]
+    pub compact: Option<bool>,
+
+    /// Zero-based offset into the listing.
+    /// Setting either `offset` or `limit` activates pagination: the
+    /// response adds an `envelope` field `{truncated, total, returned,
+    /// next_offset}`. Leaving both unset returns every matching
+    /// milestone in one flat array, no envelope.
+    #[serde(default)]
+    pub offset: Option<usize>,
+
+    /// Page size. See `offset` for the pagination-activation rule.
+    /// Defaults to `DEFAULT_LIST_MILESTONES_LIMIT`, clamps to
+    /// `MAX_LIST_MILESTONES_LIMIT`.
+    #[serde(default)]
+    pub limit: Option<usize>,
 }
+
+/// Default page size for `list_milestones` pagination when the caller
+/// sets `offset` and/or `limit` but omits an explicit `limit` value.
+/// A milestone record can carry a large `description`/`body`, so this
+/// default sits below `DEFAULT_LIST_GROUPS_LIMIT`.
+const DEFAULT_LIST_MILESTONES_LIMIT: usize = 100;
+/// Hard upper clamp on a caller-supplied `list_milestones` `limit`,
+/// independent of `DEFAULT_LIST_MILESTONES_LIMIT`.
+const MAX_LIST_MILESTONES_LIMIT: usize = 1000;
 
 /// Maximum byte length of the `version` selector accepted by
 /// `ReadMilestoneArgs::version`: a branch name, tag name, or 40-char
@@ -2094,7 +2173,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Enumerate every group the local mirror holds. Returns `{groups: [{slug, uuid, memory_count, protected, is_project}]}`: cheap manifest-only walk, no memory bodies. `is_project` is true for the group whose UUID matches the current cwd's `.mmcp.toml`; false for every other group including cases where no project is in scope. Pure-local, no network.",
+        description = "Enumerate every group the local mirror holds. Returns `{groups: [{slug, uuid, memory_count, protected, is_project}]}`: cheap manifest-only walk, no memory bodies. `is_project` is true for the group whose UUID matches the current cwd's `.mmcp.toml`; false for every other group including cases where no project is in scope. Pure-local, no network. Set `offset` and/or `limit` to page through a large mirror instead of one unbounded call; doing so reshapes the response to `{groups, envelope}` where `envelope` reports `{truncated, total, returned, next_offset}` for the returned page.",
         annotations(
             title = "List mirrored groups",
             read_only_hint = true,
@@ -2104,7 +2183,7 @@ impl McpServer {
     )]
     async fn list_groups(
         &self,
-        Parameters(_args): Parameters<ListGroupsArgs>,
+        Parameters(args): Parameters<ListGroupsArgs>,
     ) -> Result<CallToolResult, McpError> {
         // Resolve the project uuid up front so every group row can
         // flag whether it matches without re-reading the config per
@@ -2146,6 +2225,20 @@ impl McpServer {
                 "is_project":   project_uuid == Some(*uuid.as_uuid()),
             }));
         }
+        if args.offset.is_some() || args.limit.is_some() {
+            let (page, envelope) = paginate_records(
+                groups,
+                args.offset,
+                args.limit,
+                DEFAULT_LIST_GROUPS_LIMIT,
+                MAX_LIST_GROUPS_LIMIT,
+            );
+            return Ok(ok_json(json!({
+                "groups":   page,
+                "envelope": envelope,
+            })));
+        }
+
         Ok(ok_json(json!({
             "groups": groups,
             "count":  groups.len(),
@@ -2395,7 +2488,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List the commit history of a single memory, most recent first. Each entry includes the commit id, author, message, and timestamp.",
+        description = "List the commit history of a single memory, most recent first. Each entry includes the commit id, author, message, and timestamp. Pass `compact: true` to drop the full `message` field (the single largest per-entry field), keeping only `subject`. Set `offset` and/or `limit` to page through a long history instead of one unbounded call; doing so adds an `envelope` field `{truncated, total, returned, next_offset}` for the returned page.",
         annotations(
             title = "List memory versions",
             read_only_hint = true,
@@ -2418,19 +2511,48 @@ impl McpServer {
             .walk_history(&entry.handle, &resolved.path)
             .await
             .map_err(git_error)?;
+        let compact = args.compact.unwrap_or(false);
         let versions: Vec<serde_json::Value> = history
             .into_iter()
             .map(|c| {
-                json!({
-                    "commit": c.id,
-                    "subject": c.subject,
-                    "message": c.message,
-                    "author_name": c.author_name,
-                    "author_email": c.author_email,
-                    "timestamp": c.timestamp,
-                })
+                if compact {
+                    json!({
+                        "commit": c.id,
+                        "subject": c.subject,
+                        "author_name": c.author_name,
+                        "author_email": c.author_email,
+                        "timestamp": c.timestamp,
+                    })
+                } else {
+                    json!({
+                        "commit": c.id,
+                        "subject": c.subject,
+                        "message": c.message,
+                        "author_name": c.author_name,
+                        "author_email": c.author_email,
+                        "timestamp": c.timestamp,
+                    })
+                }
             })
             .collect();
+
+        if args.offset.is_some() || args.limit.is_some() {
+            let (page, envelope) = paginate_records(
+                versions,
+                args.offset,
+                args.limit,
+                DEFAULT_LIST_VERSIONS_LIMIT,
+                MAX_LIST_VERSIONS_LIMIT,
+            );
+            return Ok(ok_json(json!({
+                "group":    entry.manifest.group_id,
+                "slug":     resolved.slug,
+                "id":       resolved.id.to_string(),
+                "versions": page,
+                "envelope": envelope,
+            })));
+        }
+
         Ok(ok_json(json!({
             "group": entry.manifest.group_id,
             "slug": resolved.slug,
@@ -5727,7 +5849,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List milestones in the current project's group, each with its live cross-group rollup. By default hides a milestone whose rollup is fully `completed`. Pass `all: true` to include those too. Memories whose frontmatter fails to parse are reported through the notes channel rather than silently dropped.",
+        description = "List milestones in the current project's group, each with its live cross-group rollup. By default hides a milestone whose rollup is fully `completed`. Pass `all: true` to include those too. Memories whose frontmatter fails to parse are reported through the notes channel rather than silently dropped. Pass `compact: true` to drop `description` and `body` (the largest per-record fields). Set `offset` and/or `limit` to page through a large group instead of one unbounded call; doing so reshapes the response to `{group, milestones, envelope}` where `envelope` reports `{truncated, total, returned, next_offset}` for the returned page.",
         annotations(
             title = "List milestones",
             read_only_hint = true,
@@ -5759,10 +5881,36 @@ impl McpServer {
         .await
         .map_err(map_milestone_error_to_mcp)?;
         let notes = findings_to_notes(&findings);
+        let compact = args.compact.unwrap_or(false);
         let milestones: Vec<_> = records
             .iter()
-            .map(|record| milestone_record_to_json(&entry, record))
+            .map(|record| {
+                if compact {
+                    milestone_record_to_compact_json(&entry, record)
+                } else {
+                    milestone_record_to_json(&entry, record)
+                }
+            })
             .collect();
+
+        if args.offset.is_some() || args.limit.is_some() {
+            let (page, envelope) = paginate_records(
+                milestones,
+                args.offset,
+                args.limit,
+                DEFAULT_LIST_MILESTONES_LIMIT,
+                MAX_LIST_MILESTONES_LIMIT,
+            );
+            return Ok(ok_json_with_notes(
+                json!({
+                    "group":      entry.manifest.group_id.to_string(),
+                    "milestones": page,
+                    "envelope":   envelope,
+                }),
+                notes,
+            ));
+        }
+
         Ok(ok_json_with_notes(
             json!({
                 "group":      entry.manifest.group_id.to_string(),
@@ -6848,6 +6996,28 @@ fn milestone_record_to_json(
             "blocked":   record.rollup.blocked,
         },
         "commit_id":   record.commit_id,
+    })
+}
+
+/// Build the `list_milestones(compact: true)` shape: drops
+/// `description` and `body`, the largest per-record fields, keeping
+/// `slug`, `title`, `status`, `rollup`, and `commit_id`.
+fn milestone_record_to_compact_json(
+    entry: &GroupEntry,
+    record: &mmcp_store::milestones::MilestoneRecord,
+) -> serde_json::Value {
+    json!({
+        "group":     entry.manifest.group_id.to_string(),
+        "slug":      record.slug,
+        "title":     record.title,
+        "status":    record.status.as_str(),
+        "rollup": {
+            "status":    record.rollup.status.as_str(),
+            "counted":   record.rollup.counted,
+            "completed": record.rollup.completed,
+            "blocked":   record.rollup.blocked,
+        },
+        "commit_id": record.commit_id,
     })
 }
 
@@ -7946,6 +8116,38 @@ fn ok_json_with_notes(
     }
     let text = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
     CallToolResult::success(vec![ContentBlock::text(Cow::Owned(text))])
+}
+
+/// Paginate an already-built list of JSON records the same way
+/// `list_memories` paginates its non-mandatory window, for a listing
+/// tool with no mandatory-vs-optional split of its own (`list_groups`,
+/// `list_milestones`, `list_versions`): slice `records` by
+/// `offset`/`limit` and report `{truncated, total, returned,
+/// next_offset}` for the returned page via
+/// `mmcp_core::memory::ResponseEnvelope`. `default_limit` and
+/// `max_limit` are the calling tool's own constants, since group,
+/// milestone, and commit-history records differ enough in typical
+/// size that one shared numeric default would not fit all three.
+fn paginate_records(
+    records: Vec<serde_json::Value>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    default_limit: usize,
+    max_limit: usize,
+) -> (Vec<serde_json::Value>, mmcp_core::memory::ResponseEnvelope) {
+    let offset = offset.unwrap_or(0);
+    let limit = limit.unwrap_or(default_limit).clamp(1, max_limit);
+    let total = records.len();
+    let start = offset.min(total);
+    let page: Vec<_> = records.into_iter().skip(start).take(limit).collect();
+    let returned = page.len();
+    let next_offset = if start + returned < total {
+        Some(start + returned)
+    } else {
+        None
+    };
+    let envelope = mmcp_core::memory::ResponseEnvelope::new(total, returned, next_offset);
+    (page, envelope)
 }
 
 // `id_validation_to_notes` was hoisted to `crate::notes` so
@@ -9173,6 +9375,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_groups_limit_bounds_and_offset_skips_groups() {
+        let (state, _tmp) = test_state().await;
+        seed_group_with_memory(&state, "team-a", "rules", SAMPLE_MEMORY).await;
+        seed_group_with_memory(&state, "team-b", "rules", SAMPLE_MEMORY).await;
+        seed_group_with_memory(&state, "team-c", "rules", SAMPLE_MEMORY).await;
+        seed_group_with_memory(&state, "team-d", "rules", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let first_page = server
+            .list_groups(Parameters(ListGroupsArgs {
+                limit: Some(2),
+                ..Default::default()
+            }))
+            .await
+            .expect("list_groups limit");
+        let parsed = parse_ok_json(first_page);
+        assert!(
+            parsed.get("count").is_none(),
+            "paginated response replaces `count` with `envelope`: {parsed:?}"
+        );
+        let groups = parsed
+            .get("groups")
+            .and_then(|v| v.as_array())
+            .expect("groups array");
+        assert_eq!(groups.len(), 2, "limit=2 must bound the page to 2 groups");
+        let envelope = parsed
+            .get("envelope")
+            .expect("envelope present when paginating");
+        assert_eq!(envelope.get("total").and_then(|v| v.as_u64()), Some(4));
+        assert_eq!(envelope.get("returned").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(
+            envelope.get("truncated").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+
+        let second_page = server
+            .list_groups(Parameters(ListGroupsArgs {
+                offset: Some(2),
+                limit: Some(2),
+            }))
+            .await
+            .expect("list_groups offset");
+        let parsed2 = parse_ok_json(second_page);
+        let groups2 = parsed2
+            .get("groups")
+            .and_then(|v| v.as_array())
+            .expect("groups array");
+        assert_eq!(groups2.len(), 2);
+        let envelope2 = parsed2
+            .get("envelope")
+            .expect("envelope present when paginating");
+        assert_eq!(envelope2.get("next_offset").and_then(|v| v.as_u64()), None);
+
+        let slugs1: std::collections::HashSet<&str> = groups
+            .iter()
+            .filter_map(|g| g.get("slug").and_then(|v| v.as_str()))
+            .collect();
+        let slugs2: std::collections::HashSet<&str> = groups2
+            .iter()
+            .filter_map(|g| g.get("slug").and_then(|v| v.as_str()))
+            .collect();
+        assert!(
+            slugs1.is_disjoint(&slugs2),
+            "offset must skip past the first page's groups, never repeat them: {slugs1:?} vs {slugs2:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn read_memory_returns_frontmatter_and_body() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
@@ -9828,6 +10098,7 @@ mod tests {
             .list_versions(Parameters(ListVersionsArgs {
                 group: group.to_string(),
                 slug: "rules".into(),
+                ..Default::default()
             }))
             .await
             .expect("list_versions");
@@ -9842,6 +10113,171 @@ mod tests {
             .and_then(|v| v.as_str())
             .expect("commit string");
         assert_eq!(commit.len(), 40, "commit should be a 40-char hex id");
+    }
+
+    #[tokio::test]
+    async fn list_versions_default_omits_envelope_and_keeps_full_message() {
+        // Backward-compatibility guard: calling `list_versions` with
+        // none of the new optional args set must produce the exact
+        // same shape as before those args existed.
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let res = server
+            .list_versions(Parameters(ListVersionsArgs {
+                group: group.to_string(),
+                slug: "rules".into(),
+                ..Default::default()
+            }))
+            .await
+            .expect("list_versions");
+        let parsed = parse_ok_json(res);
+        assert!(
+            parsed.get("envelope").is_none(),
+            "unpaginated response must not carry an envelope: {parsed:?}"
+        );
+        let versions = parsed
+            .get("versions")
+            .and_then(|v| v.as_array())
+            .expect("versions array");
+        assert!(
+            versions[0].get("message").is_some(),
+            "default (non-compact) entry still carries the full commit message"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_versions_compact_drops_full_message_keeps_subject() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let res = server
+            .list_versions(Parameters(ListVersionsArgs {
+                group: group.to_string(),
+                slug: "rules".into(),
+                compact: Some(true),
+                ..Default::default()
+            }))
+            .await
+            .expect("list_versions compact");
+        let parsed = parse_ok_json(res);
+        let versions = parsed
+            .get("versions")
+            .and_then(|v| v.as_array())
+            .expect("versions array");
+        assert_eq!(versions.len(), 1);
+        assert!(
+            versions[0].get("message").is_none(),
+            "compact must drop the full commit message: {:?}",
+            versions[0]
+        );
+        assert!(
+            versions[0].get("subject").is_some(),
+            "compact still carries the subject line"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_versions_limit_bounds_and_offset_skips_history() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
+        let entry = state.groups.get(&group).await.expect("group entry");
+        let resolved =
+            mmcp_store::resolve_memory(&state.backend, &entry.handle, Some("rules"), None)
+                .await
+                .expect("resolve memory");
+        // Three additional commits on top of the seed commit: four
+        // total history entries, most-recent-first.
+        for i in 0..3 {
+            state
+                .backend
+                .write_commit(
+                    &entry.handle,
+                    CommitSpec {
+                        branch: mmcp_core::conventions::MAIN_BRANCH.to_string(),
+                        author_name: "test".into(),
+                        author_email: "test@example.com".into(),
+                        message: format!("revision {i}"),
+                        files: vec![(
+                            resolved.path.clone(),
+                            Some(format!("{SAMPLE_MEMORY}\nrev {i}\n").into_bytes()),
+                        )],
+                    },
+                )
+                .await
+                .expect("write commit");
+        }
+        state.groups.refresh().await.expect("refresh");
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let first_page = server
+            .list_versions(Parameters(ListVersionsArgs {
+                group: group.to_string(),
+                slug: "rules".into(),
+                limit: Some(2),
+                ..Default::default()
+            }))
+            .await
+            .expect("list_versions limit");
+        let parsed = parse_ok_json(first_page);
+        let versions = parsed
+            .get("versions")
+            .and_then(|v| v.as_array())
+            .expect("versions array");
+        assert_eq!(
+            versions.len(),
+            2,
+            "limit=2 must bound the page to 2 entries"
+        );
+        let envelope = parsed
+            .get("envelope")
+            .expect("envelope present when paginating");
+        assert_eq!(envelope.get("total").and_then(|v| v.as_u64()), Some(4));
+        assert_eq!(envelope.get("returned").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(
+            envelope.get("truncated").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            envelope.get("next_offset").and_then(|v| v.as_u64()),
+            Some(2)
+        );
+
+        let second_page = server
+            .list_versions(Parameters(ListVersionsArgs {
+                group: group.to_string(),
+                slug: "rules".into(),
+                offset: Some(2),
+                limit: Some(2),
+                ..Default::default()
+            }))
+            .await
+            .expect("list_versions offset");
+        let parsed2 = parse_ok_json(second_page);
+        let versions2 = parsed2
+            .get("versions")
+            .and_then(|v| v.as_array())
+            .expect("versions array");
+        assert_eq!(versions2.len(), 2);
+        let envelope2 = parsed2
+            .get("envelope")
+            .expect("envelope present when paginating");
+        assert_eq!(envelope2.get("next_offset").and_then(|v| v.as_u64()), None);
+
+        let ids1: Vec<&str> = versions
+            .iter()
+            .filter_map(|v| v.get("commit").and_then(|c| c.as_str()))
+            .collect();
+        let ids2: Vec<&str> = versions2
+            .iter()
+            .filter_map(|v| v.get("commit").and_then(|c| c.as_str()))
+            .collect();
+        assert!(
+            ids1.iter().all(|id| !ids2.contains(id)),
+            "offset must skip past the first page's entries, never repeat them: {ids1:?} vs {ids2:?}"
+        );
     }
 
     #[tokio::test]
@@ -10855,6 +11291,7 @@ mod tests {
             .list_milestones(Parameters(ListMilestonesArgs {
                 project: Some(group.to_string()),
                 all: None,
+                ..Default::default()
             }))
             .await
             .expect("list_milestones");
@@ -10868,6 +11305,140 @@ mod tests {
             .filter_map(|m| m.get("slug").and_then(|v| v.as_str()))
             .collect();
         assert!(slugs.contains(&"empty-one"));
+    }
+
+    #[tokio::test]
+    async fn list_milestones_compact_drops_description_and_body() {
+        let (state, _tmp) = test_state().await;
+        let group =
+            seed_group_with_memory(&state, "milestone-compact", "seed-only", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        server
+            .add_milestone_unguarded(AddMilestoneArgs {
+                project: Some(group.to_string()),
+                slug: Some("one".into()),
+                title: "One".into(),
+                description: "a description".into(),
+                body: "a body".into(),
+                ..AddMilestoneArgs::default()
+            })
+            .await
+            .expect("add_milestone");
+
+        let res = server
+            .list_milestones(Parameters(ListMilestonesArgs {
+                project: Some(group.to_string()),
+                compact: Some(true),
+                ..Default::default()
+            }))
+            .await
+            .expect("list_milestones compact");
+        let parsed = parse_ok_json(res);
+        let milestones = parsed
+            .get("milestones")
+            .and_then(|v| v.as_array())
+            .expect("milestones array");
+        assert_eq!(milestones.len(), 1);
+        assert!(
+            milestones[0].get("description").is_none(),
+            "compact must drop description: {:?}",
+            milestones[0]
+        );
+        assert!(
+            milestones[0].get("body").is_none(),
+            "compact must drop body: {:?}",
+            milestones[0]
+        );
+        assert!(
+            milestones[0].get("slug").is_some(),
+            "compact still carries slug"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_milestones_limit_bounds_and_offset_skips_milestones() {
+        let (state, _tmp) = test_state().await;
+        let group =
+            seed_group_with_memory(&state, "milestone-paging", "seed-only", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        for slug in ["one", "two", "three", "four"] {
+            server
+                .add_milestone_unguarded(AddMilestoneArgs {
+                    project: Some(group.to_string()),
+                    slug: Some(slug.into()),
+                    title: slug.into(),
+                    ..AddMilestoneArgs::default()
+                })
+                .await
+                .expect("add_milestone");
+        }
+
+        let first_page = server
+            .list_milestones(Parameters(ListMilestonesArgs {
+                project: Some(group.to_string()),
+                limit: Some(2),
+                ..Default::default()
+            }))
+            .await
+            .expect("list_milestones limit");
+        let parsed = parse_ok_json(first_page);
+        assert!(
+            parsed.get("count").is_none(),
+            "paginated response replaces `count` with `envelope`: {parsed:?}"
+        );
+        let milestones = parsed
+            .get("milestones")
+            .and_then(|v| v.as_array())
+            .expect("milestones array");
+        assert_eq!(
+            milestones.len(),
+            2,
+            "limit=2 must bound the page to 2 milestones"
+        );
+        let envelope = parsed
+            .get("envelope")
+            .expect("envelope present when paginating");
+        assert_eq!(envelope.get("total").and_then(|v| v.as_u64()), Some(4));
+        assert_eq!(envelope.get("returned").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(
+            envelope.get("truncated").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+
+        let second_page = server
+            .list_milestones(Parameters(ListMilestonesArgs {
+                project: Some(group.to_string()),
+                offset: Some(2),
+                limit: Some(2),
+                ..Default::default()
+            }))
+            .await
+            .expect("list_milestones offset");
+        let parsed2 = parse_ok_json(second_page);
+        let milestones2 = parsed2
+            .get("milestones")
+            .and_then(|v| v.as_array())
+            .expect("milestones array");
+        assert_eq!(milestones2.len(), 2);
+        let envelope2 = parsed2
+            .get("envelope")
+            .expect("envelope present when paginating");
+        assert_eq!(envelope2.get("next_offset").and_then(|v| v.as_u64()), None);
+
+        let slugs1: std::collections::HashSet<&str> = milestones
+            .iter()
+            .filter_map(|m| m.get("slug").and_then(|v| v.as_str()))
+            .collect();
+        let slugs2: std::collections::HashSet<&str> = milestones2
+            .iter()
+            .filter_map(|m| m.get("slug").and_then(|v| v.as_str()))
+            .collect();
+        assert!(
+            slugs1.is_disjoint(&slugs2),
+            "offset must skip past the first page's milestones, never repeat them: {slugs1:?} vs {slugs2:?}"
+        );
     }
 
     #[tokio::test]
