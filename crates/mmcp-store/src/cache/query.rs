@@ -9,6 +9,31 @@ use crate::groups::GroupIndex;
 
 use super::{CacheError, SearchHit};
 
+/// The `ESCAPE` character every `LIKE` pattern in this module uses,
+/// so a literal `%` or `_` in a caller-supplied query string matches
+/// only itself instead of acting as a `LIKE` wildcard. Escaped by
+/// [`like_pattern`] before interpolation; every query string built
+/// here carries the matching `ESCAPE '\'` clause.
+const LIKE_ESCAPE_CHAR: char = '\\';
+
+/// Build a `LIKE` pattern that matches `needle` as a literal
+/// substring: `%` and `_` (`LIKE` wildcards) and the escape
+/// character itself are each prefixed with [`LIKE_ESCAPE_CHAR`]
+/// before the surrounding `%...%` wrapper is added. Without this, a
+/// query containing a literal `%` or `_` over-matches (a bare `%`
+/// alone would return the entire index), the defect this module
+/// previously shipped.
+fn like_pattern(needle: &str) -> String {
+    let mut escaped = String::with_capacity(needle.len());
+    for c in needle.chars() {
+        if c == LIKE_ESCAPE_CHAR || c == '%' || c == '_' {
+            escaped.push(LIKE_ESCAPE_CHAR);
+        }
+        escaped.push(c);
+    }
+    format!("%{escaped}%")
+}
+
 /// Substring/keyword lookup across name, description, tags, slug, and body.
 /// Case-insensitive (SQLite `LIKE` is ASCII case-insensitive by default),
 /// sufficient for the short English-heavy identifiers and prose this cache indexes.
@@ -25,15 +50,56 @@ pub async fn keyword_search(
 ) -> Result<Vec<SearchHit>, CacheError> {
     ensure_built(pool, backend, groups).await?;
 
-    let pattern = format!("%{query}%");
+    let pattern = like_pattern(query);
     let rows: Vec<Row> = sqlx::query_as(
         "SELECT group_id, id, slug, kind, name, description, path FROM indexed_memory \
-         WHERE name LIKE ?1 OR description LIKE ?1 OR tags LIKE ?1 \
-            OR slug LIKE ?1 OR body LIKE ?1 \
+         WHERE name LIKE ?1 ESCAPE '\\' OR description LIKE ?1 ESCAPE '\\' \
+            OR tags LIKE ?1 ESCAPE '\\' OR slug LIKE ?1 ESCAPE '\\' \
+            OR body LIKE ?1 ESCAPE '\\' \
          ORDER BY updated_at DESC LIMIT ?2",
     )
     .bind(&pattern)
     .bind(i64::from(limit))
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter().map(Row::into_hit).collect()
+}
+
+/// Slug/name-only substring lookup: the restricted match surface
+/// `mmcp-client`'s `search_memories` tool requires, unlike
+/// [`keyword_search`]'s broader name/description/tags/slug/body scan.
+/// A prefilter, not the authoritative matcher: `LIKE`'s ASCII-only
+/// case folding can only MISS a row a full Unicode-aware
+/// case-insensitive comparison would match (never over-match, since
+/// every returned row genuinely contains the escaped literal
+/// substring), so a caller needing exact substring semantics
+/// re-checks `slug`/`name` on the returned rows rather than trusting
+/// this as a final answer for non-ASCII queries.
+///
+/// Returns every match with no `LIMIT`: capping to a caller-facing
+/// page size is the caller's job once results from several needles
+/// (or several group/scope filters) are merged; capping here would
+/// let the SQL-side cutoff silently starve a later merge step of
+/// candidates that belong in the final page. [`semantic_search`]
+/// already fetches its whole candidate set the same way.
+///
+/// Lazy-build-on-read, same as [`keyword_search`].
+pub async fn search_slug_name(
+    pool: &SqlitePool,
+    backend: &NativeBackend,
+    groups: &GroupIndex,
+    needle: &str,
+) -> Result<Vec<SearchHit>, CacheError> {
+    ensure_built(pool, backend, groups).await?;
+
+    let pattern = like_pattern(needle);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT group_id, id, slug, kind, name, description, path FROM indexed_memory \
+         WHERE slug LIKE ?1 ESCAPE '\\' OR name LIKE ?1 ESCAPE '\\' \
+         ORDER BY updated_at DESC",
+    )
+    .bind(&pattern)
     .fetch_all(pool)
     .await?;
 
@@ -206,8 +272,23 @@ mod tests {
         slug: &str,
         body: &str,
     ) {
+        write_named_sample(scratch, handle, slug, slug, body).await;
+    }
+
+    /// Same as [`write_sample`] but with a `name` distinct from
+    /// `slug`, so a test can put an arbitrary substring (including a
+    /// `LIKE` metacharacter that on-disk slug/path conventions would
+    /// reject) into the frontmatter `name` field without touching
+    /// the file's path.
+    async fn write_named_sample(
+        scratch: &ScratchHome,
+        handle: &mmcp_git::RepoHandle,
+        slug: &str,
+        name: &str,
+        body: &str,
+    ) {
         let source = format!(
-            "+++\nname = \"{slug}\"\ndescription = \"about {slug}\"\nkind = \"scratch\"\n+++\n\n{body}\n"
+            "+++\nname = \"{name}\"\ndescription = \"about {slug}\"\nkind = \"scratch\"\n+++\n\n{body}\n"
         );
         let file = MemoryFile::parse(&source).expect("parse");
         let rendered = file.to_string().expect("render");
@@ -399,5 +480,223 @@ mod tests {
         let first_score = hits[0].score.expect("first hit scored");
         let second_score = hits[1].score.expect("second hit scored");
         assert!(first_score >= second_score);
+    }
+
+    /// A literal `%` in the query must match only rows genuinely
+    /// containing that character, never act as a `LIKE` wildcard
+    /// that also pulls in an unrelated sibling.
+    #[tokio::test]
+    async fn keyword_search_escapes_literal_percent() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch
+            .seed_group("cache-escape-percent-test")
+            .await
+            .expect("seed group");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        write_named_sample(
+            &scratch,
+            &entry.handle,
+            "percent-rule",
+            "100% rule",
+            "always applies",
+        )
+        .await;
+        write_named_sample(
+            &scratch,
+            &entry.handle,
+            "percentx-rule",
+            "100x rule",
+            "never applies",
+        )
+        .await;
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let pool = super::super::open_pool(&tmp.path().join("index.sqlite3"))
+            .await
+            .expect("open pool");
+
+        let hits = keyword_search(&pool, scratch.backend(), scratch.groups(), "100%", 10)
+            .await
+            .expect("keyword_search");
+        assert_eq!(
+            hits.len(),
+            1,
+            "a literal '%' must not wildcard-match '100x rule'; got: {hits:?}"
+        );
+        assert_eq!(hits[0].slug, "percent-rule");
+    }
+
+    /// A literal `_` in the query must match only rows genuinely
+    /// containing that character, never `LIKE`'s single-character
+    /// wildcard behavior.
+    #[tokio::test]
+    async fn keyword_search_escapes_literal_underscore() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch
+            .seed_group("cache-escape-underscore-test")
+            .await
+            .expect("seed group");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        write_named_sample(
+            &scratch,
+            &entry.handle,
+            "snake-case-rule",
+            "max_value setting",
+            "the real setting",
+        )
+        .await;
+        write_named_sample(
+            &scratch,
+            &entry.handle,
+            "camel-case-rule",
+            "maxAvalue setting",
+            "a decoy `_` would wildcard-match this",
+        )
+        .await;
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let pool = super::super::open_pool(&tmp.path().join("index.sqlite3"))
+            .await
+            .expect("open pool");
+
+        let hits = keyword_search(&pool, scratch.backend(), scratch.groups(), "max_value", 10)
+            .await
+            .expect("keyword_search");
+        assert_eq!(
+            hits.len(),
+            1,
+            "a literal '_' must not wildcard-match 'maxAvalue'; got: {hits:?}"
+        );
+        assert_eq!(hits[0].slug, "snake-case-rule");
+    }
+
+    /// A query of exactly `%` must return only rows whose indexed
+    /// text genuinely contains a literal `%`, never the entire
+    /// index (the behavior the tracked defect this fix closes
+    /// previously produced).
+    #[tokio::test]
+    async fn keyword_search_bare_percent_query_does_not_return_the_whole_index() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch
+            .seed_group("cache-escape-bare-percent-test")
+            .await
+            .expect("seed group");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        write_named_sample(
+            &scratch,
+            &entry.handle,
+            "has-percent",
+            "100% rule",
+            "contains the literal character",
+        )
+        .await;
+        write_named_sample(
+            &scratch,
+            &entry.handle,
+            "no-percent",
+            "plain rule",
+            "no metacharacter here",
+        )
+        .await;
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let pool = super::super::open_pool(&tmp.path().join("index.sqlite3"))
+            .await
+            .expect("open pool");
+
+        let hits = keyword_search(&pool, scratch.backend(), scratch.groups(), "%", 10)
+            .await
+            .expect("keyword_search");
+        assert_eq!(
+            hits.len(),
+            1,
+            "a bare '%' query must not act as a match-everything wildcard; got: {hits:?}"
+        );
+        assert_eq!(hits[0].slug, "has-percent");
+    }
+
+    /// [`search_slug_name`] restricts the match surface to slug and
+    /// name: a query hitting only the body must return zero hits,
+    /// unlike [`keyword_search`], which also scans body.
+    #[tokio::test]
+    async fn search_slug_name_ignores_a_body_only_match() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch
+            .seed_group("cache-slug-name-surface-test")
+            .await
+            .expect("seed group");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        write_named_sample(
+            &scratch,
+            &entry.handle,
+            "unrelated-slug",
+            "unrelated name",
+            "the quokka is a small marsupial",
+        )
+        .await;
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let pool = super::super::open_pool(&tmp.path().join("index.sqlite3"))
+            .await
+            .expect("open pool");
+
+        let hits = search_slug_name(&pool, scratch.backend(), scratch.groups(), "quokka")
+            .await
+            .expect("search_slug_name");
+        assert!(
+            hits.is_empty(),
+            "a body-only match must not surface through the slug/name-restricted search: {hits:?}"
+        );
+
+        // The same needle against slug/name still finds a real match,
+        // proving the empty result above is the surface restriction,
+        // not a broken query.
+        let hits = search_slug_name(&pool, scratch.backend(), scratch.groups(), "unrelated")
+            .await
+            .expect("search_slug_name");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].slug, "unrelated-slug");
+    }
+
+    /// [`search_slug_name`] applies the same `LIKE`-escaping as
+    /// [`keyword_search`]: a literal `%` in the needle matches only
+    /// the genuine literal, not a wildcard-expanded sibling.
+    #[tokio::test]
+    async fn search_slug_name_escapes_literal_percent() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch
+            .seed_group("cache-slug-name-escape-test")
+            .await
+            .expect("seed group");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        write_named_sample(&scratch, &entry.handle, "percent-rule", "100% rule", "body").await;
+        write_named_sample(
+            &scratch,
+            &entry.handle,
+            "percentx-rule",
+            "100x rule",
+            "body",
+        )
+        .await;
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let pool = super::super::open_pool(&tmp.path().join("index.sqlite3"))
+            .await
+            .expect("open pool");
+
+        let hits = search_slug_name(&pool, scratch.backend(), scratch.groups(), "100%")
+            .await
+            .expect("search_slug_name");
+        assert_eq!(
+            hits.len(),
+            1,
+            "a literal '%' must not wildcard-match '100x rule'; got: {hits:?}"
+        );
+        assert_eq!(hits[0].slug, "percent-rule");
     }
 }

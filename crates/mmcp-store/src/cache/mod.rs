@@ -27,8 +27,8 @@
 //!
 //! ## Missing-index handling
 //!
-//! Lazy: [`query::keyword_search`] and [`query::semantic_search`] check [`schema::is_built`],
-//! then call [`index::rebuild_full`] on a never-built cache.
+//! Lazy: [`query::keyword_search`], [`query::search_slug_name`], and [`query::semantic_search`]
+//! check [`schema::is_built`], then call [`index::rebuild_full`] on a never-built cache.
 //! `mmcp debug cache-rebuild` forces a full rebuild on demand regardless of build state.
 //!
 //! ## Semantic search
@@ -118,7 +118,8 @@ pub struct IndexedRecord {
     pub milestone: Option<Uuid>,
 }
 
-/// One hit returned by [`query::keyword_search`] or [`query::semantic_search`].
+/// One hit returned by [`query::keyword_search`], [`query::search_slug_name`],
+/// or [`query::semantic_search`].
 /// Enough to locate the memory again (`group_id` + `id`, or `group_id` + `slug` + `path`),
 /// plus the display fields a search UX needs without a second lookup.
 #[derive(Debug, Clone)]
@@ -131,7 +132,8 @@ pub struct SearchHit {
     pub description: String,
     pub path: String,
     /// Present only for [`query::semantic_search`] results;
-    /// `None` for [`query::keyword_search`], which has no similarity score to report.
+    /// `None` for [`query::keyword_search`] and [`query::search_slug_name`],
+    /// neither of which has a similarity score to report.
     pub score: Option<f32>,
 }
 
@@ -277,4 +279,4 @@ pub async fn notify_pull(
 // Flattened re-exports, so callers write `cache::rebuild_full(...)` / `cache::keyword_search(...)`,
 // instead of reaching into the submodule that happens to own the implementation.
 pub use index::{RebuildStats, build_record, rebuild_full, rebuild_groups, upsert_record};
-pub use query::{ensure_built, keyword_search, semantic_search};
+pub use query::{ensure_built, keyword_search, search_slug_name, semantic_search};
