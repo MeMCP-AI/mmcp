@@ -229,6 +229,82 @@ async fn mcp_tool_list_memories_honors_only_mandatory_filter() {
     );
 }
 
+/// `kinds` is now pushed into the SQL query
+/// (`memory_repo::list_in_group`'s `WHERE` clause) instead of a
+/// post-fetch Rust `.filter()`; this exercises the route end to end
+/// to prove the observable behavior is unchanged by that pushdown.
+#[tokio::test]
+async fn mcp_tool_list_memories_honors_kinds_filter() {
+    let (addr, state, _tmp) = start_server().await;
+    let (group, _rule_memory) = seed_group_with_memory(&state, "team-rust", "rules").await;
+
+    let reference_memory = Uuid::now_v7();
+    memory_repo::create(
+        state.database.connection(),
+        memory_repo::NewMemory {
+            id: reference_memory,
+            group_id: group,
+            slug: "notes".into(),
+            kind: DbMemoryKind::Reference,
+            mandatory: false,
+            created_at: 1,
+            updated_at: 1,
+        },
+    )
+    .await
+    .unwrap();
+
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
+    let resp = post_tool(
+        addr,
+        &token,
+        envelope(
+            "list_memories",
+            json!({ "group": group.to_string(), "kinds": ["reference"] }),
+        ),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let memories = body
+        .pointer("/response/memories")
+        .and_then(|v| v.as_array())
+        .expect("memories array");
+    assert_eq!(memories.len(), 1);
+    assert_eq!(
+        memories[0].get("id").and_then(|v| v.as_str()),
+        Some(reference_memory.to_string().as_str())
+    );
+}
+
+/// A `kinds` filter naming only unrecognized strings must yield no
+/// rows, exactly like the pre-pushdown Rust-side filter (no known
+/// row's kind string can ever equal an unrecognized string), rather
+/// than being treated as "no filter" once translated to SQL.
+#[tokio::test]
+async fn mcp_tool_list_memories_with_unrecognized_kind_returns_empty() {
+    let (addr, state, _tmp) = start_server().await;
+    let (group, _memory) = seed_group_with_memory(&state, "team-rust", "rules").await;
+
+    let (_user_id, token) = seed_authenticated_user(&state, "alice").await;
+    let resp = post_tool(
+        addr,
+        &token,
+        envelope(
+            "list_memories",
+            json!({ "group": group.to_string(), "kinds": ["not-a-real-kind"] }),
+        ),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let memories = body
+        .pointer("/response/memories")
+        .and_then(|v| v.as_array())
+        .expect("memories array");
+    assert!(memories.is_empty());
+}
+
 #[tokio::test]
 async fn mcp_tool_list_versions_returns_recorded_versions() {
     let (addr, state, _tmp) = start_server().await;
@@ -291,6 +367,67 @@ async fn mcp_tool_list_versions_returns_recorded_versions() {
         versions[0].get("summary").and_then(|v| v.as_str()),
         Some("first publish")
     );
+}
+
+/// `limit` is opt-in on the request: omitting it entirely (covered by
+/// `mcp_tool_list_versions_returns_recorded_versions` above) keeps
+/// the historical unbounded response, and setting it caps the number
+/// of rows returned by the route.
+#[tokio::test]
+async fn mcp_tool_list_versions_honors_opt_in_limit() {
+    let (addr, state, _tmp) = start_server().await;
+    let (_group, memory) = seed_group_with_memory(&state, "team-rust", "rules").await;
+
+    let author = Uuid::now_v7();
+    user_repo::create(
+        state.database.connection(),
+        user_repo::NewUser {
+            id: author,
+            handle: "carol".into(),
+            display_name: None,
+            password_hash: None,
+            email: None,
+            created_at: 1,
+        },
+    )
+    .await
+    .unwrap();
+
+    const VERSIONS_RECORDED: usize = 3;
+    for i in 0..VERSIONS_RECORDED {
+        memory_repo::record_version(
+            state.database.connection(),
+            memory_version::Model {
+                id: Uuid::now_v7(),
+                memory_id: memory,
+                version: format!("0.1.{i}"),
+                commit: format!("commit{i}"),
+                author_id: author,
+                published_at: i as i64,
+                summary: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    let (_user_id, token) = seed_authenticated_user(&state, "dave").await;
+    let resp = post_tool(
+        addr,
+        &token,
+        envelope(
+            "list_versions",
+            json!({ "memory": memory.to_string(), "limit": 2 }),
+        ),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let versions = body
+        .pointer("/response/versions")
+        .and_then(|v| v.as_array())
+        .expect("versions array");
+    assert_eq!(versions.len(), 2, "limit must cap the returned rows");
 }
 
 #[tokio::test]

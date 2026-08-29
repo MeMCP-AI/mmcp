@@ -516,7 +516,7 @@ async fn sync_push_first_publish_assigns_0_1_0_and_records_tag() {
     // The FK-authority claim itself: the inserted row's `author_id`
     // is the authenticated caller, read back from the database, not
     // inferred from the HTTP 2xx alone.
-    let versions = memory_repo::list_versions(state.database.connection(), memory)
+    let versions = memory_repo::list_versions(state.database.connection(), memory, None)
         .await
         .expect("list versions");
     assert_eq!(versions.len(), 1);
@@ -643,7 +643,7 @@ async fn sync_push_rejects_a_memory_owned_by_a_different_group_without_mutating_
         memory.group_id, victim_group,
         "the memory's owning group must not change either"
     );
-    let versions = memory_repo::list_versions(state.database.connection(), memory_id)
+    let versions = memory_repo::list_versions(state.database.connection(), memory_id, None)
         .await
         .expect("list versions");
     assert_eq!(

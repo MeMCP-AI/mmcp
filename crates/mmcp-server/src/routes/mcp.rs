@@ -179,35 +179,51 @@ mod handlers {
 
     /// Return a metadata listing of every memory in the given group,
     /// filtered by optional kind and mandatory toggles.
+    ///
+    /// Both filters are pushed into the SQL query
+    /// ([`memory_repo::list_in_group`]'s `WHERE` clause) rather than
+    /// fetched in full and filtered here: a group can hold far more
+    /// rows than any one caller's filtered view needs.
     pub async fn list_memories(
         state: &ServerState,
         req: ListMemoriesRequest,
     ) -> Result<ListMemoriesResponse> {
         let conn = state.database.connection();
         let memories = match req.group {
-            Some(group) => memory_repo::list_in_group(conn, group).await?,
+            Some(group) => {
+                let kinds: Vec<MemoryKind> =
+                    req.kinds.iter().filter_map(|k| string_to_kind(k)).collect();
+                // An unrecognized kind string can never match any
+                // row's `kind_to_string`, so a request naming only
+                // unrecognized kinds must yield no rows, exactly as
+                // the prior Rust-side `.filter()` did; skip the query
+                // rather than let an empty `kinds` (which means "no
+                // kind filter" to `list_in_group`) return everything.
+                if !req.kinds.is_empty() && kinds.is_empty() {
+                    Vec::new()
+                } else {
+                    memory_repo::list_in_group(conn, group, req.only_mandatory, &kinds).await?
+                }
+            }
             None => Vec::new(),
         };
-        let filtered: Vec<_> = memories
-            .into_iter()
-            .filter(|m| {
-                req.only_mandatory.is_none_or(|flag| flag == m.mandatory)
-                    && (req.kinds.is_empty() || req.kinds.contains(&kind_to_string(m.kind)))
-            })
-            .map(to_descriptor)
-            .collect();
+        let filtered: Vec<_> = memories.into_iter().map(to_descriptor).collect();
         Ok(ListMemoriesResponse { memories: filtered })
     }
 
     /// Return every published version row recorded for the given
     /// memory, oldest first. The caller is responsible for sorting
     /// into presentation order.
+    ///
+    /// `req.limit` is opt-in and defaults to `None` (unbounded),
+    /// matching the historical behavior for every caller that does
+    /// not set it; see [`memory_repo::list_versions`].
     pub async fn list_versions(
         state: &ServerState,
         req: ListVersionsRequest,
     ) -> Result<ListVersionsResponse> {
         let conn = state.database.connection();
-        let rows = memory_repo::list_versions(conn, req.memory).await?;
+        let rows = memory_repo::list_versions(conn, req.memory, req.limit).await?;
         let versions = rows
             .into_iter()
             .map(|r| VersionEntry {
@@ -264,6 +280,23 @@ mod handlers {
             MemoryKind::Scratch => "scratch",
         }
         .to_string()
+    }
+
+    /// Inverse of [`kind_to_string`], for turning a request's kind
+    /// filter strings back into the SQL-side enum so the filter can
+    /// be pushed into a `WHERE` clause instead of applied post-fetch.
+    /// An unrecognized string maps to `None`, which the caller drops:
+    /// it can never equal any row's [`kind_to_string`] output either,
+    /// so dropping it changes nothing observable.
+    fn string_to_kind(kind: &str) -> Option<MemoryKind> {
+        match kind {
+            "rule" => Some(MemoryKind::Rule),
+            "snapshot" => Some(MemoryKind::Snapshot),
+            "log" => Some(MemoryKind::Log),
+            "reference" => Some(MemoryKind::Reference),
+            "scratch" => Some(MemoryKind::Scratch),
+            _ => None,
+        }
     }
 
     fn to_descriptor(m: mmcp_db::entities::memory::Model) -> MemoryDescriptor {
