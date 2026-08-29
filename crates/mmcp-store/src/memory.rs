@@ -15,6 +15,8 @@
 //! a rename to `MemoryError` would ripple across every consumer's error mapper,
 //! not worth it for this chain.
 
+use std::future::Future;
+
 use mmcp_core::id::{GroupId, MemoryId};
 use mmcp_core::memory::{MemoryFile, MemoryFrontmatter, MemoryKind};
 use mmcp_git::{CommitSpec, GitBackend, GitError, NativeBackend, RepoHandle, Rev};
@@ -22,6 +24,10 @@ use uuid::Uuid;
 
 use crate::groups::{GroupEntry, GroupIndex};
 use crate::home::ResolvedAuthor;
+
+/// Batched-read outcome shape [`NativeBackend::read_files`] returns.
+/// Spelled out locally because its own alias sits in a private module of `mmcp-git`.
+type BatchOutcome = Vec<(String, Result<bytes::Bytes, GitError>)>;
 
 /// Result of a successful import.
 #[derive(Debug, Clone)]
@@ -526,42 +532,82 @@ async fn resolve_by_id(
     // Step 2: hand-crafted memories (non-UUID filenames).
     // Parse frontmatter and match on its id.
     // Reached only when step 1 missed because most repos have no non-UUID files.
-    for (slug, path) in &step2_candidates {
-        let Ok(bytes) = backend.read_file(handle, path, &rev).await else {
-            continue;
-        };
-        if parse_frontmatter_id(&bytes) == Some(expected) {
-            return Ok(ResolvedMemory {
-                slug: slug.clone(),
-                id: expected,
-                path: path.clone(),
-                addressing_mode: AddressingMode::ByFrontmatter,
-            });
-        }
+    // One batched round trip over every candidate instead of one `read_file` per candidate:
+    // step 3's candidate set is essentially the whole corpus, so a sequential scan here
+    // would cost one git round trip per memory in the group on every step-1 miss.
+    if let Some(hit) = scan_candidates_for_id(
+        &step2_candidates,
+        expected,
+        AddressingMode::ByFrontmatter,
+        |paths| backend.read_files(handle, paths, &rev),
+    )
+    .await?
+    {
+        return Ok(hit);
     }
 
     // Step 3: UUID-named files whose filename stem disagrees with `expected`.
     // Their frontmatter may still match the queried id, a drift the resolver honours,
     // (frontmatter is source of truth) while leaving the addressing mode as `ByFrontmatter`,
     // so writes route through the soft-warning branch.
-    for (slug, path) in &step3_candidates {
-        let Ok(bytes) = backend.read_file(handle, path, &rev).await else {
-            continue;
-        };
-        if parse_frontmatter_id(&bytes) == Some(expected) {
-            return Ok(ResolvedMemory {
-                slug: slug.clone(),
-                id: expected,
-                path: path.clone(),
-                addressing_mode: AddressingMode::ByFrontmatter,
-            });
-        }
+    // Reached only when steps 1 and 2 both missed; same batching rationale as step 2.
+    if let Some(hit) = scan_candidates_for_id(
+        &step3_candidates,
+        expected,
+        AddressingMode::ByFrontmatter,
+        |paths| backend.read_files(handle, paths, &rev),
+    )
+    .await?
+    {
+        return Ok(hit);
     }
 
     Err(ImportError::MemoryNotFound {
         slug: None,
         id: Some(expected),
     })
+}
+
+/// Scan `candidates` for the entry whose frontmatter id equals `expected`, via one batched read.
+///
+/// `read_batch` is the batched-read seam: production passes [`NativeBackend::read_files`] directly.
+/// A test can pass a call-counting stub instead, to prove this issues exactly one batch call
+/// regardless of how many candidates it carries.
+/// A per-candidate read or parse failure is skipped, never aborts the scan;
+/// a hard failure of `read_batch` itself (the whole batch call) is the only error this raises.
+/// Returns the first candidate (in `candidates` order) whose frontmatter id matches, or `None` on a full miss.
+async fn scan_candidates_for_id<F, Fut>(
+    candidates: &[(String, String)],
+    expected: Uuid,
+    addressing_mode: AddressingMode,
+    read_batch: F,
+) -> Result<Option<ResolvedMemory>, ImportError>
+where
+    F: FnOnce(Vec<String>) -> Fut,
+    Fut: Future<Output = Result<BatchOutcome, GitError>>,
+{
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    let paths: Vec<String> = candidates
+        .iter()
+        .map(|(_slug, path)| path.clone())
+        .collect();
+    // `read_files` resolves the commit and root tree once and returns
+    // outcomes in request order, so zipping back onto `candidates` is safe.
+    let batch = read_batch(paths).await?;
+    for ((slug, path), (_batch_path, outcome)) in candidates.iter().zip(batch) {
+        let Ok(bytes) = outcome else { continue };
+        if parse_frontmatter_id(&bytes) == Some(expected) {
+            return Ok(Some(ResolvedMemory {
+                slug: slug.clone(),
+                id: expected,
+                path: path.clone(),
+                addressing_mode,
+            }));
+        }
+    }
+    Ok(None)
 }
 
 /// Result entry from [`read_frontmatters_in_group`].
@@ -2546,6 +2592,91 @@ mod tests {
             .expect("resolve");
         assert_eq!(resolved.slug, "rules");
         assert_eq!(resolved.addressing_mode, AddressingMode::ByFilename);
+    }
+
+    /// Candidate count large enough that a per-candidate `read_file` loop and
+    /// a single `read_files` batch call are trivially distinguishable.
+    const BULK_CANDIDATE_COUNT: usize = 25;
+
+    /// [`scan_candidates_for_id`] calls its `read_batch` seam exactly once, independent of how
+    /// many candidates it scans. The regression this guards is resolve_by_id's former per-candidate
+    /// `read_file` loop, which called the seam once per candidate instead of once for the whole step.
+    #[tokio::test]
+    async fn scan_candidates_for_id_reads_the_batch_exactly_once_on_a_full_miss() {
+        let expected = Uuid::now_v7();
+        let candidates: Vec<(String, String)> = (0..BULK_CANDIDATE_COUNT)
+            .map(|i| (format!("bulk-{i}"), format!("memories/bulk-{i}/dummy.md")))
+            .collect();
+        let requested_len = candidates.len();
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&call_count);
+
+        let hit = scan_candidates_for_id(
+            &candidates,
+            expected,
+            AddressingMode::ByFrontmatter,
+            move |batched_paths| {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                assert_eq!(
+                    batched_paths.len(),
+                    requested_len,
+                    "every candidate must land in the single batch call"
+                );
+                async { Ok(BatchOutcome::new()) }
+            },
+        )
+        .await
+        .expect("an empty batch resolves to a miss, not an error");
+
+        assert_eq!(
+            call_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the read seam must be called exactly once regardless of candidate count"
+        );
+        assert!(hit.is_none());
+    }
+
+    /// A hit partway through the candidate list still resolves from the single batch call,
+    /// and the seam still fires exactly once (the fix must not retry per-candidate on a miss
+    /// before the eventual hit).
+    #[tokio::test]
+    async fn scan_candidates_for_id_finds_a_mid_batch_hit_in_one_call() {
+        let expected = Uuid::now_v7();
+        let other = Uuid::now_v7();
+        let candidates: Vec<(String, String)> = (0..BULK_CANDIDATE_COUNT)
+            .map(|i| (format!("bulk-{i}"), format!("memories/bulk-{i}/dummy.md")))
+            .collect();
+        let hit_index = BULK_CANDIDATE_COUNT / 2;
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&call_count);
+
+        let hit = scan_candidates_for_id(
+            &candidates,
+            expected,
+            AddressingMode::ByFrontmatter,
+            move |batched_paths| {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let outcomes: BatchOutcome = batched_paths
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, path)| {
+                        let id = if i == hit_index { expected } else { other };
+                        let body = format!(
+                            "+++\nid = \"{id}\"\nname = \"n\"\ndescription = \"d\"\nkind = \"rule\"\n+++\nbody\n"
+                        );
+                        (path, Ok(bytes::Bytes::from(body.into_bytes())))
+                    })
+                    .collect();
+                async move { Ok(outcomes) }
+            },
+        )
+        .await
+        .expect("batch read succeeds");
+
+        assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let hit = hit.expect("mid-batch candidate must resolve");
+        assert_eq!(hit.id, expected);
+        assert_eq!(hit.slug, format!("bulk-{hit_index}"));
     }
 
     /// Slug-only lookups carry the BySlugOnly tag so write
