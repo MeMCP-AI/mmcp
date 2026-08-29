@@ -2554,11 +2554,51 @@ impl McpServer {
             None => None,
         };
         let scope_filter = args.scope.map(ToolGroupScope::into_core);
+
+        // The local content cache answers "which memories have this
+        // substring in slug or name" as an indexed SQL lookup instead
+        // of a git read per memory in every locally-mirrored group:
+        // see `mmcp_store::cache::search_slug_name`. One lookup per
+        // needle, deduped by (group, id) so a memory hit by several
+        // needles is only carried once into the authoritative
+        // re-check below.
+        let pool = require_cache_pool()?;
+        let mut candidates: Vec<mmcp_store::cache::SearchHit> = Vec::new();
+        let mut seen: std::collections::HashSet<(Uuid, Uuid)> = std::collections::HashSet::new();
+        for needle in &needles {
+            let rows = mmcp_store::cache::search_slug_name(
+                &pool,
+                &self.state.backend,
+                &self.state.groups,
+                needle,
+            )
+            .await
+            .map_err(|err| map_cache_error_to_mcp(err, "search"))?;
+            for row in rows {
+                if seen.insert((row.group_id, row.id)) {
+                    candidates.push(row);
+                }
+            }
+        }
+
         let mut hits: Vec<serde_json::Value> = Vec::new();
-        for entry in self.state.groups.list().await {
+        for row in candidates {
             if hits.len() >= limit {
                 break;
             }
+            // A cache row naming a group this mirror's live index no
+            // longer (or does not yet) know about is stale: never
+            // surfaced as a hit, the next cache rebuild reconciles
+            // it. This is also the group/scope restriction: only a
+            // group the live index resolves is eligible below.
+            let Some(entry) = self
+                .state
+                .groups
+                .get(&GroupId::from_uuid(row.group_id))
+                .await
+            else {
+                continue;
+            };
             if let Some(target) = group_filter
                 && entry.manifest.group_id != target
             {
@@ -2569,59 +2609,56 @@ impl McpServer {
             {
                 continue;
             }
-            let files = list_memory_files(&self.state.backend, &entry).await?;
-            for file in files {
-                if hits.len() >= limit {
-                    break;
+            // `search_slug_name` is a prefilter: re-verify the exact
+            // substring match here, per needle, in caller order. This
+            // is the AUTHORITATIVE check (unicode-aware, unlike the
+            // cache query's ASCII-only `LIKE` case folding) and it
+            // reproduces the legacy no-dedup-per-needle contract
+            // exactly, including a needle repeated verbatim in
+            // `queries` appearing that many times in `matched_queries`.
+            let slug_lower = row.slug.to_lowercase();
+            let name_lower = row.name.to_lowercase();
+            let mut matched: Vec<String> = Vec::new();
+            for (needle, original) in needles.iter().zip(originals.iter()) {
+                if slug_lower.contains(needle) || name_lower.contains(needle) {
+                    matched.push(original.clone());
                 }
-                let slug_lower = file.slug.to_lowercase();
-                let descriptor = match read_memory_descriptor(
-                    &self.state.backend,
-                    &entry,
-                    &file.path,
-                    &file.slug,
-                    None,
-                    DescriptorDetail::Full,
-                )
-                .await
-                {
-                    Ok(MemoryDescriptorOutcome::Parsed(d)) => d,
-                    // Never fabricate a `kind: "rule"` hit for a
-                    // record whose frontmatter failed to parse, since
-                    // it cannot legitimately match `name` either, so
-                    // it is skipped, loudly, instead of silently
-                    // matching nothing under a fake shape.
-                    Ok(MemoryDescriptorOutcome::ParseFailed(err)) => {
-                        tracing::warn!(slug = %file.slug, error = %err, "search: frontmatter parse failed, skipping");
-                        continue;
-                    }
-                    Err(err) => {
-                        tracing::warn!(slug = %file.slug, error = %err, "search: descriptor read failed, skipping");
-                        continue;
-                    }
-                };
-                let name_lower = descriptor
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_lowercase)
-                    .unwrap_or_default();
-                let mut matched: Vec<String> = Vec::new();
-                for (needle, original) in needles.iter().zip(originals.iter()) {
-                    if slug_lower.contains(needle) || name_lower.contains(needle) {
-                        matched.push(original.clone());
-                    }
-                }
-                if matched.is_empty() {
+            }
+            if matched.is_empty() {
+                continue;
+            }
+            let descriptor = match read_memory_descriptor(
+                &self.state.backend,
+                &entry,
+                &row.path,
+                &row.slug,
+                None,
+                DescriptorDetail::Full,
+            )
+            .await
+            {
+                Ok(MemoryDescriptorOutcome::Parsed(d)) => d,
+                // Never fabricate a `kind: "rule"` hit for a
+                // record whose frontmatter failed to parse, since
+                // it cannot legitimately match `name` either, so
+                // it is skipped, loudly, instead of silently
+                // matching nothing under a fake shape.
+                Ok(MemoryDescriptorOutcome::ParseFailed(err)) => {
+                    tracing::warn!(slug = %row.slug, error = %err, "search: frontmatter parse failed, skipping");
                     continue;
                 }
-                if multi_mode {
-                    hits.push(json!({
-                        "memory": descriptor,
-                        "matched_queries": matched,
-                    }));
-                } else {
-                    hits.push(descriptor);
+                Err(err) => {
+                    tracing::warn!(slug = %row.slug, error = %err, "search: descriptor read failed, skipping");
+                    continue;
                 }
+            };
+            if multi_mode {
+                hits.push(json!({
+                    "memory": descriptor,
+                    "matched_queries": matched,
+                }));
+            } else {
+                hits.push(descriptor);
             }
         }
         Ok(ok_json(json!({
@@ -6749,18 +6786,18 @@ fn map_issue_error_to_mcp(err: mmcp_store::issues::IssueError) -> McpError {
 }
 
 /// Fetch the process-global local content cache pool, mapping its
-/// absence onto a structured error. Every milestone tool that reads
-/// a rollup (`read_milestone`, `update_milestone`, `list_milestones`)
-/// needs this: unlike the write-trigger hook, a rollup query with
-/// no pool has no fallback answer to give, so this surfaces as a
-/// real error rather than silently returning a trivial rollup.
+/// absence onto a structured error. Every cache-backed tool needs
+/// this: a milestone rollup (`read_milestone`, `update_milestone`,
+/// `list_milestones`) or a `search_memories` lookup with no pool has
+/// no fallback answer to give, so this surfaces as a real error
+/// rather than silently returning a trivial or empty result.
 /// `ClientState::initialize_from` calls `cache::init_from_home`
 /// before the router ever dispatches a tool call, so this should
 /// only fire when that startup step itself failed.
 fn require_cache_pool() -> Result<sqlx::sqlite::SqlitePool, McpError> {
     mmcp_store::cache::active_pool().ok_or_else(|| {
         McpError::internal_error(
-            "local content cache is not available; milestone rollups cannot be computed",
+            "local content cache is not available",
             Some(json!({ "code": "cache_unavailable" })),
         )
     })
@@ -6836,68 +6873,79 @@ fn map_milestone_error_to_mcp(err: mmcp_store::milestones::MilestoneError) -> Mc
             McpError::invalid_params(message, Some(json!({ "code": "no_changes_supplied" })))
         }
         MilestoneError::Memory(inner) => map_memory_error_to_mcp(inner),
-        // The transparent `CacheError` wrapper's `Display` embeds raw
-        // absolute filesystem paths and raw sqlx/SQLite error text
-        // (see `CacheError`'s own variant docs), so `message` above
-        // is never surfaced to the caller for this branch. Every arm
-        // logs the real error server-side via `tracing::error!` and
-        // returns a fixed, generic caller-facing message with its
-        // own error code, matching `require_cache_pool`'s pattern.
-        MilestoneError::Cache(cache_err) => match cache_err {
-            mmcp_store::cache::CacheError::Open { path, source } => {
-                tracing::error!(
-                    path = %path.display(),
-                    error = %source,
-                    "milestone rollup: cache database failed to open"
-                );
-                McpError::internal_error(
-                    "local content cache could not be opened; milestone rollups cannot be computed",
-                    Some(json!({ "code": "cache_open_failed" })),
-                )
-            }
-            mmcp_store::cache::CacheError::Query(source) => {
-                tracing::error!(
-                    error = %source,
-                    "milestone rollup: cache database query failed"
-                );
-                McpError::internal_error(
-                    "local content cache query failed; milestone rollups cannot be computed",
-                    Some(json!({ "code": "cache_query_failed" })),
-                )
-            }
-            mmcp_store::cache::CacheError::Git(source) => {
-                tracing::error!(
-                    error = %source,
-                    "milestone rollup: walking group repository failed"
-                );
-                McpError::internal_error(
-                    "local content cache could not walk the group repository; milestone rollups cannot be computed",
-                    Some(json!({ "code": "cache_walk_failed" })),
-                )
-            }
-            mmcp_store::cache::CacheError::UnparseableFeatureStatus { raw, source } => {
-                tracing::error!(
-                    raw = %raw,
-                    error = %source,
-                    "milestone rollup: a feature's cached status does not parse"
-                );
-                McpError::internal_error(
-                    "a feature's cached status could not be parsed; milestone rollups cannot be computed",
-                    Some(json!({ "code": "cache_unparseable_feature_status" })),
-                )
-            }
-            mmcp_store::cache::CacheError::MismatchedHome { active, requested } => {
-                tracing::error!(
-                    active = %active.display(),
-                    requested = %requested.display(),
-                    "milestone rollup: cache pool requested against a different home than active"
-                );
-                McpError::internal_error(
-                    "local content cache is bound to a different home; milestone rollups cannot be computed",
-                    Some(json!({ "code": "cache_mismatched_home" })),
-                )
-            }
-        },
+        MilestoneError::Cache(cache_err) => map_cache_error_to_mcp(cache_err, "milestone rollups"),
+    }
+}
+
+/// Map a [`mmcp_store::cache::CacheError`] to a caller-facing
+/// [`McpError`] with a structured `code`, shared by every cache-backed
+/// tool (`map_milestone_error_to_mcp`, `search_memories`). The
+/// transparent `CacheError` wrapper's `Display` embeds raw absolute
+/// filesystem paths and raw sqlx/SQLite error text (see
+/// `CacheError`'s own variant docs), so that text is never surfaced
+/// to the caller: every arm logs the real error server-side via
+/// `tracing::error!` and returns a fixed, generic caller-facing
+/// message with its own error code, matching `require_cache_pool`'s
+/// pattern. `context` names the caller-facing operation that could
+/// not complete (e.g. `"milestone rollups"`, `"search"`), interpolated
+/// into that generic message so the wording still tells the caller
+/// what failed without repeating the whole match per tool.
+fn map_cache_error_to_mcp(err: mmcp_store::cache::CacheError, context: &str) -> McpError {
+    use mmcp_store::cache::CacheError;
+    match err {
+        CacheError::Open { path, source } => {
+            tracing::error!(
+                path = %path.display(),
+                error = %source,
+                "{context}: cache database failed to open"
+            );
+            McpError::internal_error(
+                format!("local content cache could not be opened; {context} cannot be computed"),
+                Some(json!({ "code": "cache_open_failed" })),
+            )
+        }
+        CacheError::Query(source) => {
+            tracing::error!(error = %source, "{context}: cache database query failed");
+            McpError::internal_error(
+                format!("local content cache query failed; {context} cannot be computed"),
+                Some(json!({ "code": "cache_query_failed" })),
+            )
+        }
+        CacheError::Git(source) => {
+            tracing::error!(error = %source, "{context}: walking group repository failed");
+            McpError::internal_error(
+                format!(
+                    "local content cache could not walk the group repository; {context} cannot be computed"
+                ),
+                Some(json!({ "code": "cache_walk_failed" })),
+            )
+        }
+        CacheError::UnparseableFeatureStatus { raw, source } => {
+            tracing::error!(
+                raw = %raw,
+                error = %source,
+                "{context}: a feature's cached status does not parse"
+            );
+            McpError::internal_error(
+                format!(
+                    "a feature's cached status could not be parsed; {context} cannot be computed"
+                ),
+                Some(json!({ "code": "cache_unparseable_feature_status" })),
+            )
+        }
+        CacheError::MismatchedHome { active, requested } => {
+            tracing::error!(
+                active = %active.display(),
+                requested = %requested.display(),
+                "{context}: cache pool requested against a different home than active"
+            );
+            McpError::internal_error(
+                format!(
+                    "local content cache is bound to a different home; {context} cannot be computed"
+                ),
+                Some(json!({ "code": "cache_mismatched_home" })),
+            )
+        }
     }
 }
 
@@ -7922,6 +7970,14 @@ mod tests {
     static SHARED_CACHE_HOME: LazyLock<TempDir> =
         LazyLock::new(|| TempDir::new().expect("shared cache home"));
 
+    /// Guards the one-time "stamp the shared cache pool as built"
+    /// step below against the concurrent-test race it exists to
+    /// prevent: see that step's own comment. `get_or_init` runs the
+    /// stamp exactly once and makes every concurrent caller await its
+    /// completion before proceeding, unlike a plain `is_built` check
+    /// racing another thread's in-flight `rebuild_full`.
+    static CACHE_STAMPED_BUILT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
     /// Build a `ClientState` rooted inside a fresh tempdir so the
     /// test never touches the real user home.
     async fn test_state() -> (ClientState, TempDir) {
@@ -7929,6 +7985,28 @@ mod tests {
         mmcp_store::cache::init_from_home(&cache_home)
             .await
             .expect("install the process-lifetime cache pool");
+        // Stamp the shared, process-global cache pool as built, with
+        // zero rows, before any test's own group-scoped
+        // `cache::ensure_built` call can trigger a REAL
+        // `cache::rebuild_full`: that rebuild `DELETE`s every row in
+        // `indexed_memory` (not just the caller's own groups) before
+        // repopulating from the caller's own per-test `GroupIndex`,
+        // which races to wipe rows a concurrently running sibling
+        // test already upserted via `cache::notify_write` for ITS
+        // groups. Stamping the index built up front, exactly once,
+        // means every test's writes only ever reach the safe,
+        // per-row `notify_write` upsert path afterward, which cannot
+        // collide across tests: each test's rows key on a fresh
+        // per-test group/memory UUID pair.
+        CACHE_STAMPED_BUILT
+            .get_or_init(|| async {
+                let pool = mmcp_store::cache::active_pool()
+                    .expect("pool installed by init_from_home above");
+                mmcp_store::cache::schema::mark_built(&pool, "1970-01-01T00:00:00Z")
+                    .await
+                    .expect("stamp shared cache pool as built");
+            })
+            .await;
         let tmp = TempDir::new().expect("tempdir");
         let home = MmcpHome::from_root(tmp.path().join("mmcp-home"));
         let state = ClientState::initialize_from(home, None, false)
@@ -8009,6 +8087,8 @@ mod tests {
             .create_group_repo(&manifest)
             .await
             .expect("create group repo");
+        let memory_id = MemoryId::new();
+        let path = mmcp_core::conventions::memory_path(memory_slug, memory_id);
         state
             .backend
             .write_commit(
@@ -8018,15 +8098,32 @@ mod tests {
                     author_name: "test".into(),
                     author_email: "test@example.com".into(),
                     message: format!("seed memory {memory_slug}"),
-                    files: vec![(
-                        mmcp_core::conventions::memory_path(memory_slug, MemoryId::new()),
-                        Some(memory_body.as_bytes().to_vec()),
-                    )],
+                    files: vec![(path.clone(), Some(memory_body.as_bytes().to_vec()))],
                 },
             )
             .await
             .expect("write commit");
         state.groups.refresh().await.expect("refresh");
+        // This helper commits straight through the raw backend
+        // rather than `mmcp_store::memory::write_file_at_path`, so it
+        // never runs through that path's `cache::notify_write` call.
+        // A real memory write always does, keeping the local content
+        // cache (`search_memories`'s data source, see
+        // `mmcp_store::cache::search_slug_name`) in sync with the
+        // mirror; a seeded fixture that skipped this would be
+        // invisible to a cache-backed tool despite genuinely existing
+        // on disk. Best-effort and silent on a parse failure (mirrors
+        // production), so a test deliberately seeding non-conforming
+        // content is unaffected.
+        mmcp_store::cache::notify_write(
+            *group_id.as_uuid(),
+            *memory_id.as_uuid(),
+            memory_slug,
+            &path,
+            "HEAD",
+            memory_body,
+        )
+        .await;
         group_id
     }
 
@@ -9578,6 +9675,147 @@ mod tests {
         let parsed = parse_ok_json(res);
         let hits = parsed.get("hits").and_then(|v| v.as_array()).unwrap();
         assert_eq!(hits.len(), 2);
+    }
+
+    /// `search_memories` reads its candidates from the local content
+    /// cache (`mmcp_store::cache::search_slug_name`), not from a full
+    /// git walk of every memory in every group. A memory committed
+    /// straight through the raw backend, bypassing
+    /// `cache::notify_write` entirely (exactly like this file's own
+    /// `read_memory_descriptor_errors_on_invalid_utf8_...` fixture),
+    /// never reaches the cache, so a cache-backed search must not
+    /// find it, even though it genuinely exists on disk at `HEAD`.
+    /// Against the OLD git-walk implementation this memory WOULD
+    /// have been found (it lists and reads every file in every
+    /// group); this test fails against that old code and passes
+    /// against the cache-backed one, directly discriminating the
+    /// data source rather than merely asserting a hit count.
+    #[tokio::test]
+    async fn search_memories_only_sees_the_cache_never_walks_git_directly() {
+        let (state, _tmp) = test_state().await;
+        let owner = UserId::new();
+        let group_id = GroupId::new();
+        let manifest = GroupManifest::new_user_owned(group_id, "cache-bypass-group", owner);
+        let handle = state
+            .backend
+            .create_group_repo(&manifest)
+            .await
+            .expect("create group repo");
+        let path = mmcp_core::conventions::memory_path("uncached-rules", MemoryId::new());
+        state
+            .backend
+            .write_commit(
+                &handle,
+                CommitSpec {
+                    branch: mmcp_core::conventions::MAIN_BRANCH.to_string(),
+                    author_name: "test".into(),
+                    author_email: "test@example.com".into(),
+                    message: "seed memory never pushed through the cache hook".into(),
+                    files: vec![(path, Some(SAMPLE_MEMORY.as_bytes().to_vec()))],
+                },
+            )
+            .await
+            .expect("write commit");
+        state.groups.refresh().await.expect("refresh");
+        // Deliberately NO `mmcp_store::cache::notify_write` call here:
+        // this memory exists on disk and at `HEAD` but was never
+        // indexed, exactly the case a git-walk implementation would
+        // still find and a cache-backed one cannot.
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let res = server
+            .search_memories(Parameters(SearchMemoriesArgs {
+                query: Some("uncached".into()),
+                queries: None,
+                limit: None,
+                group: None,
+                scope: None,
+            }))
+            .await
+            .expect("search_memories");
+        let parsed = parse_ok_json(res);
+        let hits = parsed
+            .get("hits")
+            .and_then(|v| v.as_array())
+            .expect("hits array");
+        assert!(
+            hits.is_empty(),
+            "a memory never indexed into the cache must not surface via a cache-backed search: {hits:?}"
+        );
+    }
+
+    /// Option (a) pin: `search_memories` restricts its match surface
+    /// to slug and name, never body, even though the underlying
+    /// cache also indexes body text (`cache::keyword_search` would
+    /// match it). A needle present only in the body must find
+    /// nothing, both at the store level (`search_slug_name`) and
+    /// through the tool.
+    #[tokio::test]
+    async fn search_memories_ignores_a_body_only_match() {
+        let (state, _tmp) = test_state().await;
+        let body_only_memory = "+++\nname = \"Sample\"\ndescription = \"A sample memory\"\nkind = \"rule\"\nmandatory = false\n+++\n# Sample\nquokka body text.\n";
+        seed_group_with_memory(&state, "team-rust", "unrelated-slug", body_only_memory).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let res = server
+            .search_memories(Parameters(SearchMemoriesArgs {
+                query: Some("quokka".into()),
+                queries: None,
+                limit: None,
+                group: None,
+                scope: None,
+            }))
+            .await
+            .expect("search_memories");
+        let parsed = parse_ok_json(res);
+        let hits = parsed
+            .get("hits")
+            .and_then(|v| v.as_array())
+            .expect("hits array");
+        assert!(
+            hits.is_empty(),
+            "a body-only match must never surface through search_memories: {hits:?}"
+        );
+    }
+
+    /// A literal `%` in the frontmatter `name` must match only
+    /// itself, never act as a `LIKE` wildcard that also pulls in an
+    /// unrelated sibling whose name merely resembles the escaped
+    /// pattern. Put in `name`, not `slug`: on-disk slug/path
+    /// conventions may reject `%`.
+    #[tokio::test]
+    async fn search_memories_escapes_literal_percent_in_name() {
+        let (state, _tmp) = test_state().await;
+        let percent_memory = "+++\nname = \"50% rule\"\ndescription = \"real\"\nkind = \"rule\"\nmandatory = false\n+++\n# Body\ntext.\n";
+        let decoy_memory = "+++\nname = \"50x rule\"\ndescription = \"decoy\"\nkind = \"rule\"\nmandatory = false\n+++\n# Body\ntext.\n";
+        seed_group_with_memory(&state, "team-rust", "percent-rule", percent_memory).await;
+        seed_group_with_memory(&state, "team-rust", "percentx-rule", decoy_memory).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let res = server
+            .search_memories(Parameters(SearchMemoriesArgs {
+                query: Some("50%".into()),
+                queries: None,
+                limit: None,
+                group: None,
+                scope: None,
+            }))
+            .await
+            .expect("search_memories");
+        let parsed = parse_ok_json(res);
+        let hits = parsed
+            .get("hits")
+            .and_then(|v| v.as_array())
+            .expect("hits array");
+        assert_eq!(
+            hits.len(),
+            1,
+            "a literal '%' must not wildcard-match '50x rule'; got: {hits:?}"
+        );
+        assert_eq!(
+            hits[0].get("slug").and_then(|v| v.as_str()),
+            Some("percent-rule")
+        );
     }
 
     #[tokio::test]
