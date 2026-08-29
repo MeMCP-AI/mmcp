@@ -277,11 +277,11 @@ fn sync_outside_project_fails_with_a_useful_message() {
 }
 
 #[test]
-fn sync_rejects_bare_call_without_selector() {
-    // Per the no-global-default invariant: `mmcp sync` without a
-    // selector exits non-zero at the clap parse boundary with a
-    // message naming the three accepted selectors so the operator
-    // knows which one to pick.
+fn sync_bare_call_defaults_to_all_selector() {
+    // `--group`/`--scope`/`--all` are no longer required at the clap parse boundary.
+    // A bare `mmcp sync` now reaches the command body and resolves to the whole-mirror filter.
+    // It fails on project discovery instead, exactly like `mmcp sync --all` does.
+    // See `sync_outside_project_fails_with_a_useful_message` for that failure mode.
     let tmp = tempfile::tempdir().unwrap();
     let mmcp_home = tmp.path().join("mmcp-home");
     mmcp()
@@ -290,10 +290,7 @@ fn sync_rejects_bare_call_without_selector() {
         .env("MMCP_HOME", &mmcp_home)
         .assert()
         .failure()
-        .stderr(
-            predicate::str::contains("--group")
-                .and(predicate::str::contains("--scope").and(predicate::str::contains("--all"))),
-        );
+        .stderr(predicate::str::contains("no mmcp project"));
 }
 
 #[test]

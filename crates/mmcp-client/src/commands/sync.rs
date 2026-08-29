@@ -52,15 +52,13 @@ impl From<ScopeArg> for GroupScope {
     }
 }
 
-/// Selector shared by `mmcp sync` / `pull` / `push`.
+/// Selector shared by `mmcp sync` / `pull` / `push` / `fetch`.
 ///
-/// Exactly one of `--group` / `--scope` / `--all` is required;
-/// clap's `ArgGroup(required = true, multiple = false)` enforces
-/// both at parse time so bare `mmcp sync` fails with a
-/// user-visible error message instead of silently operating on
-/// the whole mirror.
+/// At most one of `--group` / `--scope` / `--all` may be given.
+/// clap's `ArgGroup(multiple = false)` enforces mutual exclusion at parse time.
+/// Omitting all three targets every locally-known group, the same as passing `--all` explicitly.
 #[derive(Debug, Clone, clap::Args)]
-#[group(id = "sync_selector", multiple = false, required = true)]
+#[group(id = "sync_selector", multiple = false)]
 pub struct SyncSelector {
     /// Target a single group by UUID or slug.
     #[arg(long, group = "sync_selector")]
@@ -71,9 +69,9 @@ pub struct SyncSelector {
     #[arg(long, group = "sync_selector", value_enum)]
     pub scope: Option<ScopeArg>,
 
-    /// Explicitly fan out across the whole local mirror. This is
-    /// the only way to reproduce the pre-scoping behaviour; the
-    /// default is still `--all` until the breaking flip lands.
+    /// Explicitly fan out across the whole local mirror.
+    /// Redundant with the selector's own default when neither `--group` nor `--scope` is given.
+    /// Still accepted so a caller can name the whole-mirror target explicitly.
     #[arg(long, group = "sync_selector", default_value_t = false)]
     pub all: bool,
 }
@@ -119,10 +117,8 @@ impl RemoteScopeArgs {
 /// Resolve a [`SyncSelector`] into a [`SyncFilter`] against the
 /// live group index.
 ///
-/// Reaches the empty-selector fallback only if clap's required
-/// ArgGroup were bypassed (for example, an internal caller that
-/// constructs a `SyncSelector` by hand). That path bails with a
-/// user-visible error so the fallback never silently fans out.
+/// An empty selector (none of `--group`, `--scope`, `--all` given) resolves to [`SyncFilter::All`].
+/// This matches the selector's own documented default.
 pub async fn resolve_sync_filter(
     selector: &SyncSelector,
     groups: &mmcp_store::GroupIndex,
@@ -139,9 +135,7 @@ pub async fn resolve_sync_filter(
             .with_context(|| format!("resolving group `{query}` for sync selector"))?;
         return Ok(SyncFilter::Group(*entry.manifest.group_id.as_uuid()));
     }
-    bail!(
-        "sync selector required: pass exactly one of `--group <uuid|slug>`, `--scope <global|shared|project>`, or `--all`"
-    );
+    Ok(SyncFilter::All)
 }
 
 /// Load the project + user config, resolve the effective remote set,
@@ -441,4 +435,78 @@ async fn notify_cache_of_pull(
 ) {
     let updated: Vec<uuid::Uuid> = report.updated.iter().map(|g| g.group_id).collect();
     mmcp_store::cache::notify_pull(backend, groups, &updated).await;
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    fn empty_selector() -> SyncSelector {
+        SyncSelector {
+            group: None,
+            scope: None,
+            all: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_sync_filter_defaults_the_empty_selector_to_all() {
+        let scratch = mmcp_store::testing::ScratchHome::new()
+            .await
+            .expect("scratch home");
+        let filter = resolve_sync_filter(&empty_selector(), scratch.groups())
+            .await
+            .expect("empty selector resolves");
+        assert!(matches!(filter, SyncFilter::All));
+    }
+
+    #[tokio::test]
+    async fn resolve_sync_filter_honors_explicit_all() {
+        let scratch = mmcp_store::testing::ScratchHome::new()
+            .await
+            .expect("scratch home");
+        let selector = SyncSelector {
+            all: true,
+            ..empty_selector()
+        };
+        let filter = resolve_sync_filter(&selector, scratch.groups())
+            .await
+            .expect("explicit --all resolves");
+        assert!(matches!(filter, SyncFilter::All));
+    }
+
+    #[tokio::test]
+    async fn resolve_sync_filter_honors_explicit_scope() {
+        let scratch = mmcp_store::testing::ScratchHome::new()
+            .await
+            .expect("scratch home");
+        let selector = SyncSelector {
+            scope: Some(ScopeArg::Global),
+            ..empty_selector()
+        };
+        let filter = resolve_sync_filter(&selector, scratch.groups())
+            .await
+            .expect("explicit --scope resolves");
+        assert!(matches!(filter, SyncFilter::Scope(GroupScope::Global)));
+    }
+
+    #[tokio::test]
+    async fn resolve_sync_filter_honors_explicit_group() {
+        let scratch = mmcp_store::testing::ScratchHome::new()
+            .await
+            .expect("scratch home");
+        let seeded = scratch
+            .seed_group("resolve-filter-group")
+            .await
+            .expect("seed group");
+        let selector = SyncSelector {
+            group: Some(seeded.group_id.to_string()),
+            ..empty_selector()
+        };
+        let filter = resolve_sync_filter(&selector, scratch.groups())
+            .await
+            .expect("explicit --group resolves");
+        assert_eq!(filter, SyncFilter::Group(*seeded.group_id.as_uuid()));
+    }
 }
