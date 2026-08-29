@@ -272,6 +272,103 @@ pub(crate) async fn count_slug_entries(
         .count())
 }
 
+/// Per-slug outcome of a batched tracker listing read: either the slug's single memory file
+/// parsed successfully, or the same [`ImportError`] a per-slug `resolve_by_slug` + `read_file`
+/// pair would have raised.
+///
+/// Shared batched I/O between `list_issues` and `list_features`: each caller still applies its
+/// own kind-specific block-presence gating (`NotAFeature` / `NotAnIssue`) and `Finding` emission
+/// against the parsed [`MemoryFile`]; only the git reads are batched here.
+///
+/// Reduces a listing over `N` slugs from `2N` sequential `spawn_blocking` git round trips (one
+/// `list_tree` and one `read_file` per slug, each re-resolving the commit and root tree) to one
+/// [`list_memory_slug_dirs`] walk plus one batched [`NativeBackend::read_files`] call, which
+/// resolves the commit and root tree once and reuses them for every path.
+pub(crate) async fn read_all_slug_files(
+    backend: &NativeBackend,
+    entry: &GroupEntry,
+    rev: Rev,
+) -> Result<Vec<(String, Result<MemoryFile, ImportError>)>, ImportError> {
+    let slug_dirs = list_memory_slug_dirs(backend, &entry.handle, &rev)
+        .await
+        .map_err(ImportError::Git)?;
+
+    // A slug's single resolvable path (with its UUID, for a not-found id in the error), or the
+    // outcome a `resolve_by_slug` call over the same `list_tree` result would already have
+    // decided: zero UUID-named files is not-found, two or more is ambiguous.
+    enum SlugCandidate {
+        Single(Uuid, String),
+        NotFound,
+        Ambiguous(Vec<Uuid>),
+    }
+
+    let mut candidates: Vec<(String, SlugCandidate)> = Vec::with_capacity(slug_dirs.len());
+    let mut paths: Vec<String> = Vec::new();
+    for slug_dir in &slug_dirs {
+        let uuids: Vec<Uuid> = slug_dir
+            .filenames
+            .iter()
+            .filter_map(|name| {
+                name.strip_suffix(MEMORY_EXTENSION)
+                    .and_then(|stem| Uuid::parse_str(stem).ok())
+            })
+            .collect();
+        let candidate = match uuids.len() {
+            1 => {
+                let path = memory_path(&slug_dir.slug, MemoryId::from_uuid(uuids[0]));
+                paths.push(path.clone());
+                SlugCandidate::Single(uuids[0], path)
+            }
+            0 => SlugCandidate::NotFound,
+            _ => SlugCandidate::Ambiguous(uuids),
+        };
+        candidates.push((slug_dir.slug.clone(), candidate));
+    }
+
+    // One resolve of the commit and root tree, reused for every path below,
+    // instead of once per slug like a `read_file`-per-slug loop would pay.
+    let batch = backend
+        .read_files(&entry.handle, paths, &rev)
+        .await
+        .map_err(ImportError::Git)?;
+    let mut bytes_by_path = batch
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+
+    let mut out = Vec::with_capacity(candidates.len());
+    for (slug, candidate) in candidates {
+        let outcome = match candidate {
+            SlugCandidate::NotFound => Err(ImportError::MemoryNotFound {
+                slug: Some(slug.clone()),
+                id: None,
+            }),
+            SlugCandidate::Ambiguous(uuids) => Err(ImportError::MemoryAmbiguous {
+                slug: slug.clone(),
+                candidates: uuids,
+            }),
+            SlugCandidate::Single(id, path) => match bytes_by_path.remove(&path) {
+                Some(Ok(bytes)) => {
+                    let text = String::from_utf8_lossy(&bytes).into_owned();
+                    MemoryFile::parse(&text).map_err(ImportError::Parse)
+                }
+                Some(Err(mmcp_git::GitError::PathNotFound(_))) => {
+                    Err(ImportError::MemoryNotFound {
+                        slug: Some(slug.clone()),
+                        id: Some(id),
+                    })
+                }
+                Some(Err(err)) => Err(ImportError::Git(err)),
+                // `read_files` returns exactly one outcome per requested path; a path built
+                // from this same loop missing from its own result is a broken batching
+                // invariant, not a reachable runtime state.
+                None => unreachable!("read_files omitted a requested path"),
+            },
+        };
+        out.push((slug, outcome));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
