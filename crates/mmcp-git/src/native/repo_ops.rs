@@ -730,8 +730,20 @@ async fn ensure_remote(repo_path: &Path, remote_url: &str) -> Result<(), GitErro
     Ok(())
 }
 
+/// Test-only count of [`resolve_rev`] invocations, so a unit test can
+/// prove a recursive listing resolves the commit exactly once for
+/// its whole descent, instead of once per directory node the way a
+/// manual DFS calling [`list_tree`]/[`list_subtrees`] per node does.
+/// Compiled only under `#[cfg(test)]`: no production build ever pays
+/// this atomic increment.
+#[cfg(test)]
+pub(crate) static RESOLVE_REV_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// Resolve a `Rev` to a concrete commit object id.
 fn resolve_rev(repo: &gix::Repository, rev: &Rev) -> Result<gix::ObjectId, GitError> {
+    #[cfg(test)]
+    RESOLVE_REV_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let target = match rev {
         Rev::Branch(name) => {
             let full = format!("refs/heads/{name}");
@@ -932,6 +944,84 @@ pub fn list_subtrees(
         }
     }
     out.sort();
+    Ok(out)
+}
+
+/// One directory node reached while recursively listing a subtree:
+/// its path relative to the listed prefix (empty for the prefix
+/// itself), paired with the blob (file) names held directly inside
+/// it. Every directory reached appears here, whether or not it
+/// holds a blob directly, since a caller doing its own leaf test
+/// still needs to see the empty ones.
+pub type TreeDirEntry = (String, Vec<String>);
+
+/// Recursively list every directory reached while descending from
+/// `path_prefix` at the given revision, in a single tree traversal.
+///
+/// Resolves the commit and the target tree once, then decodes the
+/// whole subtree in one pass. A caller that needs a full recursive
+/// listing (for example a DFS over slug directories) uses this
+/// instead of calling [`list_tree`] and [`list_subtrees`] once per
+/// directory node, which each re-resolve the commit and root tree
+/// from scratch.
+///
+/// Missing prefix or an unborn `main` branch returns an empty
+/// vector, mirroring [`list_tree`] and [`list_subtrees`].
+pub fn list_tree_recursive(
+    repo: &gix::Repository,
+    path_prefix: &str,
+    rev: &Rev,
+) -> Result<Vec<TreeDirEntry>, GitError> {
+    let commit_id = match resolve_rev(repo, rev) {
+        Ok(id) => id,
+        Err(GitError::RevNotFound(_)) => return Ok(Vec::new()),
+        Err(other) => return Err(other),
+    };
+    let commit_obj = repo.find_object(commit_id).map_err(resolve_rev_err)?;
+    let commit: gix::objs::Commit = commit_obj
+        .into_commit()
+        .decode()
+        .map_err(resolve_rev_err)?
+        .into_owned()
+        .map_err(resolve_rev_err)?;
+
+    let target_tree_id = match resolve_tree_prefix(repo, commit.tree, path_prefix)? {
+        Some(id) => id,
+        None => return Ok(Vec::new()),
+    };
+
+    let tree_obj = repo.find_object(target_tree_id).map_err(read_blob_err)?;
+    let entries = tree_obj
+        .into_tree()
+        .traverse()
+        .breadthfirst
+        .files()
+        .map_err(read_blob_err)?;
+
+    let mut dirs: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    // The prefix itself always appears, even when it holds no blobs
+    // and no subtrees, so a caller sees it was reached.
+    dirs.entry(String::new()).or_default();
+    for entry in entries {
+        let path = String::from_utf8_lossy(&entry.filepath).into_owned();
+        match entry.mode.kind() {
+            EntryKind::Tree => {
+                dirs.entry(path).or_default();
+            }
+            EntryKind::Blob | EntryKind::BlobExecutable => {
+                let (dir, name) = match path.rsplit_once('/') {
+                    Some((dir, name)) => (dir.to_string(), name.to_string()),
+                    None => (String::new(), path),
+                };
+                dirs.entry(dir).or_default().push(name);
+            }
+            _ => {}
+        }
+    }
+    let mut out: Vec<TreeDirEntry> = dirs.into_iter().collect();
+    for (_, filenames) in &mut out {
+        filenames.sort();
+    }
     Ok(out)
 }
 
@@ -1901,6 +1991,124 @@ mod stdin_tests {
             reported_len, 0,
             "the child must see an immediate empty stdin, consistent with \
              run_git_subprocess overriding it to Stdio::null()"
+        );
+    }
+}
+
+#[cfg(test)]
+mod recursive_listing_tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+    use std::sync::atomic::Ordering;
+
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Open the freshly committed scratch repo the way `NativeBackend`
+    /// does: a `ThreadSafeRepository` handed out as a thread-local
+    /// view.
+    fn open_thread_local(repo_path: &Path) -> gix::Repository {
+        gix::ThreadSafeRepository::open(repo_path)
+            .expect("open scratch repo")
+            .to_thread_local()
+    }
+
+    /// Build a scratch bare repo with a `memories/` tree several
+    /// levels deep, so a listing that only reached the first level
+    /// could never accidentally pass: `memories/a/one.md`,
+    /// `memories/a/b/two.md`, `memories/a/b/c/three.md`,
+    /// `memories/x/four.md`. Five directory nodes are reachable under
+    /// `memories/`: itself, `a`, `a/b`, `a/b/c`, and `x`.
+    fn fixture_repo_with_nested_memories() -> TempDir {
+        let tmp = TempDir::new().expect("tempdir");
+        let repo_path = tmp.path().join("scratch.git");
+        gix::init_bare(&repo_path).expect("init bare scratch repo");
+        let repo = open_thread_local(&repo_path);
+        write_commit(
+            &repo,
+            CommitSpec::mmcp_commit(
+                "seed nested memories tree",
+                vec![
+                    ("memories/a/one.md".to_string(), Some(b"one".to_vec())),
+                    ("memories/a/b/two.md".to_string(), Some(b"two".to_vec())),
+                    (
+                        "memories/a/b/c/three.md".to_string(),
+                        Some(b"three".to_vec()),
+                    ),
+                    ("memories/x/four.md".to_string(), Some(b"four".to_vec())),
+                ],
+                "Test Author",
+                "test@example.com",
+            ),
+        )
+        .expect("seed commit");
+        tmp
+    }
+
+    /// Falsification: [`list_tree_recursive`] resolves the commit
+    /// exactly once for its whole descent, regardless of how many
+    /// directory nodes it reaches, unlike a manual DFS calling
+    /// `list_tree` then `list_subtrees` per directory (the shape
+    /// `list_memory_slug_dirs` used before migrating to this
+    /// primitive), which pays `resolve_rev` twice per node. Both
+    /// shapes run in this one test function, sharing
+    /// [`RESOLVE_REV_CALLS`] sequentially, so neither call-count
+    /// assertion races a concurrently-running test thread touching
+    /// the same process-wide counter. Red check performed manually:
+    /// replacing the single-traversal body with the per-node loop
+    /// below makes the first assertion fail (`10` instead of `1`),
+    /// and the second assertion proves the counter is genuinely
+    /// capable of reading a value above `1` on this fixture, not
+    /// just always `1` regardless of what ran.
+    #[test]
+    fn list_tree_recursive_resolves_the_commit_exactly_once() {
+        let tmp = fixture_repo_with_nested_memories();
+        let repo_path = tmp.path().join("scratch.git");
+        let rev = Rev::head();
+
+        RESOLVE_REV_CALLS.store(0, Ordering::SeqCst);
+        let repo = open_thread_local(&repo_path);
+        let mut dirs = list_tree_recursive(&repo, "memories", &rev).expect("list_tree_recursive");
+        dirs.sort_by(|a, b| a.0.cmp(&b.0));
+
+        assert_eq!(
+            RESOLVE_REV_CALLS.load(Ordering::SeqCst),
+            1,
+            "a single recursive descent must resolve the commit exactly once"
+        );
+
+        let expected: Vec<TreeDirEntry> = vec![
+            (String::new(), vec![]),
+            ("a".to_string(), vec!["one.md".to_string()]),
+            ("a/b".to_string(), vec!["two.md".to_string()]),
+            ("a/b/c".to_string(), vec!["three.md".to_string()]),
+            ("x".to_string(), vec!["four.md".to_string()]),
+        ];
+        assert_eq!(
+            dirs, expected,
+            "every directory reached must carry its own direct blob names"
+        );
+
+        // Same fixture, the OLD per-node shape: one `list_tree` plus
+        // one `list_subtrees` call per directory, each independently
+        // resolving the commit.
+        RESOLVE_REV_CALLS.store(0, Ordering::SeqCst);
+        let repo = open_thread_local(&repo_path);
+        let mut visited = 0usize;
+        let mut stack = vec!["memories".to_string()];
+        while let Some(prefix) = stack.pop() {
+            visited += 1;
+            let _files = list_tree(&repo, &prefix, &rev).expect("list_tree");
+            let subs = list_subtrees(&repo, &prefix, &rev).expect("list_subtrees");
+            for name in subs {
+                stack.push(format!("{prefix}/{name}"));
+            }
+        }
+
+        assert_eq!(visited, 5, "fixture must have exactly 5 directory nodes");
+        assert_eq!(
+            RESOLVE_REV_CALLS.load(Ordering::SeqCst),
+            visited * 2,
+            "the per-node shape must pay 2 resolve_rev calls per directory node"
         );
     }
 }

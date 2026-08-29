@@ -178,6 +178,35 @@ impl NativeBackend {
         })
         .await?
     }
+
+    /// Recursively list every directory reached while descending
+    /// from `path_prefix`, each paired with the blob (file) names it
+    /// holds directly, resolving the commit and target tree once
+    /// inside a single `spawn_blocking`.
+    ///
+    /// Not part of [`GitBackend`] for the same reason as
+    /// [`Self::read_files`]: this batches [`GitBackend::list_tree`]
+    /// and [`GitBackend::list_subtrees`] into one round trip for a
+    /// caller doing a full recursive descent, instead of the N
+    /// separate calls (each re-resolving the commit and root tree
+    /// from scratch) a manual DFS over those two trait methods would
+    /// pay per directory node.
+    pub async fn list_tree_recursive(
+        &self,
+        repo: &RepoHandle,
+        path_prefix: &str,
+        rev: &Rev,
+    ) -> Result<Vec<repo_ops::TreeDirEntry>, GitError> {
+        let repo_path = Self::handle_path(repo).to_path_buf();
+        let prefix = path_prefix.to_string();
+        let rev = rev.clone();
+        let backend = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let handle = backend.open_repo(&repo_path)?;
+            repo_ops::list_tree_recursive(&handle.to_thread_local(), &prefix, &rev)
+        })
+        .await?
+    }
 }
 
 #[async_trait]
