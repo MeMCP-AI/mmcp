@@ -914,6 +914,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "comfy-table"
+version = "8.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "136c8c4c3823846e8ba6d4bda011b4e5d5827b8bb0ac26c31f9ab31abe9f54f2"
+dependencies = [
+ "crossterm",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3578,7 +3589,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-auth"
-version = "0.1.128"
+version = "0.1.129"
 dependencies = [
  "argon2",
  "axum-login",
@@ -3595,13 +3606,14 @@ dependencies = [
 
 [[package]]
 name = "mmcp-client"
-version = "0.1.128"
+version = "0.1.129"
 dependencies = [
  "anyhow",
  "assert_cmd",
  "bytes",
  "cargo_toml",
  "clap",
+ "comfy-table",
  "inquire",
  "mmcp-core",
  "mmcp-git",
@@ -3626,7 +3638,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-core"
-version = "0.1.128"
+version = "0.1.129"
 dependencies = [
  "gray_matter",
  "jiff",
@@ -3646,7 +3658,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-db"
-version = "0.1.128"
+version = "0.1.129"
 dependencies = [
  "async-trait",
  "libsqlite3-sys",
@@ -3660,7 +3672,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-git"
-version = "0.1.128"
+version = "0.1.129"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3678,7 +3690,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-proto"
-version = "0.1.128"
+version = "0.1.129"
 dependencies = [
  "serde",
  "serde_json",
@@ -3690,7 +3702,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-server"
-version = "0.1.128"
+version = "0.1.129"
 dependencies = [
  "anyhow",
  "axum",
@@ -3729,7 +3741,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-session"
-version = "0.1.128"
+version = "0.1.129"
 dependencies = [
  "serde",
  "sha2 0.11.0",
@@ -3739,7 +3751,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-store"
-version = "0.1.128"
+version = "0.1.129"
 dependencies = [
  "acdc-converters-core",
  "acdc-converters-markdown",
@@ -3773,7 +3785,7 @@ dependencies = [
 
 [[package]]
 name = "mmcp-sync"
-version = "0.1.128"
+version = "0.1.129"
 dependencies = [
  "futures-util",
  "mmcp-core",

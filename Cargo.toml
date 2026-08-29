@@ -22,7 +22,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.128"
+version = "0.1.129"
 edition = "2024"
 rust-version = "1.94"
 authors = ["Gabriel GRONDIN"]
@@ -53,6 +53,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # CLI
 clap = { version = "4", features = ["derive"] }
 inquire = { version = "0.9", default-features = false, features = ["crossterm"] }
+
+# Table rendering for per-group sync outcome rows (`mmcp sync` /
+# `pull` / `push` / `fetch`). Pinned exact: only mmcp-client depends
+# on it, and its rendered output is asserted verbatim in tests.
+comfy-table = "=8.0.0"
 
 # Slugification (Unicode-aware: NFD + diacritic stripping). Used
 # wherever we derive a file-safe slug from human-facing text — memory

@@ -37,6 +37,7 @@ uuid = { workspace = true }
 rmcp = { workspace = true }
 notify = "8"
 sqlx = { workspace = true }
+comfy-table = { workspace = true }
 
 [dev-dependencies]
 mmcp-store = { workspace = true, features = ["testing"] }
