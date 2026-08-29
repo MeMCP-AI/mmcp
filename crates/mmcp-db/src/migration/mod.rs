@@ -8,6 +8,7 @@ use sea_orm_migration::prelude::*;
 
 mod m0001_initial;
 mod m0002_auth_methods;
+mod m0003_indexes;
 
 pub struct Migrator;
 
@@ -17,6 +18,7 @@ impl MigratorTrait for Migrator {
         vec![
             Box::new(m0001_initial::Migration),
             Box::new(m0002_auth_methods::Migration),
+            Box::new(m0003_indexes::Migration),
         ]
     }
 }
