@@ -1135,6 +1135,65 @@ mod tests {
         ));
     }
 
+    /// A slug directory name that fails `validate_memory_slug` (here, an uppercase segment) is
+    /// unreachable through `add_issue`'s own write path, but can land on disk via direct git
+    /// surgery or an externally imported repo. The pre-batching per-slug loop caught this
+    /// through `read_issue`'s own `validate_memory_slug` call and aborted the whole listing; the
+    /// batched path must still raise the identical abort.
+    #[tokio::test]
+    async fn list_issues_aborts_whole_listing_on_invalid_slug_name() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("issue-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        add_issue(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("good".into()),
+                title: "Good".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed good issue");
+
+        let metadata = IssueMetadata {
+            status: IssueStatus::Open,
+            number: Some(51),
+            ..IssueMetadata::default()
+        };
+        let file = build_memory_file("Bad slug".into(), "d".into(), "b".into(), metadata);
+        let rendered = file.to_string().expect("render bad-slug issue");
+        let bad_id = mmcp_core::id::MemoryId::new();
+        let author = scratch.author();
+        scratch
+            .backend()
+            .write_commit(
+                &entry.handle,
+                mmcp_git::CommitSpec::mmcp_commit(
+                    "seed invalid-slug issue".to_string(),
+                    vec![(
+                        mmcp_core::conventions::memory_path("Bad_Slug", bad_id),
+                        Some(rendered.into_bytes()),
+                    )],
+                    &author.name,
+                    &author.email,
+                ),
+            )
+            .await
+            .expect("seed invalid-slug memory");
+
+        let err = list_issues(scratch.backend(), &entry, None, true)
+            .await
+            .expect_err("invalid slug name must abort the whole listing");
+        assert!(matches!(
+            err,
+            IssueError::Memory(ImportError::InvalidSlug(_))
+        ));
+    }
+
     #[tokio::test]
     async fn delete_refuses_when_slug_is_not_an_issue() {
         let scratch = ScratchHome::new().await.expect("scratch home");

@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use crate::diagnostics::Finding;
 use crate::groups::GroupEntry;
-use crate::memory::{ImportError, list_memory_slug_dirs};
+use crate::memory::{ImportError, list_memory_slug_dirs, validate_memory_slug};
 
 /// Compute the next ticket number for the group.
 ///
@@ -272,9 +272,15 @@ pub(crate) async fn count_slug_entries(
         .count())
 }
 
+/// A slug's single resolvable `(id, path)`, or the pre-decided [`ImportError`] a
+/// `validate_memory_slug` + `resolve_by_slug` pair over the same `list_tree` result would
+/// already have raised: an invalid slug name, zero UUID-named files (not-found), or two or
+/// more (ambiguous). Named alias for [`read_all_slug_files`]'s intermediate candidate list.
+type SlugCandidate = Result<(Uuid, String), ImportError>;
+
 /// Per-slug outcome of a batched tracker listing read: either the slug's single memory file
-/// parsed successfully, or the same [`ImportError`] a per-slug `resolve_by_slug` + `read_file`
-/// pair would have raised.
+/// parsed successfully, or the same [`ImportError`] a per-slug `validate_memory_slug` +
+/// `resolve_by_slug` + `read_file` chain would have raised.
 ///
 /// Shared batched I/O between `list_issues` and `list_features`: each caller still applies its
 /// own kind-specific block-presence gating (`NotAFeature` / `NotAnIssue`) and `Finding` emission
@@ -293,35 +299,36 @@ pub(crate) async fn read_all_slug_files(
         .await
         .map_err(ImportError::Git)?;
 
-    // A slug's single resolvable path (with its UUID, for a not-found id in the error), or the
-    // outcome a `resolve_by_slug` call over the same `list_tree` result would already have
-    // decided: zero UUID-named files is not-found, two or more is ambiguous.
-    enum SlugCandidate {
-        Single(Uuid, String),
-        NotFound,
-        Ambiguous(Vec<Uuid>),
-    }
-
     let mut candidates: Vec<(String, SlugCandidate)> = Vec::with_capacity(slug_dirs.len());
     let mut paths: Vec<String> = Vec::new();
     for slug_dir in &slug_dirs {
-        let uuids: Vec<Uuid> = slug_dir
-            .filenames
-            .iter()
-            .filter_map(|name| {
-                name.strip_suffix(MEMORY_EXTENSION)
-                    .and_then(|stem| Uuid::parse_str(stem).ok())
-            })
-            .collect();
-        let candidate = match uuids.len() {
-            1 => {
-                let path = memory_path(&slug_dir.slug, MemoryId::from_uuid(uuids[0]));
-                paths.push(path.clone());
-                SlugCandidate::Single(uuids[0], path)
+        let candidate = validate_memory_slug(&slug_dir.slug).and_then(|()| {
+            let uuids: Vec<Uuid> = slug_dir
+                .filenames
+                .iter()
+                .filter_map(|name| {
+                    name.strip_suffix(MEMORY_EXTENSION)
+                        .and_then(|stem| Uuid::parse_str(stem).ok())
+                })
+                .collect();
+            match uuids.len() {
+                1 => Ok((
+                    uuids[0],
+                    memory_path(&slug_dir.slug, MemoryId::from_uuid(uuids[0])),
+                )),
+                0 => Err(ImportError::MemoryNotFound {
+                    slug: Some(slug_dir.slug.clone()),
+                    id: None,
+                }),
+                _ => Err(ImportError::MemoryAmbiguous {
+                    slug: slug_dir.slug.clone(),
+                    candidates: uuids,
+                }),
             }
-            0 => SlugCandidate::NotFound,
-            _ => SlugCandidate::Ambiguous(uuids),
-        };
+        });
+        if let Ok((_, path)) = &candidate {
+            paths.push(path.clone());
+        }
         candidates.push((slug_dir.slug.clone(), candidate));
     }
 
@@ -338,15 +345,8 @@ pub(crate) async fn read_all_slug_files(
     let mut out = Vec::with_capacity(candidates.len());
     for (slug, candidate) in candidates {
         let outcome = match candidate {
-            SlugCandidate::NotFound => Err(ImportError::MemoryNotFound {
-                slug: Some(slug.clone()),
-                id: None,
-            }),
-            SlugCandidate::Ambiguous(uuids) => Err(ImportError::MemoryAmbiguous {
-                slug: slug.clone(),
-                candidates: uuids,
-            }),
-            SlugCandidate::Single(id, path) => match bytes_by_path.remove(&path) {
+            Err(err) => Err(err),
+            Ok((id, path)) => match bytes_by_path.remove(&path) {
                 Some(Ok(bytes)) => {
                     let text = String::from_utf8_lossy(&bytes).into_owned();
                     MemoryFile::parse(&text).map_err(ImportError::Parse)
