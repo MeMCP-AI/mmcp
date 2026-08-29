@@ -1,16 +1,23 @@
 //! Populate the cache: full rebuilds and single-record upserts.
 
+use std::collections::HashMap;
+use std::future::Future;
+
 use jiff::Timestamp;
 use mmcp_core::memory::MemoryFile;
-use mmcp_git::{GitBackend, NativeBackend, Rev};
+use mmcp_git::{GitError, NativeBackend, Rev};
 use sqlx::Sqlite;
 use sqlx::sqlite::SqlitePool;
 use uuid::Uuid;
 
 use crate::groups::{GroupEntry, GroupIndex};
-use crate::memory::list_all_memory_files;
+use crate::memory::{MemoryFileRef, list_all_memory_files};
 
 use super::{CacheError, IndexedRecord};
+
+/// Batched-read outcome shape [`NativeBackend::read_files`] returns.
+/// Spelled out locally because its own alias sits in a private module of `mmcp-git`.
+type BatchOutcome = Vec<(String, Result<bytes::Bytes, GitError>)>;
 
 /// Outcome of a [`rebuild_full`] run.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -111,17 +118,52 @@ async fn index_group(
     backend: &NativeBackend,
     entry: &GroupEntry,
 ) -> Result<usize, CacheError> {
-    let mut indexed = 0usize;
     let rev = Rev::head();
     let files = list_all_memory_files(backend, &entry.handle, &rev).await?;
+    index_group_files(tx, entry.handle.group_id, files, |paths| {
+        backend.read_files(&entry.handle, paths, &rev)
+    })
+    .await
+}
+
+/// Upsert every file in `files` into `tx`, resolving all of their contents through exactly one
+/// call to `read_batch` before the per-file upsert loop starts.
+///
+/// `read_batch` is the batched-read seam: production passes [`NativeBackend::read_files`]
+/// directly, resolving the commit and root tree once and reusing them for every path, in place
+/// of a per-file `read_file` loop that used to re-resolve both on every iteration while holding
+/// `tx`'s write transaction open across all of those sequential round trips. A test can pass a
+/// call-counting stub instead, to prove this folds without a per-file round trip.
+///
+/// A per-file `PathNotFound` (raced with a concurrent delete/move between the listing and the
+/// read) or parse failure is skipped, never aborts the whole group.
+async fn index_group_files<F, Fut>(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    group_id: Uuid,
+    files: Vec<MemoryFileRef>,
+    read_batch: F,
+) -> Result<usize, CacheError>
+where
+    F: FnOnce(Vec<String>) -> Fut,
+    Fut: Future<Output = Result<BatchOutcome, GitError>>,
+{
+    let paths: Vec<String> = files.iter().map(|file_ref| file_ref.path.clone()).collect();
+    let mut bytes_by_path: HashMap<String, Result<bytes::Bytes, GitError>> =
+        read_batch(paths).await?.into_iter().collect();
+
+    let mut indexed = 0usize;
     for file_ref in files {
-        let bytes = match backend.read_file(&entry.handle, &file_ref.path, &rev).await {
-            Ok(bytes) => bytes,
+        let bytes = match bytes_by_path.remove(&file_ref.path) {
+            Some(Ok(bytes)) => bytes,
             // Raced with a concurrent delete/move between the
             // listing and the read: skip rather than fail the whole
             // rebuild over one vanished file.
-            Err(mmcp_git::GitError::PathNotFound(_)) => continue,
-            Err(err) => return Err(CacheError::Git(err)),
+            Some(Err(GitError::PathNotFound(_))) => continue,
+            Some(Err(err)) => return Err(CacheError::Git(err)),
+            // `read_files` returns exactly one outcome per requested path; a path built
+            // from this same loop missing from its own result is a broken batching
+            // invariant, not a reachable runtime state.
+            None => unreachable!("read_files omitted a requested path"),
         };
         let text = String::from_utf8_lossy(&bytes);
         let Ok(memory_file) = MemoryFile::parse(&text) else {
@@ -132,7 +174,7 @@ async fn index_group(
             continue;
         };
         let record = build_record(
-            entry.handle.group_id,
+            group_id,
             file_ref.id,
             &file_ref.slug,
             &file_ref.path,
@@ -383,5 +425,65 @@ mod tests {
             .await
             .expect("count rows after failed rebuild");
         assert_eq!(row_count.0, 1);
+    }
+
+    /// File count large enough that a per-file `read_file` loop and a single `read_files`
+    /// batch call are trivially distinguishable.
+    const BULK_FILE_COUNT: usize = 25;
+
+    /// [`index_group_files`] calls its `read_batch` seam exactly once, independent of how many
+    /// files the group holds. The regression this guards is a per-file `read_file` loop, which
+    /// would call the seam once per file instead of once for the whole group, holding `tx`'s
+    /// write transaction open across every one of those sequential round trips.
+    #[tokio::test]
+    async fn index_group_files_reads_the_batch_exactly_once() {
+        let files: Vec<MemoryFileRef> = (0..BULK_FILE_COUNT)
+            .map(|i| MemoryFileRef {
+                slug: format!("bulk-{i}"),
+                id: Uuid::now_v7(),
+                path: format!("memories/bulk-{i}/dummy.md"),
+            })
+            .collect();
+        let requested_len = files.len();
+        let call_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = std::sync::Arc::clone(&call_count);
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let pool = super::super::open_pool(&tmp.path().join("index.sqlite3"))
+            .await
+            .expect("open pool");
+        let mut tx = pool.begin().await.expect("begin tx");
+
+        let indexed = index_group_files(&mut tx, Uuid::now_v7(), files, move |paths| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(
+                paths.len(),
+                requested_len,
+                "every path must land in the single batch call"
+            );
+            // Every file "raced with a concurrent delete" so the upsert loop
+            // skips it without needing a real parseable body or a real DB write.
+            let outcomes: BatchOutcome = paths
+                .into_iter()
+                .map(|path| {
+                    let err = GitError::PathNotFound(path.clone());
+                    (path, Err(err))
+                })
+                .collect();
+            async move { Ok(outcomes) }
+        })
+        .await
+        .expect("an all-skipped batch still resolves");
+        tx.rollback().await.expect("rollback test tx");
+
+        assert_eq!(
+            call_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the read seam must be called exactly once regardless of file count"
+        );
+        assert_eq!(
+            indexed, 0,
+            "every file in this batch raced with a delete and must be skipped, not upserted"
+        );
     }
 }
