@@ -1071,9 +1071,8 @@ mod tests {
 
     /// Two UUID-named files under one slug directory reproduce the same
     /// `MemoryAmbiguous` a per-slug `resolve_by_slug` call would raise.
-    /// The batched read path must still abort the whole listing on it,
-    /// unchanged from the pre-batching behavior, instead of silently
-    /// dropping or partially resolving the ambiguous slug.
+    /// The batched read path aborts the whole listing on it,
+    /// instead of silently dropping or partially resolving the ambiguous slug.
     #[tokio::test]
     async fn list_issues_aborts_whole_listing_on_ambiguous_slug() {
         let scratch = ScratchHome::new().await.expect("scratch home");
@@ -1135,11 +1134,11 @@ mod tests {
         ));
     }
 
-    /// A slug directory name that fails `validate_memory_slug` (here, an uppercase segment) is
-    /// unreachable through `add_issue`'s own write path, but can land on disk via direct git
-    /// surgery or an externally imported repo. The pre-batching per-slug loop caught this
-    /// through `read_issue`'s own `validate_memory_slug` call and aborted the whole listing; the
-    /// batched path must still raise the identical abort.
+    /// A slug directory name that fails `validate_memory_slug` (here,
+    /// an uppercase segment) is unreachable through `add_issue`'s own write path.
+    /// It can land on disk via direct git surgery or an externally imported repo.
+    /// The batched read path aborts the whole listing on it,
+    /// identically to `read_issue`'s own `validate_memory_slug` gate.
     #[tokio::test]
     async fn list_issues_aborts_whole_listing_on_invalid_slug_name() {
         let scratch = ScratchHome::new().await.expect("scratch home");
