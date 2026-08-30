@@ -41,10 +41,11 @@ pub mod query;
 pub mod schema;
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::time::Duration;
 
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 use thiserror::Error;
+use tokio::sync::OnceCell;
 use uuid::Uuid;
 
 use mmcp_core::memory::{FeatureStatusParseError, MemoryFile};
@@ -145,6 +146,12 @@ const CACHE_DB_FILE: &str = "index.sqlite3";
 /// and this bounds open file handles and WAL readers.
 const CACHE_POOL_MAX_CONNECTIONS: u32 = 4;
 
+/// How long a connection waits on `SQLITE_BUSY` (another connection holding the write
+/// lock) before giving up, applied explicitly rather than left to sqlx's own default.
+/// A cache write races other in-process readers/writers (write-trigger hooks,
+/// lazy/pull-triggered rebuilds); this bounds that wait instead of failing immediately.
+const CACHE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Default on-disk location of the cache database:
 /// `<mmcp-home>/cache/index.sqlite3`.
 #[must_use]
@@ -157,6 +164,13 @@ pub fn default_db_path(home: &MmcpHome) -> PathBuf {
 /// A throwaway pool for a test or one-shot rebuild calls this directly with an explicit path;
 /// long-lived consumers (the CLI, the MCP server) go through [`init_from_home`] instead,
 /// so every write/pull hook in the process shares one pool.
+///
+/// WAL journal mode lets the read-only query paths (search, rollup) proceed without
+/// waiting on a concurrent writer (a lazy or pull-triggered rebuild, or a write-trigger
+/// upsert): under the previously-default rollback-journal mode, a writer's commit
+/// briefly blocks every other connection file-wide, and a long-held rebuild transaction
+/// (walking every group's git history) widens that window well past a single commit.
+/// `CACHE_BUSY_TIMEOUT` bounds the wait a writer-vs-writer collision still needs.
 pub async fn open_pool(path: &Path) -> Result<SqlitePool, CacheError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| CacheError::Open {
@@ -166,7 +180,9 @@ pub async fn open_pool(path: &Path) -> Result<SqlitePool, CacheError> {
     }
     let options = SqliteConnectOptions::new()
         .filename(path)
-        .create_if_missing(true);
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(CACHE_BUSY_TIMEOUT);
     let pool = SqlitePoolOptions::new()
         .max_connections(CACHE_POOL_MAX_CONNECTIONS)
         .connect_with(options)
@@ -184,7 +200,14 @@ pub async fn open_pool(path: &Path) -> Result<SqlitePool, CacheError> {
 /// Both the CLI's `main` and the MCP server's `ClientState::initialize_from` call it before dispatching.
 /// [`notify_write`] reads it back to decide whether the write-trigger hook has anything to do.
 ///
-/// A `OnceLock` (the shape `log` and `tracing` use for their global sink) is the right tool here.
+/// An async `OnceCell` (not a plain `OnceLock`) so [`init_from_home`] can guard the actual
+/// [`open_pool`] call itself, not just the final stored value: a `get`-then-`set` pattern over a
+/// sync `OnceLock` lets every concurrent caller race through the `get` before anyone calls `set`,
+/// so every one of them independently opens (and runs schema/WAL setup against) the SAME on-disk
+/// file at once. Concurrent DDL and journal-mode setup against one SQLite file this way surfaced
+/// as a genuine `"database is locked"` error, not a merely dropped, harmless loser pool.
+/// `OnceCell::get_or_try_init` instead runs [`open_pool`] exactly once; every other concurrent
+/// caller awaits that single in-flight call instead of starting its own.
 /// A real `mmcp` invocation is one process with exactly one home,
 /// so there is never a legitimate reason to swap the active pool mid-process.
 /// Tests that need to exercise the hook call [`init_from_home`] against a scratch home.
@@ -192,7 +215,7 @@ pub async fn open_pool(path: &Path) -> Result<SqlitePool, CacheError> {
 /// a dedicated `tests/*.rs` integration file that cargo compiles as its own process,
 /// rather than inside this crate's shared unit-test binary,
 /// so they cannot race another test's `init_from_home` call for the same slot.
-static ACTIVE_POOL: OnceLock<(PathBuf, SqlitePool)> = OnceLock::new();
+static ACTIVE_POOL: OnceCell<(PathBuf, SqlitePool)> = OnceCell::const_new();
 
 /// Initialise the process-global active pool from `home`'s default cache path (see [`default_db_path`]).
 /// Idempotent for the SAME home: a repeat call in the same process is a no-op that keeps the pool
@@ -202,20 +225,18 @@ static ACTIVE_POOL: OnceLock<(PathBuf, SqlitePool)> = OnceLock::new();
 /// caller silently sharing the first home's pool while believing it holds the second.
 pub async fn init_from_home(home: &MmcpHome) -> Result<(), CacheError> {
     let requested = default_db_path(home);
-    if let Some((active, _pool)) = ACTIVE_POOL.get() {
-        if *active != requested {
-            return Err(CacheError::MismatchedHome {
-                active: active.clone(),
-                requested,
-            });
-        }
-        return Ok(());
+    let (active, _pool) = ACTIVE_POOL
+        .get_or_try_init(|| async {
+            let pool = open_pool(&requested).await?;
+            Result::<_, CacheError>::Ok((requested.clone(), pool))
+        })
+        .await?;
+    if *active != requested {
+        return Err(CacheError::MismatchedHome {
+            active: active.clone(),
+            requested,
+        });
     }
-    let pool = open_pool(&requested).await?;
-    // Benign race: if another task won between the `get()` check above and this `set`,
-    // our freshly-opened pool is simply dropped (closes cleanly),
-    // and every caller ends up sharing the winner's pool either way.
-    let _ = ACTIVE_POOL.set((requested, pool));
     Ok(())
 }
 
@@ -280,3 +301,32 @@ pub async fn notify_pull(
 // instead of reaching into the submodule that happens to own the implementation.
 pub use index::{RebuildStats, build_record, rebuild_full, rebuild_groups, upsert_record};
 pub use query::{ensure_built, keyword_search, search_slug_name, semantic_search};
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    /// A pool opened via [`open_pool`] actually runs in WAL journal mode with the
+    /// configured busy timeout, not sqlx's own defaults: both are set explicitly,
+    /// so neither can silently drift back to rollback-journal mode or an implicit
+    /// timeout as the sqlx version underneath changes.
+    #[tokio::test]
+    async fn open_pool_configures_wal_and_busy_timeout() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let path = tmp.path().join("probe.sqlite3");
+        let pool = open_pool(&path).await.expect("open pool");
+
+        let journal_mode: String = sqlx::query_scalar("PRAGMA journal_mode;")
+            .fetch_one(&pool)
+            .await
+            .expect("read journal_mode");
+        assert_eq!(journal_mode, "wal");
+
+        let busy_timeout: i64 = sqlx::query_scalar("PRAGMA busy_timeout;")
+            .fetch_one(&pool)
+            .await
+            .expect("read busy_timeout");
+        assert_eq!(busy_timeout, CACHE_BUSY_TIMEOUT.as_millis() as i64);
+    }
+}
