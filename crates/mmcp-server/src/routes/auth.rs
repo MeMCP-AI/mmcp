@@ -33,6 +33,7 @@ use oauth2::{
     AuthorizationCode, CsrfToken, PkceCodeChallenge, PkceCodeVerifier, Scope, TokenResponse,
 };
 use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
 use thiserror::Error;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -368,7 +369,12 @@ fn validate_oauth_state(
             expected_len: OAUTH_STATE_TOKEN_LENGTH,
         });
     }
-    if received != expected {
+    // Constant-time comparison: a plain `!=` on the CSRF state
+    // short-circuits on the first mismatched byte, leaking timing
+    // information an attacker could use to recover the state value
+    // byte by byte.
+    let matches: bool = received.as_bytes().ct_eq(expected.as_bytes()).into();
+    if !matches {
         return Err(OAuthStateRejection::ValueMismatch);
     }
     Ok(())
