@@ -58,6 +58,11 @@ oauth2 = { workspace = true }
 # `Repository::serve_*` in-process, without a `git` binary on the server.
 gix = { workspace = true }
 
+# Constant-time byte comparison for secret values (push token, OAuth
+# CSRF state), so a comparison outcome never leaks timing information
+# an attacker could use to recover the secret byte by byte.
+subtle = "2.6.1"
+
 [dev-dependencies]
 mmcp-server = { path = ".", features = ["test-support"] }
 tokio = { workspace = true }

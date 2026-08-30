@@ -40,6 +40,7 @@ use axum::{
 use futures_util::TryStreamExt;
 use mmcp_db::repository::group_repo;
 use serde::Deserialize;
+use subtle::ConstantTimeEq;
 use tokio_util::io::{ReaderStream, StreamReader, SyncIoBridge};
 use uuid::Uuid;
 
@@ -449,7 +450,14 @@ pub(crate) fn enforce_push_token(
             "push disabled: set MMCP_PUSH_TOKEN",
         ));
     };
-    if presented != Some(expected) {
+    // Constant-time comparison: a plain `!=` on the presented token
+    // short-circuits on the first mismatched byte, leaking timing
+    // information an attacker could use to recover the token
+    // byte by byte.
+    let matches = presented
+        .map(|value| bool::from(value.as_bytes().ct_eq(expected.as_bytes())))
+        .unwrap_or(false);
+    if !matches {
         tracing::warn!(group = %group_id, "push rejected: invalid or missing push token");
         return Err(GitHttpError::Unauthorized);
     }
