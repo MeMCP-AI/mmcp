@@ -27,18 +27,9 @@
     nodes: MemoryTreeNode<MemoryTreeEntry>[];
     onSelect: (slug: string) => void;
     forceExpand?: boolean;
-    /**
-     * Recursion depth, drives indentation.
-     * Callers never set this; the self-import recursion below passes it down.
-     */
-    depth?: number;
   }
 
-  let { nodes, onSelect, forceExpand = false, depth = 0 }: Props = $props();
-
-  // Indentation per nesting level.
-  // Narrow enough that a deeply nested slug still reads, wide enough to visually separate sibling depths.
-  const INDENT_STEP_REM = 0.9;
+  let { nodes, onSelect, forceExpand = false }: Props = $props();
 
   // Absent path means collapsed, the default.
   let expandedByPath = $state<Record<string, boolean>>({});
@@ -58,19 +49,16 @@
 
 {#each nodes as node (node.type === 'leaf' ? `leaf:${node.slug}` : `folder:${node.path}`)}
   {#if node.type === 'leaf'}
-    <div style={`padding-left: ${depth * INDENT_STEP_REM}rem`}>
-      <MemoryRow
-        slug={node.entry.slug}
-        descriptor={node.entry.body}
-        onSelect={() => onSelect(node.entry.slug)}
-      />
-    </div>
+    <MemoryRow
+      slug={node.entry.slug}
+      descriptor={node.entry.body}
+      onSelect={() => onSelect(node.entry.slug)}
+    />
   {:else}
     <div>
       <button
         type="button"
         class="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
-        style={`padding-left: ${depth * INDENT_STEP_REM}rem`}
         onclick={() => toggle(node.path)}
         aria-expanded={isExpanded(node.path)}
       >
@@ -83,8 +71,10 @@
         <span class="truncate">{node.name}</span>
       </button>
       {#if isExpanded(node.path)}
-        <div class="mt-1 flex flex-col gap-1.5">
-          <MemoryTree nodes={node.children} {onSelect} {forceExpand} depth={depth + 1} />
+        <!-- `pl-4` is the whole indentation mechanism. -->
+        <!-- Each recursion nests one more of these, so depth accumulates structurally. -->
+        <div class="mt-1 flex flex-col gap-1.5 pl-4">
+          <MemoryTree nodes={node.children} {onSelect} {forceExpand} />
         </div>
       {/if}
     </div>
