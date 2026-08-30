@@ -96,8 +96,10 @@ impl ServerConfig {
     /// is unset and the OS CSPRNG cannot be read either.
     /// [`ConfigError::InvalidBind`] when `MMCP_BIND` is explicitly set
     /// to a value that is not a valid socket address.
-    /// [`ConfigError::InvalidTokenKeyHex`] when `MMCP_TOKEN_KEY_HEX`
-    /// is explicitly set to a value that fails hex-key validation.
+    /// [`ConfigError::TokenKeyHexWrongLength`] when `MMCP_TOKEN_KEY_HEX`
+    /// is explicitly set to a value that is not exactly 64 characters.
+    /// [`ConfigError::TokenKeyHexInvalidCharacter`] when it is 64
+    /// characters but contains a non-hex byte.
     /// [`ConfigError::MinPasswordLengthExceedsMax`] when the resolved
     /// minimum password length exceeds the resolved maximum.
     pub fn from_env() -> Result<Self, ConfigError> {
@@ -167,7 +169,7 @@ impl ServerConfig {
         let token_key = match get("MMCP_TOKEN_KEY_HEX") {
             // Never carry `raw` into the error: it is the (rejected)
             // key material itself.
-            Some(raw) => parse_hex_key(&raw).ok_or(ConfigError::InvalidTokenKeyHex)?,
+            Some(raw) => parse_hex_key(&raw)?,
             None => random_key()?,
         };
         // Fallback origin intentionally uses `localhost` (not the
@@ -233,11 +235,32 @@ fn parse_bool_env(raw: Option<&str>) -> bool {
     }
 }
 
-fn parse_hex_key(input: &str) -> Option<[u8; 32]> {
-    // `hex::decode` rejects odd-length input and any non-hex byte;
-    // the subsequent `try_into` enforces the 32-byte length. Mixed
-    // case is accepted exactly as before.
-    hex::decode(input).ok()?.try_into().ok()
+/// Number of hex characters `MMCP_TOKEN_KEY_HEX` must be: twice
+/// [`mmcp_auth::token::V4_LOCAL_KEY_BYTES`], one hex digit pair per
+/// byte.
+const TOKEN_KEY_HEX_CHARS: usize = mmcp_auth::token::V4_LOCAL_KEY_BYTES * 2;
+
+/// Decode `input` as the hex-encoded token-signing key, distinguishing
+/// a wrong-length input from one containing a non-hex character so
+/// the caller can raise the matching [`ConfigError`] variant instead
+/// of one fieldless catch-all. Length is checked on the raw character
+/// count BEFORE decoding: a [`TOKEN_KEY_HEX_CHARS`]-character input
+/// decodes to exactly [`mmcp_auth::token::V4_LOCAL_KEY_BYTES`] bytes
+/// whenever every character is valid hex, so this single upfront
+/// check also subsumes `hex::decode`'s `OddLength` failure without
+/// needing a separate branch for it. Mixed case is accepted exactly
+/// as before.
+fn parse_hex_key(input: &str) -> Result<[u8; mmcp_auth::token::V4_LOCAL_KEY_BYTES], ConfigError> {
+    if input.len() != TOKEN_KEY_HEX_CHARS {
+        return Err(ConfigError::TokenKeyHexWrongLength { got: input.len() });
+    }
+    let bytes = hex::decode(input).map_err(|_| ConfigError::TokenKeyHexInvalidCharacter)?;
+    // `input.len() == TOKEN_KEY_HEX_CHARS` guarantees a successful
+    // decode produces exactly `V4_LOCAL_KEY_BYTES` bytes.
+    #[allow(clippy::expect_used)]
+    Ok(bytes
+        .try_into()
+        .expect("checked length decodes to exactly V4_LOCAL_KEY_BYTES bytes"))
 }
 
 /// Pull 32 bytes straight from the OS CSPRNG (getrandom defers to
@@ -345,23 +368,26 @@ mod tests {
     #[test]
     fn wrong_length_token_key_hex_fails_construction_instead_of_falling_back() {
         // Wrong length: construction must fail rather than silently
-        // substituting a random session-signing key.
+        // substituting a random session-signing key, with the exact
+        // character count reported, not the shared invalid-character
+        // variant.
         let result = from_map_result(&[("MMCP_TOKEN_KEY_HEX", "deadbeef")]);
         assert!(
-            matches!(result, Err(ConfigError::InvalidTokenKeyHex)),
-            "expected ConfigError::InvalidTokenKeyHex, got {result:?}"
+            matches!(result, Err(ConfigError::TokenKeyHexWrongLength { got: 8 })),
+            "expected ConfigError::TokenKeyHexWrongLength {{ got: 8 }}, got {result:?}"
         );
     }
 
     #[test]
     fn invalid_hex_digit_token_key_fails_construction_instead_of_falling_back() {
-        // Right length but non-hex chars: parse_hex_key returns None,
-        // and construction must fail rather than falling back.
+        // Right length but non-hex chars: parse_hex_key rejects on
+        // content, not length, and construction must fail with the
+        // distinct invalid-character variant rather than falling back.
         let bad = "z".repeat(64);
         let result = from_map_result(&[("MMCP_TOKEN_KEY_HEX", bad.as_str())]);
         assert!(
-            matches!(result, Err(ConfigError::InvalidTokenKeyHex)),
-            "expected ConfigError::InvalidTokenKeyHex, got {result:?}"
+            matches!(result, Err(ConfigError::TokenKeyHexInvalidCharacter)),
+            "expected ConfigError::TokenKeyHexInvalidCharacter, got {result:?}"
         );
     }
 
@@ -419,19 +445,37 @@ mod tests {
 
     #[test]
     fn parse_hex_key_rejects_wrong_length() {
-        assert!(parse_hex_key("").is_none());
-        assert!(parse_hex_key("ff").is_none());
-        assert!(parse_hex_key(&"ff".repeat(31)).is_none());
-        assert!(parse_hex_key(&"ff".repeat(33)).is_none());
+        assert!(matches!(
+            parse_hex_key(""),
+            Err(ConfigError::TokenKeyHexWrongLength { got: 0 })
+        ));
+        assert!(matches!(
+            parse_hex_key("ff"),
+            Err(ConfigError::TokenKeyHexWrongLength { got: 2 })
+        ));
+        assert!(matches!(
+            parse_hex_key(&"ff".repeat(31)),
+            Err(ConfigError::TokenKeyHexWrongLength { got: 62 })
+        ));
+        assert!(matches!(
+            parse_hex_key(&"ff".repeat(33)),
+            Err(ConfigError::TokenKeyHexWrongLength { got: 66 })
+        ));
     }
 
     #[test]
     fn parse_hex_key_rejects_non_hex_characters() {
-        assert!(parse_hex_key(&"g".repeat(64)).is_none());
-        // Mixed valid/invalid.
+        assert!(matches!(
+            parse_hex_key(&"g".repeat(64)),
+            Err(ConfigError::TokenKeyHexInvalidCharacter)
+        ));
+        // Mixed valid/invalid, right length.
         let mut mixed = "f".repeat(63);
         mixed.push('z');
-        assert!(parse_hex_key(&mixed).is_none());
+        assert!(matches!(
+            parse_hex_key(&mixed),
+            Err(ConfigError::TokenKeyHexInvalidCharacter)
+        ));
     }
 
     #[test]

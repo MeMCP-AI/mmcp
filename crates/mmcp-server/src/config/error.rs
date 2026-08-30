@@ -29,16 +29,32 @@ pub enum ConfigError {
         source: std::net::AddrParseError,
     },
 
-    /// `MMCP_TOKEN_KEY_HEX` was explicitly set but the value failed
-    /// hex-key validation (wrong length, or characters outside the
-    /// hex alphabet). Fails construction instead of silently
-    /// substituting a freshly generated random key: an operator who
-    /// set a stable key deliberately must see the rejection, not a
-    /// server that silently signs sessions with a different key on
-    /// every restart. The rejected value itself is never carried on
-    /// this variant: it is the (rejected) key material.
-    #[error("MMCP_TOKEN_KEY_HEX was rejected: must be 64 hex characters encoding 32 bytes")]
-    InvalidTokenKeyHex,
+    /// `MMCP_TOKEN_KEY_HEX` was explicitly set but is not exactly 64
+    /// characters long (`got` is the raw input's character count,
+    /// checked BEFORE hex decoding, distinct from
+    /// [`ConfigError::TokenKeyHexInvalidCharacter`] below). Fails
+    /// construction instead of silently substituting a freshly
+    /// generated random key: an operator who set a stable key
+    /// deliberately must see the rejection, not a server that
+    /// silently signs sessions with a different key on every restart.
+    /// The rejected value itself is never carried on this variant: it
+    /// is the (rejected) key material.
+    #[error(
+        "MMCP_TOKEN_KEY_HEX was rejected: expected 64 hex characters \
+         encoding 32 bytes, got {got}"
+    )]
+    TokenKeyHexWrongLength { got: usize },
+
+    /// `MMCP_TOKEN_KEY_HEX` was explicitly set, is exactly 64
+    /// characters long, but contains at least one byte outside the
+    /// hex alphabet. Deliberately fieldless and NOT source-chained to
+    /// `hex::FromHexError`: that type's `InvalidHexCharacter` variant
+    /// embeds the offending character, which is drawn from what is
+    /// meant to be key material and must never surface in an error or
+    /// log line. Fails construction for the same reason
+    /// [`ConfigError::TokenKeyHexWrongLength`] does.
+    #[error("MMCP_TOKEN_KEY_HEX was rejected: contains a non-hex character")]
+    TokenKeyHexInvalidCharacter,
 
     /// The effective minimum password length, resolved from the
     /// override/env/config-file/default cascade, exceeds the
