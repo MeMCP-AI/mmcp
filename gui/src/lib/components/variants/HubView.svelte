@@ -1,9 +1,10 @@
 <script lang="ts">
   // GitHub-scale navigation: routed screens Home → Scope → Group
   // → Memory. Every screen reaches into shared primitives
-  // (MemoryRow, GroupRow, ScopeTile, MemoryReader, RelatedPanel,
-  // SearchInput, KindFilterRow, MandatoryToggle); this component
-  // owns the routing state + data-loading effects only.
+  // (MemoryRow, MemoryTree, GroupRow, ScopeTile, MemoryReader,
+  // RelatedPanel, SearchInput, KindFilterRow, MandatoryToggle);
+  // this component owns the routing state + data-loading effects
+  // only.
 
   import {
     AlertTriangle,
@@ -23,6 +24,7 @@
   import MandatoryToggle from '../primitives/MandatoryToggle.svelte';
   import MemoryReader from '../primitives/MemoryReader.svelte';
   import MemoryRow from '../primitives/MemoryRow.svelte';
+  import MemoryTree from '../primitives/MemoryTree.svelte';
   import RelatedPanel from '../primitives/RelatedPanel.svelte';
   import ScopeIcon from '../primitives/ScopeIcon.svelte';
   import ScopeTile from '../primitives/ScopeTile.svelte';
@@ -35,6 +37,7 @@
   import { memoriesStore } from '$lib/stores/memories.svelte';
   import { groupsStore } from '$lib/stores/groups.svelte';
   import { matchesMemoryFilter } from '$lib/utils/filter';
+  import { buildMemoryTree } from '$lib/memoryTree';
   import { classifyMemoryKind, type MemoryClass } from '$lib/utils/memory_kind';
   import { SCOPE_META, SCOPE_ORDER } from '$lib/utils/scope';
   import type { GroupEntry, GroupScope, KindStr, MemoryFile, MemoryFrontmatter } from '$lib/types';
@@ -260,6 +263,18 @@
       });
     })
   );
+
+  // True while the query/kind/mandatory filters narrow the list
+  // (the class tab alone does not count: it is a permanent
+  // partition, not a search). Drives MemoryTree's forceExpand: a
+  // search match nested under a collapsed folder must stay visible.
+  const isGroupFilterActive = $derived(
+    groupQuery.trim() !== '' || groupKindFilter.size > 0 || groupMandatoryOnly
+  );
+
+  // Built from `filteredGroupEntries`, so a folder with zero
+  // matching descendants is already absent, not merely hidden.
+  const groupTree = $derived.by(() => buildMemoryTree(filteredGroupEntries));
 
   // ---------------------------------------------------------------
   //  Scope-screen filter
@@ -663,22 +678,20 @@
               : 'No memories match the current filters.'}
           </div>
         {:else}
-          <ul class="flex flex-col gap-1.5">
-            {#each filteredGroupEntries as entry (entry.slug)}
-              <li>
-                <MemoryRow
-                  slug={entry.slug}
-                  descriptor={entry.body}
-                  onSelect={() =>
-                    (route = {
-                      t: 'memory',
-                      groupId: (activeGroup as GroupEntry).group_id,
-                      slug: entry.slug
-                    })}
-                />
-              </li>
-            {/each}
-          </ul>
+          <div class="flex flex-col gap-1.5">
+            {#key route.t === 'group' ? route.groupId : ''}
+              <MemoryTree
+                nodes={groupTree}
+                forceExpand={isGroupFilterActive}
+                onSelect={(slug) =>
+                  (route = {
+                    t: 'memory',
+                    groupId: (activeGroup as GroupEntry).group_id,
+                    slug
+                  })}
+              />
+            {/key}
+          </div>
         {/if}
       </div>
     {:else if route.t === 'memory'}
