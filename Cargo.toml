@@ -172,6 +172,12 @@ webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"]
 # pull-in so the version is pinned at the workspace level like every
 # other dependency.
 time = "0.3"
+# Constant-time byte comparison for secret values (push token, OAuth
+# CSRF state), so a comparison outcome never leaks timing information
+# an attacker could use to recover the secret byte by byte. Only
+# mmcp-server depends on it today, declared here anyway so its version
+# is pinned at the workspace level like every other dependency.
+subtle = "2.6.1"
 
 # HTTP framework
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "macros", "query"] }
