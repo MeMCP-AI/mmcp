@@ -1,10 +1,8 @@
 <script lang="ts">
-  // GitHub-scale navigation: routed screens Home → Scope → Group
-  // → Memory. Every screen reaches into shared primitives
-  // (MemoryRow, MemoryTree, GroupRow, ScopeTile, MemoryReader,
-  // RelatedPanel, SearchInput, KindFilterRow, MandatoryToggle);
-  // this component owns the routing state + data-loading effects
-  // only.
+  // GitHub-scale navigation: routed screens Home → Scope → Group → Memory.
+  // Every screen reaches into shared primitives (MemoryRow, MemoryTree, GroupRow, ScopeTile,
+  // MemoryReader, RelatedPanel, SearchInput, KindFilterRow, MandatoryToggle).
+  // This component owns the routing state and data-loading effects only.
 
   import {
     AlertTriangle,
@@ -264,16 +262,15 @@
     })
   );
 
-  // True while the query/kind/mandatory filters narrow the list
-  // (the class tab alone does not count: it is a permanent
-  // partition, not a search). Drives MemoryTree's forceExpand: a
-  // search match nested under a collapsed folder must stay visible.
+  // True while the query/kind/mandatory filters narrow the list.
+  // The class tab alone does not count: it is a permanent partition, not a search.
+  // Drives MemoryTree's forceExpand.
+  // A search match nested under a collapsed folder must stay visible.
   const isGroupFilterActive = $derived(
     groupQuery.trim() !== '' || groupKindFilter.size > 0 || groupMandatoryOnly
   );
 
-  // Built from `filteredGroupEntries`, so a folder with zero
-  // matching descendants is already absent, not merely hidden.
+  // Built from `filteredGroupEntries`, so a folder with zero matching descendants is already absent, not merely hidden.
   const groupTree = $derived.by(() => buildMemoryTree(filteredGroupEntries));
 
   // ---------------------------------------------------------------

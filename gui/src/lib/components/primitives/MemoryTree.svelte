@@ -1,19 +1,15 @@
 <script lang="ts">
-  // Recursive slug folder-tree renderer, built on top of the
-  // memoryTree utility's already-nested `nodes`. A folder node is a
-  // collapsible row (Folder / FolderOpen icon, distinct from
-  // MemoryRow's per-kind icons); a leaf node falls back to the
-  // existing MemoryRow. Manual expand/collapse is local per-folder
-  // state keyed by folder path, so it survives `nodes` changing
-  // reference (e.g. the caller re-deriving the tree from a filtered
-  // entry list) as long as this component instance stays mounted;
-  // folders start collapsed.
+  // Recursive slug folder-tree renderer over the memoryTree utility's already-nested `nodes`.
+  // A folder node is a collapsible row (Folder / FolderOpen icon, distinct from MemoryRow's per-kind icons).
+  // A leaf node falls back to the existing MemoryRow.
+  // Manual expand/collapse is local per-folder state keyed by folder path.
+  // It survives `nodes` changing reference, as long as this component instance stays mounted.
+  // Folders start collapsed.
   //
-  // `forceExpand` overrides manual state and expands every folder
-  // regardless: the caller sets it while a search/filter narrows
-  // `nodes` down to matches only, since every folder that survives
-  // that pruning holds at least one match and must not stay
-  // collapsed and hide it.
+  // `forceExpand` overrides manual state and expands every folder regardless.
+  // The caller sets it while a filter narrows `nodes` down to matches only.
+  // Every folder that survives that pruning holds at least one match.
+  // None of them should stay collapsed and hide it.
 
   import { ChevronRight, Folder, FolderOpen } from '@lucide/svelte';
   import MemoryRow from './MemoryRow.svelte';
@@ -31,15 +27,17 @@
     nodes: MemoryTreeNode<MemoryTreeEntry>[];
     onSelect: (slug: string) => void;
     forceExpand?: boolean;
-    /** Recursion depth, drives indentation. Callers never set this; the self-import recursion below passes it down. */
+    /**
+     * Recursion depth, drives indentation.
+     * Callers never set this; the self-import recursion below passes it down.
+     */
     depth?: number;
   }
 
   let { nodes, onSelect, forceExpand = false, depth = 0 }: Props = $props();
 
-  // Indentation per nesting level. Narrow enough that a deeply
-  // nested slug still reads, wide enough to visually separate
-  // sibling depths.
+  // Indentation per nesting level.
+  // Narrow enough that a deeply nested slug still reads, wide enough to visually separate sibling depths.
   const INDENT_STEP_REM = 0.9;
 
   // Absent path means collapsed, the default.
@@ -50,11 +48,9 @@
   }
 
   function toggle(path: string) {
-    // A click during forceExpand must not write to manual state:
-    // `isExpanded` would read back `true` from `forceExpand` itself,
-    // so the write below would silently record `false` and only
-    // surface once the filter clears, collapsing a folder the user
-    // never asked to collapse.
+    // A click during forceExpand must not write manual state.
+    // isExpanded would read true from forceExpand regardless, hiding a false write until the filter clears.
+    // That stale write then collapses a folder the user never manually closed.
     if (forceExpand) return;
     expandedByPath[path] = !isExpanded(path);
   }
