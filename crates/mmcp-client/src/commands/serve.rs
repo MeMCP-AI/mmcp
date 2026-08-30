@@ -5975,13 +5975,13 @@ fn compose_sync_section(
         }
     };
     match mmcp_store::resolve_effective_remotes(&user_cfg, cfg) {
-        Ok(effective) if effective.remotes.is_empty() => json!({ "configured": false }),
+        Ok(effective) if effective.is_empty() => json!({ "configured": false }),
         Ok(effective) => json!({
             "configured": true,
-            "remotes_count": effective.remotes.len(),
+            "remotes_count": effective.len(),
             "default_remote": effective.default_remote().map(mmcp_store::ResolvedRemote::name),
             "remotes": effective
-                .remotes
+                .remotes()
                 .iter()
                 .enumerate()
                 .map(|(index, remote)| json!({
@@ -5991,7 +5991,7 @@ fn compose_sync_section(
                         mmcp_store::RemoteLevel::User => "user",
                         mmcp_store::RemoteLevel::Project => "project",
                     },
-                    "default": effective.default_index == Some(index),
+                    "default": effective.is_default_index(index),
                 }))
                 .collect::<Vec<_>>(),
         }),
@@ -6287,7 +6287,7 @@ fn resolve_sync_config_with_home(
             })),
         )
     })?;
-    if effective.remotes.is_empty() {
+    if effective.is_empty() {
         return Err(McpError::invalid_params(
             "project has no sync remotes configured; cannot sync against a remote",
             Some(json!({
@@ -12013,9 +12013,9 @@ mod tests {
         );
         let (cfg, effective) =
             resolve_sync_config_with_home(tmp.path(), &home).expect("happy path should resolve");
-        assert_eq!(effective.remotes.len(), 1);
+        assert_eq!(effective.remotes().len(), 1);
         assert!(matches!(
-            &effective.remotes[0].remote,
+            &effective.remotes()[0].remote,
             mmcp_core::config::Remote::MmcpServer { url, .. } if url == "http://localhost:8787"
         ));
         assert_eq!(

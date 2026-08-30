@@ -76,17 +76,17 @@ fn print_remotes_section(project_cfg: &ProjectConfig) {
 /// line, then one indented line per remote naming its name, kind,
 /// origin level, and whether it is the resolved default.
 fn print_effective_remotes(effective: &EffectiveRemotes) {
-    if effective.remotes.is_empty() {
+    if effective.is_empty() {
         println!("remotes       : (none configured)");
         return;
     }
-    println!("remotes       : {} configured", effective.remotes.len());
-    for (index, remote) in effective.remotes.iter().enumerate() {
+    println!("remotes       : {} configured", effective.len());
+    for (index, remote) in effective.remotes().iter().enumerate() {
         let level = match remote.level {
             RemoteLevel::User => "user",
             RemoteLevel::Project => "project",
         };
-        let marker = if effective.default_index == Some(index) {
+        let marker = if effective.is_default_index(index) {
             " (default)"
         } else {
             ""

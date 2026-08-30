@@ -333,7 +333,7 @@ fn load_effective_remotes(
     let project_cfg: ProjectConfig = project_config::load(&root).map_err(GuiError::from)?;
     let user_cfg: UserConfig = home.load_user_config().map_err(GuiError::from)?;
     let effective = resolve_effective_remotes(&user_cfg, &project_cfg).map_err(GuiError::from)?;
-    if effective.remotes.is_empty() {
+    if effective.is_empty() {
         return Ok(None);
     }
     Ok(Some(effective))
@@ -429,7 +429,11 @@ mod tests {
             .expect("load effective remotes")
             .expect("some effective remotes");
 
-        let names: Vec<&str> = effective.remotes.iter().map(ResolvedRemote::name).collect();
+        let names: Vec<&str> = effective
+            .remotes()
+            .iter()
+            .map(ResolvedRemote::name)
+            .collect();
         assert_eq!(names, vec!["u1", "p1"]);
         assert_eq!(
             effective.default_remote().map(ResolvedRemote::name),
@@ -442,13 +446,11 @@ mod tests {
     /// `server_url`.
     #[test]
     fn default_probe_url_reads_the_default_remotes_url_from_a_multi_remote_set() {
-        let effective = EffectiveRemotes {
-            remotes: vec![
-                mmcp_server_remote("u1", false, RemoteLevel::User),
-                mmcp_server_remote("p1", true, RemoteLevel::Project),
-            ],
-            default_index: Some(1),
-        };
+        let effective = EffectiveRemotes::from_remotes(vec![
+            mmcp_server_remote("u1", false, RemoteLevel::User),
+            mmcp_server_remote("p1", true, RemoteLevel::Project),
+        ])
+        .expect("p1's own default flag resolves it as the project-level default");
         assert_eq!(
             default_probe_url(&effective).as_deref(),
             Some("https://p1.example.com")
@@ -459,30 +461,25 @@ mod tests {
     /// probe URL must be `None`, not the git remote URL.
     #[test]
     fn default_probe_url_is_none_for_a_direct_git_default_remote() {
-        let effective = EffectiveRemotes {
-            remotes: vec![ResolvedRemote {
-                remote: Remote::DirectGit {
-                    name: "mirror".to_string(),
-                    url: "ssh://git@example.com/mirror.git".to_string(),
-                    auth: RemoteAuth::None,
-                    group: Some("team-rust".to_string()),
-                    default: true,
-                    include_in_push_all: true,
-                },
-                level: RemoteLevel::Project,
-                direct_git_group: Some("team-rust".to_string()),
-            }],
-            default_index: Some(0),
-        };
+        let effective = EffectiveRemotes::from_remotes(vec![ResolvedRemote {
+            remote: Remote::DirectGit {
+                name: "mirror".to_string(),
+                url: "ssh://git@example.com/mirror.git".to_string(),
+                auth: RemoteAuth::None,
+                group: Some("team-rust".to_string()),
+                default: true,
+                include_in_push_all: true,
+            },
+            level: RemoteLevel::Project,
+            direct_git_group: Some("team-rust".to_string()),
+        }])
+        .expect("sole remote is the implicit default");
         assert_eq!(default_probe_url(&effective), None);
     }
 
     #[test]
     fn default_probe_url_is_none_for_an_empty_effective_set() {
-        let effective = EffectiveRemotes {
-            remotes: vec![],
-            default_index: None,
-        };
+        let effective = EffectiveRemotes::from_remotes(vec![]).expect("an empty set never fails");
         assert_eq!(default_probe_url(&effective), None);
     }
 

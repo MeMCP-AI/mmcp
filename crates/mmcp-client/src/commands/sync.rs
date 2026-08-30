@@ -148,7 +148,7 @@ async fn load_effective_remotes(root: &std::path::Path) -> Result<EffectiveRemot
     let mmcp_home = MmcpHome::discover()?;
     let user_cfg = mmcp_home.load_user_config()?;
     let effective = resolve_effective_remotes(&user_cfg, &project_cfg)?;
-    if effective.remotes.is_empty() {
+    if effective.is_empty() {
         bail!(
             "project {} has no sync remotes configured, in [sync] at user or project level; cannot sync",
             project_cfg.project_uuid

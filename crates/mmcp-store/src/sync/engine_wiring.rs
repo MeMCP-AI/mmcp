@@ -55,12 +55,12 @@ pub async fn build_engine_with_env(
     effective: &EffectiveRemotes,
     get_env: impl Fn(&str) -> Option<String>,
 ) -> Result<(SyncEngine, IndexResolver), StoreError> {
-    let mut bound = Vec::with_capacity(effective.remotes.len());
-    for (index, resolved) in effective.remotes.iter().enumerate() {
+    let mut bound = Vec::with_capacity(effective.remotes().len());
+    for (index, resolved) in effective.remotes().iter().enumerate() {
         let transport = build_transport(resolved, &groups, &get_env).await?;
         bound.push(BoundRemote {
             name: resolved.name().to_string(),
-            default: effective.default_index == Some(index),
+            default: effective.is_default_index(index),
             include_in_push_all: resolved.remote.include_in_push_all(),
             transport,
         });
@@ -315,19 +315,17 @@ mod tests {
         let home = MmcpHome::from_root(tmp.path().join("mmcp-home"));
         let (backend, groups) = home.init_backend().await.expect("init backend");
 
-        let effective = EffectiveRemotes {
-            remotes: vec![ResolvedRemote {
-                remote: Remote::MmcpServer {
-                    name: "user-legacy".to_string(),
-                    url: "https://mmcp.example.com".to_string(),
-                    default: false,
-                    include_in_push_all: true,
-                },
-                level: super::super::remotes::RemoteLevel::User,
-                direct_git_group: None,
-            }],
-            default_index: Some(0),
-        };
+        let effective = EffectiveRemotes::from_remotes(vec![ResolvedRemote {
+            remote: Remote::MmcpServer {
+                name: "user-legacy".to_string(),
+                url: "https://mmcp.example.com".to_string(),
+                default: false,
+                include_in_push_all: true,
+            },
+            level: super::super::remotes::RemoteLevel::User,
+            direct_git_group: None,
+        }])
+        .expect("sole remote is the implicit default");
 
         let (engine, _resolver) =
             build_engine_with_env(backend, groups, &effective, |key| match key {
@@ -350,19 +348,17 @@ mod tests {
         let home = MmcpHome::from_root(tmp.path().join("mmcp-home"));
         let (backend, groups) = home.init_backend().await.expect("init backend");
 
-        let effective = EffectiveRemotes {
-            remotes: vec![ResolvedRemote {
-                remote: Remote::MmcpServer {
-                    name: "prod-eu".to_string(),
-                    url: "https://mmcp.example.com".to_string(),
-                    default: true,
-                    include_in_push_all: true,
-                },
-                level: super::super::remotes::RemoteLevel::Project,
-                direct_git_group: None,
-            }],
-            default_index: Some(0),
-        };
+        let effective = EffectiveRemotes::from_remotes(vec![ResolvedRemote {
+            remote: Remote::MmcpServer {
+                name: "prod-eu".to_string(),
+                url: "https://mmcp.example.com".to_string(),
+                default: true,
+                include_in_push_all: true,
+            },
+            level: super::super::remotes::RemoteLevel::Project,
+            direct_git_group: None,
+        }])
+        .expect("sole remote is the implicit default");
 
         let (engine, _resolver) = build_engine_with_env(backend, groups, &effective, |key| {
             match key {
@@ -392,21 +388,19 @@ mod tests {
         let home = MmcpHome::from_root(tmp.path().join("mmcp-home"));
         let (backend, groups) = home.init_backend().await.expect("init backend");
 
-        let effective = EffectiveRemotes {
-            remotes: vec![ResolvedRemote {
-                remote: Remote::DirectGit {
-                    name: "mirror".to_string(),
-                    url: "ssh://git@example.com/mirror.git".to_string(),
-                    auth: RemoteAuth::None,
-                    group: Some("ghost-group".to_string()),
-                    default: true,
-                    include_in_push_all: true,
-                },
-                level: super::super::remotes::RemoteLevel::Project,
-                direct_git_group: Some("ghost-group".to_string()),
-            }],
-            default_index: Some(0),
-        };
+        let effective = EffectiveRemotes::from_remotes(vec![ResolvedRemote {
+            remote: Remote::DirectGit {
+                name: "mirror".to_string(),
+                url: "ssh://git@example.com/mirror.git".to_string(),
+                auth: RemoteAuth::None,
+                group: Some("ghost-group".to_string()),
+                default: true,
+                include_in_push_all: true,
+            },
+            level: super::super::remotes::RemoteLevel::Project,
+            direct_git_group: Some("ghost-group".to_string()),
+        }])
+        .expect("sole remote is the implicit default");
 
         let result = build_engine_with_env(backend, groups, &effective, |_| None).await;
         let err = match result {

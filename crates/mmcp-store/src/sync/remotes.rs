@@ -77,20 +77,76 @@ impl ResolvedRemote {
 }
 
 /// Effective, fully-resolved remote set for a sync operation.
+///
+/// Both fields are private: `default_index`, when `Some`, is only
+/// ever a valid index into `remotes`, and the invariant is enforced
+/// at construction time ([`resolve_effective_remotes`] and
+/// [`EffectiveRemotes::from_remotes`] are the only two constructors,
+/// both computing `default_index` via [`resolve_default_index`]
+/// rather than accepting a caller-supplied one), so
+/// [`EffectiveRemotes::default_remote`] can never panic on an
+/// out-of-bounds index. A public struct literal would let a caller
+/// hand-build an inconsistent pair instead.
 #[derive(Debug, Clone)]
 pub struct EffectiveRemotes {
     /// Every remote in the effective set, user remotes (unless
     /// excluded by `project_remote_only`) then project remotes,
     /// concatenated.
-    pub remotes: Vec<ResolvedRemote>,
+    remotes: Vec<ResolvedRemote>,
     /// Index into `remotes` of the resolved default remote. `None`
     /// only when `remotes` is empty; a non-empty set always resolves
     /// to exactly one default or fails with
     /// [`StoreError::AmbiguousDefaultRemote`].
-    pub default_index: Option<usize>,
+    default_index: Option<usize>,
 }
 
 impl EffectiveRemotes {
+    /// Construct an effective remote set from an already-merged,
+    /// precedence-ordered remote list, computing its default through
+    /// the same [`resolve_default_index`] precedence
+    /// [`resolve_effective_remotes`] applies. This is the second (and
+    /// only other) construction path, for a caller that already has a
+    /// merged `Vec<ResolvedRemote>` in hand (tests fixturing a
+    /// specific remote list; a future caller merging from a source
+    /// other than `UserConfig`/`ProjectConfig`) without re-deriving
+    /// `default_index` itself.
+    ///
+    /// # Errors
+    /// [`StoreError::AmbiguousDefaultRemote`] when two or more remotes
+    /// exist and none resolves as the default.
+    pub fn from_remotes(remotes: Vec<ResolvedRemote>) -> Result<Self, StoreError> {
+        let default_index = resolve_default_index(&remotes)?;
+        Ok(Self {
+            remotes,
+            default_index,
+        })
+    }
+
+    /// Every remote in the effective set, in precedence order.
+    #[must_use]
+    pub fn remotes(&self) -> &[ResolvedRemote] {
+        &self.remotes
+    }
+
+    /// True when the effective set has no remotes.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.remotes.is_empty()
+    }
+
+    /// Number of remotes in the effective set.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.remotes.len()
+    }
+
+    /// True when `index` is the resolved default remote's position in
+    /// [`EffectiveRemotes::remotes`].
+    #[must_use]
+    pub fn is_default_index(&self, index: usize) -> bool {
+        self.default_index == Some(index)
+    }
+
     /// The resolved default remote, if any.
     #[must_use]
     pub fn default_remote(&self) -> Option<&ResolvedRemote> {
@@ -811,5 +867,45 @@ mod tests {
             default_index: None,
         };
         assert_eq!(effective.summary_label(), "(no remotes configured)");
+    }
+
+    /// `EffectiveRemotes::from_remotes` is the only construction path
+    /// open to a caller outside this module (fields are private), and
+    /// it enforces the exact same default-resolution invariant
+    /// `resolve_effective_remotes` does by delegating to
+    /// [`resolve_default_index`], rather than accepting a
+    /// caller-supplied `default_index` that could point past the end
+    /// of `remotes` or disagree with the precedence rules. Two
+    /// remotes with no default anywhere must be rejected here exactly
+    /// like it is inside `resolve_effective_remotes` itself.
+    #[test]
+    fn from_remotes_rejects_an_ambiguous_default_instead_of_accepting_bad_state() {
+        let err = EffectiveRemotes::from_remotes(vec![
+            resolved(mmcp_server("u1", false), RemoteLevel::User),
+            resolved(mmcp_server("p1", false), RemoteLevel::Project),
+        ])
+        .expect_err("two undefaulted remotes must be rejected at construction");
+        match err {
+            StoreError::AmbiguousDefaultRemote { candidates } => {
+                assert_eq!(candidates, vec!["u1".to_string(), "p1".to_string()]);
+            }
+            other => panic!("expected AmbiguousDefaultRemote, got {other:?}"),
+        }
+    }
+
+    /// A single remote is always the implicit default, computed the
+    /// same way whether the caller went through
+    /// `resolve_effective_remotes` or `from_remotes` directly.
+    #[test]
+    fn from_remotes_resolves_a_sole_remote_as_the_implicit_default() {
+        let effective = EffectiveRemotes::from_remotes(vec![resolved(
+            mmcp_server("only", false),
+            RemoteLevel::User,
+        )])
+        .expect("sole remote is the implicit default");
+        assert_eq!(
+            effective.default_remote().map(ResolvedRemote::name),
+            Some("only")
+        );
     }
 }
