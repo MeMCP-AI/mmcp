@@ -93,7 +93,13 @@ impl ServerConfig {
     ///
     /// # Errors
     /// [`ConfigError::RandomKeyUnavailable`] when `MMCP_TOKEN_KEY_HEX`
-    /// is unset or rejected and the OS CSPRNG cannot be read either.
+    /// is unset and the OS CSPRNG cannot be read either.
+    /// [`ConfigError::InvalidBind`] when `MMCP_BIND` is explicitly set
+    /// to a value that is not a valid socket address.
+    /// [`ConfigError::InvalidTokenKeyHex`] when `MMCP_TOKEN_KEY_HEX`
+    /// is explicitly set to a value that fails hex-key validation.
+    /// [`ConfigError::MinPasswordLengthExceedsMax`] when the resolved
+    /// minimum password length exceeds the resolved maximum.
     pub fn from_env() -> Result<Self, ConfigError> {
         Self::from_env_with_overrides(ServerConfigOverrides::default())
     }
@@ -138,15 +144,11 @@ impl ServerConfig {
     where
         F: Fn(&str) -> Option<String>,
     {
-        let bind_raw = get("MMCP_BIND");
-        let bind: SocketAddr = match bind_raw.as_deref().unwrap_or(DEFAULT_BIND).parse() {
-            Ok(addr) => addr,
-            Err(err) => {
-                tracing::warn!(
-                    bind_value = %bind_raw.as_deref().unwrap_or(""),
-                    error = %err,
-                    "MMCP_BIND is not a valid socket address; falling back to the default bind {DEFAULT_BIND}"
-                );
+        let bind: SocketAddr = match get("MMCP_BIND") {
+            Some(raw) => raw
+                .parse()
+                .map_err(|source| ConfigError::InvalidBind { raw, source })?,
+            None => {
                 // NOTE: `DEFAULT_BIND` is a hardcoded string literal
                 // owned by this crate, never user input, so its parse
                 // outcome is fixed at compile time and covered by the
@@ -163,19 +165,9 @@ impl ServerConfig {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_REPO_ROOT));
         let token_key = match get("MMCP_TOKEN_KEY_HEX") {
-            Some(raw) => match parse_hex_key(&raw) {
-                Some(key) => key,
-                None => {
-                    // Never log `raw`: it is the (rejected) key material itself.
-                    tracing::warn!(
-                        "MMCP_TOKEN_KEY_HEX was rejected (must be 64 hex characters encoding \
-                         32 bytes); substituting a freshly generated random session-signing key \
-                         for this run. Sessions signed with the previous key, or across a \
-                         restart, will not validate."
-                    );
-                    random_key()?
-                }
-            },
+            // Never carry `raw` into the error: it is the (rejected)
+            // key material itself.
+            Some(raw) => parse_hex_key(&raw).ok_or(ConfigError::InvalidTokenKeyHex)?,
             None => random_key()?,
         };
         // Fallback origin intentionally uses `localhost` (not the
@@ -202,6 +194,12 @@ impl ServerConfig {
             resolve_min_password_length(&get, overrides.min_password_length, user_limits.as_ref());
         let max_password_length =
             resolve_max_password_length(&get, overrides.max_password_length, user_limits.as_ref());
+        if min_password_length > max_password_length {
+            return Err(ConfigError::MinPasswordLengthExceedsMax {
+                min: min_password_length,
+                max: max_password_length,
+            });
+        }
         let max_handle_length =
             resolve_max_handle_length(&get, overrides.max_handle_length, user_limits.as_ref());
         let allow_self_registration = parse_bool_env(get(ALLOW_SELF_REGISTRATION_ENV).as_deref());
@@ -260,16 +258,22 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::config::test_support::WarnCounter;
-    use crate::config::{MAX_HANDLE_LENGTH_ENV, MIN_PASSWORD_LENGTH_ENV};
+    use crate::config::{MAX_HANDLE_LENGTH_ENV, MAX_PASSWORD_LENGTH_ENV, MIN_PASSWORD_LENGTH_ENV};
     use std::collections::HashMap;
 
     /// Build a config from a `HashMap` so tests never touch
     /// `std::env`, which would race under cargo's default parallel
     /// test runner.
     fn from_map(entries: &[(&str, &str)]) -> ServerConfig {
+        from_map_result(entries).expect("the OS CSPRNG is available in the test environment")
+    }
+
+    /// Same as [`from_map`] but returns the raw `Result`, for tests
+    /// asserting a specific [`ConfigError`] rather than a successful
+    /// construction.
+    fn from_map_result(entries: &[(&str, &str)]) -> Result<ServerConfig, ConfigError> {
         let map: HashMap<&str, &str> = entries.iter().copied().collect();
         ServerConfig::from_source(|key| map.get(key).map(|s| (*s).to_string()))
-            .expect("the OS CSPRNG is available in the test environment")
     }
 
     #[test]
@@ -320,18 +324,14 @@ mod tests {
     }
 
     #[test]
-    fn malformed_bind_falls_back_to_default_and_warns() {
-        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let subscriber = WarnCounter(count.clone());
-        let cfg = tracing::subscriber::with_default(subscriber, || {
-            from_map(&[("MMCP_BIND", "not-a-socket-addr")])
-        });
-        assert_eq!(cfg.bind.to_string(), "127.0.0.1:8787");
-        assert_eq!(
-            count.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "a malformed MMCP_BIND must log exactly one warning instead of falling back silently"
-        );
+    fn malformed_bind_fails_construction_instead_of_falling_back() {
+        let result = from_map_result(&[("MMCP_BIND", "not-a-socket-addr")]);
+        match result {
+            Err(ConfigError::InvalidBind { raw, .. }) => {
+                assert_eq!(raw, "not-a-socket-addr");
+            }
+            other => panic!("expected ConfigError::InvalidBind, got {other:?}"),
+        }
     }
 
     #[test]
@@ -343,43 +343,26 @@ mod tests {
     }
 
     #[test]
-    fn invalid_token_key_hex_falls_back_to_random_and_warns() {
-        // Wrong length: fallback kicks in and still yields 32
-        // non-zero bytes. Two independent fallback calls must also
-        // differ from each other, proving the CSPRNG generates fresh
-        // randomness per call rather than a fixed or zeroed buffer
-        // that would happen to be non-zero once.
-        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let subscriber = WarnCounter(count.clone());
-        let (cfg_a, cfg_b) = tracing::subscriber::with_default(subscriber, || {
-            (
-                from_map(&[("MMCP_TOKEN_KEY_HEX", "deadbeef")]),
-                from_map(&[("MMCP_TOKEN_KEY_HEX", "deadbeef")]),
-            )
-        });
-        assert_eq!(cfg_a.token_key.len(), 32);
-        assert_ne!(cfg_a.token_key, [0u8; 32]);
-        assert_ne!(cfg_a.token_key, cfg_b.token_key);
-        assert_eq!(
-            count.load(std::sync::atomic::Ordering::SeqCst),
-            2,
-            "each rejected MMCP_TOKEN_KEY_HEX must log exactly one warning instead of \
-             falling back silently"
+    fn wrong_length_token_key_hex_fails_construction_instead_of_falling_back() {
+        // Wrong length: construction must fail rather than silently
+        // substituting a random session-signing key.
+        let result = from_map_result(&[("MMCP_TOKEN_KEY_HEX", "deadbeef")]);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidTokenKeyHex)),
+            "expected ConfigError::InvalidTokenKeyHex, got {result:?}"
         );
     }
 
     #[test]
-    fn invalid_hex_digit_falls_back_to_random_and_warns() {
-        // Right length but non-hex chars: parse_hex_key returns None.
+    fn invalid_hex_digit_token_key_fails_construction_instead_of_falling_back() {
+        // Right length but non-hex chars: parse_hex_key returns None,
+        // and construction must fail rather than falling back.
         let bad = "z".repeat(64);
-        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let subscriber = WarnCounter(count.clone());
-        let cfg = tracing::subscriber::with_default(subscriber, || {
-            from_map(&[("MMCP_TOKEN_KEY_HEX", bad.as_str())])
-        });
-        assert_eq!(cfg.token_key.len(), 32);
-        assert_ne!(cfg.token_key, [0u8; 32]);
-        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let result = from_map_result(&[("MMCP_TOKEN_KEY_HEX", bad.as_str())]);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidTokenKeyHex)),
+            "expected ConfigError::InvalidTokenKeyHex, got {result:?}"
+        );
     }
 
     /// `random_key` returns a typed `Result` (see [`ConfigError::RandomKeyUnavailable`])
@@ -520,6 +503,40 @@ mod tests {
         )
         .expect("the OS CSPRNG is available in the test environment");
         assert_eq!(cfg.min_password_length, 12);
+    }
+
+    #[test]
+    fn min_password_length_exceeding_max_via_overrides_fails_construction() {
+        let result = ServerConfig::from_source_with_overrides(
+            |_| None,
+            ServerConfigOverrides {
+                min_password_length: Some(50),
+                max_password_length: Some(10),
+                max_handle_length: None,
+            },
+        );
+        match result {
+            Err(ConfigError::MinPasswordLengthExceedsMax { min, max }) => {
+                assert_eq!(min, 50);
+                assert_eq!(max, 10);
+            }
+            other => panic!("expected ConfigError::MinPasswordLengthExceedsMax, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn min_password_length_exceeding_max_via_env_fails_construction() {
+        let result = from_map_result(&[
+            (MIN_PASSWORD_LENGTH_ENV, "50"),
+            (MAX_PASSWORD_LENGTH_ENV, "10"),
+        ]);
+        match result {
+            Err(ConfigError::MinPasswordLengthExceedsMax { min, max }) => {
+                assert_eq!(min, 50);
+                assert_eq!(max, 10);
+            }
+            other => panic!("expected ConfigError::MinPasswordLengthExceedsMax, got {other:?}"),
+        }
     }
 
     // ── max_handle_length cascade (falsification anchor) ────────────

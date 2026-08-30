@@ -1,10 +1,12 @@
 //! Default values and environment-variable names for [`super::ServerConfig`].
 
-/// Fallback bind address, used both when `MMCP_BIND` is unset and
-/// when it is present but fails to parse. A hardcoded, always-valid
-/// `SocketAddr` literal, so the `.expect()` in
-/// [`super::ServerConfig::from_source_with_overrides`] that re-parses
-/// it can never actually observe a failure.
+/// Fallback bind address, used when `MMCP_BIND` is unset. A
+/// hardcoded, always-valid `SocketAddr` literal, so the `.expect()`
+/// in [`super::ServerConfig::from_source_with_overrides`] that
+/// re-parses it can never actually observe a failure. `MMCP_BIND`
+/// present but unparsable is a distinct case that fails construction
+/// with [`super::ConfigError::InvalidBind`] instead of falling back
+/// to this default.
 pub(crate) const DEFAULT_BIND: &str = "127.0.0.1:8787";
 
 /// Fallback database URL, used when `MMCP_DATABASE_URL` is unset. An
