@@ -102,19 +102,42 @@ pub struct EffectiveRemotes {
 
 impl EffectiveRemotes {
     /// Construct an effective remote set from an already-merged,
-    /// precedence-ordered remote list, computing its default through
-    /// the same [`resolve_default_index`] precedence
-    /// [`resolve_effective_remotes`] applies. This is the second (and
-    /// only other) construction path, for a caller that already has a
-    /// merged `Vec<ResolvedRemote>` in hand (tests fixturing a
-    /// specific remote list; a future caller merging from a source
-    /// other than `UserConfig`/`ProjectConfig`) without re-deriving
-    /// `default_index` itself.
+    /// precedence-ordered remote list, applying the same per-remote
+    /// name validation and cross-entry collision check
+    /// [`resolve_effective_remotes`] runs via `collect_level` and
+    /// [`check_name_collisions`], then computing the default through
+    /// the same [`resolve_default_index`] precedence. This is the
+    /// second (and only other) construction path, for a caller that
+    /// already has a merged `Vec<ResolvedRemote>` in hand (tests
+    /// fixturing a specific remote list; a future caller merging from
+    /// a source other than `UserConfig`/`ProjectConfig`) without
+    /// re-deriving `default_index` itself. Skipping these checks here
+    /// would let a caller hand-build a `ResolvedRemote` list where a
+    /// project-level entry shares a real user-level remote's name and
+    /// inherits that name's ambient `MMCP_SYNC_TOKEN_<NAME>`
+    /// credential while pointing the connection elsewhere, the exact
+    /// attack [`resolve_effective_remotes`]'s doc comment describes.
+    /// A synthesized legacy-shorthand entry
+    /// (`ResolvedRemote::is_legacy_shorthand`) is exempt from the
+    /// charset/reserved-name check, matching `collect_level`, which
+    /// never runs [`validate_remote_name`] against the entry it
+    /// synthesizes from `server_url` either.
     ///
     /// # Errors
+    /// [`StoreError::InvalidRemoteName`] for a non-legacy-shorthand
+    /// entry whose name is outside the safe git-ref charset or
+    /// collides with a reserved legacy name,
+    /// [`StoreError::RemoteNameCollision`] for a name declared more
+    /// than once in `remotes`, and
     /// [`StoreError::AmbiguousDefaultRemote`] when two or more remotes
     /// exist and none resolves as the default.
     pub fn from_remotes(remotes: Vec<ResolvedRemote>) -> Result<Self, StoreError> {
+        for remote in &remotes {
+            if !remote.is_legacy_shorthand() {
+                validate_remote_name(remote.name())?;
+            }
+        }
+        check_name_collisions(remotes.iter())?;
         let default_index = resolve_default_index(&remotes)?;
         Ok(Self {
             remotes,
@@ -907,5 +930,32 @@ mod tests {
             effective.default_remote().map(ResolvedRemote::name),
             Some("only")
         );
+    }
+
+    /// `from_remotes` is `pub` and cross-crate reachable (the GUI
+    /// calls it), so it must reject a name collision exactly like
+    /// `resolve_effective_remotes` does, not just enforce the
+    /// `default_index` invariant. Without this check, a caller could
+    /// hand-build a project-level entry sharing a real user-level
+    /// remote's name and inherit that name's ambient
+    /// `MMCP_SYNC_TOKEN_<NAME>` credential while pointing the
+    /// connection at an attacker-controlled URL, the same attack
+    /// `resolve_effective_remotes`'s doc comment describes.
+    #[test]
+    fn from_remotes_rejects_a_name_collision_the_same_way_resolve_effective_remotes_does() {
+        let err = EffectiveRemotes::from_remotes(vec![
+            resolved(mmcp_server("primary", true), RemoteLevel::User),
+            resolved(
+                Remote::MmcpServer {
+                    name: "primary".to_string(),
+                    url: "https://attacker.example".to_string(),
+                    default: false,
+                    include_in_push_all: true,
+                },
+                RemoteLevel::Project,
+            ),
+        ])
+        .expect_err("a name declared twice across the merged list must be rejected");
+        assert!(matches!(err, StoreError::RemoteNameCollision { name } if name == "primary"));
     }
 }
