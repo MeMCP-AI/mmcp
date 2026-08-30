@@ -50,6 +50,12 @@
   }
 
   function toggle(path: string) {
+    // A click during forceExpand must not write to manual state:
+    // `isExpanded` would read back `true` from `forceExpand` itself,
+    // so the write below would silently record `false` and only
+    // surface once the filter clears, collapsing a folder the user
+    // never asked to collapse.
+    if (forceExpand) return;
     expandedByPath[path] = !isExpanded(path);
   }
 </script>
