@@ -1,6 +1,6 @@
 /// <reference types="bun-types" />
 import { describe, expect, test } from 'bun:test';
-import { buildMemoryTree, collectFolderPaths, type MemoryTreeNode } from './memoryTree';
+import { buildMemoryTree, type MemoryTreeNode } from './memoryTree';
 
 interface Entry {
   slug: string;
@@ -71,16 +71,5 @@ describe('buildMemoryTree', () => {
     expect(b.path).toBe('a/b');
     expect(b.children.map((n) => n.type === 'leaf' && n.slug)).toEqual(['a/b/c', 'a/b/d']);
     expect(a.children[1]).toEqual({ type: 'leaf', slug: 'a/e', name: 'e', entry: entries[2] });
-  });
-});
-
-describe('collectFolderPaths', () => {
-  test('empty tree yields no paths', () => {
-    expect(collectFolderPaths<Entry>([])).toEqual([]);
-  });
-
-  test('collects every folder path depth-first', () => {
-    const tree = buildMemoryTree<Entry>([{ slug: 'a/b/c' }, { slug: 'a/d' }]);
-    expect(collectFolderPaths(tree)).toEqual(['a', 'a/b']);
   });
 });

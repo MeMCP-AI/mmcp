@@ -64,20 +64,3 @@ export function buildMemoryTree<T extends { slug: string }>(
 
   return root;
 }
-
-/**
- * Every folder `path` reachable in `nodes`, depth-first.
- * Used to force-expand a tree already pruned down to filter matches.
- * Every folder that survives pruning holds at least one matching leaf.
- * None of them should stay collapsed and hide that match.
- */
-export function collectFolderPaths<T>(nodes: readonly MemoryTreeNode<T>[]): string[] {
-  const paths: string[] = [];
-  for (const node of nodes) {
-    if (node.type === 'folder') {
-      paths.push(node.path);
-      paths.push(...collectFolderPaths(node.children));
-    }
-  }
-  return paths;
-}
