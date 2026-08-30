@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Recursive slug folder-tree renderer over the memoryTree utility's already-nested `nodes`.
+  // Recursive slug folder-tree renderer over the memory_tree utility's already-nested `nodes`.
   // A folder node is a collapsible row (Folder / FolderOpen icon, distinct from MemoryRow's per-kind icons).
   // A leaf node falls back to the existing MemoryRow.
   // Manual expand/collapse is local per-folder state keyed by folder path.
@@ -14,7 +14,7 @@
   import { ChevronRight, Folder, FolderOpen } from '@lucide/svelte';
   import MemoryRow from './MemoryRow.svelte';
   import MemoryTree from './MemoryTree.svelte';
-  import type { MemoryTreeNode } from '$lib/memoryTree';
+  import type { MemoryTreeNode } from '$lib/utils/memory_tree';
   import type { MemoryFile } from '$lib/types';
 
   export interface MemoryTreeEntry {

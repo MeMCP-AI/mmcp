@@ -1,6 +1,6 @@
 /// <reference types="bun-types" />
 import { describe, expect, test } from 'bun:test';
-import { buildMemoryTree, type MemoryTreeNode } from './memoryTree';
+import { buildMemoryTree, type MemoryTreeNode } from './memory_tree';
 
 interface Entry {
   slug: string;

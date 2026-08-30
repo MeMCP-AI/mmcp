@@ -35,7 +35,7 @@
   import { memoriesStore } from '$lib/stores/memories.svelte';
   import { groupsStore } from '$lib/stores/groups.svelte';
   import { matchesMemoryFilter } from '$lib/utils/filter';
-  import { buildMemoryTree } from '$lib/memoryTree';
+  import { buildMemoryTree } from '$lib/utils/memory_tree';
   import { classifyMemoryKind, type MemoryClass } from '$lib/utils/memory_kind';
   import { SCOPE_META, SCOPE_ORDER } from '$lib/utils/scope';
   import type { GroupEntry, GroupScope, KindStr, MemoryFile, MemoryFrontmatter } from '$lib/types';
