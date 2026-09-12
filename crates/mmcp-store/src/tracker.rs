@@ -15,7 +15,7 @@ use std::future::Future;
 
 use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION, memory_path};
 use mmcp_core::id::MemoryId;
-use mmcp_core::memory::{MemoryFile, MemoryRef, Status};
+use mmcp_core::memory::{MemoryFile, MemoryFrontmatter, MemoryRef, Status};
 use mmcp_git::{GitBackend, GitError, NativeBackend, Rev};
 use uuid::Uuid;
 
@@ -128,6 +128,68 @@ pub(crate) fn compose_refs(
         }
     }
     out
+}
+
+/// Read a memory's raw on-disk frontmatter, without going through any `*Record` shape.
+/// Shared between `update_issue_unlocked`, `update_feature_unlocked`, and `update_milestone`:
+/// each rebuilds its typed record from `UpdateSpec` plus the current record, but the record
+/// shapes drop fields (`tags`, `mandatory`, `version`, `bump_intent`, `source`, general `refs`)
+/// an update must still carry forward via [`carry_forward_frontmatter`].
+///
+/// `to_err` lets each tracker keep its own error type without this helper depending on any of them.
+pub(crate) async fn read_memory_frontmatter<E>(
+    backend: &NativeBackend,
+    handle: &mmcp_git::RepoHandle,
+    path: &str,
+    to_err: impl Fn(ImportError) -> E,
+) -> Result<MemoryFrontmatter, E> {
+    let bytes = backend
+        .read_file(handle, path, &Rev::head())
+        .await
+        .map_err(|e| to_err(ImportError::Git(e)))?;
+    let text =
+        std::str::from_utf8(&bytes).map_err(|e| to_err(ImportError::Render(e.to_string())))?;
+    let file = MemoryFile::parse(text).map_err(|e| to_err(ImportError::Parse(e)))?;
+    Ok(file.frontmatter)
+}
+
+/// Carry forward every frontmatter field an update does not itself own.
+///
+/// `updated` is the fresh [`MemoryFrontmatter`] a tracker's `build_memory_file` produced for the
+/// edit: it already carries the new name, description, kind, and tracker metadata block the
+/// caller is updating. `current` is the frontmatter [`read_memory_frontmatter`] read off the
+/// on-disk memory before the edit. Every other field is copied forward from `current` untouched,
+/// so a status-only (or any single-field) update never resets the record to
+/// [`MemoryFrontmatter::new`]'s defaults: at minimum `tags`, `mandatory`, `version`,
+/// `bump_intent`, and `source`.
+///
+/// `refs` is `Some` when the caller already composed its own cross-reference list (`update_issue`
+/// and `update_feature` merge add/remove against the on-disk refs); `None` carries `current.refs`
+/// forward unchanged, for a caller (`update_milestone`) with no refs-editing surface at all.
+///
+/// `kind` and the sibling tracker blocks (`feature` / `issue` / `milestone`) also carry forward:
+/// `build_memory_file` hardcodes its own kind and sets only the one block it owns, which would
+/// otherwise flip a hybrid memory's primary `kind` and destroy the sibling block a hybrid record
+/// carries per `kind.rs`'s documented hybrid model. `current.kind` always matches the kind
+/// `build_memory_file` already set on a non-hybrid record, so this is a no-op there; a hybrid
+/// record is the only case where it changes anything.
+pub(crate) fn carry_forward_frontmatter(
+    updated: MemoryFrontmatter,
+    current: &MemoryFrontmatter,
+    refs: Option<Vec<MemoryRef>>,
+) -> MemoryFrontmatter {
+    let mut updated = updated
+        .with_tags(current.tags.clone())
+        .with_mandatory(current.mandatory)
+        .with_version(current.version.clone())
+        .with_bump_intent(current.bump_intent)
+        .with_source(current.source)
+        .with_refs(refs.unwrap_or_else(|| current.refs.clone()));
+    updated.kind = current.kind;
+    updated.feature = updated.feature.or_else(|| current.feature.clone());
+    updated.issue = updated.issue.or_else(|| current.issue.clone());
+    updated.milestone = updated.milestone.or_else(|| current.milestone.clone());
+    updated
 }
 
 /// Decide whether a tracker record carrying `status` survives a listing filter.

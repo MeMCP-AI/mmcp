@@ -450,7 +450,13 @@ pub async fn update_issue_unlocked(
         .await
         .map_err(IssueError::Memory)?;
     let current = read_issue(backend, entry, slug, None).await?;
-    let current_refs = read_memory_refs(backend, &entry.handle, &resolved.path).await?;
+    let current_frontmatter = crate::tracker::read_memory_frontmatter(
+        backend,
+        &entry.handle,
+        &resolved.path,
+        IssueError::Memory,
+    )
+    .await?;
 
     let title = spec.title.unwrap_or(current.title);
     let description = spec.description.unwrap_or(current.description);
@@ -461,7 +467,7 @@ pub async fn update_issue_unlocked(
     let depends_on = spec.depends_on.unwrap_or(current.depends_on);
     let blocks = spec.blocks.unwrap_or(current.blocks);
     let refs = crate::tracker::compose_refs(
-        current_refs,
+        current_frontmatter.refs.clone(),
         spec.refs_remove.as_deref(),
         spec.refs_add.as_deref(),
     );
@@ -479,11 +485,11 @@ pub async fn update_issue_unlocked(
         .map_err(|e| IssueError::Memory(ImportError::Render(e.to_string())))?;
 
     let mut file = build_memory_file(title.clone(), description.clone(), body.clone(), metadata);
-    file.frontmatter = file
-        .frontmatter
-        .clone()
-        .with_id(resolved.id)
-        .with_refs(refs);
+    file.frontmatter = crate::tracker::carry_forward_frontmatter(
+        file.frontmatter.clone().with_id(resolved.id),
+        &current_frontmatter,
+        Some(refs),
+    );
     let rendered = file
         .to_string()
         .map_err(|e| IssueError::Memory(ImportError::Render(e.to_string())))?;
@@ -518,21 +524,6 @@ pub async fn update_issue_unlocked(
         superseded_by,
         commit_id,
     })
-}
-
-async fn read_memory_refs(
-    backend: &NativeBackend,
-    handle: &mmcp_git::RepoHandle,
-    path: &str,
-) -> Result<Vec<MemoryRef>, IssueError> {
-    let bytes = backend
-        .read_file(handle, path, &Rev::head())
-        .await
-        .map_err(|e| IssueError::Memory(ImportError::Git(e)))?;
-    let text = std::str::from_utf8(&bytes)
-        .map_err(|e| IssueError::Memory(ImportError::Render(e.to_string())))?;
-    let file = MemoryFile::parse(text).map_err(|e| IssueError::Memory(ImportError::Parse(e)))?;
-    Ok(file.frontmatter.refs)
 }
 
 /// Rename every issue under `old_slug` to `new_slug` in one atomic commit.
@@ -781,7 +772,9 @@ fn record_from_file(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use crate::memory::import_memory;
     use crate::testing::ScratchHome;
+    use mmcp_core::memory::{BumpIntent, FeatureMetadata, FeatureStatus};
 
     #[tokio::test]
     async fn add_then_read_round_trips() {
@@ -909,6 +902,208 @@ mod tests {
         assert_eq!(updated.title, "Before");
         assert_eq!(updated.description, "unchanged");
         assert_eq!(updated.body, "body");
+    }
+
+    /// Regression guard for the frontmatter-reset defect: `update_issue_unlocked` used to rebuild
+    /// its frontmatter from `MemoryFrontmatter::new`'s defaults, silently resetting `tags`,
+    /// `mandatory`, `bump_intent`, and `source` on any update, even one naming only `status`.
+    /// Asserts the requirement (a field the mutator does not name survives), not a value merely
+    /// observed off the pre-fix code.
+    #[tokio::test]
+    async fn update_preserves_frontmatter_fields_it_does_not_own() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("issue-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        let source_id = Uuid::now_v7();
+        let seeded_file = MemoryFile {
+            frontmatter: MemoryFrontmatter::new("Before", "unchanged", MemoryKind::Issue)
+                .with_issue(IssueMetadata {
+                    status: IssueStatus::Open,
+                    number: Some(1),
+                    ..IssueMetadata::default()
+                })
+                .with_tags(vec!["alpha".to_string(), "beta".to_string()])
+                .with_mandatory(true)
+                .with_bump_intent(Some(BumpIntent::Patch))
+                .with_source(Some(source_id))
+                .with_version(Some("1.2.3".parse().expect("valid semver literal"))),
+            body: "body".to_string(),
+            format: FrontmatterFormat::TomlPlus,
+        };
+        let seeded_version = seeded_file.frontmatter.version.clone();
+        import_memory(
+            scratch.backend(),
+            &entry.handle,
+            "tagged-issue",
+            &seeded_file.to_string().expect("render seeded issue"),
+            None,
+            scratch.author(),
+            false,
+        )
+        .await
+        .expect("seed tagged issue");
+
+        let assert_carried_forward = |frontmatter: &MemoryFrontmatter| {
+            assert_eq!(
+                frontmatter.tags,
+                vec!["alpha".to_string(), "beta".to_string()],
+                "an update naming only one field must not reset tags"
+            );
+            assert!(
+                frontmatter.mandatory,
+                "an update naming only one field must not reset mandatory"
+            );
+            assert_eq!(
+                frontmatter.bump_intent,
+                Some(BumpIntent::Patch),
+                "an update naming only one field must not reset bump_intent"
+            );
+            assert_eq!(
+                frontmatter.source,
+                Some(source_id),
+                "an update naming only one field must not reset source"
+            );
+            assert_eq!(
+                frontmatter.version, seeded_version,
+                "an update naming only one field must not reset version"
+            );
+        };
+
+        update_issue(
+            scratch.backend(),
+            &entry,
+            "tagged-issue",
+            UpdateSpec {
+                status: Some(IssueStatus::Wontfix),
+                ..UpdateSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("status-only update");
+        let resolved = resolve_memory(scratch.backend(), &entry.handle, Some("tagged-issue"), None)
+            .await
+            .expect("resolve after status-only update");
+        let frontmatter = crate::tracker::read_memory_frontmatter(
+            scratch.backend(),
+            &entry.handle,
+            &resolved.path,
+            IssueError::Memory,
+        )
+        .await
+        .expect("read frontmatter after status-only update");
+        assert_carried_forward(&frontmatter);
+
+        update_issue(
+            scratch.backend(),
+            &entry,
+            "tagged-issue",
+            UpdateSpec {
+                description: Some("a different unrelated description".into()),
+                ..UpdateSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("description-only update");
+        let resolved = resolve_memory(scratch.backend(), &entry.handle, Some("tagged-issue"), None)
+            .await
+            .expect("resolve after description-only update");
+        let frontmatter = crate::tracker::read_memory_frontmatter(
+            scratch.backend(),
+            &entry.handle,
+            &resolved.path,
+            IssueError::Memory,
+        )
+        .await
+        .expect("read frontmatter after description-only update");
+        assert_carried_forward(&frontmatter);
+    }
+
+    /// Regression guard for the hybrid sibling-block defect: a hybrid memory (kind=Feature,
+    /// carrying both a `[feature]` and an `[issue]` block, per `kind.rs`'s documented hybrid
+    /// model) must keep its `feature` block and its primary `kind` intact when `update_issue`
+    /// only touches the `[issue]` block's status.
+    #[tokio::test]
+    async fn update_on_a_hybrid_record_preserves_the_sibling_feature_block_and_kind() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("issue-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        let feature_block = FeatureMetadata {
+            status: FeatureStatus::Requested,
+            number: Some(1),
+            ..FeatureMetadata::default()
+        };
+        let seeded_file = MemoryFile {
+            frontmatter: MemoryFrontmatter::new("Hybrid", "both blocks", MemoryKind::Feature)
+                .with_feature(feature_block.clone())
+                .with_issue(IssueMetadata {
+                    status: IssueStatus::Open,
+                    number: Some(1),
+                    ..IssueMetadata::default()
+                }),
+            body: "body".to_string(),
+            format: FrontmatterFormat::TomlPlus,
+        };
+        import_memory(
+            scratch.backend(),
+            &entry.handle,
+            "hybrid-ticket",
+            &seeded_file.to_string().expect("render seeded hybrid"),
+            None,
+            scratch.author(),
+            false,
+        )
+        .await
+        .expect("seed hybrid ticket");
+
+        update_issue(
+            scratch.backend(),
+            &entry,
+            "hybrid-ticket",
+            UpdateSpec {
+                status: Some(IssueStatus::Wontfix),
+                ..UpdateSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("status-only update on hybrid record");
+
+        let resolved = resolve_memory(
+            scratch.backend(),
+            &entry.handle,
+            Some("hybrid-ticket"),
+            None,
+        )
+        .await
+        .expect("resolve after update");
+        let frontmatter = crate::tracker::read_memory_frontmatter(
+            scratch.backend(),
+            &entry.handle,
+            &resolved.path,
+            IssueError::Memory,
+        )
+        .await
+        .expect("read frontmatter after update");
+
+        assert_eq!(
+            frontmatter.kind,
+            MemoryKind::Feature,
+            "update_issue must not flip a hybrid record's primary kind"
+        );
+        assert_eq!(
+            frontmatter.feature,
+            Some(feature_block),
+            "update_issue must not drop the sibling feature block on a hybrid record"
+        );
+        assert_eq!(
+            frontmatter.issue.map(|m| m.status),
+            Some(IssueStatus::Wontfix),
+            "the named field (issue status) must still apply"
+        );
     }
 
     #[tokio::test]
