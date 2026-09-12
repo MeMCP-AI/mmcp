@@ -630,11 +630,17 @@ pub async fn update_feature_unlocked(
         .await
         .map_err(FeatureError::Memory)?;
     let current = read_feature(backend, entry, slug, None).await?;
-    // Pull the current refs list off the on-disk memory so compose
-    // ops can merge against it. `read_feature` drops the frontmatter
-    // `refs` since it builds a feature-centric record; re-read the
-    // raw memory here to preserve them across the update.
-    let current_refs = read_memory_refs(backend, &entry.handle, &resolved.path).await?;
+    // Pull the raw on-disk frontmatter so compose ops can merge refs
+    // against it and the update can carry forward every field
+    // `FeatureRecord` drops (`tags`, `mandatory`, `version`,
+    // `bump_intent`, `source`, general `refs`).
+    let current_frontmatter = crate::tracker::read_memory_frontmatter(
+        backend,
+        &entry.handle,
+        &resolved.path,
+        FeatureError::Memory,
+    )
+    .await?;
 
     let title = spec.title.unwrap_or(current.title);
     let description = spec.description.unwrap_or(current.description);
@@ -649,7 +655,7 @@ pub async fn update_feature_unlocked(
     // target UUID, ignoring commit), then add-side (dedup by
     // target so add-side wins the commit pin on collision).
     let refs = crate::tracker::compose_refs(
-        current_refs,
+        current_frontmatter.refs.clone(),
         spec.refs_remove.as_deref(),
         spec.refs_add.as_deref(),
     );
@@ -675,12 +681,13 @@ pub async fn update_feature_unlocked(
 
     let mut file = build_memory_file(title.clone(), description.clone(), body.clone(), metadata);
     // Preserve the id pinned on disk so the rewrite hits the same
-    // canonical path and stays addressable by UUID across the edit.
-    file.frontmatter = file
-        .frontmatter
-        .clone()
-        .with_id(resolved.id)
-        .with_refs(refs);
+    // canonical path and stays addressable by UUID across the edit,
+    // and carry forward every frontmatter field this update does not own.
+    file.frontmatter = crate::tracker::carry_forward_frontmatter(
+        file.frontmatter.clone().with_id(resolved.id),
+        &current_frontmatter,
+        Some(refs),
+    );
     let rendered = file
         .to_string()
         .map_err(|e| FeatureError::Memory(ImportError::Render(e.to_string())))?;
@@ -726,19 +733,19 @@ pub async fn update_feature_unlocked(
 /// Read the raw `refs` list off a memory's frontmatter without
 /// going through [`FeatureRecord`] (which deliberately omits
 /// general-purpose refs to keep feature-flavored listings focused).
+/// Test-only: production code reads the full frontmatter directly via
+/// [`crate::tracker::read_memory_frontmatter`]; only the test suite's
+/// refs-only assertions need this narrower, refs-shaped accessor.
+#[cfg(test)]
 async fn read_memory_refs(
     backend: &NativeBackend,
     handle: &mmcp_git::RepoHandle,
     path: &str,
 ) -> Result<Vec<MemoryRef>, FeatureError> {
-    let bytes = backend
-        .read_file(handle, path, &Rev::head())
-        .await
-        .map_err(|e| FeatureError::Memory(ImportError::Git(e)))?;
-    let text = std::str::from_utf8(&bytes)
-        .map_err(|e| FeatureError::Memory(ImportError::Render(e.to_string())))?;
-    let file = MemoryFile::parse(text).map_err(|e| FeatureError::Memory(ImportError::Parse(e)))?;
-    Ok(file.frontmatter.refs)
+    let frontmatter =
+        crate::tracker::read_memory_frontmatter(backend, handle, path, FeatureError::Memory)
+            .await?;
+    Ok(frontmatter.refs)
 }
 
 /// Rename every feature under `old_slug` to `new_slug`, committing the moves in a single atomic batch.
@@ -1120,8 +1127,10 @@ fn record_from_file(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use crate::memory::import_memory;
     use crate::testing::ScratchHome;
     use mmcp_core::conventions::memory_path;
+    use mmcp_core::memory::BumpIntent;
 
     #[tokio::test]
     async fn add_then_read_round_trips() {
@@ -1222,6 +1231,133 @@ mod tests {
             updated.body, "unchanged body",
             "body preserved across update"
         );
+    }
+
+    /// Regression guard for the frontmatter-reset defect: `update_feature_unlocked` used to
+    /// rebuild its frontmatter from `MemoryFrontmatter::new`'s defaults, silently resetting
+    /// `tags`, `mandatory`, `bump_intent`, and `source` on any update, even one naming only
+    /// `status`. Asserts the requirement (a field the mutator does not name survives), not a
+    /// value merely observed off the pre-fix code.
+    #[tokio::test]
+    async fn update_preserves_frontmatter_fields_it_does_not_own() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        let source_id = Uuid::now_v7();
+        let seeded_file = MemoryFile {
+            frontmatter: MemoryFrontmatter::new("Before", "unchanged", MemoryKind::Feature)
+                .with_feature(FeatureMetadata {
+                    status: FeatureStatus::Requested,
+                    number: Some(1),
+                    ..FeatureMetadata::default()
+                })
+                .with_tags(vec!["alpha".to_string(), "beta".to_string()])
+                .with_mandatory(true)
+                .with_bump_intent(Some(BumpIntent::Patch))
+                .with_source(Some(source_id))
+                .with_version(Some("1.2.3".parse().expect("valid semver literal"))),
+            body: "body".to_string(),
+            format: FrontmatterFormat::TomlPlus,
+        };
+        let seeded_version = seeded_file.frontmatter.version.clone();
+        import_memory(
+            scratch.backend(),
+            &entry.handle,
+            "tagged-feature",
+            &seeded_file.to_string().expect("render seeded feature"),
+            None,
+            scratch.author(),
+            false,
+        )
+        .await
+        .expect("seed tagged feature");
+
+        let assert_carried_forward = |frontmatter: &MemoryFrontmatter| {
+            assert_eq!(
+                frontmatter.tags,
+                vec!["alpha".to_string(), "beta".to_string()],
+                "an update naming only one field must not reset tags"
+            );
+            assert!(
+                frontmatter.mandatory,
+                "an update naming only one field must not reset mandatory"
+            );
+            assert_eq!(
+                frontmatter.bump_intent,
+                Some(BumpIntent::Patch),
+                "an update naming only one field must not reset bump_intent"
+            );
+            assert_eq!(
+                frontmatter.source,
+                Some(source_id),
+                "an update naming only one field must not reset source"
+            );
+            assert_eq!(
+                frontmatter.version, seeded_version,
+                "an update naming only one field must not reset version"
+            );
+        };
+
+        update_feature(
+            scratch.backend(),
+            &entry,
+            "tagged-feature",
+            UpdateSpec {
+                status: Some(FeatureStatus::Completed),
+                ..UpdateSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("status-only update");
+        let resolved = resolve_memory(
+            scratch.backend(),
+            &entry.handle,
+            Some("tagged-feature"),
+            None,
+        )
+        .await
+        .expect("resolve after status-only update");
+        let frontmatter = crate::tracker::read_memory_frontmatter(
+            scratch.backend(),
+            &entry.handle,
+            &resolved.path,
+            FeatureError::Memory,
+        )
+        .await
+        .expect("read frontmatter after status-only update");
+        assert_carried_forward(&frontmatter);
+
+        update_feature(
+            scratch.backend(),
+            &entry,
+            "tagged-feature",
+            UpdateSpec {
+                description: Some("a different unrelated description".into()),
+                ..UpdateSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("description-only update");
+        let resolved = resolve_memory(
+            scratch.backend(),
+            &entry.handle,
+            Some("tagged-feature"),
+            None,
+        )
+        .await
+        .expect("resolve after description-only update");
+        let frontmatter = crate::tracker::read_memory_frontmatter(
+            scratch.backend(),
+            &entry.handle,
+            &resolved.path,
+            FeatureError::Memory,
+        )
+        .await
+        .expect("read frontmatter after description-only update");
+        assert_carried_forward(&frontmatter);
     }
 
     async fn seed_mixed_status_fixture(scratch: &ScratchHome) -> GroupEntry {
