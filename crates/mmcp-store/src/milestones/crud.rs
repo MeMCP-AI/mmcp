@@ -275,6 +275,17 @@ pub async fn update_milestone(
     .await;
 
     let current = read_milestone(backend, entry, pool, groups, slug, None).await?;
+    // Raw on-disk frontmatter, so the update can carry forward every field
+    // `MilestoneRecord` drops (`tags`, `mandatory`, `version`, `bump_intent`,
+    // `source`, `refs`): this module exposes no refs-editing surface at all,
+    // so `refs` always carries the on-disk value forward unchanged.
+    let current_frontmatter = crate::tracker::read_memory_frontmatter(
+        backend,
+        &entry.handle,
+        &resolved.path,
+        MilestoneError::Memory,
+    )
+    .await?;
 
     let title = spec.title.unwrap_or(current.title);
     let description = spec.description.unwrap_or(current.description);
@@ -283,7 +294,11 @@ pub async fn update_milestone(
 
     let metadata = MilestoneMetadata { status };
     let mut file = build_memory_file(title.clone(), description.clone(), body.clone(), metadata);
-    file.frontmatter = file.frontmatter.clone().with_id(resolved.id);
+    file.frontmatter = crate::tracker::carry_forward_frontmatter(
+        file.frontmatter.clone().with_id(resolved.id),
+        &current_frontmatter,
+        None,
+    );
     let rendered = file
         .to_string()
         .map_err(|e| MilestoneError::Memory(ImportError::Render(e.to_string())))?;
@@ -424,7 +439,9 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::cache::open_pool;
+    use crate::memory::import_memory;
     use crate::testing::ScratchHome;
+    use mmcp_core::memory::{BumpIntent, MemoryRef};
 
     async fn scratch_pool() -> (tempfile::TempDir, SqlitePool) {
         let tmp = tempfile::TempDir::new().expect("tempdir");
@@ -529,6 +546,144 @@ mod tests {
         assert_eq!(updated.title, "Before");
         assert_eq!(updated.description, "unchanged");
         assert_eq!(updated.body, "body");
+    }
+
+    /// Regression guard for the frontmatter-reset defect: `update_milestone` used to rebuild
+    /// its frontmatter from `MemoryFrontmatter::new`'s defaults, silently resetting `tags`,
+    /// `mandatory`, `bump_intent`, `source`, and `refs` on any update, even one naming only
+    /// `status`; this module exposes no refs-editing surface, so `refs` must always survive
+    /// unchanged. Asserts the requirement (a field the mutator does not name survives), not a
+    /// value merely observed off the pre-fix code.
+    #[tokio::test]
+    async fn update_preserves_frontmatter_fields_it_does_not_own() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("milestone-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+        let (_tmp, pool) = scratch_pool().await;
+
+        let source_id = Uuid::now_v7();
+        let seeded_ref = MemoryRef::new(Uuid::now_v7(), "deadbeefcafe");
+        let seeded_file = MemoryFile {
+            frontmatter: MemoryFrontmatter::new("Before", "unchanged", MemoryKind::Milestone)
+                .with_milestone(MilestoneMetadata {
+                    status: MilestoneStatus::Planning,
+                })
+                .with_tags(vec!["alpha".to_string(), "beta".to_string()])
+                .with_mandatory(true)
+                .with_bump_intent(Some(BumpIntent::Patch))
+                .with_source(Some(source_id))
+                .with_refs(vec![seeded_ref.clone()])
+                .with_version(Some("1.2.3".parse().expect("valid semver literal"))),
+            body: "body".to_string(),
+            format: FrontmatterFormat::TomlPlus,
+        };
+        let seeded_version = seeded_file.frontmatter.version.clone();
+        import_memory(
+            scratch.backend(),
+            &entry.handle,
+            "tagged-milestone",
+            &seeded_file.to_string().expect("render seeded milestone"),
+            None,
+            scratch.author(),
+            false,
+        )
+        .await
+        .expect("seed tagged milestone");
+
+        let assert_carried_forward = |frontmatter: &MemoryFrontmatter| {
+            assert_eq!(
+                frontmatter.tags,
+                vec!["alpha".to_string(), "beta".to_string()],
+                "an update naming only one field must not reset tags"
+            );
+            assert!(
+                frontmatter.mandatory,
+                "an update naming only one field must not reset mandatory"
+            );
+            assert_eq!(
+                frontmatter.bump_intent,
+                Some(BumpIntent::Patch),
+                "an update naming only one field must not reset bump_intent"
+            );
+            assert_eq!(
+                frontmatter.source,
+                Some(source_id),
+                "an update naming only one field must not reset source"
+            );
+            assert_eq!(
+                frontmatter.refs,
+                vec![seeded_ref.clone()],
+                "an update naming only one field must not drop refs"
+            );
+            assert_eq!(
+                frontmatter.version, seeded_version,
+                "an update naming only one field must not reset version"
+            );
+        };
+
+        update_milestone(
+            scratch.backend(),
+            &entry,
+            &pool,
+            scratch.groups(),
+            "tagged-milestone",
+            UpdateSpec {
+                status: Some(MilestoneStatus::Active),
+                ..UpdateSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("status-only update");
+        let resolved = resolve_memory(
+            scratch.backend(),
+            &entry.handle,
+            Some("tagged-milestone"),
+            None,
+        )
+        .await
+        .expect("resolve after status-only update");
+        let frontmatter = crate::tracker::read_memory_frontmatter(
+            scratch.backend(),
+            &entry.handle,
+            &resolved.path,
+            MilestoneError::Memory,
+        )
+        .await
+        .expect("read frontmatter after status-only update");
+        assert_carried_forward(&frontmatter);
+
+        update_milestone(
+            scratch.backend(),
+            &entry,
+            &pool,
+            scratch.groups(),
+            "tagged-milestone",
+            UpdateSpec {
+                description: Some("a different unrelated description".into()),
+                ..UpdateSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("description-only update");
+        let resolved = resolve_memory(
+            scratch.backend(),
+            &entry.handle,
+            Some("tagged-milestone"),
+            None,
+        )
+        .await
+        .expect("resolve after description-only update");
+        let frontmatter = crate::tracker::read_memory_frontmatter(
+            scratch.backend(),
+            &entry.handle,
+            &resolved.path,
+            MilestoneError::Memory,
+        )
+        .await
+        .expect("read frontmatter after description-only update");
+        assert_carried_forward(&frontmatter);
     }
 
     #[tokio::test]
