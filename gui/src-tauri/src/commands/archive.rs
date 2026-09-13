@@ -186,14 +186,12 @@ pub async fn export_archive(
     }))
 }
 
-/// Open a native picker for an archive to import and return its path,
-/// or `None` if the operator dismisses the dialog. The frontend then
-/// inspects the archive before committing to an import.
+/// Open a native picker for an archive to import and return its path.
+/// Returns `None` if the operator dismisses the dialog.
+/// The frontend then inspects the archive before committing to an import.
 ///
-/// The canonicalized path is also stashed as the one path
-/// `inspect_archive` / `import_archive` will accept, so those commands
-/// never trust an arbitrary IPC-supplied filesystem path (see
-/// `read_confined_archive`).
+/// The canonicalized path is also stashed as the one path `inspect_archive` / `import_archive` will accept.
+/// Those commands never trust an arbitrary IPC-supplied filesystem path (see `read_confined_archive`).
 #[tauri::command]
 pub async fn pick_import_path(app: AppHandle) -> GuiResult<Option<String>> {
     let main = app
