@@ -264,10 +264,10 @@ impl From<mmcp_git::GitError> for CorruptSeedError {
 
 /// Corrupt `path`'s stored file at `marker`, in a new commit, and return the corrupted bytes.
 ///
-/// Reads the current bytes, flips the byte at `marker`'s offset to an invalid UTF-8 continuation
-/// byte via [`corrupt_one_byte`], and writes the result back via [`overwrite_raw_bytes`].
-/// Callers assert both a rejected update's error and that the file on disk still matches the
-/// returned bytes afterward, proving the rejected write left the stored file untouched.
+/// Reads the current bytes and corrupts one via [`corrupt_one_byte`].
+/// The result is written back via [`overwrite_raw_bytes`].
+/// Callers assert both a rejected update's error and that the stored bytes match afterward.
+/// That proves a rejected write left the stored file untouched.
 pub async fn corrupt_stored_file(
     backend: &NativeBackend,
     handle: &RepoHandle,

@@ -787,8 +787,8 @@ mod tests {
         );
     }
 
-    /// Reading a corrupted milestone directly must surface the typed `NotUtf8` error
-    /// rather than silently substituting text.
+    /// A direct read has no accompanying `read_frontmatter_at` guard.
+    /// It must still surface the typed `NotUtf8` error rather than silently substituting text.
     #[tokio::test]
     async fn read_milestone_rejects_invalid_utf8_in_the_frontmatter_block() {
         let scratch = ScratchHome::new().await.expect("scratch home");
@@ -850,9 +850,8 @@ mod tests {
         }
     }
 
-    /// A corrupted member of a group must surface as a `memory_not_utf8` finding in
-    /// `list_milestones`, not silently included with replacement characters and not aborting
-    /// the whole listing.
+    /// A corrupted member of a group must surface as a `memory_not_utf8` finding.
+    /// It must not appear with replacement characters, and it must not abort the whole listing.
     #[tokio::test]
     async fn list_milestones_reports_invalid_utf8_as_a_finding() {
         let scratch = ScratchHome::new().await.expect("scratch home");
