@@ -319,8 +319,7 @@ fn load_or_mint_config(
 ///
 /// 1. `arg_slug`: whatever the caller passed explicitly.
 /// 2. `config_slug`: the stored `project_slug` in `.mmcp.toml`.
-/// 3. TTY prompt (only when `tty_slug_prompt` is true and stdin is a
-///    terminal), defaulting to the slugified project dir basename.
+/// 3. TTY prompt (`tty_slug_prompt` true, stdin a terminal), else slugified project dir basename.
 /// 4. [`InitProjectError::SlugRequired`].
 ///
 /// Errors [`InitProjectError::SlugMismatch`] when the caller's slug disagrees with the stored one.

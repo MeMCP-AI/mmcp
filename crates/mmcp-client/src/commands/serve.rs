@@ -6228,8 +6228,7 @@ impl McpServer {
 /// Factored out of [`McpServer::require_sync_configured`] so tests can feed a deterministic path.
 /// This avoids touching process-wide `current_dir`.
 /// The wire-contract error codes are stable across callers.
-/// They are `project_not_found`, `project_config_load_failed`.
-/// As well as `sync_resolution_failed` and `sync_not_configured`.
+/// They are `project_not_found`, `project_config_load_failed`, `sync_resolution_failed`, and `sync_not_configured`.
 /// `sync_resolution_failed` covers a name collision or a missing `direct-git` group.
 /// It also covers an ambiguous default across user and project config.
 /// `sync_not_configured` means the effective set resolved but is empty.
