@@ -31,10 +31,10 @@ pub struct ServerStateInner {
     pub oauth_providers: HashMap<String, OAuthProviderConfig>,
     /// One `oauth2` client per entry of [`ServerStateInner::oauth_providers`],
     /// built once at [`ServerState::initialize`] from that same config; see
-    /// [`crate::oauth_client::build_oauth_client`].
+    /// `crate::oauth_client::build_oauth_client`.
     pub oauth_clients: HashMap<String, OauthClient>,
     /// Dedicated async HTTP client for the `oauth2` token exchange;
-    /// see [`crate::oauth_client::build_oauth_exchange_http_client`]
+    /// see `crate::oauth_client::build_oauth_exchange_http_client`
     /// for why it is a separate client from every other HTTP call in
     /// this crate.
     pub oauth_exchange_http_client: oauth2::reqwest::Client,

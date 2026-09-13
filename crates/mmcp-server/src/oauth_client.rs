@@ -57,7 +57,7 @@ pub fn build_oauth_client(cfg: &OAuthProviderConfig, origin: &str) -> Result<Oau
 }
 
 /// Build the dedicated async HTTP client
-/// [`crate::routes::auth::oauth_callback`] passes to
+/// `crate::routes::auth::oauth_callback` passes to
 /// [`oauth2::CodeTokenRequest::request_async`] for the token
 /// exchange.
 ///
