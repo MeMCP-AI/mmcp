@@ -8479,7 +8479,7 @@ mod tests {
         group_id
     }
 
-    /// Seed a fresh group whose one memory file is not valid UTF-8.
+    /// Seed a fresh group whose one memory file is not valid UTF8 text.
     /// Proves a decode-path tool call surfaces `memory_not_utf8` rather than parsing lossily.
     async fn seed_group_with_non_utf8_memory(
         state: &ClientState,
@@ -8495,7 +8495,7 @@ mod tests {
             .await
             .expect("create group repo");
         let path = mmcp_core::conventions::memory_path(memory_slug, MemoryId::new());
-        // A lone continuation byte can never start a valid UTF-8 sequence.
+        // A lone continuation byte can never start a valid UTF8 sequence.
         const NOT_UTF8: &[u8] = &[0x80, 0x81, 0x82];
         state
             .backend
