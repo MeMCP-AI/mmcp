@@ -8521,7 +8521,7 @@ mod tests {
     }
 
     /// Seed a fresh group whose one memory file is not valid UTF-8.
-    /// Used to prove a decode-path tool call surfaces `memory_not_utf8` rather than parsing lossily.
+    /// Proves a decode-path tool call surfaces `memory_not_utf8` rather than parsing lossily.
     async fn seed_group_with_non_utf8_memory(
         state: &ClientState,
         slug: &str,
