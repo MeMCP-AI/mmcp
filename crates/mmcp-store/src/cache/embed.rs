@@ -79,7 +79,7 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
-/// L2 norm of `vector`, via [`dot`] rather than an [`Array1`] copy.
+/// L2 norm of `vector`, via `dot` rather than an [`Array1`] copy.
 #[must_use]
 pub fn norm(vector: &[f32]) -> f32 {
     dot(vector, vector).sqrt()

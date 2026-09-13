@@ -2,8 +2,8 @@
 //!
 //! Wraps the generic memory layer with FR-aware semantics:
 //! every write/read through this module commits a memory whose
-//! [`MemoryKind`](mmcp_core::memory::MemoryKind) is `Fr`,
-//! carrying a structured [`FeatureMetadata`](mmcp_core::memory::FeatureMetadata) block in frontmatter,
+//! [`MemoryKind`] is `Fr`,
+//! carrying a structured [`FeatureMetadata`] block in frontmatter,
 //! so the tool surface never has to parse the body to classify a memory.
 //!
 //! The module is intentionally thin: it owns:
@@ -84,7 +84,7 @@ pub enum FeatureError {
     #[error("failed to load project config at {path}: {detail}")]
     ProjectConfigBroken { path: String, detail: String },
 
-    /// Malformed cross-reference input parsed through [`mmcp_core::memory::xrefs`].
+    /// Malformed cross-reference input parsed through [`mmcp_core::memory::XrefError`].
     /// Surfaces both the `InvalidCrossRef` and `InvalidMemoryRef` cases
     /// so `map_feature_error_to_mcp` and the CLI handlers can pattern-match through one variant
     /// on the feature side without losing the field-attribution detail the parser recorded.
@@ -532,7 +532,7 @@ async fn next_feature_number(
 
 /// Read an FR by slug.
 /// When `rev` is `None`, reads the group's current `main`; otherwise parses `rev` through
-/// [`Rev`](mmcp_git::Rev) so branch names, tags, and commit hexes all work the same way
+/// [`Rev`] so branch names, tags, and commit hexes all work the same way
 /// the generic `read_memory` tool does.
 pub async fn read_feature(
     backend: &NativeBackend,

@@ -32,7 +32,7 @@ use crate::memory::{MemoryFileRef, slugify_filename};
 /// One finding emitted by a check.
 /// `code` is a stable slug-style identifier (e.g. `manifest_unreadable`, `memory_body_empty`),
 /// that lets consumers branch without parsing the free-form `message`.
-/// The MCP tool boundary maps each finding onto a [`mmcp_proto::Note`] using this code.
+/// The MCP tool boundary maps each finding onto a `mmcp_proto::Note` using this code.
 #[derive(Debug, Clone, Serialize)]
 pub struct Finding {
     pub group: String,

@@ -35,7 +35,7 @@ type BatchOutcome = Vec<(String, Result<bytes::Bytes, GitError>)>;
 /// Returns `1` for an empty group.
 /// Nested slug paths are walked recursively via [`list_memory_slug_dirs`].
 ///
-/// Deliberately not [`read_all_slug_files`]: that helper errors on an ambiguous slug.
+/// Deliberately not `read_all_slug_files`: that helper errors on an ambiguous slug.
 /// This counter folds every file of an ambiguous slug; skipping one could reissue an allocated number.
 ///
 /// Errors only on a hard list / read failure on the underlying git tree;

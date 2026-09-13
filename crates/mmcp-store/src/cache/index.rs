@@ -229,7 +229,7 @@ pub fn build_record(
 /// from the current name, description, tags, and body every time:
 /// an edit that changes the text must not leave a stale embedding behind.
 ///
-/// Generic over the executor so [`index_group`] can run every upsert inside the caller's transaction,
+/// Generic over the executor so `index_group` can run every upsert inside the caller's transaction,
 /// (see [`rebuild_full`] and [`rebuild_groups`]),
 /// while the write-trigger hook ([`super::notify_write`]) keeps passing the plain pool.
 pub async fn upsert_record<'e, E>(executor: E, record: &IndexedRecord) -> Result<(), CacheError>

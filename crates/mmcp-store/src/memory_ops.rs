@@ -1,6 +1,6 @@
 //! Transactional section-level editing for memory bodies.
 //!
-//! The body parser in [`mmcp_core::memory::body`] slices a markdown memory into addressable sections,
+//! The body parser in [`mmcp_core::memory::parse_sections`] slices a markdown memory into addressable sections,
 //! each with a stable dot-separated path id.
 //! This module supplies the matching mutation surface:
 //! an ordered list of [`MemoryEditOp`]s, applied sequentially to a body string.

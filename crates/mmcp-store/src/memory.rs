@@ -1188,7 +1188,7 @@ pub fn validate_memory_slug(slug: &str) -> Result<(), ImportError> {
 /// [`MAX_SLUG_LENGTH`] still governs what `validate_memory_slug` *accepts*, and stays untouched.
 ///
 /// Value fixed at 64, not independently derived from a specific reference system.
-/// The LOWEST-precedence tier of [`resolve_max_auto_slug_length`],
+/// The LOWEST-precedence tier of `resolve_max_auto_slug_length`,
 /// overridable per-call, per-machine (env var), or per-user (config file);
 /// see that function's doc comment for the full cascade.
 /// Duplicate slugs are legal regardless of which tier wins,
@@ -1212,8 +1212,8 @@ pub const MAX_AUTO_SLUG_LENGTH_ENV: &str = "MMCP_MAX_AUTO_SLUG_LENGTH";
 /// `coding-rules.adoc` gets the `coding-rules` slug rather than
 /// `coding-rules-adoc`; the on-disk memory still lands as `.md`.
 ///
-/// The result is then capped via [`truncate_slug_at_hyphen_boundary`]
-/// at [`resolve_max_auto_slug_length`]'s compiled-in default tier (no per-call override)
+/// The result is then capped via `truncate_slug_at_hyphen_boundary`
+/// at `resolve_max_auto_slug_length`'s compiled-in default tier (no per-call override)
 /// so an auto-derived slug from a long title stays a sane, readable identifier
 /// instead of growing unboundedly with the title.
 /// Callers that need a one-off cap call [`slugify_filename_with_cap`] directly.
@@ -1222,7 +1222,7 @@ pub fn slugify_filename(filename: &str) -> String {
 }
 
 /// Same as [`slugify_filename`], but `override_max_len`, when `Some` and non-zero,
-/// takes precedence over every other tier of [`resolve_max_auto_slug_length`].
+/// takes precedence over every other tier of `resolve_max_auto_slug_length`.
 /// Exists so a future MCP tool / CLI flag can request a one-off cap
 /// without touching the env var or user config that every other call on the machine shares.
 pub fn slugify_filename_with_cap(filename: &str, override_max_len: Option<usize>) -> String {
@@ -1414,7 +1414,7 @@ const CREATABLE_KINDS: &[MemoryKind] = &[
 /// Parse a kind string for `mmcp memory create` / `mmcp memory edit --kind`.
 /// Delegates to [`parse_kind`] for syntax (so the error text on a genuinely unknown kind
 /// matches every other kind-parsing call site), then re-applies the create-time policy restriction
-/// to [`CREATABLE_KINDS`], returning [`ImportError::NotACreatableKind`] for a syntactically valid
+/// to `CREATABLE_KINDS`, returning [`ImportError::NotACreatableKind`] for a syntactically valid
 /// but tracked kind instead of silently creating a memory the tracked-kind tooling will reject.
 pub fn parse_creatable_kind(s: &str) -> Result<MemoryKind, ImportError> {
     let kind = parse_kind(s)?;

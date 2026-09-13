@@ -19,8 +19,8 @@
 //!
 //! Rather than forking the converter, this module wraps it:
 //! a small pre-processor rewrites the constructs acdc can't faithfully render into ones it can,
-//! (see [`preprocess_adoc`]), the converter does the AST -> markdown translation,
-//! and [`postprocess_markdown`] strips warning comments and the `linkgit:` macro residue.
+//! (see `preprocess_adoc`), the converter does the AST -> markdown translation,
+//! and `postprocess_markdown` strips warning comments and the `linkgit:` macro residue.
 //! Each step is independently testable.
 //!
 //! `DocumentAttributes` on the parsed AsciiDoc side are NOT currently promoted into the memory's TOML frontmatter.
