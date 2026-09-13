@@ -306,7 +306,7 @@ impl GitBackend for NativeBackend {
     /// Each is bounded by its own `tokio::time::timeout` (see `crate::native::repo_ops`).
     /// Unlike every other `GitBackend` method here, they run directly on the calling task.
     /// They never run inside `spawn_blocking`.
-    /// There is no synchronous `gix`/filesystem work left to offload.
+    /// This path has no synchronous `gix`/filesystem work to offload.
     /// Wrapping them would only cost a blocking-pool thread for no benefit.
     async fn clone_to(
         &self,

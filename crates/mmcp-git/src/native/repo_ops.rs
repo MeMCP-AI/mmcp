@@ -1,12 +1,10 @@
 //! Repository operations against a bare git repo.
 //!
-//! Every function that needs an open repository takes an
-//! already-opened `&gix::Repository`: [`crate::native::NativeBackend`]
-//! owns the cached [`gix::ThreadSafeRepository`] handle and hands out
-//! a thread-local view per call, so this module never re-opens a repo
-//! itself. The `gix`-based read/write functions are synchronous and
-//! are invoked from `spawn_blocking` inside the async backend, the
-//! same as ever.
+//! Every function that needs an open repository takes an already-opened `&gix::Repository`.
+//! [`crate::native::NativeBackend`] owns the cached [`gix::ThreadSafeRepository`] handle.
+//! It hands out a thread-local view per call, so this module never re-opens a repo itself.
+//! The `gix`-based read/write functions are synchronous.
+//! They run inside `spawn_blocking` from the async backend.
 //!
 //! [`clone`], [`fetch`], [`push`], and `ensure_remote` are the exception.
 //! They shell out to the `git` binary for the actual network transfer.
@@ -646,14 +644,13 @@ fn is_ancestor(
     }
 }
 
-/// Verify every local ref named in the outgoing refspecs actually
-/// resolves in `repo`. Turns git's opaque "src refspec does not
-/// match any" into an actionable `nothing to push` error with the
-/// offending ref name, which otherwise looks identical to a
-/// remote-rejection and sends debuggers down the wrong path.
+/// Verify every local ref named in the outgoing refspecs actually resolves in `repo`.
+/// Turns git's opaque "src refspec does not match any" into an actionable `nothing to push` error.
+/// The error names the offending ref, which otherwise looks identical to a remote rejection.
+/// That similarity sends debuggers down the wrong path.
 ///
-/// Empty refspec lists (used by tests exercising error paths) skip
-/// the check so the subprocess surfaces its own error.
+/// An empty refspec list, used by tests exercising error paths, skips this check.
+/// The subprocess then surfaces its own error instead.
 ///
 /// `pub(crate)`: [`crate::native::NativeBackend`]'s [`crate::GitBackend::push`] impl runs this.
 /// It runs against the open `gix::Repository` handle inside its own `spawn_blocking`.

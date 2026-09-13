@@ -223,14 +223,11 @@ impl Credentials {
 
 /// Outcome of a local [`crate::GitBackend::fast_forward`] call.
 ///
-/// Fast-forward advances a local branch ref to match the commit at
-/// another ref (typically a remote-tracking ref just populated by
-/// `fetch`). The distinction between the variants matters to the
-/// sync engine's pull path: `AlreadyAt` and `Advanced` both mean
-/// "safe to publish as updated"; `NotFastForward` means local work
-/// diverged from the remote and the caller needs to resolve the
-/// split; the engine currently records it without raising a typed
-/// error.
+/// Fast-forward advances a local branch ref to match the commit at another ref.
+/// That other ref is typically a remote-tracking ref just populated by `fetch`.
+/// `AlreadyAt` and `Advanced` both mean the local ref is safe to publish as updated.
+/// `NotFastForward` means local work diverged from the remote ref.
+/// Callers decide how to resolve or report that divergence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FastForwardOutcome {
     /// `local_ref` already pointed at `target_ref`'s commit; the
