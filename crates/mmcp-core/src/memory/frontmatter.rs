@@ -14,8 +14,8 @@ use crate::memory::{
 /// An undeclared TOML key is dropped by `serde` on parse, not preserved for round-trip.
 /// A key written by a newer mmcp is silently dropped when an older mmcp rewrites the file.
 ///
-/// The `version` field is server-managed.
-/// Clients do not hand-edit it; the server assigns it at push time using the commit's [`BumpIntent`].
+/// The `version` field records this memory's server-tracked published version, when known.
+/// No push path in this workspace currently writes an assigned version back into this field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryFrontmatter {
     /// Canonical primary key. Assigned once (UUIDv7) at create time
@@ -38,8 +38,8 @@ pub struct MemoryFrontmatter {
     #[serde(default)]
     pub mandatory: bool,
 
-    /// Current published version. Managed by the server; ignored on
-    /// incoming client edits.
+    /// Current published version, when known.
+    /// Ignored on incoming client edits: no write path in this workspace accepts a client-supplied value here.
     #[serde(default)]
     pub version: Option<semver::Version>,
 
