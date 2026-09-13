@@ -8,16 +8,14 @@
 //! are invoked from `spawn_blocking` inside the async backend, the
 //! same as ever.
 //!
-//! [`clone`], [`fetch`], [`push`], and `ensure_remote` are the
-//! exception: they shell out to the `git` binary for the actual
-//! network transfer, so they are genuinely `async fn` built on
-//! `tokio::process::Command`. Each subprocess call runs under
-//! `tokio::time::timeout`; on expiry the child is explicitly killed
-//! and reaped before the function returns
-//! [`GitError::Timeout`], so a dead
-//! or unresponsive remote fails within a bounded window instead of
-//! pinning the calling task (or, with the old `spawn_blocking` design,
-//! an entire blocking-pool thread) indefinitely.
+//! [`clone`], [`fetch`], [`push`], and `ensure_remote` are the exception.
+//! They shell out to the `git` binary for the actual network transfer.
+//! They are genuinely `async fn` built on `tokio::process::Command`.
+//! Each subprocess call runs under `tokio::time::timeout`.
+//! On expiry, the child is explicitly killed and reaped.
+//! The function then returns [`GitError::Timeout`].
+//! A dead or unresponsive remote fails within a bounded window.
+//! It never pins the calling task indefinitely.
 
 use std::ffi::OsString;
 use std::path::Path;
@@ -657,10 +655,10 @@ fn is_ancestor(
 /// Empty refspec lists (used by tests exercising error paths) skip
 /// the check so the subprocess surfaces its own error.
 ///
-/// `pub(crate)`: [`crate::GitBackend::push`] runs this
-/// against the open `gix::Repository` handle inside its own
-/// `spawn_blocking`, before awaiting the async [`push`] subprocess
-/// call, which no longer holds a `gix::Repository` at all.
+/// `pub(crate)`: [`crate::native::NativeBackend`]'s [`crate::GitBackend::push`] impl runs this.
+/// It runs against the open `gix::Repository` handle inside its own `spawn_blocking`.
+/// This runs before awaiting the async [`push`] subprocess call.
+/// That subprocess call holds no `gix::Repository` at all.
 pub(crate) fn preflight_local_refs(
     repo: &gix::Repository,
     refspecs: &[(String, String, bool)],
