@@ -36,10 +36,8 @@ use crate::memory::{
 
 /// Errors specific to feature-request operations.
 ///
-/// Wraps [`ImportError`] so every memory-layer failure shape
-/// remains addressable, and adds the two FR-specific cases that
-/// cannot arise on a generic memory: a target slug that exists but
-/// is not an FR, and a missing title on create.
+/// Wraps [`ImportError`] so every memory-layer failure shape remains addressable.
+/// Adds the FR-specific cases that cannot arise on a generic memory.
 #[derive(Debug, thiserror::Error)]
 pub enum FeatureError {
     /// Propagated from the memory CRUD primitives.
@@ -47,7 +45,7 @@ pub enum FeatureError {
     Memory(#[from] ImportError),
 
     /// Raised when `read_feature` / `update_feature` / `delete_feature` target a memory
-    /// that exists but carries a non-Fr kind.
+    /// that exists but carries no `[feature]` block.
     /// Keeps the FR tools from silently operating on unrelated memories.
     #[error("memory '{slug}' exists in this group but is kind '{kind}', not a feature request")]
     NotAFeature { slug: String, kind: String },
@@ -102,9 +100,8 @@ pub enum FeatureError {
         existing_link: Option<MemoryRef>,
     },
 
-    /// `supersedes` pointed at an FR in a different group. v1 rejects
-    /// cross-group supersede until the project-selector FR lands a
-    /// broader story; the data model itself supports it.
+    /// `supersedes` pointed at an FR in a different group.
+    /// Cross-group supersede is not supported.
     #[error(
         "supersedes target '{query}' lives in a different group than the caller's project group; cross-group supersede is not yet supported"
     )]
@@ -539,7 +536,7 @@ pub async fn read_feature(
         .map_err(FeatureError::Memory)?;
     let git_rev = match rev {
         // Heuristic aligned with the MCP `read_memory` tool: a 40-char hex string resolves as a commit id;
-        // anything else is treated as a branch or tag name.
+        // anything else is treated as a branch name.
         // Kept in the store so every consumer interprets `rev` the same way.
         Some(v) => {
             if v.len() == 40 && v.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -869,7 +866,7 @@ pub async fn delete_feature(
 ///    Default listing matches the "what still needs work?" mental model operators reach for.
 ///    The closed-ish statuses only come back via the `show_all` escape hatch or an explicit `status` selector.
 ///
-/// A memory whose kind genuinely is NOT `feature` is skipped silently.
+/// A memory with no `[feature]` block is skipped silently when its own kind field is not `feature`.
 /// FRs share the group with rules/snapshots/logs/references/scratch notes.
 /// Listing would otherwise return a confused shape.
 /// A memory that self-declares kind `feature` but carries no `[feature]` block is NOT skipped silently.
