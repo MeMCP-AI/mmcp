@@ -7,14 +7,14 @@
 //! - `mmcp-gui`'s widget tests: this surface stays stable so that crate can pick it up unchanged.
 //! - Any future third-party consumer driving the store programmatically.
 //!
-//! Gated behind the `testing` Cargo feature,
-//! so downstream crates opt in via `mmcp-store = { ..., features = ["testing"] }`,
-//! and release builds don't pay the `tempfile` compile cost.
-//! A `#[cfg(test)]` equivalent inside the source tree wouldn't let outside crates reach these helpers,
-//! hence the feature flag.
+//! Gated behind the `testing` Cargo feature.
+//! Downstream crates opt in via `mmcp-store = { ..., features = ["testing"] }`.
+//! That keeps a release build from paying the `tempfile` compile cost.
+//! A `#[cfg(test)]` equivalent inside the source tree wouldn't let outside crates reach these helpers.
+//! Hence the feature flag.
 //!
-//! The helpers intentionally hold onto their `TempDir` handles:
-//! when the fixture goes out of scope the backing directory is removed.
+//! The helpers intentionally hold onto their `TempDir` handles.
+//! When the fixture goes out of scope, the backing directory is removed.
 //! That keeps tests leak-free without any explicit teardown.
 
 use std::path::PathBuf;
@@ -53,16 +53,15 @@ pub struct ScratchHome {
 impl ScratchHome {
     /// Build a scratch home and fully initialise its backend, group index, and session store.
     ///
-    /// Errors surface as [`StoreError`] so callers can match on the canonical store-side error shape,
-    /// without juggling intermediate conversions.
-    /// Propagated backend/index failures only happen in genuinely pathological test setups (e.g. a poisoned tempdir),
-    /// so most call sites `.expect("scratch home")` and move on.
+    /// Errors surface as [`StoreError`] so callers can match on the canonical store-side error shape.
+    /// That avoids juggling intermediate conversions.
+    /// Propagated backend/index failures only happen in genuinely pathological test setups, e.g. a poisoned tempdir.
+    /// Most call sites `.expect("scratch home")` and move on.
     pub async fn new() -> Result<Self, StoreError> {
-        // `TempDir::new` retries several randomly named candidates
-        // internally and does not expose which one failed, so this
-        // names the OS temp root the attempt happened under rather
-        // than misreporting it as the exact path that failed
-        // (`StoreError::TempDirUnavailable`'s doc comment).
+        // `TempDir::new` retries several randomly named candidates internally.
+        // It does not expose which one failed.
+        // So this names the OS temp root instead of misreporting the exact path that failed.
+        // See `StoreError::TempDirUnavailable`'s doc comment.
         let tmp = TempDir::new().map_err(|source| StoreError::TempDirUnavailable {
             root: std::env::temp_dir(),
             source,
@@ -98,8 +97,7 @@ impl ScratchHome {
     }
 
     /// The live [`GroupIndex`].
-    /// Refreshed lazily by the fixture methods that create groups;
-    /// callers can also poke `.refresh()` on it directly.
+    /// Refreshed lazily by the fixture methods that create groups; callers can also poke `.refresh()` on it directly.
     #[must_use]
     pub fn groups(&self) -> &GroupIndex {
         &self.groups
@@ -125,8 +123,8 @@ impl ScratchHome {
         self.home.repos_root()
     }
 
-    /// Create a fresh bare repo backed by a new [`GroupManifest`],
-    /// and refresh the group index so callers can resolve the new entry immediately.
+    /// Create a fresh bare repo backed by a new [`GroupManifest`].
+    /// Refresh the group index so callers can resolve the new entry immediately.
     pub async fn seed_group(&self, slug: &str) -> Result<SeededGroup, StoreError> {
         let group_id = GroupId::new();
         let owner = Uuid::now_v7();
@@ -141,8 +139,8 @@ impl ScratchHome {
     }
 }
 
-/// Return value of [`ScratchHome::seed_group`]:
-/// enough to drive memory CRUD against the freshly-created group without re-walking the index.
+/// Return value of [`ScratchHome::seed_group`].
+/// Enough to drive memory CRUD against the freshly-created group without re-walking the index.
 #[derive(Debug, Clone)]
 pub struct SeededGroup {
     /// Stable [`GroupId`] of the new group.
@@ -156,9 +154,9 @@ pub struct SeededGroup {
 
 /// Build a [`ResolvedAuthor`] with stable, non-real credentials.
 ///
-/// Kept ephemeral, same name/email every time,
-/// so tests that assert on commit metadata can compare against a known pair,
-/// without touching the operator's real git config.
+/// Kept ephemeral, same name/email every time.
+/// Tests that assert on commit metadata can compare against a known pair.
+/// This never touches the operator's real git config.
 #[must_use]
 pub fn ephemeral_author() -> ResolvedAuthor {
     ResolvedAuthor {
@@ -237,8 +235,8 @@ pub async fn overwrite_raw_bytes(
 
 /// Continuation byte invalid at any position in a UTF-8 stream.
 ///
-/// `0x80` never starts a valid UTF-8 sequence and never appears as a bare lead byte, so writing it
-/// anywhere always breaks decoding at that offset.
+/// `0x80` never starts a valid UTF-8 sequence and never appears as a bare lead byte.
+/// Writing it anywhere always breaks decoding at that offset.
 const INVALID_UTF8_CONTINUATION_BYTE: u8 = 0x80;
 
 /// Corrupt `source` into invalid UTF-8 at the byte offset where `marker` starts.
