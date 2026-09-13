@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use mmcp_core::id::{GroupId, UserId};
 use mmcp_core::manifest::GroupManifest;
-use mmcp_core::memory::MemoryFrontmatter;
+use mmcp_core::memory::{BumpIntent, MemoryFrontmatter, MemoryRef};
 use mmcp_git::{GitBackend, NativeBackend, RepoHandle, Rev};
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -165,8 +165,8 @@ pub fn ephemeral_author() -> ResolvedAuthor {
 
 /// Resolve `slug` to its on-disk memory and return its raw frontmatter.
 ///
-/// A test assertion often needs a field a tracker's own record shape omits
-/// (`tags`, `refs`, `source`, `bump_intent`, `version`).
+/// A test assertion often needs a field a tracker's own record shape omits.
+/// Examples: `tags`, `refs`, `source`, `bump_intent`, `version`.
 /// This pairs [`resolve_memory`] with the crate's frontmatter reader in one call.
 pub async fn read_current_frontmatter(
     backend: &NativeBackend,
@@ -175,4 +175,42 @@ pub async fn read_current_frontmatter(
 ) -> Result<MemoryFrontmatter, ImportError> {
     let resolved = resolve_memory(backend, handle, Some(slug), None).await?;
     read_frontmatter_at(backend, handle, &Rev::head(), &resolved.path).await
+}
+
+/// Set every tracker-non-owned [`MemoryFrontmatter`] field to a non-default value.
+///
+/// A field left at its type default (`Vec::new()`, `false`, `None`) cannot prove preservation:
+/// a bug that resets the field to its default would pass unnoticed.
+/// `id`, `name`, `description`, `kind`, and the tracker metadata blocks are untouched here;
+/// callers set those through the ordinary [`MemoryFrontmatter`] constructors.
+#[must_use]
+pub fn seed_unowned_fields(frontmatter: MemoryFrontmatter) -> MemoryFrontmatter {
+    // "1.2.3" is a fixed valid semver literal: this parse can never fail.
+    #[allow(clippy::expect_used)]
+    let version = "1.2.3".parse().expect("valid semver literal");
+    frontmatter
+        .with_tags(vec!["alpha".to_string(), "beta".to_string()])
+        .with_mandatory(true)
+        .with_bump_intent(Some(BumpIntent::Patch))
+        .with_source(Some(Uuid::now_v7()))
+        .with_version(Some(version))
+        .with_refs(vec![MemoryRef::new(Uuid::now_v7(), "deadbeefcafe")])
+}
+
+/// Assert that `after` differs from `before` in exactly the fields `apply_owned` mutates.
+///
+/// Clones `before`, applies `apply_owned` to the clone, and compares the result against `after`
+/// field by field via [`MemoryFrontmatter`]'s `PartialEq`.
+/// Covers every field the struct declares, including a field added later.
+pub fn assert_update_changed_only(
+    before: &MemoryFrontmatter,
+    after: &MemoryFrontmatter,
+    apply_owned: impl FnOnce(&mut MemoryFrontmatter),
+) {
+    let mut expected = before.clone();
+    apply_owned(&mut expected);
+    assert_eq!(
+        after, &expected,
+        "an update must change only the fields it owns"
+    );
 }

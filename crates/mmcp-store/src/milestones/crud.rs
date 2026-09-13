@@ -435,7 +435,6 @@ mod tests {
     use crate::cache::open_pool;
     use crate::memory::import_memory;
     use crate::testing::ScratchHome;
-    use mmcp_core::memory::{BumpIntent, MemoryRef};
 
     async fn scratch_pool() -> (tempfile::TempDir, SqlitePool) {
         let tmp = tempfile::TempDir::new().expect("tempdir");
@@ -543,7 +542,7 @@ mod tests {
     }
 
     /// An update naming only one field leaves every other field untouched.
-    /// Covers `tags`, `mandatory`, `bump_intent`, `source`, `version`, and `refs`.
+    /// Compares the whole frontmatter, so a field this test does not name by hand is still covered.
     /// This module has no refs-editing surface, so `refs` must survive unchanged.
     #[tokio::test]
     async fn update_preserves_frontmatter_fields_it_does_not_own() {
@@ -552,23 +551,16 @@ mod tests {
         let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
         let (_tmp, pool) = scratch_pool().await;
 
-        let source_id = Uuid::now_v7();
-        let seeded_ref = MemoryRef::new(Uuid::now_v7(), "deadbeefcafe");
         let seeded_file = MemoryFile {
-            frontmatter: MemoryFrontmatter::new("Before", "unchanged", MemoryKind::Milestone)
-                .with_milestone(MilestoneMetadata {
-                    status: MilestoneStatus::Planning,
-                })
-                .with_tags(vec!["alpha".to_string(), "beta".to_string()])
-                .with_mandatory(true)
-                .with_bump_intent(Some(BumpIntent::Patch))
-                .with_source(Some(source_id))
-                .with_refs(vec![seeded_ref.clone()])
-                .with_version(Some("1.2.3".parse().expect("valid semver literal"))),
+            frontmatter: crate::testing::seed_unowned_fields(
+                MemoryFrontmatter::new("Before", "unchanged", MemoryKind::Milestone)
+                    .with_milestone(MilestoneMetadata {
+                        status: MilestoneStatus::Planning,
+                    }),
+            ),
             body: "body".to_string(),
             format: FrontmatterFormat::TomlPlus,
         };
-        let seeded_version = seeded_file.frontmatter.version.clone();
         import_memory(
             scratch.backend(),
             &entry.handle,
@@ -580,37 +572,13 @@ mod tests {
         )
         .await
         .expect("seed tagged milestone");
-
-        let assert_carried_forward = |frontmatter: &MemoryFrontmatter| {
-            assert_eq!(
-                frontmatter.tags,
-                vec!["alpha".to_string(), "beta".to_string()],
-                "an update naming only one field must not reset tags"
-            );
-            assert!(
-                frontmatter.mandatory,
-                "an update naming only one field must not reset mandatory"
-            );
-            assert_eq!(
-                frontmatter.bump_intent,
-                Some(BumpIntent::Patch),
-                "an update naming only one field must not reset bump_intent"
-            );
-            assert_eq!(
-                frontmatter.source,
-                Some(source_id),
-                "an update naming only one field must not reset source"
-            );
-            assert_eq!(
-                frontmatter.refs,
-                vec![seeded_ref.clone()],
-                "an update naming only one field must not drop refs"
-            );
-            assert_eq!(
-                frontmatter.version, seeded_version,
-                "an update naming only one field must not reset version"
-            );
-        };
+        let before = crate::testing::read_current_frontmatter(
+            scratch.backend(),
+            &entry.handle,
+            "tagged-milestone",
+        )
+        .await
+        .expect("read seeded frontmatter");
 
         update_milestone(
             scratch.backend(),
@@ -626,14 +594,19 @@ mod tests {
         )
         .await
         .expect("status-only update");
-        let frontmatter = crate::testing::read_current_frontmatter(
+        let after_status = crate::testing::read_current_frontmatter(
             scratch.backend(),
             &entry.handle,
             "tagged-milestone",
         )
         .await
         .expect("read frontmatter after status-only update");
-        assert_carried_forward(&frontmatter);
+        crate::testing::assert_update_changed_only(&before, &after_status, |fm| {
+            fm.milestone
+                .as_mut()
+                .expect("milestone block present")
+                .status = MilestoneStatus::Active;
+        });
 
         update_milestone(
             scratch.backend(),
@@ -649,14 +622,16 @@ mod tests {
         )
         .await
         .expect("description-only update");
-        let frontmatter = crate::testing::read_current_frontmatter(
+        let after_description = crate::testing::read_current_frontmatter(
             scratch.backend(),
             &entry.handle,
             "tagged-milestone",
         )
         .await
         .expect("read frontmatter after description-only update");
-        assert_carried_forward(&frontmatter);
+        crate::testing::assert_update_changed_only(&after_status, &after_description, |fm| {
+            fm.description = "a different unrelated description".to_string();
+        });
     }
 
     #[tokio::test]
