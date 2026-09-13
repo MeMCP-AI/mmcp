@@ -174,6 +174,37 @@ pub enum ImportError {
     BodyResultTooLarge { limit: usize, size: usize },
 }
 
+impl ImportError {
+    /// One code per variant; no wildcard, so a new variant needs its own arm.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidSlug(_) => "invalid_slug",
+            Self::MissingFrontmatter => "memory_missing_frontmatter",
+            Self::Parse(_) => "memory_parse_failed",
+            Self::Git(_) => "git_backend",
+            Self::Render(_) => "memory_render_failed",
+            Self::UnknownKind(_) => "memory_unknown_kind",
+            Self::GroupNotFound(_) => "group_not_found",
+            Self::MemoryAlreadyExists { .. } => "memory_already_exists",
+            Self::MemoryNotFound { .. } => "memory_not_found",
+            Self::MemoryAmbiguous { .. } => "memory_ambiguous",
+            Self::MemoryIdMismatch { .. } => "memory_id_mismatch",
+            Self::IdMismatchOnFilenameWrite { .. } => "id_mismatch_on_filename_write",
+            Self::ResolveArgsMissing => "resolve_args_missing",
+            Self::FieldTooLong(inner) => match inner {
+                mmcp_core::memory::FieldLengthError::TooLong { .. } => "field_too_long",
+                mmcp_core::memory::FieldLengthError::TooMany { .. } => "field_too_many",
+            },
+            Self::NotACreatableKind { .. } => "not_a_creatable_kind",
+            Self::NotUtf8 { .. } => "memory_not_utf8",
+            Self::TicketCounterOverflow => "ticket_counter_overflow",
+            Self::Edit(_) => "memory_edit_failed",
+            Self::BodyResultTooLarge { .. } => "body_result_too_large",
+        }
+    }
+}
+
 /// Per-file reference to a memory on disk.
 /// Returned by [`list_all_memory_files`] so callers get a direct path
 /// plus the slug/id pair the `memories/<slug>/<uuid>.md` layout encodes.
