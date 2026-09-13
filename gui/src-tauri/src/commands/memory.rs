@@ -2,10 +2,10 @@
 
 use mmcp_core::id::GroupId;
 use mmcp_core::memory::{MemoryFile, MemoryFrontmatter, MemoryKind};
-use mmcp_git::{GitBackend, Rev};
+use mmcp_git::{GitBackend, NativeBackend, RepoHandle, Rev};
 use mmcp_store::{
-    AddressingMode, WriteFileOptions, WriteMemoryOptions, delete_file_at_path, resolve_memory,
-    write_file_at_path, write_memory_by_id,
+    AddressingMode, MemorySlugDir, WriteFileOptions, WriteMemoryOptions, delete_file_at_path,
+    list_memory_slug_dirs, resolve_memory, write_file_at_path, write_memory_by_id,
 };
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -273,17 +273,32 @@ pub async fn list_memory_slugs(
 ) -> GuiResult<Vec<String>> {
     tracing::debug!(group_id = %group_id, "ipc: list_memory_slugs");
     let entry = group_entry(&state, &group_id).await?;
-    let mut slugs = state
-        .backend
-        .list_subtrees(
-            &entry.handle,
-            mmcp_core::conventions::MEMORIES_DIR,
-            &Rev::head(),
-        )
+    // `list_memory_slug_dirs` already sorts by slug and already excludes
+    // folder-only path segments (see `list_descriptors_in` below).
+    let slugs = list_memory_slug_dirs(&state.backend, &entry.handle, &Rev::head())
         .await
-        .map_err(GuiError::from)?;
-    slugs.sort();
+        .map_err(GuiError::from)?
+        .into_iter()
+        .map(|dir| dir.slug)
+        .collect();
     Ok(slugs)
+}
+
+/// Locate the single UUID-named memory blob inside a resolved slug directory.
+/// [`list_memory_slug_dirs`] guarantees at least one `.md`-suffixed filename per entry;
+/// this narrows that guarantee to exactly one UUID-stemmed filename, the shape
+/// every memory file on disk follows.
+fn slug_dir_memory_path(dir: &MemorySlugDir) -> Result<String, &'static str> {
+    let ext = mmcp_core::conventions::MEMORY_EXTENSION;
+    let mut uuid_filenames = dir.filenames.iter().filter(|f| {
+        f.strip_suffix(ext)
+            .is_some_and(|stem| Uuid::parse_str(stem).is_ok())
+    });
+    match (uuid_filenames.next(), uuid_filenames.next()) {
+        (Some(only), None) => Ok(format!("{}/{}", dir.dir, only)),
+        (None, _) => Err("no UUID-named memory file in slug directory"),
+        (Some(_), Some(_)) => Err("ambiguous slug directory: multiple memory files"),
+    }
 }
 
 /// Decode `bytes` as UTF-8 and parse them as a memory file, producing either a
@@ -315,60 +330,58 @@ fn classify_memory_bytes(
     ))
 }
 
-/// Frontmatter for every memory in one group, plus the group tip commit.
-/// Returns [`MemoryDescriptorListDto`].
+/// Core of [`list_memory_descriptors`]: frontmatter for every memory in one group,
+/// plus the group tip commit.
+/// Extracted so a test can drive it with a real git backend without needing a live Tauri `State`.
+///
+/// Walks [`list_memory_slug_dirs`] instead of a one-level directory listing, so a
+/// folder-only path segment (for example `git`, holding only nested `git/tooling`
+/// and never a memory file of its own) is never probed as a candidate slug: it is
+/// excluded upstream, before this function ever sees it, rather than resolved and
+/// rejected here. A slug directory this function DOES receive but that carries zero
+/// or several UUID-named files is a genuine data defect, still reported via `skipped`.
+///
 /// A slug that cannot be resolved, read, decoded as UTF-8, or parsed is logged
 /// AND reported back in the response's `skipped` list, never dropped silently:
 /// `Ok(descriptors)` alone would let the caller mistake a truncated listing for
 /// a complete one, with no way to tell the two apart.
-#[tauri::command]
-pub async fn list_memory_descriptors(
-    group_id: String,
-    state: State<'_, AppState>,
+async fn list_descriptors_in(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    group_id: &str,
 ) -> GuiResult<MemoryDescriptorListDto> {
-    tracing::debug!(group_id = %group_id, "ipc: list_memory_descriptors");
-    let entry = group_entry(&state, &group_id).await?;
-    let mut slugs = state
-        .backend
-        .list_subtrees(
-            &entry.handle,
-            mmcp_core::conventions::MEMORIES_DIR,
-            &Rev::head(),
-        )
+    let slug_dirs = list_memory_slug_dirs(backend, handle, &Rev::head())
         .await
         .map_err(GuiError::from)?;
-    slugs.sort();
 
-    let tip = state
-        .backend
-        .tip_commit(&entry.handle, &Rev::head())
+    let tip = backend
+        .tip_commit(handle, &Rev::head())
         .await
         .map_err(GuiError::from)?;
 
     let mut skipped = Vec::new();
-    let mut resolved_slugs = Vec::with_capacity(slugs.len());
-    let mut paths = Vec::with_capacity(slugs.len());
-    for slug in slugs {
-        match resolve_memory(&state.backend, &entry.handle, Some(&slug), None).await {
-            Ok(resolved) => {
-                resolved_slugs.push(slug);
-                paths.push(resolved.path);
+    let mut resolved_slugs = Vec::with_capacity(slug_dirs.len());
+    let mut paths = Vec::with_capacity(slug_dirs.len());
+    for dir in slug_dirs {
+        match slug_dir_memory_path(&dir) {
+            Ok(path) => {
+                resolved_slugs.push(dir.slug);
+                paths.push(path);
             }
-            Err(err) => {
-                tracing::warn!(group_id = %group_id, slug = %slug, error = %err, "list_memory_descriptors: skipping unresolvable slug");
+            Err(reason) => {
+                tracing::warn!(group_id = %group_id, slug = %dir.slug, reason, "list_memory_descriptors: skipping malformed slug directory");
                 skipped.push(skip_finding(
-                    &group_id,
-                    slug,
+                    group_id,
+                    dir.slug,
                     "memory_unresolvable",
-                    format!("unresolvable: {err}"),
+                    format!("unresolvable: {reason}"),
                 ));
             }
         }
     }
 
-    let batch = state
-        .backend
-        .read_files(&entry.handle, paths, &Rev::head())
+    let batch = backend
+        .read_files(handle, paths, &Rev::head())
         .await
         .map_err(GuiError::from)?;
 
@@ -379,7 +392,7 @@ pub async fn list_memory_descriptors(
             Err(err) => {
                 tracing::warn!(group_id = %group_id, slug = %slug, path = %path, error = %err, "list_memory_descriptors: skipping unreadable file");
                 skipped.push(skip_finding(
-                    &group_id,
+                    group_id,
                     slug,
                     "memory_unreadable",
                     format!("unreadable: {err}"),
@@ -387,7 +400,7 @@ pub async fn list_memory_descriptors(
                 continue;
             }
         };
-        match classify_memory_bytes(&group_id, slug, tip.id.clone(), &bytes) {
+        match classify_memory_bytes(group_id, slug, tip.id.clone(), &bytes) {
             Ok(descriptor) => descriptors.push(descriptor),
             Err(skip) => {
                 tracing::warn!(group_id = %group_id, slug = ?skip.slug, path = %path, reason = %skip.message, "list_memory_descriptors: skipping unusable file");
@@ -399,6 +412,16 @@ pub async fn list_memory_descriptors(
         descriptors,
         skipped,
     })
+}
+
+#[tauri::command]
+pub async fn list_memory_descriptors(
+    group_id: String,
+    state: State<'_, AppState>,
+) -> GuiResult<MemoryDescriptorListDto> {
+    tracing::debug!(group_id = %group_id, "ipc: list_memory_descriptors");
+    let entry = group_entry(&state, &group_id).await?;
+    list_descriptors_in(&state.backend, &entry.handle, &group_id).await
 }
 
 #[tauri::command]
@@ -567,8 +590,32 @@ pub async fn delete_memory(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mmcp_core::id::UserId;
+    use mmcp_core::manifest::GroupManifest;
+    use mmcp_store::{ResolvedAuthor, import_memory};
+    use tempfile::TempDir;
 
     const VALID_MEMORY_BYTES: &[u8] = b"+++\nname = \"Rust Coding Rules\"\ndescription = \"Strict Rust coding conventions\"\nkind = \"rule\"\nmandatory = true\n+++\n# Rust Coding Rules\n\nBody text.\n";
+
+    fn test_author() -> ResolvedAuthor {
+        ResolvedAuthor {
+            name: "test".to_string(),
+            email: "test@test.invalid".to_string(),
+        }
+    }
+
+    /// Real git-backed group repo, one per call, torn down with the returned `TempDir`.
+    /// Mirrors `mmcp_store::memory::tests::test_backend`, kept as its own copy here since
+    /// that one is private to its crate and this crate exercises a different command surface.
+    async fn test_backend() -> (NativeBackend, RepoHandle, TempDir) {
+        let tmp = TempDir::new().expect("tempdir");
+        let backend = NativeBackend::new(tmp.path()).expect("backend");
+        let owner = UserId::new();
+        let group_id = GroupId::new();
+        let manifest = GroupManifest::new_user_owned(group_id, "test", owner);
+        let handle = backend.create_group_repo(&manifest).await.expect("create");
+        (backend, handle, tmp)
+    }
 
     /// Asserts a deliberately-malformed file (no frontmatter fence at all) produces a
     /// populated `skipped` entry carrying `mmcp_store`'s stable
@@ -648,5 +695,88 @@ mod tests {
         assert_eq!(value["descriptors"].as_array().unwrap().len(), 1);
         assert_eq!(value["skipped"].as_array().unwrap().len(), 1);
         assert_eq!(value["skipped"][0]["slug"], "bad");
+    }
+
+    #[test]
+    fn slug_dir_memory_path_rejects_a_folder_only_directory() {
+        let dir = MemorySlugDir {
+            slug: "comments".to_string(),
+            dir: "memories/comments".to_string(),
+            filenames: vec![],
+        };
+        assert!(slug_dir_memory_path(&dir).is_err());
+    }
+
+    #[test]
+    fn slug_dir_memory_path_rejects_an_ambiguous_directory() {
+        let dir = MemorySlugDir {
+            slug: "twin".to_string(),
+            dir: "memories/twin".to_string(),
+            filenames: vec![
+                format!("{}.md", Uuid::now_v7()),
+                format!("{}.md", Uuid::now_v7()),
+            ],
+        };
+        assert!(slug_dir_memory_path(&dir).is_err());
+    }
+
+    #[test]
+    fn slug_dir_memory_path_accepts_a_single_uuid_file() {
+        let id = Uuid::now_v7();
+        let dir = MemorySlugDir {
+            slug: "flat".to_string(),
+            dir: "memories/flat".to_string(),
+            filenames: vec![format!("{id}.md")],
+        };
+        let path = slug_dir_memory_path(&dir).expect("single uuid file resolves");
+        assert_eq!(path, format!("memories/flat/{id}.md"));
+    }
+
+    /// Regression lock for the root cause behind "skipping unresolvable slug": a
+    /// folder-only path segment (`git`, `comments`) is never probed as its own
+    /// slug, and every nested slug still surfaces.
+    /// Fails on the pre-fix one-level `list_subtrees` walk, which enumerated `git`
+    /// and `comments` themselves (both unresolvable, both warned on) and never
+    /// reached `git/tooling`, `git/branches`, `comments/comments`, `comments/child`.
+    #[tokio::test]
+    async fn list_descriptors_in_never_treats_a_folder_prefix_as_its_own_slug() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let content = std::str::from_utf8(VALID_MEMORY_BYTES).expect("ascii fixture");
+        for slug in [
+            "git/tooling",
+            "git/branches",
+            "comments/comments",
+            "comments/child",
+            "flat",
+        ] {
+            import_memory(&backend, &handle, slug, content, None, &author, false)
+                .await
+                .unwrap_or_else(|err| panic!("seed {slug}: {err}"));
+        }
+
+        let result = list_descriptors_in(&backend, &handle, "test-group")
+            .await
+            .expect("list descriptors");
+
+        assert!(
+            result.skipped.is_empty(),
+            "unexpected skips: {:?}",
+            result.skipped
+        );
+        let mut slugs: Vec<&str> = result.descriptors.iter().map(|d| d.slug.as_str()).collect();
+        slugs.sort_unstable();
+        assert_eq!(
+            slugs,
+            vec![
+                "comments/child",
+                "comments/comments",
+                "flat",
+                "git/branches",
+                "git/tooling"
+            ]
+        );
+        assert!(!slugs.contains(&"git"));
+        assert!(!slugs.contains(&"comments"));
     }
 }
