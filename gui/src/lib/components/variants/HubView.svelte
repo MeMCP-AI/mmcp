@@ -1,7 +1,9 @@
 <script lang="ts">
   // GitHub-scale navigation: routed screens Home → Scope → Group → Memory.
-  // Every screen reaches into shared primitives (MemoryRow, MemoryTree, GroupRow, ScopeTile,
+  // Every screen reaches into shared primitives (MemoryTree, GroupRow, ScopeTile,
   // MemoryReader, RelatedPanel, SearchInput, KindFilterRow, MandatoryToggle).
+  // Every memory list (Home signals, Group, global search) presents its `/`-segments as
+  // folders through MemoryTree, grouped per source group since a slug is only unique there.
   // This component owns the routing state and data-loading effects only.
 
   import {
@@ -15,13 +17,10 @@
     PinOff,
     Star
   } from '@lucide/svelte';
-  import FeatureBadge from '../FeatureBadge.svelte';
   import GroupRow from '../primitives/GroupRow.svelte';
-  import KindBadge from '../KindBadge.svelte';
   import KindFilterRow from '../primitives/KindFilterRow.svelte';
   import MandatoryToggle from '../primitives/MandatoryToggle.svelte';
   import MemoryReader from '../primitives/MemoryReader.svelte';
-  import MemoryRow from '../primitives/MemoryRow.svelte';
   import MemoryTree from '../primitives/MemoryTree.svelte';
   import RelatedPanel from '../primitives/RelatedPanel.svelte';
   import ScopeIcon from '../primitives/ScopeIcon.svelte';
@@ -35,7 +34,7 @@
   import { memoriesStore } from '$lib/stores/memories.svelte';
   import { groupsStore } from '$lib/stores/groups.svelte';
   import { matchesMemoryFilter } from '$lib/utils/filter';
-  import { buildMemoryTree } from '$lib/utils/memory_tree';
+  import { buildMemoryTree, type MemoryTreeNode } from '$lib/utils/memory_tree';
   import { classifyMemoryKind, type MemoryClass } from '$lib/utils/memory_kind';
   import { SCOPE_META, SCOPE_ORDER } from '$lib/utils/scope';
   import type { GroupEntry, GroupScope, KindStr, MemoryFile, MemoryFrontmatter } from '$lib/types';
@@ -211,6 +210,55 @@
         e.frontmatter.feature?.status === 'requested'
     )
   );
+
+  // ---------------------------------------------------------------
+  //  Cross-group folder presentation
+  // ---------------------------------------------------------------
+  //
+  // A slug is only unique within its own group, and MemoryTree's `onSelect`
+  // callback carries a bare slug, so every list that mixes groups (Home's
+  // mandatory/open-issues signals, the global search dropdown) builds one
+  // folder tree per group rather than a single tree spanning them all.
+
+  interface GroupedMemoryTree {
+    group: GroupEntry;
+    tree: MemoryTreeNode<{ slug: string; body: MemoryFile | undefined }>[];
+  }
+
+  function groupTreesByGroup<T extends { groupId: string; group: GroupEntry; slug: string }>(
+    items: readonly T[],
+    toBody: (item: T) => MemoryFile | undefined
+  ): GroupedMemoryTree[] {
+    const groupOrder: string[] = [];
+    const entriesByGroup = new Map<
+      string,
+      { group: GroupEntry; entries: { slug: string; body: MemoryFile | undefined }[] }
+    >();
+    for (const item of items) {
+      let bucket = entriesByGroup.get(item.groupId);
+      if (!bucket) {
+        bucket = { group: item.group, entries: [] };
+        entriesByGroup.set(item.groupId, bucket);
+        groupOrder.push(item.groupId);
+      }
+      bucket.entries.push({ slug: item.slug, body: toBody(item) });
+    }
+    return groupOrder.map((gid) => {
+      // `gid` was only ever pushed alongside a bucket insertion, so the entry always exists.
+      const bucket = entriesByGroup.get(gid)!;
+      return { group: bucket.group, tree: buildMemoryTree(bucket.entries) };
+    });
+  }
+
+  const mandatoryMemoryTrees = $derived.by(() =>
+    groupTreesByGroup(mandatoryMemories.slice(0, 10), (e) => ({ frontmatter: e.frontmatter, body: '' }))
+  );
+
+  const openIssueTrees = $derived.by(() =>
+    groupTreesByGroup(openIssues.slice(0, 10), (e) => ({ frontmatter: e.frontmatter, body: '' }))
+  );
+
+  const globalHitTrees = $derived.by(() => groupTreesByGroup(globalHits, (h) => h.body));
 
   // ---------------------------------------------------------------
   //  Group-screen filters
@@ -397,33 +445,24 @@
               No matches in cached memories.
             </div>
           {:else}
-            <ul>
-              {#each globalHits as hit (hit.groupId + ':' + hit.slug)}
-                <li>
-                  <button
-                    type="button"
-                    class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-surface-2"
-                    onmousedown={(e) => e.preventDefault()}
-                    onclick={() => gotoMemory(hit.groupId, hit.slug)}
-                  >
-                    <KindBadge kind={hit.body.frontmatter.kind} mode="icon" />
-                    <div class="min-w-0 flex-1">
-                      <div class="truncate text-fg">{hit.body.frontmatter.name}</div>
-                      <div class="truncate text-[10px] text-fg-subtle">
-                        {hit.group.slug} / {hit.slug}
-                      </div>
-                    </div>
-                    {#if hit.body.frontmatter.feature}
-                      <FeatureBadge
-                        status={hit.body.frontmatter.feature.status}
-                        number={hit.body.frontmatter.feature.number}
-                        label={false}
-                      />
-                    {/if}
-                  </button>
-                </li>
+            <!-- Each hit's `/`-segments render as folders; a search match is always inside an
+                 already-expanded folder, so `forceExpand` keeps it visible without a click. -->
+            <!-- A row click still lands before the input's blur closes this dropdown: -->
+            <!-- `onBlur` above defers closing by 120ms, well past the click's own event turn. -->
+            <div class="flex flex-col gap-2 px-1 py-1">
+              {#each globalHitTrees as g (g.group.group_id)}
+                <div>
+                  <div class="px-2 py-0.5 text-[10px] uppercase tracking-wide text-fg-subtle">
+                    {g.group.slug}
+                  </div>
+                  <MemoryTree
+                    nodes={g.tree}
+                    forceExpand
+                    onSelect={(slug) => gotoMemory(g.group.group_id, slug)}
+                  />
+                </div>
               {/each}
-            </ul>
+            </div>
           {/if}
         </div>
       {/if}
@@ -489,18 +528,24 @@
               None cached yet. Mandatory memories will appear once their groups load.
             </div>
           {:else}
-            <ul class="flex flex-col gap-1.5">
-              {#each mandatoryMemories.slice(0, 10) as hit (hit.groupId + ':' + hit.slug)}
-                <li>
-                  <MemoryRow
-                    slug={hit.slug}
-                    descriptor={{ frontmatter: hit.frontmatter }}
-                    subtitle={`${SCOPE_META[hit.group.scope].label} · ${hit.group.slug}`}
-                    onSelect={() => gotoMemory(hit.groupId, hit.slug)}
-                  />
-                </li>
+            <!-- A short, curated signal list: every folder starts expanded so the
+                 handful of matches never hide behind an extra click. -->
+            <div class="flex flex-col gap-3">
+              {#each mandatoryMemoryTrees as g (g.group.group_id)}
+                <div>
+                  <div class="mb-1 text-[10px] uppercase tracking-wide text-fg-subtle">
+                    {SCOPE_META[g.group.scope].label} · {g.group.display_name ?? g.group.slug}
+                  </div>
+                  <div class="flex flex-col gap-1.5">
+                    <MemoryTree
+                      nodes={g.tree}
+                      forceExpand
+                      onSelect={(slug) => gotoMemory(g.group.group_id, slug)}
+                    />
+                  </div>
+                </div>
               {/each}
-            </ul>
+            </div>
           {/if}
         </section>
 
@@ -513,18 +558,22 @@
               No open feature requests cached. They'll appear as their groups load.
             </div>
           {:else}
-            <ul class="flex flex-col gap-1.5">
-              {#each openIssues.slice(0, 10) as hit (hit.groupId + ':' + hit.slug)}
-                <li>
-                  <MemoryRow
-                    slug={hit.slug}
-                    descriptor={{ frontmatter: hit.frontmatter }}
-                    subtitle={`${SCOPE_META[hit.group.scope].label} · ${hit.group.slug}`}
-                    onSelect={() => gotoMemory(hit.groupId, hit.slug)}
-                  />
-                </li>
+            <div class="flex flex-col gap-3">
+              {#each openIssueTrees as g (g.group.group_id)}
+                <div>
+                  <div class="mb-1 text-[10px] uppercase tracking-wide text-fg-subtle">
+                    {SCOPE_META[g.group.scope].label} · {g.group.display_name ?? g.group.slug}
+                  </div>
+                  <div class="flex flex-col gap-1.5">
+                    <MemoryTree
+                      nodes={g.tree}
+                      forceExpand
+                      onSelect={(slug) => gotoMemory(g.group.group_id, slug)}
+                    />
+                  </div>
+                </div>
               {/each}
-            </ul>
+            </div>
           {/if}
         </section>
       </div>
