@@ -61,10 +61,10 @@ pub fn build_oauth_client(cfg: &OAuthProviderConfig, origin: &str) -> Result<Oau
 ///
 /// `oauth2`'s `reqwest` feature implements `AsyncHttpClient` only for its own pulled `reqwest` version.
 /// That version is re-exported as [`oauth2::reqwest`].
-/// It is a different type from this workspace's own `reqwest` dependency.
+/// It is a different type from this crate's own `reqwest` dependency.
 /// This crate's own `reqwest` is used everywhere else, including this handler's GitHub userinfo fetch.
 /// The two types cannot be swapped for each other.
-/// So the token exchange uses this client, while every other HTTP call in the crate keeps using the workspace's own.
+/// So the token exchange uses this client, while every other HTTP call in the crate keeps using its own.
 ///
 /// `redirect(Policy::none())`: the token endpoint is not expected to redirect.
 /// Blindly following a redirect on this POST would replay the client secret and authorization code.
