@@ -6,8 +6,8 @@
 //! A group whose individual records are all small can still overflow a client's per-response ceiling.
 //! An unfiltered `list_memories` call returning hundreds of them is enough.
 //! `read_memory` itself carries no bound here: a memory body reads back whole regardless of size.
-//! See the operator directive recorded alongside [`crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES`].
-//! That constant is the one owner of the write-time body ceiling this module's page-size defaults derive from.
+//! [`crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES`] is the one owner of the write-time body ceiling
+//! this module's page-size defaults derive from.
 //!
 //! ## Evidence (measured response sizes)
 //!
@@ -21,7 +21,7 @@
 //! ## Shared shape
 //!
 //! [`ResponseEnvelope`] is the ONE pagination shape every tool uses to page its response below the full result set.
-//! Tools using it: `list_memories`, `list_versions`, and `list_groups`.
+//! Tools using it: `list_memories`, `list_versions`, `list_groups`, and `list_milestones`.
 //! `list_memories` pages its non-mandatory window by offset/limit.
 //! A caller learns the pattern once instead of once per tool.
 
@@ -89,9 +89,8 @@ pub struct ResponseEnvelope {
     /// How much this response actually returned, same unit as
     /// `total`.
     pub returned: usize,
-    /// Where to resume (byte offset or item offset) to get the
-    /// rest, when `truncated`. `None` when nothing remains to fetch
-    /// in this shape.
+    /// Item offset to resume from to get the rest, when `truncated`.
+    /// `None` when nothing remains to fetch in this shape.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_offset: Option<usize>,
 }

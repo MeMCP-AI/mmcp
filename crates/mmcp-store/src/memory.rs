@@ -817,7 +817,10 @@ fn body_result_bytes(body: &str) -> usize {
 
 /// Estimated inline-result byte size of `rendered`'s frontmatter and body.
 /// The JSON-escaped byte length of each, plus [`RESULT_ENVELOPE_RESERVE_BYTES`].
-/// Matches what `read_memory`'s response returns for a memory holding this content.
+/// An estimate, not an exact figure: it serializes `MemoryFrontmatter` directly with serde,
+/// while `read_memory`'s response reshapes frontmatter through the MCP layer's own `frontmatter_to_json`.
+/// The store layer cannot call that function without depending on its caller, so
+/// [`RESULT_ENVELOPE_RESERVE_BYTES`] absorbs the difference instead of the two being made to match exactly.
 fn estimated_result_bytes(rendered: &str) -> Result<usize, ImportError> {
     let file = MemoryFile::parse(rendered)?;
     let frontmatter_bytes =

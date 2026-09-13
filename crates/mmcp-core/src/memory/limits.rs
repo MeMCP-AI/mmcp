@@ -70,7 +70,8 @@ pub const MAX_TAG_COUNT: usize = 32;
 /// Measured against Claude Code 2.1.266 (13 September 2026).
 /// Inline up to roughly 49,730 characters; saved to a file at 50,130.
 /// A saved-to-file result is not a reliable read for an agent.
-/// A memory WRITE bounds the new body to this many bytes (see `mmcp_store::memory::validate_write_content_lengths`).
+/// A memory WRITE bounds its estimated inline-result size, not the new body directly, to this many bytes
+/// (see `mmcp_store::memory::enforce_write_result_ceiling`).
 /// `read_memory` itself stays unbounded: an existing body already above this ceiling still reads back whole.
 pub const MCP_CLIENT_RESULT_CEILING_BYTES: usize = 48 * 1024;
 
