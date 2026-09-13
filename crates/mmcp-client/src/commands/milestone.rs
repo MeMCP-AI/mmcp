@@ -47,7 +47,8 @@ pub enum MilestoneCommand {
 
 #[derive(Debug, Args, Default)]
 pub struct AddArgs {
-    /// Stable slug. Auto-minted from the title when omitted.
+    /// Stable slug.
+    /// Auto-minted from the title when omitted.
     /// Prefer an explicit slug grouped under a subject prefix (`<area>/<short-slug>`).
     #[arg(long)]
     pub slug: Option<String>,

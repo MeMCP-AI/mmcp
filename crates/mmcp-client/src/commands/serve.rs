@@ -1326,7 +1326,8 @@ struct AddFeatureArgs {
     #[serde(default)]
     pub project: Option<String>,
 
-    /// Stable slug for the FR. Auto-minted from the title when omitted.
+    /// Stable slug for the FR.
+    /// Auto-minted from the title when omitted.
     /// When present must satisfy the memory-slug contract.
     /// Prefer an explicit slug grouped under a subject prefix (`<area>/<short-slug>`).
     #[serde(default)]
@@ -1534,8 +1535,8 @@ struct MoveMemoryArgs {
     #[serde(default)]
     pub id: Option<String>,
     /// New slug path.
-    /// May be a single segment (`feedback`) or a `/`-joined multi-segment path
-    /// (`feedback/git/commit-phase`) up to [`mmcp_store::MAX_SLUG_SEGMENTS`] segments.
+    /// May be a single segment (`feedback`) or a `/`-joined multi-segment path (`feedback/git/commit-phase`).
+    /// Up to [`mmcp_store::MAX_SLUG_SEGMENTS`] segments.
     /// Group it under a subject prefix nested with `/`, never a hyphenated form.
     pub new_slug: String,
     /// Optional override for the git commit message.
@@ -1611,7 +1612,8 @@ struct AddIssueArgs {
     #[serde(default)]
     pub project: Option<String>,
 
-    /// Stable slug for the issue. Auto-minted from the title when omitted.
+    /// Stable slug for the issue.
+    /// Auto-minted from the title when omitted.
     /// When present must satisfy the memory-slug contract.
     /// Prefer an explicit slug grouped under a subject prefix (`<area>/<short-slug>`).
     #[serde(default)]
@@ -1844,7 +1846,8 @@ struct AddMilestoneArgs {
     #[serde(default)]
     pub project: Option<String>,
 
-    /// Stable slug for the milestone. Auto-minted from the title when omitted.
+    /// Stable slug for the milestone.
+    /// Auto-minted from the title when omitted.
     /// Prefer an explicit slug grouped under a subject prefix (`<area>/<short-slug>`).
     #[serde(default)]
     pub slug: Option<String>,
