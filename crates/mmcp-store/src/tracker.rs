@@ -248,6 +248,46 @@ pub fn not_utf8_finding(group: &str, slug: &str, err: &std::str::Utf8Error) -> F
     }
 }
 
+/// The wire-facing error code for `err`.
+/// The single owner of the `ImportError`-to-code vocabulary: the MCP tool layer
+/// (`map_memory_error_to_mcp`), the GUI backend, and any future consumer all call
+/// this instead of naming their own string per variant, so one variant carries one
+/// code everywhere instead of drifting per surface (`memory_not_found` vs.
+/// `memory_missing` was one such drift this function closes).
+///
+/// No wildcard arm: adding an `ImportError` variant without adding it here fails
+/// the build, per `global-coding-rules-errors`.
+/// `ImportError::Edit` names only its own outer code; the richer per-`MemoryEditError`-variant
+/// codes are a separate, already-unified vocabulary the MCP layer's
+/// `memory_edit_error_payload` owns.
+#[must_use]
+pub fn import_error_code(err: &ImportError) -> &'static str {
+    match err {
+        ImportError::InvalidSlug(_) => "invalid_slug",
+        ImportError::MissingFrontmatter => "memory_missing_frontmatter",
+        ImportError::Parse(_) => "memory_parse_failed",
+        ImportError::Git(_) => "git_backend",
+        ImportError::Render(_) => "memory_render_failed",
+        ImportError::UnknownKind(_) => "memory_unknown_kind",
+        ImportError::GroupNotFound(_) => "group_not_found",
+        ImportError::MemoryAlreadyExists { .. } => "memory_already_exists",
+        ImportError::MemoryNotFound { .. } => "memory_not_found",
+        ImportError::MemoryAmbiguous { .. } => "memory_ambiguous",
+        ImportError::MemoryIdMismatch { .. } => "memory_id_mismatch",
+        ImportError::IdMismatchOnFilenameWrite { .. } => "id_mismatch_on_filename_write",
+        ImportError::ResolveArgsMissing => "resolve_args_missing",
+        ImportError::FieldTooLong(inner) => match inner {
+            mmcp_core::memory::FieldLengthError::TooLong { .. } => "field_too_long",
+            mmcp_core::memory::FieldLengthError::TooMany { .. } => "field_too_many",
+        },
+        ImportError::NotACreatableKind { .. } => "not_a_creatable_kind",
+        ImportError::NotUtf8 { .. } => "memory_not_utf8",
+        ImportError::TicketCounterOverflow => "ticket_counter_overflow",
+        ImportError::Edit(_) => "memory_edit_failed",
+        ImportError::BodyResultTooLarge { .. } => "body_result_too_large",
+    }
+}
+
 /// Git move-list produced by [`plan_slug_rename`], ready for `CommitSpec::mmcp_commit`.
 pub(crate) type PlannedRename = Vec<(String, Option<Vec<u8>>)>;
 
@@ -653,5 +693,30 @@ mod tests {
             "the read seam must be called exactly once regardless of path count"
         );
         assert_eq!(max, 0);
+    }
+
+    /// `import_error_code` is the single owner every surface consumes.
+    /// `MemoryNotFound` and `MemoryAmbiguous` pin the two names that
+    /// once drifted between the MCP tool layer and the GUI backend.
+    #[test]
+    fn import_error_code_names_every_variant_the_mcp_wire_expects() {
+        assert_eq!(
+            import_error_code(&ImportError::MemoryNotFound {
+                slug: Some("x".to_string()),
+                id: None,
+            }),
+            "memory_not_found"
+        );
+        assert_eq!(
+            import_error_code(&ImportError::MemoryAmbiguous {
+                slug: "x".to_string(),
+                candidates: vec![Uuid::now_v7()],
+            }),
+            "memory_ambiguous"
+        );
+        assert_eq!(
+            import_error_code(&ImportError::GroupNotFound("g".to_string())),
+            "group_not_found"
+        );
     }
 }
