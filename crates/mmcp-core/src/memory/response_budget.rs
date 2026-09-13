@@ -12,45 +12,49 @@
 //! ## Evidence (measured response sizes)
 //!
 //! Measured live against this project's own mmcp mirror:
-//! - `list_memories` on the ~90-memory global group: roughly 60-62 KiB, spilled to a side file
-//!   by the calling harness rather than hard-failing.
-//! - `list_memories` on this project's own ~115-123-memory project group: 73,747 bytes, a hard
-//!   "exceeds maximum allowed tokens" failure.
+//! - `list_memories` on the ~90-memory global group: roughly 60-62 KiB.
+//!   Spilled to a side file by the calling harness rather than hard-failing.
+//! - `list_memories` on this project's own ~115-123-memory project group: 73,747 bytes.
+//!   A hard "exceeds maximum allowed tokens" failure.
 //! - `list_memories` on a 471-memory project group (`hubedia`): 308,678 bytes.
 //!
 //! ## Shared shape
 //!
-//! [`ResponseEnvelope`] is the ONE pagination shape used by every tool that pages its response below the full result set.
-//! Tools using it: `list_memories` (offset/limit pagination of the non-mandatory window), `list_versions`, and `list_groups`.
+//! [`ResponseEnvelope`] is the ONE pagination shape every tool uses to page its response below the full result set.
+//! Tools using it: `list_memories`, `list_versions`, and `list_groups`.
+//! `list_memories` pages its non-mandatory window by offset/limit.
 //! A caller learns the pattern once instead of once per tool.
 
 use serde::Serialize;
 
-/// Estimated TYPICAL serialized JSON size of one COMPACT `list_memories` descriptor
-/// (`slug`, `path`, `name`, `kind`, `mandatory`, plus object/array punctuation).
+/// Estimated TYPICAL serialized JSON size of one COMPACT `list_memories` descriptor.
+/// Fields: `slug`, `path`, `name`, `kind`, `mandatory`, plus object/array punctuation.
 /// This is a measured average, not a worst-case bound.
-/// Field lengths observed on this project's own mmcp mirror average name ~52 chars, slug
-/// ~72 chars, and path ~74 chars, per the measured evidence in the module doc above.
-/// The theoretical worst case runs closer to 838 bytes, well above this constant: `name` at
-/// [`crate::memory::MAX_NAME_LENGTH`] (256 bytes) and `slug` at mmcp-store's `MAX_SLUG_LENGTH`
-/// (256 bytes, re-encoded a second time into `path`), plus JSON punctuation.
-/// [`DEFAULT_LIST_MEMORIES_LIMIT`] therefore fits the client result ceiling for the typical
-/// record sizes actually observed, not as a hard guarantee for a group of unusually long
-/// slugs and names.
+/// Field lengths observed on this project's own mmcp mirror: name averages ~52 chars,
+/// slug ~72 chars, path ~74 chars, per the measured evidence in the module doc above.
+/// The theoretical worst case runs closer to 838 bytes, well above this constant.
+/// That worst case: `name` at [`crate::memory::MAX_NAME_LENGTH`] (256 bytes) and `slug`
+/// at mmcp-store's `MAX_SLUG_LENGTH` (256 bytes, re-encoded a second time into `path`),
+/// plus JSON punctuation.
+/// [`DEFAULT_LIST_MEMORIES_LIMIT`] therefore fits the client result ceiling for the
+/// typical record sizes actually observed.
+/// It is not a hard guarantee for a group of unusually long slugs and names.
 pub const COMPACT_RECORD_ESTIMATED_BYTES: usize = 512;
 
 /// Default page size for `list_memories` pagination when the caller
 /// sets `offset` and/or `limit` but omits an explicit `limit` value.
-/// Derived from [`crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES`] divided by one compact record's estimated size.
-/// The default page fits the client result ceiling with margin left over for the wrapper object and the mandatory set.
+/// Derived from [`crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES`] divided by one
+/// compact record's estimated size.
+/// The default page fits the client result ceiling with margin left over for the
+/// wrapper object and the mandatory set.
 pub const DEFAULT_LIST_MEMORIES_LIMIT: usize =
     crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES / COMPACT_RECORD_ESTIMATED_BYTES;
 
 /// Hard upper clamp on a caller-supplied `limit`, independent of [`DEFAULT_LIST_MEMORIES_LIMIT`].
 /// The largest real group measured on this project's own mmcp mirror carries 471 memories
 /// (the `hubedia` architecture-cleanup-sweep group).
-/// 512 keeps roughly 1.1x headroom above that observed maximum while still bounding a
-/// pathological caller-supplied limit.
+/// 512 keeps roughly 1.1x headroom above that observed maximum.
+/// It still bounds a pathological caller-supplied limit.
 pub const MAX_LIST_MEMORIES_LIMIT: usize = 512;
 
 // Compile-time invariants on the constants above: a violation fails

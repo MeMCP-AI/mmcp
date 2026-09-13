@@ -806,9 +806,8 @@ pub(crate) fn validate_write_content_lengths(rendered: &str) -> Result<(), Impor
 }
 
 /// Reserve added to the JSON-escaped body and frontmatter estimate for the wrapper fields.
-/// `read_memory`'s response adds `group`, `slug`, `id`, `version`, and object/array punctuation
-/// beyond the body and frontmatter, so the estimate does not need to build the whole response
-/// just to measure it.
+/// `read_memory`'s response adds more than the body and frontmatter: `group`, `slug`, `id`, `version`, and punctuation.
+/// The estimate does not need to build the whole response just to measure it.
 const RESULT_ENVELOPE_RESERVE_BYTES: usize = 1024;
 
 /// JSON-escaped byte length of `body`, matching how `read_memory`'s response renders it.
@@ -828,9 +827,9 @@ fn estimated_result_bytes(rendered: &str) -> Result<usize, ImportError> {
         .saturating_add(RESULT_ENVELOPE_RESERVE_BYTES))
 }
 
-/// Refuse `rendered` only when its estimated result size exceeds [`mmcp_core::memory::MCP_CLIENT_RESULT_CEILING_BYTES`].
+/// Refuse `rendered` when its estimated result size exceeds [`mmcp_core::memory::MCP_CLIENT_RESULT_CEILING_BYTES`].
 /// The refusal also requires its body to be larger than `existing`'s body.
-/// `existing` is the content stored at this path today.
+/// `existing` names the content already stored at this path.
 /// `None` means a create, which has no existing body to compare against and so cannot pass the exemption.
 /// The comparison is body-only.
 /// A metadata-only edit (name, tags, frontmatter fields) never trips the gate on an already-oversized body.
@@ -3218,8 +3217,8 @@ mod tests {
     }
 
     /// A body at [`mmcp_core::memory::MAX_BODY_LENGTH`] is refused by the write-time result ceiling.
-    /// [`ImportError::FieldTooLong`] only fires past that hard bound, well above the ceiling
-    /// `import_memory` (a create) enforces.
+    /// [`ImportError::FieldTooLong`] only fires past that hard bound.
+    /// The hard bound sits well above the ceiling `import_memory` (a create) enforces.
     #[tokio::test]
     async fn import_memory_at_the_hard_bound_is_refused_by_the_result_ceiling() {
         let (backend, handle, _tmp) = test_backend().await;

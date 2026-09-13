@@ -70,22 +70,21 @@ pub const MAX_TAG_COUNT: usize = 32;
 /// Measured against Claude Code 2.1.266 (2026-09-13).
 /// Inline up to roughly 49,730 characters; saved to a file at 50,130.
 /// A saved-to-file result is not a reliable read for an agent.
-/// A memory WRITE bounds the new body to this many bytes (see
-/// `mmcp_store::memory::validate_write_content_lengths`).
+/// A memory WRITE bounds the new body to this many bytes (see `mmcp_store::memory::validate_write_content_lengths`).
 /// `read_memory` itself stays unbounded: an existing body already above this ceiling still reads back whole.
 pub const MCP_CLIENT_RESULT_CEILING_BYTES: usize = 48 * 1024;
 
 /// Multiplier applied to [`MCP_CLIENT_RESULT_CEILING_BYTES`] to derive [`MAX_BODY_LENGTH`].
-/// A stored body may already sit above the write-time ceiling: archive restore, sync, or an
-/// edit that does not grow an already-oversized record.
+/// A stored body may already sit above the write-time ceiling.
+/// Causes: archive restore, sync, or an edit that does not grow an already-oversized record.
 /// The hard body bound stays a full order of magnitude above it.
 /// [`MAX_BODY_LENGTH`] guards the git-blob size, not the inline-result size the write-time ceiling owns.
 const MAX_BODY_LENGTH_CEILING_MULTIPLIER: usize = 12;
 
 /// Maximum byte length of a memory body.
 /// Memories are Markdown documents, not blob storage.
-/// The longest real bodies observed (multi-section rule memories such as
-/// `global-worktree-orchestration`) run to a few tens of KiB.
+/// The longest real bodies observed run to a few tens of KiB.
+/// One example: multi-section rule memories such as `global-worktree-orchestration`.
 /// The largest observed in the wild is 388 KB.
 /// Derived from [`MCP_CLIENT_RESULT_CEILING_BYTES`] so the two bounds move together.
 /// It stays generous for even a long-form design document or a large generated report.
