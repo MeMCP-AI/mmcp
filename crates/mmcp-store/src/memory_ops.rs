@@ -1788,8 +1788,6 @@ done body
         assert!(out.contains("### Rationale\n\nwhy"));
     }
 
-    // ── Line-op content guard (`expect`) ──────────────────────────
-
     #[test]
     fn a_stray_field_on_an_op_is_rejected() {
         let raw = r#"{"op":"delete_lines","start":0,"end":1,"bogus":true}"#;
