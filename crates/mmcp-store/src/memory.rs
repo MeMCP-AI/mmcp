@@ -1187,12 +1187,11 @@ pub fn validate_memory_slug(slug: &str) -> Result<(), ImportError> {
     Ok(())
 }
 
-/// Compiled-in fallback for the auto-slug length cap applied by [`slugify_filename`]
-/// when deriving a default slug from a title
-/// (`add_issue`, `add_feature`, milestone creation, and file import all fall back to this path
-/// when the caller supplies no explicit slug).
-/// This is a production default for auto-generation, not an acceptance ceiling:
-/// [`MAX_SLUG_LENGTH`] still governs what `validate_memory_slug` *accepts*, and stays untouched.
+/// Compiled-in fallback for [`slugify_filename`]'s auto-slug length cap when deriving a slug from a title.
+/// `add_issue`, `add_feature`, milestone creation, and file import all fall back to this path.
+/// That happens whenever the caller supplies no explicit slug.
+/// This is a production default for auto-generation, not an acceptance ceiling.
+/// [`MAX_SLUG_LENGTH`] still governs what `validate_memory_slug` *accepts*.
 ///
 /// Value fixed at 64, not independently derived from a specific reference system.
 /// The LOWEST-precedence tier of `resolve_max_auto_slug_length`.
@@ -1211,13 +1210,12 @@ pub const MAX_AUTO_SLUG_LENGTH_ENV: &str = "MMCP_MAX_AUTO_SLUG_LENGTH";
 
 /// Derive a slug from a filename.
 ///
-/// Strips the known import extensions (`.md`, plus each entry in
-/// [`crate::import_adoc::ADOC_EXTENSIONS`]) case-insensitively before
-/// delegating to the `slug` crate, which handles Unicode
-/// normalization (NFD + diacritic stripping) and hyphen collapsing.
-/// The extra adoc / asciidoc cases exist so an operator importing
-/// `coding-rules.adoc` gets the `coding-rules` slug rather than
-/// `coding-rules-adoc`; the on-disk memory still lands as `.md`.
+/// Strips known import extensions (`.md`, plus [`crate::import_adoc::ADOC_EXTENSIONS`]) case-insensitively.
+/// Then delegates to the `slug` crate for Unicode normalization (NFD + diacritic stripping).
+/// The `slug` crate also collapses hyphens.
+/// The extra adoc / asciidoc cases exist so an operator importing `coding-rules.adoc` gets the `coding-rules` slug.
+/// Otherwise the slug would be `coding-rules-adoc`.
+/// The on-disk memory still lands as `.md`.
 ///
 /// The result is then capped via `truncate_slug_at_hyphen_boundary`.
 /// The cap uses `resolve_max_auto_slug_length`'s compiled-in default tier (no per-call override).
@@ -1230,9 +1228,8 @@ pub fn slugify_filename(filename: &str) -> String {
 
 /// Same as [`slugify_filename`], with one difference.
 /// `override_max_len`, when `Some` and non-zero, takes precedence over every other tier.
-/// That tier is `resolve_max_auto_slug_length`'s cascade.
-/// A future MCP tool / CLI flag can use this for a one-off cap.
-/// The env var and user config that every other call shares stay untouched.
+/// That tier comes from `resolve_max_auto_slug_length`'s cascade.
+/// The env var and user config that every other call shares are not consulted here.
 pub fn slugify_filename_with_cap(filename: &str, override_max_len: Option<usize>) -> String {
     let stem = strip_known_import_extension(filename);
     let slug = slug::slugify(stem);
@@ -1421,10 +1418,10 @@ const CREATABLE_KINDS: &[MemoryKind] = &[
 
 /// Parse a kind string for `mmcp memory create` / `mmcp memory edit --kind`.
 /// Delegates to [`parse_kind`] for syntax.
-/// This matches the error text on a genuinely unknown kind to every other kind-parsing call site.
-/// Then re-applies the create-time policy restriction to `CREATABLE_KINDS`.
+/// That gives a genuinely unknown kind the same error text as every other kind-parsing call site.
+/// The result then goes through the create-time policy restriction against `CREATABLE_KINDS`.
 /// A syntactically valid but tracked kind returns [`ImportError::NotACreatableKind`].
-/// This never silently creates a memory the tracked-kind tooling will reject.
+/// This function never silently creates a memory the tracked-kind tooling will reject.
 pub fn parse_creatable_kind(s: &str) -> Result<MemoryKind, ImportError> {
     let kind = parse_kind(s)?;
     if CREATABLE_KINDS.contains(&kind) {

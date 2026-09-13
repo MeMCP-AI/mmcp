@@ -225,13 +225,13 @@ pub fn build_record(
     }
 }
 
-/// Insert or replace one memory's row, recomputing its embedding (see [`super::embed`]),
-/// from the current name, description, tags, and body every time:
-/// an edit that changes the text must not leave a stale embedding behind.
+/// Insert or replace one memory's row.
+/// Recompute its embedding (see [`super::embed`]) from the current name, description, tags, and body every time.
+/// An edit that changes the text must not leave a stale embedding behind.
 ///
 /// Generic over the executor so `index_group` can run every upsert inside the caller's transaction.
 /// See [`rebuild_full`] and [`rebuild_groups`].
-/// The write-trigger hook ([`super::notify_write`]) keeps passing the plain pool.
+/// The write-trigger hook ([`super::notify_write`]) always passes the plain pool, not a transaction.
 pub async fn upsert_record<'e, E>(executor: E, record: &IndexedRecord) -> Result<(), CacheError>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,

@@ -29,9 +29,9 @@ type BatchOutcome = Vec<(String, Result<bytes::Bytes, GitError>)>;
 
 /// Compute the next ticket number for the group.
 ///
-/// Reads the frontmatter of every memory under `memories/`,
-/// looks at `feature.number` and `issue.number`,
-/// and returns one more than the maximum observed value.
+/// Reads the frontmatter of every memory under `memories/`.
+/// Looks at `feature.number` and `issue.number`.
+/// Returns one more than the maximum observed value.
 /// Returns `1` for an empty group.
 /// Nested slug paths are walked recursively via [`list_memory_slug_dirs`].
 ///
@@ -39,8 +39,8 @@ type BatchOutcome = Vec<(String, Result<bytes::Bytes, GitError>)>;
 /// This counter folds every file of an ambiguous slug.
 /// Skipping one could reissue an allocated number.
 ///
-/// Errors only on a hard list / read failure on the underlying git tree;
-/// per-memory parse errors are ignored so a single malformed file does not stall the counter.
+/// Errors only on a hard list / read failure on the underlying git tree.
+/// Per-memory parse errors are ignored, so a single malformed file does not stall the counter.
 pub async fn next_ticket_number(
     backend: &NativeBackend,
     entry: &GroupEntry,

@@ -9,23 +9,21 @@
 //! Semantics:
 //!
 //! - Ops run in order; each op re-parses the body so subsequent ops see the prior edits.
-//! - The applier is transactional:
-//!   the first error aborts the whole batch,
-//!   and the input body is returned unchanged at the caller's layer.
-//! - Section operations address a whole section:
-//!   its heading line plus every line down to the next peer or shallower heading.
+//! - The applier is transactional: the first error aborts the whole batch.
+//!   The input body is returned unchanged at the caller's layer.
+//! - Section operations address a whole section: heading line through the next peer or shallower heading.
 //!   Nested sections move with their parent.
-//! - Line-level ops (`InsertAtLine`, `ReplaceLines`, `DeleteLines`) exist as escape hatches
-//!   for non-heading content, prose inside the preamble, code fences, plain lists.
+//! - Line-level ops (`InsertAtLine`, `ReplaceLines`, `DeleteLines`) exist as escape hatches.
+//!   They cover non-heading content: prose inside the preamble, code fences, plain lists.
 //!   Section ops are the preferred surface, because they survive rewrites of unrelated parts of the body.
 //!
-//! Every op resolves to a byte range plus a replacement fragment,
-//! and hands both to [`splice`], which owns the seam rules.
-//! No op patches newlines itself:
-//! a local patch is what lets an insertion merge into the preceding line or sit flush against the next heading.
+//! Every op resolves to a byte range plus a replacement fragment.
+//! Both are handed to [`splice`], which owns the seam rules.
+//! No op patches newlines itself.
+//! A local patch is what lets an insertion merge into the preceding line or sit flush against the next heading.
 //!
-//! The wire shape matches the MCP tool's input schema directly,
-//! so a caller can ship the `ops` array verbatim from their tool request into the applier.
+//! The wire shape matches the MCP tool's input schema directly.
+//! A caller can ship the `ops` array verbatim from their tool request into the applier.
 
 use std::ops::Range;
 

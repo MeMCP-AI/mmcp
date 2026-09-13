@@ -1,24 +1,18 @@
 //! Typed CRUD over feature-request memories.
 //!
-//! Wraps the generic memory layer with FR-aware semantics:
-//! every write/read through this module commits a memory whose
-//! [`MemoryKind`] is [`Feature`](MemoryKind::Feature),
-//! carrying a structured [`FeatureMetadata`] block in frontmatter,
-//! so the tool surface never has to parse the body to classify a memory.
+//! Wraps the generic memory layer with FR-aware semantics.
+//! Every write/read through this module commits a memory whose [`MemoryKind`] is [`Feature`](MemoryKind::Feature).
+//! It carries a structured [`FeatureMetadata`] block in frontmatter.
+//! That lets the tool surface classify a memory without parsing the body.
 //!
 //! The module is intentionally thin: it owns:
 //!
-//! - typed `AddSpec`/`UpdateSpec`/`FeatureRecord` shapes so the
-//!   CLI, the MCP tools, and any third-party caller all converge on
-//!   one input/output struct;
-//! - kind enforcement (reads against a non-FR slug return
-//!   `FeatureError::NotAFeature` rather than silently round-tripping
-//!   a regular memory through FR helpers);
-//! - list filtering by [`FeatureStatus`] so listings and diagnostics
-//!   don't duplicate the status-filter predicate.
+//! - typed `AddSpec`/`UpdateSpec`/`FeatureRecord` shapes shared by the CLI, MCP tools, and any third-party caller;
+//! - kind enforcement: reading a non-FR slug returns `FeatureError::NotAFeature`, not a silent round-trip;
+//! - list filtering by [`FeatureStatus`] so listings and diagnostics don't duplicate the status-filter predicate.
 //!
-//! Everything else, the git commit, the slug probe, the error shapes for `GitError`,
-//! flows through `crate::memory`, keeping the CRUD guarantees identical between FR and non-FR memories.
+//! Everything else (the git commit, the slug probe, the error shapes for `GitError`) flows through `crate::memory`.
+//! That keeps the CRUD guarantees identical between FR and non-FR memories.
 
 use std::path::{Path, PathBuf};
 
@@ -724,12 +718,12 @@ pub async fn update_feature_unlocked(
 }
 
 /// Rename every feature under `old_slug` to `new_slug`, committing the moves in a single atomic batch.
-/// UUIDs are stable across the rename so cross-refs in other features keep resolving without any further rewrite:
-/// the slug is a directory-level label, not a primary key.
+/// UUIDs are stable across the rename, so cross-refs in other features keep resolving without any further rewrite.
+/// The slug is a directory-level label, not a primary key.
 ///
 /// When multiple memories share `old_slug` (duplicate slugs are legal), every entry moves in the same commit.
-/// When no memory lives at `old_slug`, returns [`ImportError::MemoryNotFound`],
-/// so callers don't silently succeed on a non-existent rename.
+/// When no memory lives at `old_slug`, this returns [`ImportError::MemoryNotFound`].
+/// That keeps callers from silently succeeding on a non-existent rename.
 /// An explicit `message` override is bounded via [`resolve_commit_message`].
 pub async fn rename_feature(
     backend: &NativeBackend,
@@ -871,27 +865,28 @@ pub async fn delete_feature(
 ///    Explicit selector wins so a caller asking for `completed` or `superseded` FRs always sees them.
 /// 2. `status_filter = None` + `show_all = true`: include every FR.
 ///    The "show me literally everything" escape hatch.
-/// 3. `status_filter = None` + `show_all = false`:
-///    hide every status marked [`FeatureStatus::is_default_hidden`] (`Completed`, `Duplicate`, `Superseded`).
-///    Default listing matches the "what still needs work?" mental model operators reach for;
-///    the closed-ish statuses only come back via the `show_all` escape hatch or an explicit `status` selector.
+/// 3. `status_filter = None` + `show_all = false` hides the default-hidden statuses.
+///    These are `Completed`, `Duplicate`, and `Superseded`, per [`FeatureStatus::is_default_hidden`].
+///    Default listing matches the "what still needs work?" mental model operators reach for.
+///    The closed-ish statuses only come back via the `show_all` escape hatch or an explicit `status` selector.
 ///
-/// A memory whose kind genuinely is NOT `feature` is skipped silently:
-/// FRs share the group with rules/snapshots/logs/references/scratch notes,
-/// and listing would otherwise return a confused shape.
-/// A memory that self-declares kind `feature` but carries no `[feature]` block is NOT skipped
-/// silently: `require_block` gates on block presence, not on `frontmatter.kind`, so this is the
-/// same corruption signal a hybrid memory missing its block would be, per `record_from_file`'s
-/// own doc comment. It is excluded from the returned records, a record with no block cannot be
-/// trusted, but reported back as a [`Finding`] (`feature_block_missing`), so callers can surface
-/// it through the notes channel instead of the listing quietly lying about the group's true FR
-/// count.
-/// A memory that IS a feature but whose frontmatter fails to parse is likewise NOT skipped silently:
-/// it is excluded from the returned records, a mis-parsed record cannot be trusted,
-/// but reported back as a [`Finding`] (`frontmatter_parse_failed`,
-/// matching the code `check_health` already uses for the identical failure),
-/// so callers can surface it through the notes channel,
-/// instead of the listing quietly lying about the group's true FR count.
+/// A memory whose kind genuinely is NOT `feature` is skipped silently.
+/// FRs share the group with rules/snapshots/logs/references/scratch notes.
+/// Listing would otherwise return a confused shape.
+/// A memory that self-declares kind `feature` but carries no `[feature]` block is NOT skipped silently.
+/// `require_block` gates on block presence, not on `frontmatter.kind`.
+/// That is the same corruption signal as a hybrid memory missing its block.
+/// See `record_from_file`'s own doc comment.
+/// It is excluded from the returned records, since a record with no block cannot be trusted.
+/// It is instead reported back as a [`Finding`] (`feature_block_missing`).
+/// Callers can surface it through the notes channel.
+/// A memory that IS a feature but whose frontmatter fails to parse is likewise NOT skipped silently.
+/// It is excluded from the returned records, since a mis-parsed record cannot be trusted.
+/// It is instead reported back as a [`Finding`], so callers can surface it through the notes channel.
+/// The same treatment applies to a memory blob that is not valid UTF-8.
+/// The finding code is `frontmatter_parse_failed` or `memory_not_utf8`, matching the failure.
+/// That matches the code `check_health` uses for the identical failure.
+/// Either way, the listing never quietly lies about the group's true FR count.
 pub async fn list_features(
     backend: &NativeBackend,
     entry: &GroupEntry,

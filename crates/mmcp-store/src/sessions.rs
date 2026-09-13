@@ -1,15 +1,13 @@
 //! Flat per-session state storage under `~/.mmcp/sessions/`.
 //!
 //! Each Claude Code session has its own TOML file named after the session id.
-//! Every write goes through an atomic temp-file-rename,
-//! so the hook process and the serve process can share the file without tearing each other's edits.
+//! Every write goes through an atomic temp-file-rename.
+//! That lets the hook process and the serve process share the file without tearing each other's edits.
 //!
 //! The store intentionally does not take a file lock.
-//! In practice the hook process runs only while Claude Code is waiting for the prompt to be accepted,
-//! and the serve process is idle during that window,
-//! so the two never overlap on the same session file.
-//! A future need for stronger guarantees can layer `fs2`-based advisory locks on top,
-//! without changing the public API.
+//! In practice the hook process runs only while Claude Code is waiting for the prompt to be accepted.
+//! The serve process is idle during that window.
+//! So the two never overlap on the same session file.
 //!
 //! The store uses [`StoreError`].
 //! It is the consolidated error type covering sessions, groups, memory, sync, and diagnostics.

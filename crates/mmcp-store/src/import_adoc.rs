@@ -1,21 +1,19 @@
 //! AsciiDoc -> Markdown conversion used by the import pipeline.
 //!
 //! The project stores every memory as `.md` with a TOML/YAML frontmatter fence.
-//! Supporting AsciiDoc on the input side is a one-way bridge:
-//! an `.adoc`/`.asciidoc` file is parsed with `acdc-parser` and rendered to CommonMark,
-//! via `acdc-converters-markdown`, then handed verbatim to [`crate::memory::import_memory`],
-//! as if the operator had dropped a `.md` file.
-//! Nothing else in the store layer needs to know the source format:
-//! on-disk storage, diagnostics, and the MCP read surface all stay markdown-native.
+//! Supporting AsciiDoc on the input side is a one-way bridge.
+//! An `.adoc`/`.asciidoc` file is parsed with `acdc-parser` and rendered to CommonMark via `acdc-converters-markdown`.
+//! The result is handed verbatim to [`crate::memory::import_memory`], as if the operator had dropped a `.md` file.
+//! Nothing else in the store layer needs to know the source format.
+//! On-disk storage, diagnostics, and the MCP read surface all stay markdown-native.
 //!
-//! `acdc-converters-markdown` has two known weak spots that real-world Git docs trigger constantly:
-//! it drops description-list bodies (`label::\n\tbody`) on the floor with only a warning comment,
-//! and it doesn't render `linkgit:foo[N]` macros cleanly,
-//! (escaping the brackets and leaving a literal `linkgit:` prefix).
+//! `acdc-converters-markdown` has two known weak spots that real-world Git docs trigger constantly.
+//! It drops description-list bodies (`label::\n\tbody`) on the floor with only a warning comment.
+//! It doesn't render `linkgit:foo[N]` macros cleanly: it escapes the brackets and leaves a literal `linkgit:` prefix.
 //! It also leaves a sprinkling of `<!-- Warning: ... -->` HTML comments behind.
-//! The `setext` parser feature also has to be enabled by hand,
-//! for the `~~~~~`/`^^^^^` underline styles to parse as headings:
-//! the upstream default is off.
+//! The `setext` parser feature also has to be enabled by hand.
+//! It's needed for the `~~~~~`/`^^^^^` underline styles to parse as headings.
+//! The upstream default is off.
 //!
 //! Rather than forking the converter, this module wraps it in three steps.
 //! A small pre-processor rewrites the constructs acdc can't faithfully render into ones it can.
@@ -24,10 +22,11 @@
 //! `postprocess_markdown` strips warning comments and the `linkgit:` macro residue.
 //! Each step is independently testable.
 //!
-//! `DocumentAttributes` on the parsed AsciiDoc side are NOT currently promoted into the memory's TOML frontmatter.
-//! Operators who want structured frontmatter must either pre-embed it in the source,
-//! (AsciiDoc supports front-matter-style preambles that `gray_matter` will pick up after conversion),
-//! or supply [`crate::memory::SynthFrontmatter`] via the import CLI flags.
+//! `DocumentAttributes` on the parsed AsciiDoc side are not promoted into the memory's TOML frontmatter.
+//! Operators who want structured frontmatter have two options.
+//! The first option pre-embeds it in the source.
+//! AsciiDoc supports front-matter preambles that `gray_matter` picks up after conversion.
+//! The second option supplies [`crate::memory::SynthFrontmatter`] via the import CLI flags.
 
 use acdc_converters_core::{Converter, Diagnostics, Options as ConverterOptions};
 use acdc_converters_markdown::{MarkdownVariant, Processor};

@@ -106,7 +106,6 @@ impl EffectiveRemotes {
     /// This is the second, and only other, construction path.
     /// It is for a caller that already has a merged `Vec<ResolvedRemote>` in hand.
     /// Example callers: tests fixturing a specific remote list.
-    /// Or a future caller merging from a source other than `UserConfig`/`ProjectConfig`.
     /// This path does not require the caller to re-derive `default_index` itself.
     /// Skipping these checks would let a caller hand-build an inconsistent `ResolvedRemote` list.
     /// In that list, a project-level entry could share a real user-level remote's name.
@@ -119,13 +118,10 @@ impl EffectiveRemotes {
     /// `collect_level` never runs `validate_remote_name` against its own synthesized entry either.
     ///
     /// # Errors
-    /// [`StoreError::InvalidRemoteName`] for a non-legacy-shorthand
-    /// entry whose name is outside the safe git-ref charset or
-    /// collides with a reserved legacy name,
-    /// [`StoreError::RemoteNameCollision`] for a name declared more
-    /// than once in `remotes`, and
-    /// [`StoreError::AmbiguousDefaultRemote`] when two or more remotes
-    /// exist and none resolves as the default.
+    /// - [`StoreError::InvalidRemoteName`] fires for a non-legacy-shorthand entry outside the safe git-ref charset.
+    ///   It also fires when the name collides with a reserved legacy name.
+    /// - [`StoreError::RemoteNameCollision`] fires for a name declared more than once in `remotes`.
+    /// - [`StoreError::AmbiguousDefaultRemote`] fires when two or more remotes exist and none resolves as the default.
     pub fn from_remotes(remotes: Vec<ResolvedRemote>) -> Result<Self, StoreError> {
         for remote in &remotes {
             if !remote.is_legacy_shorthand() {

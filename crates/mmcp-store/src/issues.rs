@@ -647,19 +647,18 @@ pub async fn delete_issue(
 /// Mirrors `list_features` semantics:
 /// - `status_filter = Some(x)` always wins over `show_all`.
 /// - `show_all = true` returns every status.
-/// - default (`None` + `false`) hides terminal-ish states
-///   (Closed, Wontfix, Duplicate, Superseded).
+/// - default (`None` + `false`) hides terminal-ish states (Closed, Wontfix, Duplicate, Superseded).
 ///
-/// Per Q13, this returns every memory in the group whose
-/// frontmatter carries an `[issue]` block, regardless of the
-/// `kind` discriminator.
+/// Per Q13, this returns every memory in the group whose frontmatter carries an `[issue]` block.
+/// That includes every `kind` discriminator value.
 /// Hybrid memories appear in both `list_features` and `list_issues`.
 ///
-/// A memory that IS an issue but whose frontmatter fails to parse is NOT skipped silently:
-/// it is excluded from the returned records, a mis-parsed record cannot be trusted,
-/// but reported back as a [`Finding`] (`frontmatter_parse_failed`),
-/// so callers can surface it through the notes channel,
-/// instead of the listing quietly lying about the group's true issue count.
+/// A memory that IS an issue but whose frontmatter fails to parse is NOT skipped silently.
+/// It is excluded from the returned records, since a mis-parsed record cannot be trusted.
+/// It is instead reported back as a [`Finding`], so callers can surface it through the notes channel.
+/// The same treatment applies to a memory blob that is not valid UTF-8.
+/// The finding code is `frontmatter_parse_failed` or `memory_not_utf8`, matching the failure.
+/// Either way, the listing never quietly lies about the group's true issue count.
 /// `list_features` applies the same rule.
 pub async fn list_issues(
     backend: &NativeBackend,
