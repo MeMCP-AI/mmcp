@@ -681,11 +681,10 @@ mod tests {
         assert_eq!(value["skipped"][0]["slug"], "bad");
     }
 
-    /// The GUI's skip code for a resolve failure comes from the same
-    /// `mmcp_store::tracker::import_error_code` the MCP tool layer's
-    /// `map_memory_error_to_mcp` uses, so the two surfaces can never
-    /// drift back to reporting different wire names for one variant
-    /// (this was `memory_missing` here vs. `memory_not_found` there).
+    /// The GUI's skip code for a resolve failure comes from `mmcp_store::tracker::import_error_code`.
+    /// The MCP tool layer's `map_memory_error_to_mcp` uses that same function.
+    /// The two surfaces can never drift back to reporting different wire names for one variant.
+    /// This was `memory_missing` here vs. `memory_not_found` there.
     #[test]
     fn resolve_error_code_matches_the_shared_mcp_vocabulary() {
         let missing = ImportError::MemoryNotFound {

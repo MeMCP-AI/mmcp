@@ -7440,8 +7440,8 @@ fn map_archive_error_to_mcp(err: mmcp_store::ArchiveError) -> McpError {
 }
 
 /// Map an [`ImportError`] onto an [`McpError`] with a structured `code` payload.
-/// The `code` itself comes from `mmcp_store::tracker::import_error_code`, the one owner
-/// every surface (this tool layer, the GUI backend) names an `ImportError` variant through.
+/// The `code` itself comes from `mmcp_store::tracker::import_error_code`.
+/// That is the one owner every surface (this tool layer, the GUI backend) names a variant through.
 /// Each arm below adds its own variant-specific fields around that shared code.
 fn map_memory_error_to_mcp(err: ImportError) -> McpError {
     let message = err.to_string();

@@ -249,17 +249,15 @@ pub fn not_utf8_finding(group: &str, slug: &str, err: &std::str::Utf8Error) -> F
 }
 
 /// The wire-facing error code for `err`.
-/// The single owner of the `ImportError`-to-code vocabulary: the MCP tool layer
-/// (`map_memory_error_to_mcp`), the GUI backend, and any future consumer all call
-/// this instead of naming their own string per variant, so one variant carries one
-/// code everywhere instead of drifting per surface (`memory_not_found` vs.
-/// `memory_missing` was one such drift this function closes).
+/// The single owner of the `ImportError`-to-code vocabulary.
+/// The MCP tool layer and the GUI backend both call this instead of naming their own string.
+/// One variant carries one code everywhere instead of drifting per surface.
+/// `memory_not_found` vs. `memory_missing` was one such drift this function closes.
 ///
-/// No wildcard arm: adding an `ImportError` variant without adding it here fails
-/// the build, per `global-coding-rules-errors`.
-/// `ImportError::Edit` names only its own outer code; the richer per-`MemoryEditError`-variant
-/// codes are a separate, already-unified vocabulary the MCP layer's
-/// `memory_edit_error_payload` owns.
+/// No wildcard arm here: a new `ImportError` variant forces its own arm before this compiles.
+/// See `global-coding-rules-errors`.
+/// `ImportError::Edit` names only its own outer code.
+/// The per-`MemoryEditError`-variant codes are a separate vocabulary `memory_edit_error_payload` owns.
 #[must_use]
 pub fn import_error_code(err: &ImportError) -> &'static str {
     match err {
@@ -696,8 +694,8 @@ mod tests {
     }
 
     /// `import_error_code` is the single owner every surface consumes.
-    /// `MemoryNotFound` and `MemoryAmbiguous` pin the two names that
-    /// once drifted between the MCP tool layer and the GUI backend.
+    /// `MemoryNotFound` and `MemoryAmbiguous` pin the two names that once drifted.
+    /// The drift ran between the MCP tool layer and the GUI backend.
     #[test]
     fn import_error_code_names_every_variant_the_mcp_wire_expects() {
         assert_eq!(
