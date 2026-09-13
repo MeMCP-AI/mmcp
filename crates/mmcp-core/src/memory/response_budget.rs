@@ -51,9 +51,9 @@ pub const LIST_MEMORIES_RESERVE_BYTES: usize = 4096;
 /// Derived from [`crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES`] minus [`LIST_MEMORIES_RESERVE_BYTES`].
 /// Divided by one compact record's estimated size.
 /// The default page plus that reserve fits the client result ceiling for a typical mandatory set.
-pub const DEFAULT_LIST_MEMORIES_LIMIT: usize = (crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES
-    - LIST_MEMORIES_RESERVE_BYTES)
-    / COMPACT_RECORD_ESTIMATED_BYTES;
+pub const DEFAULT_LIST_MEMORIES_LIMIT: usize =
+    (crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES - LIST_MEMORIES_RESERVE_BYTES)
+        / COMPACT_RECORD_ESTIMATED_BYTES;
 
 /// Hard upper clamp on a caller-supplied `limit`, independent of [`DEFAULT_LIST_MEMORIES_LIMIT`].
 /// The largest real group measured on this project's own mmcp mirror carries 471 memories.
