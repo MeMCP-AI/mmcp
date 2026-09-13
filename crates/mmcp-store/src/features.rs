@@ -1,14 +1,14 @@
 //! Typed CRUD over feature-request memories.
 //!
 //! Wraps the generic memory layer with FR-aware semantics.
-//! Every write/read through this module commits a memory whose [`MemoryKind`] is [`Feature`](MemoryKind::Feature).
-//! It carries a structured [`FeatureMetadata`] block in frontmatter.
-//! That lets the tool surface classify a memory without parsing the body.
+//! `add_feature` commits a memory of kind [`Feature`](MemoryKind::Feature) carrying a [`FeatureMetadata`] block.
+//! Updates keep the on-disk kind; reads and updates gate on the `[feature]` block, not on `kind`.
+//! That block lets the tool surface classify a memory without parsing the body.
 //!
 //! The module is intentionally thin: it owns:
 //!
 //! - typed `AddSpec`/`UpdateSpec`/`FeatureRecord` shapes shared by the CLI, MCP tools, and any third-party caller;
-//! - kind enforcement: reading a non-FR slug returns `FeatureError::NotAFeature`, not a silent round-trip;
+//! - block enforcement: reading a slug with no `[feature]` block returns `FeatureError::NotAFeature`;
 //! - list filtering by [`FeatureStatus`] so listings and diagnostics don't duplicate the status-filter predicate.
 //!
 //! Everything else (the git commit, the slug probe, the error shapes for `GitError`) flows through `crate::memory`.
@@ -79,9 +79,7 @@ pub enum FeatureError {
     ProjectConfigBroken { path: String, detail: String },
 
     /// Raised by `parse_cross_refs` or `parse_memory_refs` on malformed cross-reference input.
-    /// One variant covers both `InvalidCrossRef` and `InvalidMemoryRef`.
-    /// `map_feature_error_to_mcp` and the CLI handlers pattern-match on this variant alone.
-    /// Each case keeps the parser's own field-attribution detail.
+    /// One variant covers both `InvalidCrossRef` and `InvalidMemoryRef`, keeping the parser's own field-attribution detail.
     #[error(transparent)]
     Xref(#[from] mmcp_core::memory::XrefError),
 
@@ -526,7 +524,7 @@ async fn next_feature_number(
 
 /// Read an FR by slug.
 /// When `rev` is `None`, this reads the group's current `main`.
-/// Otherwise `rev` is parsed through [`Rev`], accepting a branch name, tag, or commit hex.
+/// Otherwise a 40-char hex `rev` reads that commit; any other `rev` reads the `refs/heads/` branch of that name.
 /// This matches the generic `read_memory` tool's own `rev` handling.
 pub async fn read_feature(
     backend: &NativeBackend,
@@ -880,7 +878,7 @@ pub async fn delete_feature(
 /// It is excluded from the returned records, since a record with no block cannot be trusted.
 /// It is instead reported back as a [`Finding`] (`feature_block_missing`).
 /// Callers can surface it through the notes channel.
-/// A memory that IS a feature but whose frontmatter fails to parse is likewise NOT skipped silently.
+/// Any memory in the group whose frontmatter fails to parse, whatever its kind, is NOT skipped silently.
 /// It is excluded from the returned records, since a mis-parsed record cannot be trusted.
 /// It is instead reported back as a [`Finding`], so callers can surface it through the notes channel.
 /// The same treatment applies to a memory blob that is not valid UTF-8.
@@ -1054,7 +1052,7 @@ pub async fn resolve_project_group_with_selector(
     }
 }
 
-/// Build a `MemoryFile` with the Fr kind and a populated feature block, ready for rendering.
+/// Build a `MemoryFile` with the `Feature` kind and a populated feature block, ready for rendering.
 /// Shared between create and update so the two paths never disagree on serialization shape.
 fn build_memory_file(
     title: String,

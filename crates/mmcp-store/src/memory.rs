@@ -712,7 +712,6 @@ pub async fn read_frontmatters_in_group(
 /// Borrows `bytes` as UTF-8 instead of lossily substituting the replacement character.
 /// A malformed blob surfaces as [`ImportError::NotUtf8`], carrying `path`.
 /// This avoids silently corrupting frontmatter or body content.
-/// Every tracker memory reader in this crate goes through this one strict decode.
 pub(crate) fn parse_memory_file_bytes(bytes: &[u8], path: &str) -> Result<MemoryFile, ImportError> {
     let text = std::str::from_utf8(bytes).map_err(|source| ImportError::NotUtf8 {
         path: path.to_string(),
@@ -1188,8 +1187,7 @@ pub fn validate_memory_slug(slug: &str) -> Result<(), ImportError> {
 }
 
 /// Compiled-in fallback for [`slugify_filename`]'s auto-slug length cap when deriving a slug from a title.
-/// `add_issue`, `add_feature`, milestone creation, and file import all fall back to this path.
-/// That happens whenever the caller supplies no explicit slug.
+/// Applies whenever the caller supplies no explicit slug.
 /// This is a production default for auto-generation, not an acceptance ceiling.
 /// [`MAX_SLUG_LENGTH`] still governs what `validate_memory_slug` *accepts*.
 ///
@@ -1211,14 +1209,13 @@ pub const MAX_AUTO_SLUG_LENGTH_ENV: &str = "MMCP_MAX_AUTO_SLUG_LENGTH";
 /// Derive a slug from a filename.
 ///
 /// Strips known import extensions (`.md`, plus [`crate::import_adoc::ADOC_EXTENSIONS`]) case-insensitively.
-/// Then delegates to the `slug` crate for Unicode normalization (NFD + diacritic stripping).
-/// The `slug` crate also collapses hyphens.
+/// Delegates the rest to the `slug` crate.
 /// The extra adoc / asciidoc cases exist so an operator importing `coding-rules.adoc` gets the `coding-rules` slug.
 /// Otherwise the slug would be `coding-rules-adoc`.
 /// The on-disk memory still lands as `.md`.
 ///
 /// The result is then capped via `truncate_slug_at_hyphen_boundary`.
-/// The cap uses `resolve_max_auto_slug_length`'s compiled-in default tier (no per-call override).
+/// The cap comes from `resolve_max_auto_slug_length` with no per-call override: env var, user config, then default.
 /// This keeps an auto-derived slug from a long title a sane, readable identifier.
 /// It does not grow unboundedly with the title.
 /// Callers that need a one-off cap call [`slugify_filename_with_cap`] directly.
@@ -1228,8 +1225,7 @@ pub fn slugify_filename(filename: &str) -> String {
 
 /// Same as [`slugify_filename`], with one difference.
 /// `override_max_len`, when `Some` and non-zero, takes precedence over every other tier.
-/// Every other tier comes from `resolve_max_auto_slug_length`'s cascade.
-/// The env var and user config that every other call shares are not consulted here.
+/// `None` or `Some(0)` falls through to the env var, then user config, then the compiled-in default.
 pub fn slugify_filename_with_cap(filename: &str, override_max_len: Option<usize>) -> String {
     let stem = strip_known_import_extension(filename);
     let slug = slug::slugify(stem);
@@ -1421,7 +1417,7 @@ const CREATABLE_KINDS: &[MemoryKind] = &[
 /// That gives a genuinely unknown kind the same error text as every other kind-parsing call site.
 /// The result then goes through the create-time policy restriction against `CREATABLE_KINDS`.
 /// A syntactically valid but tracked kind returns [`ImportError::NotACreatableKind`].
-/// This function never silently creates a memory the tracked-kind tooling will reject.
+/// Rejecting a tracked kind here keeps `mmcp memory create` from writing a memory the tracked-kind tooling rejects.
 pub fn parse_creatable_kind(s: &str) -> Result<MemoryKind, ImportError> {
     let kind = parse_kind(s)?;
     if CREATABLE_KINDS.contains(&kind) {

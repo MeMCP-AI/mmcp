@@ -140,8 +140,7 @@ impl GroupIndex {
     /// Non-blocking snapshot of every indexed group's UUID.
     ///
     /// Mirrors [`Self::try_scope_of`].
-    /// The sync engine's `GroupHandleResolver::iter_group_ids` calls this from an async worker.
-    /// No `block_on` bridge is available there, so this stays non-blocking.
+    /// Safe to call from an async worker with no `block_on` bridge available.
     /// Returns an empty vector when the lock is held by a writer.
     /// Callers treat that as "no groups" and retry on the next tick.
     #[must_use]

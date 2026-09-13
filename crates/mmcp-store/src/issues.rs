@@ -1,8 +1,8 @@
 //! Typed CRUD over issue tracker memories.
 //!
 //! Sister surface to [`crate::features`].
-//! Wraps the generic memory layer with issue-aware semantics: every write / read commits a memory
-//! whose [`MemoryKind`] is `Issue`, carrying a structured [`IssueMetadata`] block in frontmatter.
+//! Wraps the generic memory layer with issue-aware semantics.
+//! `add_issue` commits a memory of kind `Issue` carrying an [`IssueMetadata`] block; updates keep the on-disk kind.
 //! Cross-references take any UUID, so an issue may depend on a feature, another issue, or any future tracker kind.
 //! The shared ticket counter lives in [`crate::tracker`],
 //! so feature and issue numbers occupy one per-group monotonic sequence (GitHub-style).
@@ -649,11 +649,10 @@ pub async fn delete_issue(
 /// - `show_all = true` returns every status.
 /// - default (`None` + `false`) hides terminal-ish states (Closed, Wontfix, Duplicate, Superseded).
 ///
-/// Per Q13, this returns every memory in the group whose frontmatter carries an `[issue]` block.
-/// That includes every `kind` discriminator value.
+/// Returns every memory in the group whose frontmatter carries an `[issue]` block, whatever its `kind`.
 /// Hybrid memories appear in both `list_features` and `list_issues`.
 ///
-/// A memory that IS an issue but whose frontmatter fails to parse is NOT skipped silently.
+/// Any memory in the group whose frontmatter fails to parse, whatever its kind, is NOT skipped silently.
 /// It is excluded from the returned records, since a mis-parsed record cannot be trusted.
 /// It is instead reported back as a [`Finding`], so callers can surface it through the notes channel.
 /// The same treatment applies to a memory blob that is not valid UTF-8.

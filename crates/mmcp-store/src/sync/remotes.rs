@@ -83,7 +83,7 @@ impl ResolvedRemote {
 /// [`resolve_effective_remotes`] and [`EffectiveRemotes::from_remotes`] are the only constructors.
 /// Both compute `default_index` via `resolve_default_index`.
 /// Neither accepts a caller-supplied index.
-/// This means [`EffectiveRemotes::default_remote`] can never panic on an out-of-bounds index.
+/// [`EffectiveRemotes::default_remote`] therefore never panics on an out-of-bounds index.
 /// A public struct literal would let a caller hand-build an inconsistent pair.
 #[derive(Debug, Clone)]
 pub struct EffectiveRemotes {

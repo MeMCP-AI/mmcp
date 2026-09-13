@@ -39,8 +39,8 @@ type BatchOutcome = Vec<(String, Result<bytes::Bytes, GitError>)>;
 /// This counter folds every file of an ambiguous slug.
 /// Skipping one could reissue an allocated number.
 ///
-/// Errors only on a hard list / read failure on the underlying git tree.
-/// Per-memory parse errors are ignored, so a single malformed file does not stall the counter.
+/// Errors on a hard list / batch-read failure, or `ImportError::TicketCounterOverflow` at `u32::MAX`.
+/// Per-memory read, UTF-8, and parse failures are skipped, so one malformed file does not stall the counter.
 pub async fn next_ticket_number(
     backend: &NativeBackend,
     entry: &GroupEntry,

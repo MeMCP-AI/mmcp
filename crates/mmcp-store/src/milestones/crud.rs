@@ -328,7 +328,7 @@ pub async fn update_milestone(
 /// Enumerate milestones in the group, each with a freshly-computed rollup.
 /// Mirrors the tracker convention: default hides `RollupStatus::Completed` (rule 4 of the rollup fold).
 /// That default is skipped when `show_all` is set.
-/// A memory that IS a milestone but whose frontmatter fails to parse is not silently dropped.
+/// Any memory in the group whose frontmatter fails to parse, whatever its kind, is NOT skipped silently.
 /// It is excluded from the returned records, since a mis-parsed record cannot be trusted.
 /// It is instead reported back as a [`Finding`].
 /// The same treatment applies to a memory blob that is not valid UTF-8.

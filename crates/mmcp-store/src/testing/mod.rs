@@ -256,8 +256,7 @@ pub fn corrupt_one_byte(source: &str, marker: &str) -> Option<Vec<u8>> {
 ///
 /// Reads the current bytes and corrupts one via [`corrupt_one_byte`].
 /// The result is written back via [`overwrite_raw_bytes`].
-/// Callers assert both a rejected update's error and that the stored bytes match afterward.
-/// That proves a rejected write left the stored file untouched.
+/// Returns the corrupted bytes so a caller can assert a rejected write left the stored file unchanged.
 pub async fn corrupt_stored_file(
     backend: &NativeBackend,
     handle: &RepoHandle,
