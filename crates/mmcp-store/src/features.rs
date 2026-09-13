@@ -630,17 +630,11 @@ pub async fn update_feature_unlocked(
         .await
         .map_err(FeatureError::Memory)?;
     let current = read_feature(backend, entry, slug, None).await?;
-    // Pull the raw on-disk frontmatter so compose ops can merge refs
-    // against it and the update can carry forward every field
-    // `FeatureRecord` drops (`tags`, `mandatory`, `version`,
-    // `bump_intent`, `source`, general `refs`).
-    let current_frontmatter = crate::tracker::read_memory_frontmatter(
-        backend,
-        &entry.handle,
-        &resolved.path,
-        FeatureError::Memory,
-    )
-    .await?;
+    // Raw frontmatter: refs-compose input and carry-forward source.
+    let current_frontmatter =
+        crate::memory::read_frontmatter_at(backend, &entry.handle, &Rev::head(), &resolved.path)
+            .await
+            .map_err(FeatureError::Memory)?;
 
     let title = spec.title.unwrap_or(current.title);
     let description = spec.description.unwrap_or(current.description);

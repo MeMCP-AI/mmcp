@@ -450,13 +450,10 @@ pub async fn update_issue_unlocked(
         .await
         .map_err(IssueError::Memory)?;
     let current = read_issue(backend, entry, slug, None).await?;
-    let current_frontmatter = crate::tracker::read_memory_frontmatter(
-        backend,
-        &entry.handle,
-        &resolved.path,
-        IssueError::Memory,
-    )
-    .await?;
+    let current_frontmatter =
+        crate::memory::read_frontmatter_at(backend, &entry.handle, &Rev::head(), &resolved.path)
+            .await
+            .map_err(IssueError::Memory)?;
 
     let title = spec.title.unwrap_or(current.title);
     let description = spec.description.unwrap_or(current.description);
@@ -1066,19 +1063,10 @@ mod tests {
         .await
         .expect("status-only update on hybrid record");
 
-        let resolved = resolve_memory(
+        let frontmatter = crate::testing::read_current_frontmatter(
             scratch.backend(),
             &entry.handle,
-            Some("hybrid-ticket"),
-            None,
-        )
-        .await
-        .expect("resolve after update");
-        let frontmatter = crate::tracker::read_memory_frontmatter(
-            scratch.backend(),
-            &entry.handle,
-            &resolved.path,
-            IssueError::Memory,
+            "hybrid-ticket",
         )
         .await
         .expect("read frontmatter after update");

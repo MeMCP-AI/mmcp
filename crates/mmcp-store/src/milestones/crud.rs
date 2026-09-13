@@ -275,17 +275,10 @@ pub async fn update_milestone(
     .await;
 
     let current = read_milestone(backend, entry, pool, groups, slug, None).await?;
-    // Raw on-disk frontmatter, so the update can carry forward every field
-    // `MilestoneRecord` drops (`tags`, `mandatory`, `version`, `bump_intent`,
-    // `source`, `refs`): this module exposes no refs-editing surface at all,
-    // so `refs` always carries the on-disk value forward unchanged.
-    let current_frontmatter = crate::tracker::read_memory_frontmatter(
-        backend,
-        &entry.handle,
-        &resolved.path,
-        MilestoneError::Memory,
-    )
-    .await?;
+    let current_frontmatter =
+        crate::memory::read_frontmatter_at(backend, &entry.handle, &Rev::head(), &resolved.path)
+            .await
+            .map_err(MilestoneError::Memory)?;
 
     let title = spec.title.unwrap_or(current.title);
     let description = spec.description.unwrap_or(current.description);
