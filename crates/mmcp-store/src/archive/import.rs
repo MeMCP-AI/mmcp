@@ -2205,4 +2205,60 @@ mod tests {
         .expect("restoring an over-ceiling memory must not be refused");
         assert_eq!(report.groups[0].created, 1);
     }
+
+    /// An archived memory overwrite-restores even with a body past the write-time ceiling.
+    /// This mirrors the create path's exemption from that same ceiling.
+    #[tokio::test]
+    async fn overwrite_restore_of_an_over_ceiling_memory_succeeds() {
+        let home = ScratchHome::new().await.expect("home");
+        let seeded = home.seed_group("origin").await.expect("seed");
+        let group_id = *seeded.group_id.as_uuid();
+        let entry = home.groups().get(&seeded.group_id).await.expect("entry");
+        let memory_id = Uuid::now_v7();
+        import_memory(
+            home.backend(),
+            &entry.handle,
+            "huge",
+            &memory_doc(memory_id, "small body"),
+            None,
+            home.author(),
+            false,
+        )
+        .await
+        .expect("seed existing memory");
+
+        let oversized_body = "a".repeat(mmcp_core::memory::MCP_CLIENT_RESULT_CEILING_BYTES + 1);
+        let body = format!(
+            "+++\nid = \"{memory_id}\"\nname = \"n\"\ndescription = \"d\"\nkind = \"reference\"\n+++\n{oversized_body}\n"
+        );
+        let buf = build_archive(group_id, &seeded.manifest, "huge", memory_id, &body);
+
+        let report = import_archive(
+            home.backend(),
+            home.groups(),
+            home.author(),
+            &buf,
+            &ImportArchiveOptions {
+                overwrite: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("overwrite-restoring an over-ceiling memory must not be refused");
+        assert_eq!(report.groups[0].overwritten, 1);
+
+        let resolved = resolve_memory(home.backend(), &entry.handle, None, Some(memory_id))
+            .await
+            .expect("resolve");
+        let restored = home
+            .backend()
+            .read_file(&entry.handle, &resolved.path, &Rev::Head)
+            .await
+            .expect("read restored file");
+        let restored = utf8(&resolved.path, &restored).expect("utf8");
+        assert!(
+            restored.contains(&oversized_body),
+            "overwrite restored the full oversized body"
+        );
+    }
 }
