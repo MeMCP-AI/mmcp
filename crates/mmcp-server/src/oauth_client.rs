@@ -56,10 +56,8 @@ pub fn build_oauth_client(cfg: &OAuthProviderConfig, origin: &str) -> Result<Oau
         ))
 }
 
-/// Build the dedicated async HTTP client
-/// `crate::routes::auth::oauth_callback` passes to
-/// [`oauth2::CodeTokenRequest::request_async`] for the token
-/// exchange.
+/// Build the dedicated async HTTP client for the OAuth token exchange.
+/// `crate::routes::auth::oauth_callback` passes it to [`oauth2::CodeTokenRequest::request_async`].
 ///
 /// `oauth2`'s `reqwest` feature implements its `AsyncHttpClient`
 /// trait only for ITS OWN transitively pulled `reqwest` major

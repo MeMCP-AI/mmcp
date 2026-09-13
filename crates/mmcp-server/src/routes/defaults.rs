@@ -88,8 +88,7 @@ pub(crate) use mmcp_core::conventions::PUSH_TOKEN_HEADER;
 /// ceremonies an authenticated user started but never finished.
 pub(crate) const PASSKEY_CEREMONY_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
-/// Lifetime, in seconds, of the bearer token `crate::routes::auth::login`
-/// issues on a successful password login. Matches
-/// [`mmcp_auth::SessionClaims::new_with_lifetime`]'s `lifetime_secs`
-/// parameter type (`i64`).
+/// Lifetime, in seconds, of the bearer token issued on a successful password login.
+/// `crate::routes::auth::login` is the handler that issues it.
+/// Matches [`mmcp_auth::SessionClaims::new_with_lifetime`]'s `lifetime_secs` type, `i64`.
 pub(crate) const BEARER_TOKEN_LIFETIME_SECS: i64 = 3600;

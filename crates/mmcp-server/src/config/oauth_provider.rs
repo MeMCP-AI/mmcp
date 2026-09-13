@@ -12,12 +12,12 @@ pub struct OAuthProviderConfig {
 }
 
 impl OAuthProviderConfig {
-    /// Build the GitHub OAuth provider config: the only provider
-    /// wired up today. `client_id` / `client_secret` come from
-    /// `MMCP_OAUTH_GITHUB_CLIENT_ID` / `MMCP_OAUTH_GITHUB_CLIENT_SECRET`;
-    /// the endpoint URLs are GitHub's own fixed OAuth endpoints,
-    /// defined once here (via `OAuthProviderConfigBuilder`) instead
-    /// of restated as a bare struct literal at each construction site.
+    /// Build the GitHub OAuth provider config: the only provider wired up today.
+    /// `client_id` comes from `MMCP_OAUTH_GITHUB_CLIENT_ID`.
+    /// `client_secret` comes from `MMCP_OAUTH_GITHUB_CLIENT_SECRET`.
+    /// The endpoint URLs are GitHub's own fixed OAuth endpoints.
+    /// They are defined once here, via `OAuthProviderConfigBuilder`.
+    /// This avoids restating them as a bare struct literal at each construction site.
     pub fn github(client_id: impl Into<String>, client_secret: impl Into<String>) -> Self {
         OAuthProviderConfigBuilder::new("github")
             .client_id(client_id)
