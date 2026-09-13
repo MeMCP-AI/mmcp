@@ -675,14 +675,41 @@ struct EditMemoryBodyArgs {
     pub force: bool,
 }
 
-/// Tool-layer mirror of `mmcp_store::MemoryEditOp`. The store
-/// enum deliberately does not depend on `rmcp::schemars` so the
-/// store crate stays consumer-agnostic; this mirror carries the
-/// `JsonSchema` derive the MCP tool schema needs and converts
-/// into the store type before `apply_ops` runs.
+/// Tool-layer mirror of `mmcp_store::memory_ops::LineExpect`.
+/// See that type's doc comment for the field semantics.
+/// This mirror only adds the `JsonSchema` derive the MCP tool schema needs.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields, default)]
+struct ToolLineExpect {
+    lines: Vec<String>,
+    before: Option<String>,
+    after: Option<String>,
+}
+
+impl From<ToolLineExpect> for mmcp_store::LineExpect {
+    fn from(expect: ToolLineExpect) -> Self {
+        mmcp_store::LineExpect {
+            lines: expect.lines,
+            before: expect.before,
+            after: expect.after,
+        }
+    }
+}
+
+/// Tool-layer mirror of `mmcp_store::MemoryEditOp`.
+/// The store enum deliberately does not depend on `rmcp::schemars` so the store crate stays consumer-agnostic.
+/// This mirror carries the `JsonSchema` derive the MCP tool schema needs.
+/// It converts into the store type before `apply_ops` runs.
+///
+/// Line ops (`InsertAtLine`, `ReplaceLines`, `DeleteLines`) use 0-indexed, half-open `[start, end)` ranges.
+/// Ranges are relative to the parsed body, excluding frontmatter and the blank lines after its closing fence.
+/// Each op in a batch sees the body left by the previous op.
+/// A batch touching several ranges orders them by descending `start`.
+/// Removing or replacing a later range first leaves every earlier line index unchanged for the ops that follow.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum ToolMemoryEditOp {
     UpsertSection {
         path: String,
@@ -717,18 +744,35 @@ enum ToolMemoryEditOp {
         path: String,
         body: String,
     },
+    /// Insert `content` at zero-based line `line`.
+    /// Lines at and after `line` shift down; `line` may equal the body's line count to append.
+    /// `expect` guards the insertion point against a non-empty body.
+    /// It names the line before and/or after it (see `LineExpect`).
+    /// Required unless the body is empty.
     InsertAtLine {
         line: u32,
         content: String,
+        #[serde(default)]
+        expect: Option<ToolLineExpect>,
     },
+    /// Replace the half-open line range `[start, end)` with `content`.
+    /// A non-empty range requires `expect.lines` to equal that range's current content.
+    /// An empty range on a non-empty body requires `expect.before` and/or `expect.after`.
     ReplaceLines {
         start: u32,
         end: u32,
         content: String,
+        #[serde(default)]
+        expect: Option<ToolLineExpect>,
     },
+    /// Delete the half-open line range `[start, end)`.
+    /// Same bounds and guard rule as `ReplaceLines`.
+    /// An empty range on an empty body is the only case exempt from `expect`.
     DeleteLines {
         start: u32,
         end: u32,
+        #[serde(default)]
+        expect: Option<ToolLineExpect>,
     },
 }
 
@@ -788,20 +832,32 @@ impl From<ToolMemoryEditOp> for mmcp_store::MemoryEditOp {
             ToolMemoryEditOp::ReplaceSectionBody { path, body } => {
                 mmcp_store::MemoryEditOp::ReplaceSectionBody { path, body }
             }
-            ToolMemoryEditOp::InsertAtLine { line, content } => {
-                mmcp_store::MemoryEditOp::InsertAtLine { line, content }
-            }
+            ToolMemoryEditOp::InsertAtLine {
+                line,
+                content,
+                expect,
+            } => mmcp_store::MemoryEditOp::InsertAtLine {
+                line,
+                content,
+                expect: expect.map(Into::into),
+            },
             ToolMemoryEditOp::ReplaceLines {
                 start,
                 end,
                 content,
+                expect,
             } => mmcp_store::MemoryEditOp::ReplaceLines {
                 start,
                 end,
                 content,
+                expect: expect.map(Into::into),
             },
-            ToolMemoryEditOp::DeleteLines { start, end } => {
-                mmcp_store::MemoryEditOp::DeleteLines { start, end }
+            ToolMemoryEditOp::DeleteLines { start, end, expect } => {
+                mmcp_store::MemoryEditOp::DeleteLines {
+                    start,
+                    end,
+                    expect: expect.map(Into::into),
+                }
             }
         }
     }
@@ -3207,10 +3263,8 @@ impl McpServer {
             .read_file(&entry.handle, &resolved.path, &Rev::head())
             .await
             .map_err(git_error)?;
-        let text = String::from_utf8_lossy(&bytes).into_owned();
-        let mut file = MemoryFile::parse(&text).map_err(|e| {
-            McpError::internal_error(Cow::Owned(format!("parsing existing memory: {e}")), None)
-        })?;
+        let mut file = mmcp_store::parse_memory_file_bytes(&bytes, &resolved.path)
+            .map_err(map_memory_error_to_mcp)?;
 
         // Apply deltas. Body replacement and frontmatter field
         // replacements are straightforward slot writes; tags_add /
@@ -3462,7 +3516,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Return the section tree of a memory's markdown body. Every heading gets a stable dot-separated path id (slugified heading trail with `-2`, `-3` disambiguators for duplicate siblings) plus its level, raw heading text, and half-open line range. Callers discover addressable nodes here before issuing `edit_memory_body` ops. A synthetic `preamble` section covers content before the first heading so even headingless bodies return one entry.",
+        description = "Return the section tree of a memory's markdown body. Every heading gets a stable dot-separated path id (slugified heading trail with `-2`, `-3` disambiguators for duplicate siblings) plus its level, raw heading text, and a 0-indexed, half-open `[line_start, line_end)` range relative to the parsed body (frontmatter and the blank lines after its closing fence excluded). `body_line_count` reports the same body's total line count, the upper bound an `edit_memory_body` line op may target. Callers discover addressable nodes here before issuing `edit_memory_body` ops. A synthetic `preamble` section covers content before the first heading so even headingless bodies return one entry.",
         annotations(
             title = "Read memory body sections",
             read_only_hint = true,
@@ -3492,10 +3546,8 @@ impl McpServer {
             .read_file(&entry.handle, &resolved.path, &Rev::head())
             .await
             .map_err(git_error)?;
-        let text = String::from_utf8_lossy(&bytes).into_owned();
-        let file = MemoryFile::parse(&text).map_err(|e| {
-            McpError::internal_error(Cow::Owned(format!("parsing existing memory: {e}")), None)
-        })?;
+        let file = mmcp_store::parse_memory_file_bytes(&bytes, &resolved.path)
+            .map_err(map_memory_error_to_mcp)?;
         let sections = mmcp_core::memory::parse_sections(&file.body).map_err(|e| {
             McpError::internal_error(Cow::Owned(format!("parsing body: {e}")), None)
         })?;
@@ -3517,11 +3569,12 @@ impl McpServer {
             "id": resolved.id.to_string(),
             "sections": as_json,
             "count": sections.len(),
+            "body_line_count": mmcp_core::memory::line_count(&file.body),
         })))
     }
 
     #[tool(
-        description = "Apply an ordered list of section-level or line-level edits to a memory's markdown body and commit the result. Section ops address a whole section (heading + nested children) by the dot-path id returned from `read_memory_body_sections`. Line ops are escape hatches for non-heading content. Ops run transactionally: the first error aborts the batch. Structured error codes: `section_not_found`, `move_would_loop`, `level_out_of_range`, `invalid_line_range`, `line_past_eof`, `body_parse_failed`. The protected-group elicitation guard still gates this path.",
+        description = "Apply an ordered list of section-level or line-level edits to a memory's markdown body and commit the result. Section ops address a whole section (heading + nested children) by the dot-path id returned from `read_memory_body_sections`. Line ops are escape hatches for non-heading content, addressed by 0-indexed, half-open `[start, end)` ranges relative to the parsed body (frontmatter and the blank lines after its closing fence excluded); each op in a batch sees the body left by the previous op, so a batch touching several ranges orders them by descending `start`. A non-trivial line op requires an `expect` content guard (see the op's own field docs); a stray top-level field is rejected outright. Ops run transactionally: the first error aborts the batch. Structured error codes: `section_not_found`, `move_would_loop`, `level_out_of_range`, `invalid_line_range`, `line_past_eof`, `line_content_mismatch`, `line_guard_required`, `body_parse_failed`, `invalid_splice_range`, `preamble_not_upsertable`, `upsert_path_unreachable`, `upsert_section_not_self_contained`. The protected-group elicitation guard still gates this path.",
         annotations(
             title = "Edit memory body (semantic ops)",
             read_only_hint = false,
@@ -3565,33 +3618,26 @@ impl McpServer {
             .resolve_memory_address(&args.group, args.slug.as_deref(), args.id.as_deref())
             .await?;
 
-        let bytes = self
-            .state
-            .backend
-            .read_file(&entry.handle, &resolved.path, &Rev::head())
-            .await
-            .map_err(git_error)?;
-        let text = String::from_utf8_lossy(&bytes).into_owned();
-        let mut file = MemoryFile::parse(&text).map_err(|e| {
-            McpError::internal_error(Cow::Owned(format!("parsing existing memory: {e}")), None)
-        })?;
-
-        let store_ops: Vec<mmcp_store::MemoryEditOp> =
-            args.ops.into_iter().map(Into::into).collect();
-        let new_body =
-            mmcp_store::apply_ops(&file.body, &store_ops).map_err(map_memory_edit_error_to_mcp)?;
-        file.body = new_body;
-        let rendered = file
-            .to_string()
-            .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
-
         // Same memory-modify chain as `edit_memory`.
+        // Held across the read, the ops' application, and the render.
+        // A concurrent writer must not shift the very lines this batch targets before the commit lands.
         let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::memory_chain(
             *entry.manifest.group_id.as_uuid(),
             resolved.id,
             mmcp_store::lock::LockMode::Exclusive,
         ))
         .await;
+
+        let store_ops: Vec<mmcp_store::MemoryEditOp> =
+            args.ops.into_iter().map(Into::into).collect();
+        let (file, rendered) = mmcp_store::read_and_apply_body_ops(
+            &self.state.backend,
+            &entry.handle,
+            &resolved.path,
+            &store_ops,
+        )
+        .await
+        .map_err(map_memory_error_to_mcp)?;
 
         let commit_message = args
             .message
@@ -7529,17 +7575,18 @@ fn map_memory_error_to_mcp(err: ImportError) -> McpError {
         ImportError::TicketCounterOverflow => json!({
             "code": "ticket_counter_overflow",
         }),
+        ImportError::Edit(inner) => memory_edit_error_payload(inner),
     };
     McpError::invalid_params(message, Some(payload))
 }
 
-/// Map the section-applier's typed errors onto stable
-/// MCP wire codes. Keeps the tool body terse and every error
-/// path consistent across the `edit_memory_body` surface.
-fn map_memory_edit_error_to_mcp(err: mmcp_store::MemoryEditError) -> McpError {
+/// Build the structured error payload for one [`mmcp_store::MemoryEditError`].
+/// The `ImportError::Edit` arm of [`map_memory_error_to_mcp`] delegates here.
+/// It fires when `edit_memory_body`'s shared read-apply-render path fails.
+/// Every section/line-op error code stays consistent regardless of which entry point produced it.
+fn memory_edit_error_payload(err: &mmcp_store::MemoryEditError) -> serde_json::Value {
     use mmcp_store::MemoryEditError as E;
-    let message = err.to_string();
-    let payload = match &err {
+    match err {
         E::SectionNotFound { path } => json!({
             "code": "section_not_found",
             "path": path,
@@ -7592,8 +7639,27 @@ fn map_memory_edit_error_to_mcp(err: mmcp_store::MemoryEditError) -> McpError {
             "code": "upsert_section_not_self_contained",
             "requested": requested,
         }),
-    };
-    McpError::invalid_params(message, Some(payload))
+        E::LineContentMismatch {
+            start,
+            end,
+            expected,
+            found,
+            found_at,
+        } => json!({
+            "code": "line_content_mismatch",
+            "start": start,
+            "end": end,
+            "expected": expected,
+            "found": found,
+            "found_at": found_at,
+        }),
+        E::LineGuardRequired { op, start, end } => json!({
+            "code": "line_guard_required",
+            "op": op,
+            "start": start,
+            "end": end,
+        }),
+    }
 }
 
 #[tool_handler]
@@ -14114,6 +14180,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_memory_body_sections_reports_body_line_count() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "rules", SECTIONED_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let res = server
+            .read_memory_body_sections_inner(ReadMemoryBodySectionsArgs {
+                group: group.to_string(),
+                slug: Some("rules".into()),
+                id: None,
+            })
+            .await
+            .expect("read sections");
+        let parsed = parse_ok_json(res);
+        assert_eq!(
+            parsed
+                .get("body_line_count")
+                .and_then(serde_json::Value::as_u64),
+            Some(7),
+        );
+    }
+
+    #[tokio::test]
     async fn edit_memory_body_upsert_replaces_section() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "team-rust", "rules", SECTIONED_MEMORY).await;
@@ -14276,6 +14365,83 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn edit_memory_body_line_op_without_a_guard_errors_with_structured_code() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "rules", SECTIONED_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let err = server
+            .edit_memory_body_unguarded(EditMemoryBodyArgs {
+                group: group.to_string(),
+                slug: Some("rules".into()),
+                id: None,
+                ops: vec![ToolMemoryEditOp::ReplaceLines {
+                    start: 2,
+                    end: 3,
+                    content: "x".into(),
+                    expect: None,
+                }],
+                message: None,
+                force: false,
+            })
+            .await
+            .expect_err("a non-empty range without a guard must be refused");
+        let payload = err.data.as_ref().expect("error payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("line_guard_required"),
+        );
+        assert_eq!(
+            payload.get("op").and_then(|v| v.as_str()),
+            Some("replace_lines"),
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_memory_body_line_op_content_mismatch_reports_found_at() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "rules", SECTIONED_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let err = server
+            .edit_memory_body_unguarded(EditMemoryBodyArgs {
+                group: group.to_string(),
+                slug: Some("rules".into()),
+                id: None,
+                ops: vec![ToolMemoryEditOp::DeleteLines {
+                    start: 2,
+                    end: 3,
+                    expect: Some(ToolLineExpect {
+                        lines: vec!["wrong content".into()],
+                        before: None,
+                        after: None,
+                    }),
+                }],
+                message: None,
+                force: false,
+            })
+            .await
+            .expect_err("a wrong expectation must be refused");
+        let payload = err.data.as_ref().expect("error payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("line_content_mismatch"),
+        );
+        assert_eq!(
+            payload.get("expected").and_then(|v| v.as_array()),
+            Some(&vec![json!("wrong content")]),
+        );
+        assert_eq!(
+            payload.get("found").and_then(|v| v.as_array()),
+            Some(&vec![json!("need body")]),
+        );
+        assert_eq!(
+            payload.get("found_at").and_then(|v| v.as_array()),
+            Some(&vec![]),
+        );
+    }
+
     #[test]
     fn edit_memory_body_args_rejects_top_level_line_op_fields() {
         // A caller that sends line-op fields at the top level instead
@@ -14309,6 +14475,43 @@ mod tests {
         assert!(
             result.is_ok(),
             "nested ops must deserialize, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn edit_memory_body_args_rejects_a_stray_field_on_an_op() {
+        let raw = json!({
+            "group": "019d955d-4cce-77f2-a0b3-0b79ed394612",
+            "slug": "rules",
+            "ops": [
+                { "op": "insert_at_line", "line": 1, "content": "x", "bogus": true },
+            ],
+        });
+        let result: Result<EditMemoryBodyArgs, _> = serde_json::from_value(raw);
+        assert!(
+            result.is_err(),
+            "a stray field on an op must be rejected, got: {result:?}",
+        );
+    }
+
+    #[test]
+    fn edit_memory_body_args_rejects_a_stray_field_on_expect() {
+        let raw = json!({
+            "group": "019d955d-4cce-77f2-a0b3-0b79ed394612",
+            "slug": "rules",
+            "ops": [
+                {
+                    "op": "insert_at_line",
+                    "line": 1,
+                    "content": "x",
+                    "expect": { "after": "a", "bogus": true },
+                },
+            ],
+        });
+        let result: Result<EditMemoryBodyArgs, _> = serde_json::from_value(raw);
+        assert!(
+            result.is_err(),
+            "a stray field on expect must be rejected, got: {result:?}",
         );
     }
 

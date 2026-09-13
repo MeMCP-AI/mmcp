@@ -23,9 +23,9 @@ use mmcp_core::memory::{
 use mmcp_git::{GitBackend, NativeBackend, Rev};
 use mmcp_store::home::MmcpHome;
 use mmcp_store::{
-    AddressingMode, GroupEntry, MemoryEditOp, WriteFileOptions, WriteMemoryOptions, apply_ops,
-    delete_file_at_path, list_all_memory_files, parse_creatable_kind, resolve_group,
-    resolve_memory, write_file_at_path, write_memory_by_id,
+    AddressingMode, GroupEntry, MemoryEditOp, WriteFileOptions, WriteMemoryOptions,
+    delete_file_at_path, list_all_memory_files, parse_creatable_kind, parse_memory_file_bytes,
+    read_and_apply_body_ops, resolve_group, resolve_memory, write_file_at_path, write_memory_by_id,
 };
 use uuid::Uuid;
 
@@ -793,9 +793,7 @@ async fn run_edit(args: EditArgs) -> Result<()> {
         .read_file(&entry.handle, &resolved.path, &Rev::head())
         .await
         .map_err(anyhow::Error::from)?;
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    let mut file =
-        MemoryFile::parse(&text).map_err(|e| anyhow::anyhow!("parsing existing memory: {e}"))?;
+    let mut file = parse_memory_file_bytes(&bytes, &resolved.path).map_err(anyhow::Error::from)?;
 
     // Apply deltas. Body / frontmatter slot writes are
     // straightforward; tags compose additively with dedup; refs
@@ -898,26 +896,18 @@ async fn run_edit_body(args: EditBodyArgs) -> Result<()> {
     let ops_json = read_body_input(&args.ops)?;
     let ops: Vec<MemoryEditOp> = serde_json::from_str(&ops_json).context("parsing --ops JSON")?;
 
-    let bytes = backend
-        .read_file(&entry.handle, &resolved.path, &Rev::head())
-        .await
-        .map_err(anyhow::Error::from)?;
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    let mut file =
-        MemoryFile::parse(&text).map_err(|e| anyhow::anyhow!("parsing existing memory: {e}"))?;
-
-    let new_body = apply_ops(&file.body, &ops).map_err(anyhow::Error::from)?;
-    file.body = new_body;
-    let rendered = file
-        .to_string()
-        .map_err(|e| anyhow::anyhow!("render: {e}"))?;
-
+    // Held across the read, the ops' application, and the render.
+    // A concurrent writer must not shift the very lines this batch targets before the commit lands.
     let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::memory_chain(
         *entry.manifest.group_id.as_uuid(),
         resolved.id,
         mmcp_store::lock::LockMode::Exclusive,
     ))
     .await;
+
+    let (_file, rendered) = read_and_apply_body_ops(&backend, &entry.handle, &resolved.path, &ops)
+        .await
+        .map_err(anyhow::Error::from)?;
 
     let commit_message = args
         .message
@@ -966,7 +956,7 @@ async fn run_delete(args: DeleteArgs) -> Result<()> {
         .read_file(&entry.handle, &resolved.path, &Rev::head())
         .await
     {
-        Ok(bytes) => MemoryFile::parse(&String::from_utf8_lossy(&bytes))
+        Ok(bytes) => parse_memory_file_bytes(&bytes, &resolved.path)
             .map(|f| f.frontmatter.kind)
             .unwrap_or(mmcp_core::memory::MemoryKind::Reference),
         Err(_) => mmcp_core::memory::MemoryKind::Reference,
