@@ -9,6 +9,15 @@
 use anyhow::Result;
 use mmcp_core::memory::MemoryKind;
 use mmcp_store::{MemoryFilter, parse_memory_kind};
+use strum::VariantArray as _;
+
+/// Value parser for `--kind`/`--exclude-kind`: every [`MemoryKind`] wire name, case-insensitively.
+/// Feeds clap's own possible-values help text, so the accepted set can never drift out of sync.
+fn memory_kind_value_parser() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(
+        MemoryKind::VARIANTS.iter().copied().map(MemoryKind::as_str),
+    )
+}
 
 #[derive(clap::Args, Clone, Default)]
 pub struct MemoryFilterArgs {
@@ -20,13 +29,12 @@ pub struct MemoryFilterArgs {
     #[arg(long = "exclude-memory")]
     pub exclude_memory: Vec<String>,
 
-    /// Include only these kinds: rule, snapshot, log, reference,
-    /// scratch, feature, issue (repeatable).
-    #[arg(long = "kind")]
+    /// Include only these kinds (repeatable).
+    #[arg(long = "kind", value_parser = memory_kind_value_parser(), ignore_case = true)]
     pub kind: Vec<String>,
 
     /// Exclude these kinds (repeatable).
-    #[arg(long = "exclude-kind")]
+    #[arg(long = "exclude-kind", value_parser = memory_kind_value_parser(), ignore_case = true)]
     pub exclude_kind: Vec<String>,
 
     /// Include only memories carrying these tags (repeatable).
@@ -121,8 +129,6 @@ fn parse_kinds(values: &[String]) -> Result<Vec<MemoryKind>> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used)]
-    use strum::VariantArray as _;
-
     use super::*;
 
     #[test]

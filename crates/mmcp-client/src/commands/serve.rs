@@ -2071,6 +2071,37 @@ fn validate_update_milestone_args(args: &UpdateMilestoneArgs) -> Result<(), McpE
     Ok(())
 }
 
+/// Schema stand-in for the `kind`/`exclude_kind` facets: every [`mmcp_core::memory::MemoryKind`] wire name.
+/// Written by hand, not derived.
+/// Its json_schema reads `mmcp_core::memory::MemoryKind::VARIANTS` directly, with no macro in between.
+struct MemoryKindArraySchema;
+
+impl JsonSchema for MemoryKindArraySchema {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        "MemoryKindArray".into()
+    }
+
+    fn json_schema(_generator: &mut rmcp::schemars::SchemaGenerator) -> rmcp::schemars::Schema {
+        use strum::VariantArray as _;
+        let values: Vec<&'static str> = mmcp_core::memory::MemoryKind::VARIANTS
+            .iter()
+            .copied()
+            .map(mmcp_core::memory::MemoryKind::as_str)
+            .collect();
+        let mut map = serde_json::Map::new();
+        map.insert("type".to_string(), json!("array"));
+        map.insert(
+            "items".to_string(),
+            json!({ "type": "string", "enum": values }),
+        );
+        rmcp::schemars::Schema::from(map)
+    }
+}
+
 /// Memory filter facets shared by `export_archive` and
 /// `import_archive`. Every facet is optional; an absent filter matches
 /// every memory.
@@ -2084,12 +2115,13 @@ struct ArchiveFilterArgs {
     /// Exclude memories with these slugs.
     #[serde(default)]
     pub exclude_memory: Vec<String>,
-    /// Include only these kinds (rule, snapshot, log, reference,
-    /// scratch, feature, issue).
+    /// Include only these kinds.
     #[serde(default)]
+    #[schemars(with = "MemoryKindArraySchema")]
     pub kind: Vec<String>,
     /// Exclude these kinds.
     #[serde(default)]
+    #[schemars(with = "MemoryKindArraySchema")]
     pub exclude_kind: Vec<String>,
     /// Include only memories carrying these tags.
     #[serde(default)]
@@ -14545,6 +14577,25 @@ mod tests {
         assert!(
             result.is_ok(),
             "known nested filter facets must deserialize, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn archive_filter_kind_schema_lists_every_memory_kind() {
+        use strum::VariantArray as _;
+        let schema =
+            rmcp::schemars::SchemaGenerator::default().into_root_schema_for::<ArchiveFilterArgs>();
+        let schema_text = serde_json::to_string(&schema).expect("serialize schema");
+        for kind in mmcp_core::memory::MemoryKind::VARIANTS {
+            assert!(
+                schema_text.contains(kind.as_str()),
+                "expected '{}' in the kind facet schema, got: {schema_text}",
+                kind.as_str()
+            );
+        }
+        assert!(
+            !schema_text.contains("MemoryKind"),
+            "schema must not leak the Rust type name, got: {schema_text}"
         );
     }
 
