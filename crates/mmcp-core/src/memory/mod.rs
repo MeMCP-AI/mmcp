@@ -44,8 +44,8 @@ pub use milestone::{MilestoneMetadata, MilestoneStatus, MilestoneStatusParseErro
 pub use parser::{FrontmatterFormat, MemoryFile, MemoryParseError, parse_frontmatter};
 pub use refs::{COMMIT_SHA_HEX_LEN, InvalidCommit, MemoryRef, looks_like_commit_sha};
 pub use response_budget::{
-    COMPACT_RECORD_ESTIMATED_BYTES, DEFAULT_LIST_MEMORIES_LIMIT, MAX_LIST_MEMORIES_LIMIT,
-    ResponseEnvelope,
+    COMPACT_RECORD_ESTIMATED_BYTES, DEFAULT_LIST_MEMORIES_LIMIT, LIST_MEMORIES_RESERVE_BYTES,
+    MAX_LIST_MEMORIES_LIMIT, ResponseEnvelope,
 };
 pub use splice::{SpliceError, line_terminator, splice};
 pub use status::Status;
