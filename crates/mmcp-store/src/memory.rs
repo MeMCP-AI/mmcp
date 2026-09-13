@@ -712,7 +712,7 @@ pub async fn read_frontmatters_in_group(
 /// Borrows `bytes` as UTF-8 instead of lossily substituting the replacement character.
 /// A malformed blob surfaces as [`ImportError::NotUtf8`], carrying `path`.
 /// This avoids silently corrupting frontmatter or body content.
-/// Every memory-file reader in this crate goes through this one strict decode.
+/// Every tracker memory reader in this crate goes through this one strict decode.
 pub(crate) fn parse_memory_file_bytes(bytes: &[u8], path: &str) -> Result<MemoryFile, ImportError> {
     let text = std::str::from_utf8(bytes).map_err(|source| ImportError::NotUtf8 {
         path: path.to_string(),
