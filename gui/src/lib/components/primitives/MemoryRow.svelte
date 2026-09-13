@@ -17,9 +17,18 @@
     subtitle?: string | null;
     active?: boolean;
     onSelect: () => void;
+    /** Forwarded onto the row's own mousedown, for a caller guarding against a blur-triggered close. */
+    onMouseDown?: (e: MouseEvent) => void;
   }
 
-  let { slug, descriptor, subtitle = null, active = false, onSelect }: Props = $props();
+  let {
+    slug,
+    descriptor,
+    subtitle = null,
+    active = false,
+    onSelect,
+    onMouseDown
+  }: Props = $props();
 
   const fm = $derived(descriptor?.frontmatter);
 </script>
@@ -29,6 +38,7 @@
   class="flex w-full items-center gap-2 rounded-md border border-line bg-surface-1 px-3 py-2 text-left transition-colors hover:border-line-strong hover:bg-surface-2
     {active ? 'border-sky-500/40 bg-sky-500/10 text-selected-fg' : 'text-fg'}"
   onclick={onSelect}
+  onmousedown={onMouseDown}
   title={fm?.name ?? slug}
 >
   {#if fm?.kind}

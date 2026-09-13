@@ -1,9 +1,9 @@
 <script lang="ts">
   // GitHub-scale navigation: routed screens Home → Scope → Group → Memory.
-  // Every screen reaches into shared primitives (MemoryTree, GroupRow, ScopeTile,
-  // MemoryReader, RelatedPanel, SearchInput, KindFilterRow, MandatoryToggle).
-  // Every memory list (Home signals, Group, global search) presents its `/`-segments as
-  // folders through MemoryTree, grouped per source group since a slug is only unique there.
+  // Every screen reaches into shared primitives: MemoryTree, GroupRow, ScopeTile, MemoryReader.
+  // It also reaches RelatedPanel, SearchInput, KindFilterRow, and MandatoryToggle.
+  // Every memory list presents its `/`-segments as folders through MemoryTree.
+  // A list spanning several groups builds one folder tree per group, since a slug is only unique within its own group.
   // This component owns the routing state and data-loading effects only.
 
   import {
@@ -211,14 +211,9 @@
     )
   );
 
-  // ---------------------------------------------------------------
-  //  Cross-group folder presentation
-  // ---------------------------------------------------------------
-  //
-  // A slug is only unique within its own group, and MemoryTree's `onSelect`
-  // callback carries a bare slug, so every list that mixes groups (Home's
-  // mandatory/open-issues signals, the global search dropdown) builds one
-  // folder tree per group rather than a single tree spanning them all.
+  // Cross-group folder presentation.
+  // A slug is only unique within its own group, and MemoryTree's `onSelect` callback carries a bare slug.
+  // Home's signal lists and the global search dropdown mix groups, so each builds one folder tree per group.
 
   interface GroupedMemoryTree {
     group: GroupEntry;
@@ -445,10 +440,8 @@
               No matches in cached memories.
             </div>
           {:else}
-            <!-- Each hit's `/`-segments render as folders; a search match is always inside an
-                 already-expanded folder, so `forceExpand` keeps it visible without a click. -->
-            <!-- A row click still lands before the input's blur closes this dropdown: -->
-            <!-- `onBlur` above defers closing by 120ms, well past the click's own event turn. -->
+            <!-- Each hit's `/`-segments render as folders, already expanded by `forceExpand`. -->
+            <!-- `preventBlurOnMouseDown` stops a row click from losing the race against `onBlur` above. -->
             <div class="flex flex-col gap-2 px-1 py-1">
               {#each globalHitTrees as g (g.group.group_id)}
                 <div>
@@ -458,6 +451,7 @@
                   <MemoryTree
                     nodes={g.tree}
                     forceExpand
+                    preventBlurOnMouseDown
                     onSelect={(slug) => gotoMemory(g.group.group_id, slug)}
                   />
                 </div>
@@ -528,8 +522,7 @@
               None cached yet. Mandatory memories will appear once their groups load.
             </div>
           {:else}
-            <!-- A short, curated signal list: every folder starts expanded so the
-                 handful of matches never hide behind an extra click. -->
+            <!-- Every folder starts expanded, so this short, curated list never hides a match. -->
             <div class="flex flex-col gap-3">
               {#each mandatoryMemoryTrees as g (g.group.group_id)}
                 <div>

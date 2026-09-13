@@ -1,18 +1,18 @@
 <script lang="ts">
   // Recursive slug folder-tree renderer over the memory_tree utility's already-nested `nodes`.
-  // A folder node is a collapsible row: a Folder / FolderOpen icon, plus its master
-  // memory's kind icon when `buildMemoryTree` attached one.
-  // A leaf node falls back to the existing MemoryRow.
-  // The chevron toggles expansion; the rest of the folder row selects its master memory when
-  // one is present, and otherwise also toggles expansion.
-  // Manual expand/collapse is local per-folder state keyed by folder path.
-  // It survives `nodes` changing reference, as long as this component instance stays mounted.
+  // A folder row shows a Folder or FolderOpen icon.
+  // A folder carrying a master memory also shows that memory's kind icon on its label.
+  // A leaf row renders through MemoryRow.
+  // The chevron button only toggles expansion and carries `aria-expanded`.
+  // The label button opens the master memory when one exists, or toggles expansion otherwise.
+  // Manual expand and collapse state is local per folder, keyed by folder path.
+  // It survives `nodes` changing reference as long as this component instance stays mounted.
   // Folders start collapsed.
-  //
-  // `forceExpand` overrides manual state and expands every folder regardless.
-  // The caller sets it while a filter narrows `nodes` down to matches only.
-  // Every folder that survives that pruning holds at least one match.
-  // None of them should stay collapsed and hide it.
+  // `forceExpand` overrides manual state and expands every folder.
+  // A filtered result set passes it so every surviving match stays visible.
+  // A short, always-open list passes it too.
+  // `preventBlurOnMouseDown` makes every row's mousedown call `preventDefault`.
+  // A caller passes it when its own blur handler would otherwise close this tree before a click lands.
 
   import { ChevronRight, Folder, FolderOpen } from '@lucide/svelte';
   import KindBadge from '../KindBadge.svelte';
@@ -31,9 +31,16 @@
     nodes: MemoryTreeNode<MemoryTreeEntry>[];
     onSelect: (slug: string) => void;
     forceExpand?: boolean;
+    /** Guards every row's mousedown against a caller's own blur-triggered close. */
+    preventBlurOnMouseDown?: boolean;
   }
 
-  let { nodes, onSelect, forceExpand = false }: Props = $props();
+  let {
+    nodes,
+    onSelect,
+    forceExpand = false,
+    preventBlurOnMouseDown = false
+  }: Props = $props();
 
   // Absent path means collapsed, the default.
   let expandedByPath = $state<Record<string, boolean>>({});
@@ -49,6 +56,10 @@
     if (forceExpand) return;
     expandedByPath[path] = !isExpanded(path);
   }
+
+  function guardMouseDown(e: MouseEvent) {
+    if (preventBlurOnMouseDown) e.preventDefault();
+  }
 </script>
 
 {#each nodes as node (node.type === 'leaf' ? `leaf:${node.slug}` : `folder:${node.path}`)}
@@ -57,6 +68,7 @@
       slug={node.entry.slug}
       descriptor={node.entry.body}
       onSelect={() => onSelect(node.entry.slug)}
+      onMouseDown={guardMouseDown}
     />
   {:else}
     <div>
@@ -67,6 +79,7 @@
           type="button"
           class="shrink-0"
           onclick={() => toggle(node.path)}
+          onmousedown={guardMouseDown}
           aria-expanded={isExpanded(node.path)}
           aria-label={isExpanded(node.path) ? 'Collapse folder' : 'Expand folder'}
         >
@@ -76,6 +89,11 @@
           type="button"
           class="flex min-w-0 flex-1 items-center gap-1.5 text-left"
           onclick={() => (node.master ? onSelect(node.master.slug) : toggle(node.path))}
+          onmousedown={guardMouseDown}
+          aria-expanded={node.master ? undefined : isExpanded(node.path)}
+          aria-label={node.master
+            ? `Open ${node.master.body?.frontmatter.name ?? node.master.slug}`
+            : undefined}
         >
           {#if isExpanded(node.path)}
             <FolderOpen size={13} />
@@ -92,7 +110,7 @@
         <!-- `pl-4` is the whole indentation mechanism. -->
         <!-- Each recursion nests one more of these, so depth accumulates structurally. -->
         <div class="mt-1 flex flex-col gap-1.5 pl-4">
-          <MemoryTree nodes={node.children} {onSelect} {forceExpand} />
+          <MemoryTree nodes={node.children} {onSelect} {forceExpand} {preventBlurOnMouseDown} />
         </div>
       {/if}
     </div>
