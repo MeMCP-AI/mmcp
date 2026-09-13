@@ -241,7 +241,7 @@ const INVALID_UTF8_CONTINUATION_BYTE: u8 = 0x80;
 
 /// Corrupt `source` into invalid UTF-8 at the byte offset where `marker` starts.
 ///
-/// Replaces that one byte with [`INVALID_UTF8_CONTINUATION_BYTE`].
+/// Replaces that one byte with `INVALID_UTF8_CONTINUATION_BYTE`.
 /// `marker` pins the corruption to a caller-chosen region, e.g. a frontmatter field or the body.
 /// A test can target the frontmatter block or the body at will by choosing where `marker` sits.
 /// Returns `None` when `marker` is not found in `source`.
