@@ -875,6 +875,20 @@ mod tests {
         )
         .await
         .expect("seed milestone");
+        add_milestone(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("list-good".into()),
+                title: "Good sibling".into(),
+                description: "unaffected sibling".into(),
+                body: "body text".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed sibling milestone");
 
         let resolved = resolve_memory(scratch.backend(), &entry.handle, Some("list-corrupt"), None)
             .await
@@ -896,6 +910,10 @@ mod tests {
         assert!(
             records.iter().all(|record| record.slug != "list-corrupt"),
             "a corrupted member must not appear among the returned records"
+        );
+        assert!(
+            records.iter().any(|record| record.slug == "list-good"),
+            "an unaffected sibling must still be returned alongside the finding"
         );
         assert_eq!(
             findings.len(),

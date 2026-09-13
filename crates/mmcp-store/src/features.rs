@@ -1514,6 +1514,20 @@ mod tests {
         )
         .await
         .expect("seed feature");
+        add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("list-good".into()),
+                title: "Good sibling".into(),
+                description: "unaffected sibling".into(),
+                body: "body text".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed sibling feature");
 
         let resolved = resolve_memory(scratch.backend(), &entry.handle, Some("list-corrupt"), None)
             .await
@@ -1534,6 +1548,10 @@ mod tests {
         assert!(
             records.iter().all(|record| record.slug != "list-corrupt"),
             "a corrupted member must not appear among the returned records"
+        );
+        assert!(
+            records.iter().any(|record| record.slug == "list-good"),
+            "an unaffected sibling must still be returned alongside the finding"
         );
         assert_eq!(
             findings.len(),
@@ -2178,6 +2196,77 @@ mod tests {
                 Err(FeatureError::Memory(ImportError::MemoryNotFound { .. }))
             ),
             "old slug must be gone after rename: got {missing:?}"
+        );
+    }
+
+    /// A rename cannot classify a corrupted source file as belonging to this tracker kind.
+    /// It refuses instead of moving unclassifiable bytes under the new slug.
+    #[tokio::test]
+    async fn rename_rejects_invalid_utf8_in_the_frontmatter_block() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("rename-corrupt".into()),
+                title: "Corrupt target".into(),
+                description: "rename-frontmatter-marker".into(),
+                body: "body text".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed feature");
+
+        let resolved = resolve_memory(
+            scratch.backend(),
+            &entry.handle,
+            Some("rename-corrupt"),
+            None,
+        )
+        .await
+        .expect("resolve seeded feature");
+        let corrupted = crate::testing::corrupt_stored_file(
+            scratch.backend(),
+            &entry.handle,
+            &resolved.path,
+            "rename-frontmatter-marker",
+            scratch.author(),
+        )
+        .await
+        .expect("corrupt the seeded file's frontmatter block");
+
+        let err = rename_feature(
+            scratch.backend(),
+            &entry,
+            "rename-corrupt",
+            "rename-corrupt-renamed",
+            scratch.author(),
+            None,
+        )
+        .await
+        .expect_err("rename must refuse a source it cannot classify");
+        match err {
+            FeatureError::Memory(ImportError::NotUtf8 { path, .. }) => {
+                assert_eq!(
+                    path, resolved.path,
+                    "the error must name the corrupted path"
+                );
+            }
+            other => panic!("expected ImportError::NotUtf8, got {other:?}"),
+        }
+
+        let after_bytes =
+            crate::testing::read_raw_bytes(scratch.backend(), &entry.handle, &resolved.path)
+                .await
+                .expect("read bytes after refused rename");
+        assert_eq!(
+            after_bytes, corrupted,
+            "a refused rename must leave the source file untouched under its old slug"
         );
     }
 
