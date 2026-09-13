@@ -323,7 +323,7 @@ fn load_or_mint_config(
 ///    terminal), defaulting to the slugified project dir basename.
 /// 4. [`InitProjectError::SlugRequired`].
 ///
-/// Errors [`SlugMismatch`] when the caller's slug disagrees with an
+/// Errors [`InitProjectError::SlugMismatch`] when the caller's slug disagrees with an
 /// already-stored slug. A matching arg is accepted, useful for
 /// automation that passes the slug defensively even when it's
 /// already recorded.

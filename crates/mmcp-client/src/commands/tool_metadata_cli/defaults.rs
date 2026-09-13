@@ -1,7 +1,7 @@
-//! Default values for [`super::tool_metadata`].
+//! Default values for `registry::tool_metadata`.
 
 /// Namespaced `_meta` advisory keys.
-/// See [`super::tool_metadata`]'s doc for the vocabulary each one signals.
+/// See `registry::tool_metadata`'s doc for the vocabulary each one signals.
 pub(super) const META_REQUIRES_PROJECT: &str = "mmcp.requires_project";
 pub(super) const META_REQUIRES_SYNC: &str = "mmcp.requires_sync";
 pub(super) const META_NETWORK: &str = "mmcp.network";

@@ -7,7 +7,7 @@ use super::defaults::{
 use super::registry::tool_metadata_for_name;
 
 /// Per-tool category that drives icon selection.
-/// Declared per tool in [`super::registry::tool_metadata`], the single exhaustive
+/// Declared per tool in `registry::tool_metadata`, the single exhaustive
 /// registry backing icons, `_meta`, and argument risk hints alike;
 /// there is no default arm, so a `#[tool]` method without a
 /// [`mmcp_proto::McpToolId`] variant and a `tool_metadata` arm fails to compile

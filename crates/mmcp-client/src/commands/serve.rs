@@ -1192,7 +1192,7 @@ struct InitProjectArgs {
 /// Kept as a separate enum so the JSON schema exported by `rmcp` is
 /// owned by this crate; the mmcp-core definition stays serde-only
 /// and unaware of schemars. `rename_all = "snake_case"` matches
-/// [`GroupScope`]'s own serde rename, so the wire strings are
+/// [`mmcp_core::manifest::GroupScope`]'s own serde rename, so the wire strings are
 /// identical (`"global"`, `"shared"`, `"project"`).
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -1214,7 +1214,7 @@ impl ToolGroupScope {
     }
 }
 
-/// Render a [`GroupScope`] as its wire string. Matches the enum's
+/// Render a [`mmcp_core::manifest::GroupScope`] as its wire string. Matches the enum's
 /// serde `rename_all = "snake_case"` so response and request
 /// vocabularies stay in lockstep.
 fn group_scope_wire(scope: mmcp_core::manifest::GroupScope) -> &'static str {
@@ -6223,7 +6223,7 @@ impl McpServer {
 }
 
 /// Resolve the project at `cwd` (walking parent dirs) and return its
-/// [`ProjectConfig`] plus its EFFECTIVE remote set (user config
+/// [`mmcp_core::config::ProjectConfig`] plus its EFFECTIVE remote set (user config
 /// merged with project config via
 /// `mmcp_store::resolve_effective_remotes`).
 ///
@@ -6569,7 +6569,7 @@ fn current_dir_for_mcp() -> Result<PathBuf, McpError> {
         .map_err(|e| McpError::internal_error(format!("cannot read working directory: {e}"), None))
 }
 
-/// Parse the wire form of [`FeatureStatus`] from an optional string
+/// Parse the wire form of [`mmcp_core::memory::FeatureStatus`] from an optional string
 /// argument. `None` → `Ok(None)`; a known variant → `Ok(Some(...))`;
 /// an unknown variant → structured `invalid_feature_status` error.
 fn parse_status_arg(
@@ -6593,7 +6593,7 @@ fn parse_status_arg(
         })
 }
 
-/// Serialize a [`FeatureRecord`] to the JSON shape returned by the
+/// Serialize a [`mmcp_store::features::FeatureRecord`] to the JSON shape returned by the
 /// FR tools. Includes the group id so callers can cross-reference
 /// without a second `status` call.
 fn feature_record_to_json(
@@ -6616,7 +6616,7 @@ fn feature_record_to_json(
     })
 }
 
-/// Serialize a [`FeatureSummary`] to the body-free JSON shape used
+/// Serialize a [`mmcp_store::features::FeatureSummary`] to the body-free JSON shape used
 /// by `list_features`.
 /// Same fields as `feature_record_to_json` minus
 /// `body`: listings stay metadata-only so populated FR groups
@@ -6724,7 +6724,7 @@ fn map_xref_error_to_mcp(err: mmcp_store::XrefError) -> McpError {
     }
 }
 
-/// Map a [`features::FeatureError`] onto an [`McpError`] with a
+/// Map a [`mmcp_store::features::FeatureError`] onto an [`McpError`] with a
 /// structured `code` payload so AI callers branch on state rather
 /// than parsing strings. Covers the FR-specific cases first, then
 /// delegates to `map_memory_error_to_mcp` for the wrapped memory
@@ -6810,7 +6810,7 @@ fn map_feature_error_to_mcp(err: mmcp_store::features::FeatureError) -> McpError
     }
 }
 
-/// Parse the wire form of [`IssueStatus`] from an optional string
+/// Parse the wire form of [`mmcp_core::memory::IssueStatus`] from an optional string
 /// argument. Mirrors `parse_status_arg` for the issue tracker.
 fn parse_issue_status_arg(
     raw: Option<&str>,
@@ -6833,7 +6833,7 @@ fn parse_issue_status_arg(
         })
 }
 
-/// Serialize an [`IssueRecord`] to the JSON shape returned by the
+/// Serialize an [`mmcp_store::issues::IssueRecord`] to the JSON shape returned by the
 /// issue tools. Mirrors `feature_record_to_json`.
 fn issue_record_to_json(
     entry: &GroupEntry,
@@ -6854,7 +6854,7 @@ fn issue_record_to_json(
     })
 }
 
-/// Serialize an [`IssueSummary`] to the body-free JSON shape used
+/// Serialize an [`mmcp_store::issues::IssueSummary`] to the body-free JSON shape used
 /// by `list_issues`. Mirrors `feature_summary_to_json`.
 fn issue_summary_to_json(
     entry: &GroupEntry,
@@ -7113,7 +7113,7 @@ fn map_cache_error_to_mcp(err: mmcp_store::cache::CacheError, context: &str) -> 
     }
 }
 
-/// Map a [`commands::init::InitProjectError`] to an [`McpError`]
+/// Map a [`crate::commands::init::InitProjectError`] to an [`McpError`]
 /// with a structured `code` payload so AI callers can branch on
 /// state instead of parsing the error string.
 fn map_init_project_error_to_mcp(err: crate::commands::init::InitProjectError) -> McpError {
@@ -7200,7 +7200,7 @@ fn map_adoc_convert_error_to_mcp(err: mmcp_store::AdocConvertError) -> McpError 
     McpError::invalid_params(message, Some(json!({ "code": code })))
 }
 
-/// Map a [`commands::group::CreateGroupError`] to an [`McpError`]
+/// Map a [`crate::commands::group::CreateGroupError`] to an [`McpError`]
 /// with a structured `code` payload so AI callers can branch on
 /// state instead of parsing the error string.
 fn map_create_group_error_to_mcp(err: crate::commands::group::CreateGroupError) -> McpError {
