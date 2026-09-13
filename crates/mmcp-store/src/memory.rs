@@ -1228,7 +1228,7 @@ pub fn slugify_filename(filename: &str) -> String {
 
 /// Same as [`slugify_filename`], with one difference.
 /// `override_max_len`, when `Some` and non-zero, takes precedence over every other tier.
-/// That tier comes from `resolve_max_auto_slug_length`'s cascade.
+/// Every other tier comes from `resolve_max_auto_slug_length`'s cascade.
 /// The env var and user config that every other call shares are not consulted here.
 pub fn slugify_filename_with_cap(filename: &str, override_max_len: Option<usize>) -> String {
     let stem = strip_known_import_extension(filename);
