@@ -15,7 +15,7 @@ pub(super) const META_ANTHROPIC_MAX_RESULT_SIZE_CHARS: &str = "anthropic/maxResu
 /// Claude Code's documented hard ceiling on a single tool result, in characters.
 /// `read_memory` declares this via [`META_ANTHROPIC_MAX_RESULT_SIZE_CHARS`].
 /// A client honoring the key avoids side-filing a body up to this size.
-/// `mmcp_core::memory::MAX_BODY_LENGTH` (589,824 bytes) is the real stored-body ceiling, and it exceeds this value.
+/// [`mmcp_core::memory::MAX_BODY_LENGTH`] is the real stored-body ceiling and exceeds this value.
 /// A body sized between the two still gets saved to a file despite the declared hint.
 pub(super) const CLAUDE_CODE_MAX_RESULT_SIZE_CHARS: u64 = 500_000;
 
