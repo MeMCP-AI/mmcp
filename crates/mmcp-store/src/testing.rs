@@ -22,13 +22,15 @@ use std::sync::Arc;
 
 use mmcp_core::id::{GroupId, UserId};
 use mmcp_core::manifest::GroupManifest;
-use mmcp_git::{GitBackend, NativeBackend};
+use mmcp_core::memory::MemoryFrontmatter;
+use mmcp_git::{GitBackend, NativeBackend, RepoHandle, Rev};
 use tempfile::TempDir;
 use uuid::Uuid;
 
 use crate::error::{FileOperation, StoreError};
 use crate::groups::GroupIndex;
 use crate::home::{MmcpHome, ResolvedAuthor};
+use crate::memory::{ImportError, read_frontmatter_at, resolve_memory};
 use crate::sessions::SessionStore;
 
 /// An [`MmcpHome`] rooted inside a fresh tempdir, pre-wired with a backend, group index, and session store.
@@ -159,4 +161,18 @@ pub fn ephemeral_author() -> ResolvedAuthor {
         name: "mmcp-test".to_string(),
         email: "mmcp-test@example.invalid".to_string(),
     }
+}
+
+/// Resolve `slug` to its on-disk memory and return its raw frontmatter.
+///
+/// A test assertion often needs a field a tracker's own record shape omits
+/// (`tags`, `refs`, `source`, `bump_intent`, `version`).
+/// This pairs [`resolve_memory`] with the crate's frontmatter reader in one call.
+pub async fn read_current_frontmatter(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    slug: &str,
+) -> Result<MemoryFrontmatter, ImportError> {
+    let resolved = resolve_memory(backend, handle, Some(slug), None).await?;
+    read_frontmatter_at(backend, handle, &Rev::head(), &resolved.path).await
 }

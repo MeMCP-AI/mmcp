@@ -707,7 +707,7 @@ pub async fn read_frontmatters_in_group(
     Ok(out)
 }
 
-async fn read_frontmatter_at(
+pub(crate) async fn read_frontmatter_at(
     backend: &NativeBackend,
     handle: &RepoHandle,
     rev: &Rev,
