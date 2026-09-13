@@ -1246,9 +1246,15 @@ mod tests {
         .expect("read seeded frontmatter");
         assert!(!before.tags.is_empty(), "seeded tags must be non-default");
         assert!(before.mandatory, "seeded mandatory must be non-default");
-        assert!(before.bump_intent.is_some(), "seeded bump_intent must be non-default");
+        assert!(
+            before.bump_intent.is_some(),
+            "seeded bump_intent must be non-default"
+        );
         assert!(before.source.is_some(), "seeded source must be non-default");
-        assert!(before.version.is_some(), "seeded version must be non-default");
+        assert!(
+            before.version.is_some(),
+            "seeded version must be non-default"
+        );
         assert!(!before.refs.is_empty(), "seeded refs must be non-default");
 
         update_feature(
