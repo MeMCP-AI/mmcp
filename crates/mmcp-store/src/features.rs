@@ -730,24 +730,6 @@ pub async fn update_feature_unlocked(
     })
 }
 
-/// Read the raw `refs` list off a memory's frontmatter without
-/// going through [`FeatureRecord`] (which deliberately omits
-/// general-purpose refs to keep feature-flavored listings focused).
-/// Test-only: production code reads the full frontmatter directly via
-/// [`crate::tracker::read_memory_frontmatter`]; only the test suite's
-/// refs-only assertions need this narrower, refs-shaped accessor.
-#[cfg(test)]
-async fn read_memory_refs(
-    backend: &NativeBackend,
-    handle: &mmcp_git::RepoHandle,
-    path: &str,
-) -> Result<Vec<MemoryRef>, FeatureError> {
-    let frontmatter =
-        crate::tracker::read_memory_frontmatter(backend, handle, path, FeatureError::Memory)
-            .await?;
-    Ok(frontmatter.refs)
-}
-
 /// Rename every feature under `old_slug` to `new_slug`, committing the moves in a single atomic batch.
 /// UUIDs are stable across the rename so cross-refs in other features keep resolving without any further rewrite:
 /// the slug is a directory-level label, not a primary key.
@@ -1233,11 +1215,8 @@ mod tests {
         );
     }
 
-    /// Regression guard for the frontmatter-reset defect: `update_feature_unlocked` used to
-    /// rebuild its frontmatter from `MemoryFrontmatter::new`'s defaults, silently resetting
-    /// `tags`, `mandatory`, `bump_intent`, and `source` on any update, even one naming only
-    /// `status`. Asserts the requirement (a field the mutator does not name survives), not a
-    /// value merely observed off the pre-fix code.
+    /// An update naming only one field leaves every other field untouched.
+    /// Covers `tags`, `mandatory`, `bump_intent`, `source`, `version`, and `refs`.
     #[tokio::test]
     async fn update_preserves_frontmatter_fields_it_does_not_own() {
         let scratch = ScratchHome::new().await.expect("scratch home");
@@ -1245,6 +1224,7 @@ mod tests {
         let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
 
         let source_id = Uuid::now_v7();
+        let seeded_ref = MemoryRef::new(Uuid::now_v7(), "deadbeefcafe");
         let seeded_file = MemoryFile {
             frontmatter: MemoryFrontmatter::new("Before", "unchanged", MemoryKind::Feature)
                 .with_feature(FeatureMetadata {
@@ -1256,7 +1236,8 @@ mod tests {
                 .with_mandatory(true)
                 .with_bump_intent(Some(BumpIntent::Patch))
                 .with_source(Some(source_id))
-                .with_version(Some("1.2.3".parse().expect("valid semver literal"))),
+                .with_version(Some("1.2.3".parse().expect("valid semver literal")))
+                .with_refs(vec![seeded_ref.clone()]),
             body: "body".to_string(),
             format: FrontmatterFormat::TomlPlus,
         };
@@ -1297,6 +1278,11 @@ mod tests {
                 frontmatter.version, seeded_version,
                 "an update naming only one field must not reset version"
             );
+            assert_eq!(
+                frontmatter.refs,
+                vec![seeded_ref.clone()],
+                "an update naming only one field must not drop refs"
+            );
         };
 
         update_feature(
@@ -1311,19 +1297,10 @@ mod tests {
         )
         .await
         .expect("status-only update");
-        let resolved = resolve_memory(
+        let frontmatter = crate::testing::read_current_frontmatter(
             scratch.backend(),
             &entry.handle,
-            Some("tagged-feature"),
-            None,
-        )
-        .await
-        .expect("resolve after status-only update");
-        let frontmatter = crate::tracker::read_memory_frontmatter(
-            scratch.backend(),
-            &entry.handle,
-            &resolved.path,
-            FeatureError::Memory,
+            "tagged-feature",
         )
         .await
         .expect("read frontmatter after status-only update");
@@ -1341,23 +1318,86 @@ mod tests {
         )
         .await
         .expect("description-only update");
-        let resolved = resolve_memory(
+        let frontmatter = crate::testing::read_current_frontmatter(
             scratch.backend(),
             &entry.handle,
-            Some("tagged-feature"),
-            None,
-        )
-        .await
-        .expect("resolve after description-only update");
-        let frontmatter = crate::tracker::read_memory_frontmatter(
-            scratch.backend(),
-            &entry.handle,
-            &resolved.path,
-            FeatureError::Memory,
+            "tagged-feature",
         )
         .await
         .expect("read frontmatter after description-only update");
         assert_carried_forward(&frontmatter);
+    }
+
+    /// A hybrid record carries both a `[feature]` and an `[issue]` block (see `kind.rs`).
+    /// `update_feature` must leave the `issue` block and the primary `kind` untouched.
+    #[tokio::test]
+    async fn update_on_a_hybrid_record_preserves_the_sibling_issue_block_and_kind() {
+        use mmcp_core::memory::IssueMetadata;
+
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        let issue_block = IssueMetadata {
+            number: Some(1),
+            ..IssueMetadata::default()
+        };
+        let seeded_file = MemoryFile {
+            frontmatter: MemoryFrontmatter::new("Hybrid", "both blocks", MemoryKind::Issue)
+                .with_issue(issue_block.clone())
+                .with_feature(FeatureMetadata {
+                    status: FeatureStatus::Requested,
+                    number: Some(1),
+                    ..FeatureMetadata::default()
+                }),
+            body: "body".to_string(),
+            format: FrontmatterFormat::TomlPlus,
+        };
+        import_memory(
+            scratch.backend(),
+            &entry.handle,
+            "hybrid-fr",
+            &seeded_file.to_string().expect("render seeded hybrid"),
+            None,
+            scratch.author(),
+            false,
+        )
+        .await
+        .expect("seed hybrid fr");
+
+        update_feature(
+            scratch.backend(),
+            &entry,
+            "hybrid-fr",
+            UpdateSpec {
+                status: Some(FeatureStatus::Completed),
+                ..UpdateSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("status-only update on hybrid record");
+
+        let frontmatter =
+            crate::testing::read_current_frontmatter(scratch.backend(), &entry.handle, "hybrid-fr")
+                .await
+                .expect("read frontmatter after update");
+
+        assert_eq!(
+            frontmatter.kind,
+            MemoryKind::Issue,
+            "update_feature must not flip a hybrid record's primary kind"
+        );
+        assert_eq!(
+            frontmatter.issue,
+            Some(issue_block),
+            "update_feature must not drop the sibling issue block on a hybrid record"
+        );
+        assert_eq!(
+            frontmatter.feature.map(|m| m.status),
+            Some(FeatureStatus::Completed),
+            "the named field (feature status) must still apply"
+        );
     }
 
     async fn seed_mixed_status_fixture(scratch: &ScratchHome) -> GroupEntry {
@@ -2354,22 +2394,18 @@ mod tests {
         assert_eq!(link.commit, new_record.commit_id);
 
         // New FR's refs auto-include the old FR's pre-supersede commit.
-        let new_refs = read_memory_refs(
+        let new_frontmatter = crate::testing::read_current_frontmatter(
             scratch.backend(),
             &entry.handle,
-            &resolve_memory(
-                scratch.backend(),
-                &entry.handle,
-                Some(&new_record.slug),
-                None,
-            )
-            .await
-            .expect("resolve new")
-            .path,
+            &new_record.slug,
         )
         .await
-        .expect("refs");
-        assert_eq!(new_refs.len(), 1, "auto-ref must point at the old FR");
+        .expect("read new frontmatter");
+        assert_eq!(
+            new_frontmatter.refs.len(),
+            1,
+            "auto-ref must point at the old FR"
+        );
     }
 
     #[tokio::test]
@@ -2446,23 +2482,15 @@ mod tests {
         let link = old_after.superseded_by.expect("back-link set");
         assert_eq!(link.commit, new_record.commit_id);
 
-        let new_refs = read_memory_refs(
+        let new_frontmatter = crate::testing::read_current_frontmatter(
             scratch.backend(),
             &entry.handle,
-            &resolve_memory(
-                scratch.backend(),
-                &entry.handle,
-                Some(&new_record.slug),
-                None,
-            )
-            .await
-            .expect("resolve new")
-            .path,
+            &new_record.slug,
         )
         .await
-        .expect("refs");
+        .expect("read new frontmatter");
         assert_eq!(
-            new_refs.len(),
+            new_frontmatter.refs.len(),
             1,
             "new FR must carry exactly one auto-populated ref pinned at old FR's pre-supersede commit",
         );
@@ -2588,15 +2616,17 @@ mod tests {
         .await
         .expect("compose refs");
 
-        // Re-read raw refs and assert the shape.
-        let resolved = resolve_memory(scratch.backend(), &entry.handle, Some(&seed.slug), None)
-            .await
-            .expect("resolve");
-        let refs = read_memory_refs(scratch.backend(), &entry.handle, &resolved.path)
-            .await
-            .expect("refs");
-        assert_eq!(refs.len(), 1, "drop + replace leaves exactly one ref");
-        assert_eq!(refs[0].target, keep);
-        assert_eq!(refs[0].commit, new_commit);
+        // Re-read raw frontmatter and assert the refs shape.
+        let frontmatter =
+            crate::testing::read_current_frontmatter(scratch.backend(), &entry.handle, &seed.slug)
+                .await
+                .expect("read frontmatter");
+        assert_eq!(
+            frontmatter.refs.len(),
+            1,
+            "drop + replace leaves exactly one ref"
+        );
+        assert_eq!(frontmatter.refs[0].target, keep);
+        assert_eq!(frontmatter.refs[0].commit, new_commit);
     }
 }

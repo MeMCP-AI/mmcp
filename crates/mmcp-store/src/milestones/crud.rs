@@ -548,12 +548,9 @@ mod tests {
         assert_eq!(updated.body, "body");
     }
 
-    /// Regression guard for the frontmatter-reset defect: `update_milestone` used to rebuild
-    /// its frontmatter from `MemoryFrontmatter::new`'s defaults, silently resetting `tags`,
-    /// `mandatory`, `bump_intent`, `source`, and `refs` on any update, even one naming only
-    /// `status`; this module exposes no refs-editing surface, so `refs` must always survive
-    /// unchanged. Asserts the requirement (a field the mutator does not name survives), not a
-    /// value merely observed off the pre-fix code.
+    /// An update naming only one field leaves every other field untouched.
+    /// Covers `tags`, `mandatory`, `bump_intent`, `source`, `version`, and `refs`.
+    /// This module has no refs-editing surface, so `refs` must survive unchanged.
     #[tokio::test]
     async fn update_preserves_frontmatter_fields_it_does_not_own() {
         let scratch = ScratchHome::new().await.expect("scratch home");
@@ -635,19 +632,10 @@ mod tests {
         )
         .await
         .expect("status-only update");
-        let resolved = resolve_memory(
+        let frontmatter = crate::testing::read_current_frontmatter(
             scratch.backend(),
             &entry.handle,
-            Some("tagged-milestone"),
-            None,
-        )
-        .await
-        .expect("resolve after status-only update");
-        let frontmatter = crate::tracker::read_memory_frontmatter(
-            scratch.backend(),
-            &entry.handle,
-            &resolved.path,
-            MilestoneError::Memory,
+            "tagged-milestone",
         )
         .await
         .expect("read frontmatter after status-only update");
@@ -667,19 +655,10 @@ mod tests {
         )
         .await
         .expect("description-only update");
-        let resolved = resolve_memory(
+        let frontmatter = crate::testing::read_current_frontmatter(
             scratch.backend(),
             &entry.handle,
-            Some("tagged-milestone"),
-            None,
-        )
-        .await
-        .expect("resolve after description-only update");
-        let frontmatter = crate::tracker::read_memory_frontmatter(
-            scratch.backend(),
-            &entry.handle,
-            &resolved.path,
-            MilestoneError::Memory,
+            "tagged-milestone",
         )
         .await
         .expect("read frontmatter after description-only update");

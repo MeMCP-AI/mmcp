@@ -904,11 +904,8 @@ mod tests {
         assert_eq!(updated.body, "body");
     }
 
-    /// Regression guard for the frontmatter-reset defect: `update_issue_unlocked` used to rebuild
-    /// its frontmatter from `MemoryFrontmatter::new`'s defaults, silently resetting `tags`,
-    /// `mandatory`, `bump_intent`, and `source` on any update, even one naming only `status`.
-    /// Asserts the requirement (a field the mutator does not name survives), not a value merely
-    /// observed off the pre-fix code.
+    /// An update naming only one field leaves every other field untouched.
+    /// Covers `tags`, `mandatory`, `bump_intent`, `source`, `version`, and `refs`.
     #[tokio::test]
     async fn update_preserves_frontmatter_fields_it_does_not_own() {
         let scratch = ScratchHome::new().await.expect("scratch home");
@@ -916,6 +913,7 @@ mod tests {
         let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
 
         let source_id = Uuid::now_v7();
+        let seeded_ref = MemoryRef::new(Uuid::now_v7(), "deadbeefcafe");
         let seeded_file = MemoryFile {
             frontmatter: MemoryFrontmatter::new("Before", "unchanged", MemoryKind::Issue)
                 .with_issue(IssueMetadata {
@@ -927,7 +925,8 @@ mod tests {
                 .with_mandatory(true)
                 .with_bump_intent(Some(BumpIntent::Patch))
                 .with_source(Some(source_id))
-                .with_version(Some("1.2.3".parse().expect("valid semver literal"))),
+                .with_version(Some("1.2.3".parse().expect("valid semver literal")))
+                .with_refs(vec![seeded_ref.clone()]),
             body: "body".to_string(),
             format: FrontmatterFormat::TomlPlus,
         };
@@ -968,6 +967,11 @@ mod tests {
                 frontmatter.version, seeded_version,
                 "an update naming only one field must not reset version"
             );
+            assert_eq!(
+                frontmatter.refs,
+                vec![seeded_ref.clone()],
+                "an update naming only one field must not drop refs"
+            );
         };
 
         update_issue(
@@ -982,14 +986,10 @@ mod tests {
         )
         .await
         .expect("status-only update");
-        let resolved = resolve_memory(scratch.backend(), &entry.handle, Some("tagged-issue"), None)
-            .await
-            .expect("resolve after status-only update");
-        let frontmatter = crate::tracker::read_memory_frontmatter(
+        let frontmatter = crate::testing::read_current_frontmatter(
             scratch.backend(),
             &entry.handle,
-            &resolved.path,
-            IssueError::Memory,
+            "tagged-issue",
         )
         .await
         .expect("read frontmatter after status-only update");
@@ -1007,24 +1007,18 @@ mod tests {
         )
         .await
         .expect("description-only update");
-        let resolved = resolve_memory(scratch.backend(), &entry.handle, Some("tagged-issue"), None)
-            .await
-            .expect("resolve after description-only update");
-        let frontmatter = crate::tracker::read_memory_frontmatter(
+        let frontmatter = crate::testing::read_current_frontmatter(
             scratch.backend(),
             &entry.handle,
-            &resolved.path,
-            IssueError::Memory,
+            "tagged-issue",
         )
         .await
         .expect("read frontmatter after description-only update");
         assert_carried_forward(&frontmatter);
     }
 
-    /// Regression guard for the hybrid sibling-block defect: a hybrid memory (kind=Feature,
-    /// carrying both a `[feature]` and an `[issue]` block, per `kind.rs`'s documented hybrid
-    /// model) must keep its `feature` block and its primary `kind` intact when `update_issue`
-    /// only touches the `[issue]` block's status.
+    /// A hybrid record carries both a `[feature]` and an `[issue]` block (see `kind.rs`).
+    /// `update_issue` must leave the `feature` block and the primary `kind` untouched.
     #[tokio::test]
     async fn update_on_a_hybrid_record_preserves_the_sibling_feature_block_and_kind() {
         let scratch = ScratchHome::new().await.expect("scratch home");
