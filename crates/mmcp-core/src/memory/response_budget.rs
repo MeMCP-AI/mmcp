@@ -40,12 +40,20 @@ use serde::Serialize;
 /// It is not a hard guarantee for a group of unusually long slugs and names.
 pub const COMPACT_RECORD_ESTIMATED_BYTES: usize = 512;
 
+/// Bytes withheld from the ceiling before sizing the default page.
+/// Covers the envelope wrapper's own JSON punctuation and a typical mandatory set (about 8 compact records' worth).
+/// The mandatory set rides in unconditionally, outside pagination, so it is not itself bounded by this reserve.
+/// A group whose mandatory set alone exceeds this reserve can still push a default-limit response over the ceiling.
+pub const LIST_MEMORIES_RESERVE_BYTES: usize = 4096;
+
 /// Default page size for `list_memories` pagination.
 /// Used when the caller sets `offset` and/or `limit` but omits an explicit `limit` value.
-/// Derived from [`crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES`] over one compact record's estimated size.
-/// The default page fits the client result ceiling with margin left over for the wrapper object and the mandatory set.
-pub const DEFAULT_LIST_MEMORIES_LIMIT: usize =
-    crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES / COMPACT_RECORD_ESTIMATED_BYTES;
+/// Derived from [`crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES`] over one compact record's estimated size,
+/// after withholding [`LIST_MEMORIES_RESERVE_BYTES`].
+/// The default page plus that reserve fits the client result ceiling for a typical mandatory set.
+pub const DEFAULT_LIST_MEMORIES_LIMIT: usize = (crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES
+    - LIST_MEMORIES_RESERVE_BYTES)
+    / COMPACT_RECORD_ESTIMATED_BYTES;
 
 /// Hard upper clamp on a caller-supplied `limit`, independent of [`DEFAULT_LIST_MEMORIES_LIMIT`].
 /// The largest real group measured on this project's own mmcp mirror carries 471 memories.
@@ -63,7 +71,7 @@ pub const MAX_LIST_MEMORIES_LIMIT: usize = 512;
 // worst case it does not cover).
 const _: () = assert!(MAX_LIST_MEMORIES_LIMIT >= DEFAULT_LIST_MEMORIES_LIMIT);
 const _: () = assert!(
-    DEFAULT_LIST_MEMORIES_LIMIT * COMPACT_RECORD_ESTIMATED_BYTES
+    DEFAULT_LIST_MEMORIES_LIMIT * COMPACT_RECORD_ESTIMATED_BYTES + LIST_MEMORIES_RESERVE_BYTES
         <= crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES
 );
 
