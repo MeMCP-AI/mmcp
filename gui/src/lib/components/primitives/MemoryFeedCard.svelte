@@ -29,6 +29,7 @@
     rule: 'border-l-kind-rule',
     snapshot: 'border-l-kind-snapshot',
     log: 'border-l-kind-log',
+    incident: 'border-l-kind-incident',
     reference: 'border-l-kind-reference',
     scratch: 'border-l-kind-scratch',
     feature: 'border-l-kind-feature',

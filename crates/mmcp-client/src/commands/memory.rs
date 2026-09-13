@@ -162,7 +162,7 @@ pub struct WriteArgs {
     #[arg(long)]
     pub description: String,
 
-    /// `rule` / `snapshot` / `log` / `reference` / `scratch`.
+    /// `rule` / `snapshot` / `log` / `incident` / `reference` / `scratch`.
     #[arg(long)]
     pub kind: String,
 

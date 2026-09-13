@@ -40,6 +40,10 @@ pub enum MemoryKind {
     /// Edits may only add entries; prior entries are immutable.
     Log,
 
+    /// Append-only record of one incident: an outage, a defect, or another disruptive event.
+    /// Edits may only add entries; prior entries are immutable, same as `Log`.
+    Incident,
+
     /// Pointer to an external resource (Linear project, Grafana dashboard, spec URL).
     /// Rarely changes; no staleness warning.
     Reference,
@@ -120,7 +124,7 @@ impl MemoryKind {
     /// True if edits to this kind must be append-only.
     #[must_use]
     pub const fn is_append_only(self) -> bool {
-        matches!(self, MemoryKind::Log)
+        matches!(self, MemoryKind::Log | MemoryKind::Incident)
     }
 
     /// True if this kind participates in the semver versioning system.
@@ -224,7 +228,7 @@ mod tests {
         let err = "bogus".parse::<MemoryKind>().expect_err("unknown kind");
         assert_eq!(
             err.to_string(),
-            "invalid memory kind 'bogus': expected one of rule / snapshot / log / reference / scratch / feature / issue / milestone"
+            "invalid memory kind 'bogus': expected one of rule / snapshot / log / incident / reference / scratch / feature / issue / milestone"
         );
     }
 

@@ -1427,7 +1427,7 @@ pub fn parse_kind(s: &str) -> Result<MemoryKind, ImportError> {
     Ok(s.parse::<MemoryKind>()?)
 }
 
-/// The five kinds a plain memory CREATE (or `edit --kind`) may target.
+/// The six kinds a plain memory CREATE (or `edit --kind`) may target.
 /// Tracked kinds are deliberately excluded: they are created through their own dedicated command
 /// (`add_feature` / `add_issue` / `add_milestone`), which populates the structured metadata subtable
 /// this path never does.
@@ -1435,6 +1435,7 @@ const CREATABLE_KINDS: &[MemoryKind] = &[
     MemoryKind::Rule,
     MemoryKind::Snapshot,
     MemoryKind::Log,
+    MemoryKind::Incident,
     MemoryKind::Reference,
     MemoryKind::Scratch,
 ];
@@ -1779,13 +1780,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_creatable_kind_accepts_the_five_non_tracked_kinds() {
+    fn parse_creatable_kind_accepts_the_six_non_tracked_kinds() {
         assert_eq!(parse_creatable_kind("rule").unwrap(), MemoryKind::Rule);
         assert_eq!(
             parse_creatable_kind("snapshot").unwrap(),
             MemoryKind::Snapshot
         );
         assert_eq!(parse_creatable_kind("log").unwrap(), MemoryKind::Log);
+        assert_eq!(
+            parse_creatable_kind("incident").unwrap(),
+            MemoryKind::Incident
+        );
         assert_eq!(
             parse_creatable_kind("reference").unwrap(),
             MemoryKind::Reference

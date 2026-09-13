@@ -362,6 +362,7 @@ enum ToolMemoryKind {
     Rule,
     Snapshot,
     Log,
+    Incident,
     Reference,
     Scratch,
 }
@@ -372,6 +373,7 @@ impl ToolMemoryKind {
             ToolMemoryKind::Rule => mmcp_core::memory::MemoryKind::Rule,
             ToolMemoryKind::Snapshot => mmcp_core::memory::MemoryKind::Snapshot,
             ToolMemoryKind::Log => mmcp_core::memory::MemoryKind::Log,
+            ToolMemoryKind::Incident => mmcp_core::memory::MemoryKind::Incident,
             ToolMemoryKind::Reference => mmcp_core::memory::MemoryKind::Reference,
             ToolMemoryKind::Scratch => mmcp_core::memory::MemoryKind::Scratch,
         }
