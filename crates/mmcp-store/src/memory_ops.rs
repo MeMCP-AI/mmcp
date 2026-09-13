@@ -175,7 +175,7 @@ pub enum MemoryEditError {
 
     /// A line op's `expect` guard disagreed with the body it targets.
     /// The expected range content, or a supplied `before`/`after` neighbour, does not match.
-    /// `found_at` lists the indices (capped at [`MAX_FOUND_AT_MATCHES`]) where the expected content actually occurs.
+    /// `found_at` lists the indices (capped at `MAX_FOUND_AT_MATCHES`) where the expected content actually occurs.
     /// The caller can retarget from that list instead of guessing.
     #[error("line range [{start}, {end}) does not match the caller's expected content")]
     LineContentMismatch {
@@ -644,7 +644,7 @@ fn strip_line_terminator(line: &str) -> String {
 }
 
 /// Every starting index in `lines` where the contiguous, terminator-stripped sequence `needle` occurs.
-/// Capped at [`MAX_FOUND_AT_MATCHES`] entries.
+/// Capped at `MAX_FOUND_AT_MATCHES` entries.
 fn find_line_sequence(lines: &[&str], needle: &[String]) -> Vec<usize> {
     if needle.is_empty() || needle.len() > lines.len() {
         return Vec::new();
