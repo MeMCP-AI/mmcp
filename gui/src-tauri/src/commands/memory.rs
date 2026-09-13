@@ -4,7 +4,7 @@ use mmcp_core::id::GroupId;
 use mmcp_core::memory::{MemoryFile, MemoryFrontmatter, MemoryKind};
 use mmcp_git::{GitBackend, NativeBackend, RepoHandle, Rev};
 use mmcp_store::{
-    AddressingMode, ImportError, WriteFileOptions, WriteMemoryOptions, delete_file_at_path,
+    AddressingMode, WriteFileOptions, WriteMemoryOptions, delete_file_at_path,
     list_memory_slug_dirs, resolve_memory, write_file_at_path, write_memory_by_id,
 };
 use serde::{Deserialize, Serialize};
@@ -283,15 +283,6 @@ pub async fn list_memory_slugs(
     Ok(slugs)
 }
 
-/// Maps a slug-resolution failure to its own skip code, distinct per cause.
-fn skip_code_for_resolve_error(err: &ImportError) -> &'static str {
-    match err {
-        ImportError::MemoryNotFound { .. } => "memory_missing",
-        ImportError::MemoryAmbiguous { .. } => "memory_ambiguous",
-        _ => "memory_unresolvable",
-    }
-}
-
 /// Decode `bytes` as UTF-8 and parse them as a memory file, producing either a
 /// resolved descriptor or a [`mmcp_store::Finding`] naming why the file was unusable.
 /// Pulled out of [`list_memory_descriptors`] so the skip-populating behavior is
@@ -350,7 +341,7 @@ async fn list_descriptors_in(
                 paths.push(resolved.path);
             }
             Err(err) => {
-                let code = skip_code_for_resolve_error(&err);
+                let code = mmcp_store::tracker::import_error_code(&err);
                 tracing::warn!(group_id = %group_id, slug = %dir.slug, error = %err, "list_memory_descriptors: skipping unresolvable slug");
                 skipped.push(skip_finding(
                     group_id,
@@ -586,7 +577,7 @@ mod tests {
     use mmcp_core::id::UserId;
     use mmcp_core::manifest::GroupManifest;
     use mmcp_git::CommitSpec;
-    use mmcp_store::{ResolvedAuthor, import_memory};
+    use mmcp_store::{ImportError, ResolvedAuthor, import_memory};
     use tempfile::TempDir;
 
     const VALID_MEMORY_BYTES: &[u8] = b"+++\nname = \"Rust Coding Rules\"\ndescription = \"Strict Rust coding conventions\"\nkind = \"rule\"\nmandatory = true\n+++\n# Rust Coding Rules\n\nBody text.\n";
@@ -690,8 +681,13 @@ mod tests {
         assert_eq!(value["skipped"][0]["slug"], "bad");
     }
 
+    /// The GUI's skip code for a resolve failure comes from the same
+    /// `mmcp_store::tracker::import_error_code` the MCP tool layer's
+    /// `map_memory_error_to_mcp` uses, so the two surfaces can never
+    /// drift back to reporting different wire names for one variant
+    /// (this was `memory_missing` here vs. `memory_not_found` there).
     #[test]
-    fn skip_code_for_resolve_error_distinguishes_missing_from_ambiguous() {
+    fn resolve_error_code_matches_the_shared_mcp_vocabulary() {
         let missing = ImportError::MemoryNotFound {
             slug: Some("x".to_string()),
             id: None,
@@ -700,8 +696,14 @@ mod tests {
             slug: "x".to_string(),
             candidates: vec![Uuid::now_v7(), Uuid::now_v7()],
         };
-        assert_eq!(skip_code_for_resolve_error(&missing), "memory_missing");
-        assert_eq!(skip_code_for_resolve_error(&ambiguous), "memory_ambiguous");
+        assert_eq!(
+            mmcp_store::tracker::import_error_code(&missing),
+            "memory_not_found"
+        );
+        assert_eq!(
+            mmcp_store::tracker::import_error_code(&ambiguous),
+            "memory_ambiguous"
+        );
     }
 
     /// A folder-only path segment (`git`, `comments`) is never probed as its own slug.
