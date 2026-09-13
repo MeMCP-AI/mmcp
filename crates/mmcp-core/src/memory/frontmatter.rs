@@ -18,7 +18,7 @@ use crate::memory::{
 ///
 /// The `version` field is server-managed. Clients do not hand-edit it;
 /// the server assigns it at push time using the
-/// [`BumpIntent`](crate::memory::BumpIntent) that accompanied the
+/// [`BumpIntent`] that accompanied the
 /// commit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryFrontmatter {
