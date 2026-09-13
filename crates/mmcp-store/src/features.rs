@@ -44,8 +44,7 @@ pub enum FeatureError {
     #[error(transparent)]
     Memory(#[from] ImportError),
 
-    /// Raised when `read_feature` / `update_feature` / `delete_feature` target a memory
-    /// that exists but carries no `[feature]` block.
+    /// Raised when `read_feature` / `update_feature` / `delete_feature` target a memory with no `[feature]` block.
     /// Keeps the FR tools from silently operating on unrelated memories.
     #[error("memory '{slug}' exists in this group but is kind '{kind}', not a feature request")]
     NotAFeature { slug: String, kind: String },
@@ -535,8 +534,8 @@ pub async fn read_feature(
         .await
         .map_err(FeatureError::Memory)?;
     let git_rev = match rev {
-        // Heuristic aligned with the MCP `read_memory` tool: a 40-char hex string resolves as a commit id;
-        // anything else is treated as a branch name.
+        // Heuristic aligned with the MCP `read_memory` tool.
+        // A 40-char hex string resolves as a commit id; anything else is treated as a branch name.
         // Kept in the store so every consumer interprets `rev` the same way.
         Some(v) => {
             if v.len() == 40 && v.chars().all(|c| c.is_ascii_hexdigit()) {
