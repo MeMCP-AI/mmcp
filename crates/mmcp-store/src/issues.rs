@@ -680,8 +680,8 @@ pub async fn list_issues(
                         out.push(record);
                     }
                 }
-                // `NotAnIssue` is an *expected* non-match:
-                // the slug is a rule/snapshot/log/reference/scratch/pure feature memory, not a corruption signal.
+                // `NotAnIssue` is an expected non-match, not a corruption signal.
+                // The slug is some other `MemoryKind` variant.
                 Err(IssueError::NotAnIssue { .. }) => {}
                 Err(other) => return Err(other),
             },

@@ -866,7 +866,7 @@ pub async fn delete_feature(
 ///    The closed-ish statuses only come back via the `show_all` escape hatch or an explicit `status` selector.
 ///
 /// A memory with no `[feature]` block is skipped silently when its own kind field is not `feature`.
-/// FRs share the group with rules/snapshots/logs/references/scratch notes.
+/// FRs share the group with memories of any other `MemoryKind`.
 /// Listing would otherwise return a confused shape.
 /// A memory that self-declares kind `feature` but carries no `[feature]` block is NOT skipped silently.
 /// `require_block` gates on block presence, not on `frontmatter.kind`.
@@ -926,9 +926,8 @@ pub async fn list_features(
                         code: "feature_block_missing",
                     });
                 }
-                // A genuinely unrelated kind is an *expected* non-match:
-                // the slug is a rule/snapshot/log/reference/scratch memory, not a corruption signal,
-                // so the loop continues past it without a finding.
+                // A genuinely unrelated kind is an expected non-match, not a corruption signal.
+                // The loop continues past that slug without a finding.
                 Err(FeatureError::NotAFeature { .. }) => {}
                 Err(other) => return Err(other),
             },
