@@ -7439,25 +7439,23 @@ fn map_archive_error_to_mcp(err: mmcp_store::ArchiveError) -> McpError {
     }
 }
 
-/// Map an [`ImportError`] onto an [`McpError`] with a structured `code` payload.
-/// The `code` itself comes from `mmcp_store::tracker::import_error_code`.
-/// That is the one owner every surface (this tool layer, the GUI backend) names a variant through.
-/// Each arm below adds its own variant-specific fields around that shared code.
+/// One code per variant; no wildcard, so a new variant needs its own arm.
 fn map_memory_error_to_mcp(err: ImportError) -> McpError {
     let message = err.to_string();
+    let code = err.code();
     let payload = match &err {
         ImportError::MemoryNotFound { slug, id } => json!({
-            "code": mmcp_store::tracker::import_error_code(&err),
+            "code": code,
             "slug": slug,
             "id": id.map(|u| u.to_string()),
         }),
         ImportError::MemoryAlreadyExists { slug } => json!({
-            "code": mmcp_store::tracker::import_error_code(&err),
+            "code": code,
             "slug": slug,
             "retry_hint": "use edit_memory to update in place, delete_memory to remove, or pass override: true to replace",
         }),
         ImportError::MemoryAmbiguous { slug, candidates } => json!({
-            "code": mmcp_store::tracker::import_error_code(&err),
+            "code": code,
             "slug": slug,
             "candidates": candidates.iter().map(|u| u.to_string()).collect::<Vec<_>>(),
             "retry_hint": "pass an explicit id to disambiguate",
@@ -7467,39 +7465,39 @@ fn map_memory_error_to_mcp(err: ImportError) -> McpError {
             expected,
             got,
         } => json!({
-            "code": mmcp_store::tracker::import_error_code(&err),
+            "code": code,
             "slug": slug,
             "expected": expected.to_string(),
             "got": got.to_string(),
         }),
         ImportError::ResolveArgsMissing => json!({
-            "code": mmcp_store::tracker::import_error_code(&err),
+            "code": code,
         }),
         ImportError::InvalidSlug(slug) => json!({
-            "code": mmcp_store::tracker::import_error_code(&err),
+            "code": code,
             "slug": slug,
         }),
         ImportError::Render(detail) => json!({
-            "code": mmcp_store::tracker::import_error_code(&err),
+            "code": code,
             "detail": detail,
         }),
         ImportError::Parse(detail) => json!({
-            "code": mmcp_store::tracker::import_error_code(&err),
+            "code": code,
             "detail": detail.to_string(),
         }),
         ImportError::Git(detail) => json!({
-            "code": mmcp_store::tracker::import_error_code(&err),
+            "code": code,
             "detail": detail.to_string(),
         }),
         ImportError::MissingFrontmatter => json!({
-            "code": mmcp_store::tracker::import_error_code(&err),
+            "code": code,
         }),
         ImportError::UnknownKind(inner) => json!({
-            "code": mmcp_store::tracker::import_error_code(&err),
+            "code": code,
             "kind": inner.input,
         }),
         ImportError::GroupNotFound(group) => json!({
-            "code": mmcp_store::tracker::import_error_code(&err),
+            "code": code,
             "group": group,
         }),
         ImportError::IdMismatchOnFilenameWrite {
@@ -7507,7 +7505,7 @@ fn map_memory_error_to_mcp(err: ImportError) -> McpError {
             filename,
             frontmatter,
         } => json!({
-            "code": mmcp_store::tracker::import_error_code(&err),
+            "code": code,
             "path": path,
             "filename": filename.to_string(),
             "frontmatter": frontmatter.to_string(),
@@ -7515,34 +7513,34 @@ fn map_memory_error_to_mcp(err: ImportError) -> McpError {
         }),
         ImportError::FieldTooLong(inner) => match inner {
             mmcp_core::memory::FieldLengthError::TooLong { field, max, actual } => json!({
-                "code": mmcp_store::tracker::import_error_code(&err),
+                "code": code,
                 "field": field,
                 "max": max,
                 "actual": actual,
             }),
             mmcp_core::memory::FieldLengthError::TooMany { field, max, actual } => json!({
-                "code": mmcp_store::tracker::import_error_code(&err),
+                "code": code,
                 "field": field,
                 "max": max,
                 "actual": actual,
             }),
         },
         ImportError::NotACreatableKind { kind } => json!({
-            "code": mmcp_store::tracker::import_error_code(&err),
+            "code": code,
             "kind": kind,
             "retry_hint": format!("use the dedicated add_{kind} tool instead"),
         }),
         ImportError::NotUtf8 { path, source } => json!({
-            "code": mmcp_store::tracker::import_error_code(&err),
+            "code": code,
             "path": path,
             "detail": source.to_string(),
         }),
         ImportError::TicketCounterOverflow => json!({
-            "code": mmcp_store::tracker::import_error_code(&err),
+            "code": code,
         }),
         ImportError::Edit(inner) => memory_edit_error_payload(inner),
         ImportError::BodyResultTooLarge { limit, size } => json!({
-            "code": mmcp_store::tracker::import_error_code(&err),
+            "code": code,
             "limit": limit,
             "size": size,
             "retry_hint": "split this memory into a family under a subject prefix (e.g. `<subject>/<part>`)",
