@@ -26,7 +26,9 @@ mod status;
 mod version;
 mod xrefs;
 
-pub use body::{BodyParseError, Section, parse_sections, render_sections, slugify_heading};
+pub use body::{
+    BodyParseError, Section, line_count, parse_sections, render_sections, slugify_heading,
+};
 pub use bump::BumpIntent;
 pub use entry::Memory;
 pub use feature::{FeatureMetadata, FeatureStatus, FeatureStatusParseError};

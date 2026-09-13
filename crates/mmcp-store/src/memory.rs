@@ -158,6 +158,11 @@ pub enum ImportError {
         u32::MAX
     )]
     TicketCounterOverflow,
+
+    /// [`read_and_apply_body_ops`]'s edit batch failed against the body it targeted:
+    /// a section/anchor not found, an out-of-range line, or a line-op content guard mismatch.
+    #[error(transparent)]
+    Edit(#[from] crate::memory_ops::MemoryEditError),
 }
 
 /// Per-file reference to a memory on disk.
@@ -712,7 +717,7 @@ pub async fn read_frontmatters_in_group(
 /// Borrows `bytes` as UTF-8 instead of lossily substituting the replacement character.
 /// A malformed blob surfaces as [`ImportError::NotUtf8`], carrying `path`.
 /// This avoids silently corrupting frontmatter or body content.
-pub(crate) fn parse_memory_file_bytes(bytes: &[u8], path: &str) -> Result<MemoryFile, ImportError> {
+pub fn parse_memory_file_bytes(bytes: &[u8], path: &str) -> Result<MemoryFile, ImportError> {
     let text = std::str::from_utf8(bytes).map_err(|source| ImportError::NotUtf8 {
         path: path.to_string(),
         source,
@@ -815,6 +820,26 @@ pub fn resolve_commit_message(
         }
         None => Ok(fallback()),
     }
+}
+
+/// Read the memory file at `path`, apply `ops` to its body, and render the result.
+///
+/// Callers must hold the memory's exclusive lock (`crate::lock::memory_chain`) before calling:
+/// the read, the ops' application, and the render all run against one snapshot, so a lock
+/// acquired only around the later write leaves the whole application window open to a
+/// concurrent writer shifting the very lines the ops target.
+/// Decodes strictly via [`parse_memory_file_bytes`], never lossily.
+pub async fn read_and_apply_body_ops(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    path: &str,
+    ops: &[crate::memory_ops::MemoryEditOp],
+) -> Result<(MemoryFile, String), ImportError> {
+    let bytes = backend.read_file(handle, path, &Rev::head()).await?;
+    let mut file = parse_memory_file_bytes(&bytes, path)?;
+    file.body = crate::memory_ops::apply_ops(&file.body, ops)?;
+    let rendered = file.to_string()?;
+    Ok((file, rendered))
 }
 
 /// Commit a write of `rendered` at an explicit repo-relative `path` after running the id-mismatch check.

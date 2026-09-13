@@ -28,15 +28,28 @@
 use std::ops::Range;
 
 use mmcp_core::memory::{
-    BodyParseError, Section, SpliceError, line_terminator, parse_sections, splice,
+    BodyParseError, Section, SpliceError, line_count, line_terminator, parse_sections, splice,
 };
 use serde::{Deserialize, Serialize};
+
+/// Content a line op expects its target to hold, checked before the op mutates anything.
+/// `lines` are the body lines of the op's `[start, end)` range with line terminators excluded.
+/// `before` is line `start - 1`; `after` is line `end` (or line `line` for `InsertAtLine`).
+/// A supplied neighbour that does not exist in the body is a mismatch, not a silent skip.
+/// Every field defaults to empty/absent, so a caller only names the anchors it wants checked.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct LineExpect {
+    pub lines: Vec<String>,
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
 
 /// Single mutation of a memory body.
 /// See the module-level docs for semantics;
 /// the variants are ordered section-first, line-last.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MemoryEditOp {
     /// Create or replace a whole section (heading line + body).
     /// Matched by `path`.
@@ -93,19 +106,34 @@ pub enum MemoryEditOp {
     /// Insert `content` at the zero-based line index `line`.
     /// Lines at and after `line` shift down.
     /// `line` may equal the current line count to append at EOF.
-    InsertAtLine { line: u32, content: String },
+    /// `expect` guards the insertion point on a non-empty body: see [`LineExpect`].
+    InsertAtLine {
+        line: u32,
+        content: String,
+        #[serde(default)]
+        expect: Option<LineExpect>,
+    },
 
     /// Replace the half-open line range `[start, end)` with `content`.
     /// `end >= start`; `end <= current_line_count`.
+    /// `expect` guards the target range: see [`LineExpect`].
     ReplaceLines {
         start: u32,
         end: u32,
         content: String,
+        #[serde(default)]
+        expect: Option<LineExpect>,
     },
 
     /// Delete the half-open line range `[start, end)`.
     /// Same bounds as `ReplaceLines`.
-    DeleteLines { start: u32, end: u32 },
+    /// `expect` guards the target range: see [`LineExpect`].
+    DeleteLines {
+        start: u32,
+        end: u32,
+        #[serde(default)]
+        expect: Option<LineExpect>,
+    },
 }
 
 /// Heading level reserved for the synthetic preamble section.
@@ -144,6 +172,31 @@ pub enum MemoryEditError {
     /// The valid range is `0..=line_count`.
     #[error("line {line} is past the end of the body ({line_count} lines)")]
     LinePastEof { line: u32, line_count: u32 },
+
+    /// A line op's `expect` guard disagreed with the body it targets:
+    /// the expected range content, or a supplied `before`/`after` neighbour, does not match.
+    /// `found_at` lists the indices (capped at [`MAX_FOUND_AT_MATCHES`])
+    /// where the expected content actually occurs in the body,
+    /// so the caller can retarget instead of guessing.
+    #[error("line range [{start}, {end}) does not match the caller's expected content")]
+    LineContentMismatch {
+        start: u32,
+        end: u32,
+        expected: Vec<String>,
+        found: Vec<String>,
+        found_at: Vec<usize>,
+    },
+
+    /// A line op targeted a non-empty range, or a position in a
+    /// non-empty body, without supplying an `expect` guard that
+    /// actually names something to check.
+    /// Fail-closed: every non-trivial line op must prove it targets what the caller thinks it does.
+    #[error("op `{op}` targeting [{start}, {end}) requires a content guard (`expect`)")]
+    LineGuardRequired {
+        op: &'static str,
+        start: u32,
+        end: u32,
+    },
 
     /// The parser itself rejected the body.
     /// Wrapped so the MCP tool can surface a structured error rather than an opaque failure.
@@ -225,13 +278,20 @@ fn apply_one(body: &str, op: &MemoryEditOp) -> Result<String, MemoryEditError> {
         MemoryEditOp::ReplaceSectionBody { path, body: new } => {
             replace_section_body(body, path, new)
         }
-        MemoryEditOp::InsertAtLine { line, content } => insert_at_line(body, *line, content),
+        MemoryEditOp::InsertAtLine {
+            line,
+            content,
+            expect,
+        } => insert_at_line(body, *line, content, expect.as_ref()),
         MemoryEditOp::ReplaceLines {
             start,
             end,
             content,
-        } => replace_lines(body, *start, *end, content),
-        MemoryEditOp::DeleteLines { start, end } => replace_lines(body, *start, *end, ""),
+            expect,
+        } => replace_lines(body, *start, *end, content, expect.as_ref(), "replace_lines"),
+        MemoryEditOp::DeleteLines { start, end, expect } => {
+            replace_lines(body, *start, *end, "", expect.as_ref(), "delete_lines")
+        }
     }
 }
 
@@ -298,7 +358,7 @@ fn upsert_section(
     // The span must cover every rendered line.
     let written_start = written.line_start;
     let subtree_end = subtree_end_idx(&sections_after, written_idx);
-    let total_lines = spliced.split_inclusive('\n').count();
+    let total_lines = line_count(&spliced);
     let span_end = sections_after
         .get(subtree_end)
         .map_or(total_lines, |section| section.line_start);
@@ -453,12 +513,18 @@ fn replace_section_body(
 
 // ── Line ops ───────────────────────────────────────────────────
 
-fn insert_at_line(body: &str, line: u32, content: &str) -> Result<String, MemoryEditError> {
+fn insert_at_line(
+    body: &str,
+    line: u32,
+    content: &str,
+    expect: Option<&LineExpect>,
+) -> Result<String, MemoryEditError> {
     let lines: Vec<&str> = body.split_inclusive('\n').collect();
     let line_count = lines.len() as u32;
     if line > line_count {
         return Err(MemoryEditError::LinePastEof { line, line_count });
     }
+    check_line_guard(&lines, line, line, expect, "insert_at_line")?;
     let point = byte_offset_of_line(&lines, line as usize);
     Ok(splice(body, point..point, content)?)
 }
@@ -468,6 +534,8 @@ fn replace_lines(
     start: u32,
     end: u32,
     content: &str,
+    expect: Option<&LineExpect>,
+    op: &'static str,
 ) -> Result<String, MemoryEditError> {
     let lines: Vec<&str> = body.split_inclusive('\n').collect();
     let line_count = lines.len() as u32;
@@ -478,9 +546,119 @@ fn replace_lines(
             line_count,
         });
     }
+    check_line_guard(&lines, start, end, expect, op)?;
     let start_byte = byte_offset_of_line(&lines, start as usize);
     let end_byte = byte_offset_of_line(&lines, end as usize);
     Ok(splice(body, start_byte..end_byte, content)?)
+}
+
+/// Cap on how many indices [`MemoryEditError::LineContentMismatch::found_at`] reports,
+/// so content that recurs throughout a large body does not blow up the error payload.
+const MAX_FOUND_AT_MATCHES: usize = 20;
+
+/// Validate a line op's `expect` guard against the `[start, end)` range of `lines`
+/// (a single position when `start == end`, covering `InsertAtLine`).
+/// Bounds are assumed already checked by the caller, so every index used here is in range.
+///
+/// Fail-closed: a non-empty range always requires `expect`;
+/// a position op (an insert, or an empty range) requires `expect` naming a `before` or `after`
+/// neighbour whenever the body itself is non-empty.
+/// Once `expect` supplies something to check, any disagreement is a content mismatch,
+/// never a second "guard required" failure.
+fn check_line_guard(
+    lines: &[&str],
+    start: u32,
+    end: u32,
+    expect: Option<&LineExpect>,
+    op: &'static str,
+) -> Result<(), MemoryEditError> {
+    let line_count = lines.len() as u32;
+    let range_empty = start == end;
+    let guard_needed = !range_empty || !lines.is_empty();
+
+    let Some(expect) = expect else {
+        return if guard_needed {
+            Err(MemoryEditError::LineGuardRequired { op, start, end })
+        } else {
+            Ok(())
+        };
+    };
+    if range_empty && guard_needed && expect.before.is_none() && expect.after.is_none() {
+        return Err(MemoryEditError::LineGuardRequired { op, start, end });
+    }
+
+    let actual: Vec<String> = lines[start as usize..end as usize]
+        .iter()
+        .map(|l| strip_line_terminator(l))
+        .collect();
+    if expect.lines != actual {
+        return Err(MemoryEditError::LineContentMismatch {
+            start,
+            end,
+            found_at: find_line_sequence(lines, &expect.lines),
+            expected: expect.lines.clone(),
+            found: actual,
+        });
+    }
+
+    if let Some(before) = &expect.before {
+        let actual_before = (start > 0).then(|| strip_line_terminator(lines[start as usize - 1]));
+        if actual_before.as_ref() != Some(before) {
+            return Err(MemoryEditError::LineContentMismatch {
+                start,
+                end,
+                found_at: find_line_sequence(lines, std::slice::from_ref(before)),
+                expected: vec![before.clone()],
+                found: actual_before.into_iter().collect(),
+            });
+        }
+    }
+    if let Some(after) = &expect.after {
+        let actual_after = (end < line_count).then(|| strip_line_terminator(lines[end as usize]));
+        if actual_after.as_ref() != Some(after) {
+            return Err(MemoryEditError::LineContentMismatch {
+                start,
+                end,
+                found_at: find_line_sequence(lines, std::slice::from_ref(after)),
+                expected: vec![after.clone()],
+                found: actual_after.into_iter().collect(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Strip a single trailing line terminator (`\r\n` or `\n`) so a guard comparison
+/// is insensitive to the body's line-ending style.
+fn strip_line_terminator(line: &str) -> String {
+    line.strip_suffix("\r\n")
+        .or_else(|| line.strip_suffix('\n'))
+        .unwrap_or(line)
+        .to_string()
+}
+
+/// Every starting index in `lines` where the contiguous, terminator-stripped sequence
+/// `needle` occurs, capped at [`MAX_FOUND_AT_MATCHES`] entries.
+fn find_line_sequence(lines: &[&str], needle: &[String]) -> Vec<usize> {
+    if needle.is_empty() || needle.len() > lines.len() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for start in 0..=(lines.len() - needle.len()) {
+        if out.len() >= MAX_FOUND_AT_MATCHES {
+            break;
+        }
+        let window = &lines[start..start + needle.len()];
+        if window
+            .iter()
+            .map(|l| strip_line_terminator(l))
+            .eq(needle.iter().cloned())
+        {
+            out.push(start);
+        }
+    }
+    out
 }
 
 // ── Helpers ────────────────────────────────────────────────────
@@ -788,6 +966,10 @@ done body
             &[MemoryEditOp::InsertAtLine {
                 line: 1,
                 content: "inserted".into(),
+                expect: Some(LineExpect {
+                    after: Some("beta".into()),
+                    ..Default::default()
+                }),
             }],
         )
         .expect("apply");
@@ -805,6 +987,10 @@ done body
             &[MemoryEditOp::InsertAtLine {
                 line: 2,
                 content: "gamma".into(),
+                expect: Some(LineExpect {
+                    before: Some("beta".into()),
+                    ..Default::default()
+                }),
             }],
         )
         .expect("apply");
@@ -820,6 +1006,10 @@ done body
                 start: 2,
                 end: 2,
                 content: "gamma".into(),
+                expect: Some(LineExpect {
+                    before: Some("beta".into()),
+                    ..Default::default()
+                }),
             }],
         )
         .expect("apply");
@@ -880,6 +1070,10 @@ done body
             &[MemoryEditOp::InsertAtLine {
                 line: 2,
                 content: "added note".into(),
+                expect: Some(LineExpect {
+                    after: Some("## Need".into()),
+                    ..Default::default()
+                }),
             }],
         )
         .expect("apply");
@@ -960,6 +1154,10 @@ done body
             &[MemoryEditOp::InsertAtLine {
                 line: 1,
                 content: "note".into(),
+                expect: Some(LineExpect {
+                    before: Some("intro".into()),
+                    ..Default::default()
+                }),
             }],
         )
         .expect("apply");
@@ -973,6 +1171,10 @@ done body
             &[MemoryEditOp::InsertAtLine {
                 line: 1,
                 content: "  note".into(),
+                expect: Some(LineExpect {
+                    before: Some("- item".into()),
+                    ..Default::default()
+                }),
             }],
         )
         .expect("apply");
@@ -988,6 +1190,10 @@ done body
             &[MemoryEditOp::InsertAtLine {
                 line: 0,
                 content: "X".into(),
+                expect: Some(LineExpect {
+                    after: Some("## A".into()),
+                    ..Default::default()
+                }),
             }],
         )
         .expect("apply");
@@ -1010,7 +1216,14 @@ done body
     fn deleting_one_trailing_blank_line_removes_exactly_one() {
         let out = apply_ops(
             "a\n\n\n\n",
-            &[MemoryEditOp::DeleteLines { start: 3, end: 4 }],
+            &[MemoryEditOp::DeleteLines {
+                start: 3,
+                end: 4,
+                expect: Some(LineExpect {
+                    lines: vec![String::new()],
+                    ..Default::default()
+                }),
+            }],
         )
         .expect("apply");
         assert_eq!(out, "a\n\n\n");
@@ -1020,7 +1233,14 @@ done body
     fn deleting_inside_an_unclosed_fence_keeps_the_rest_of_the_fence() {
         let out = apply_ops(
             "## A\n\n```\nx\n\n\n",
-            &[MemoryEditOp::DeleteLines { start: 5, end: 6 }],
+            &[MemoryEditOp::DeleteLines {
+                start: 5,
+                end: 6,
+                expect: Some(LineExpect {
+                    lines: vec![String::new()],
+                    ..Default::default()
+                }),
+            }],
         )
         .expect("apply");
         assert_eq!(out, "## A\n\n```\nx\n\n");
@@ -1314,8 +1534,18 @@ done body
     #[test]
     fn a_no_op_deletion_changes_nothing() {
         let body = "a\n\n\n\n";
-        let out =
-            apply_ops(body, &[MemoryEditOp::DeleteLines { start: 0, end: 0 }]).expect("apply");
+        let out = apply_ops(
+            body,
+            &[MemoryEditOp::DeleteLines {
+                start: 0,
+                end: 0,
+                expect: Some(LineExpect {
+                    after: Some("a".into()),
+                    ..Default::default()
+                }),
+            }],
+        )
+        .expect("apply");
         assert_eq!(out, body);
     }
 
@@ -1327,6 +1557,10 @@ done body
             &[MemoryEditOp::InsertAtLine {
                 line: 0,
                 content: "X".into(),
+                expect: Some(LineExpect {
+                    after: Some("## Code".into()),
+                    ..Default::default()
+                }),
             }],
         )
         .expect("apply");
@@ -1341,6 +1575,10 @@ done body
             &[MemoryEditOp::InsertAtLine {
                 line: 0,
                 content: "X".into(),
+                expect: Some(LineExpect {
+                    after: Some("## A".into()),
+                    ..Default::default()
+                }),
             }],
         )
         .expect("apply");
@@ -1403,6 +1641,7 @@ done body
             &[MemoryEditOp::InsertAtLine {
                 line: 99,
                 content: "x".into(),
+                expect: None,
             }],
         )
         .expect_err("must error");
@@ -1418,6 +1657,10 @@ done body
                 start: 1,
                 end: 3,
                 content: "new middle".into(),
+                expect: Some(LineExpect {
+                    lines: vec!["beta".into(), "gamma".into()],
+                    ..Default::default()
+                }),
             }],
         )
         .expect("apply");
@@ -1427,8 +1670,18 @@ done body
     #[test]
     fn delete_lines_collapses_range() {
         let body = "alpha\nbeta\ngamma\n";
-        let out =
-            apply_ops(body, &[MemoryEditOp::DeleteLines { start: 1, end: 2 }]).expect("apply");
+        let out = apply_ops(
+            body,
+            &[MemoryEditOp::DeleteLines {
+                start: 1,
+                end: 2,
+                expect: Some(LineExpect {
+                    lines: vec!["beta".into()],
+                    ..Default::default()
+                }),
+            }],
+        )
+        .expect("apply");
         assert_eq!(out, "alpha\ngamma\n");
     }
 
@@ -1441,6 +1694,7 @@ done body
                 start: 3,
                 end: 1,
                 content: "x".into(),
+                expect: None,
             }],
         )
         .expect_err("must error");
@@ -1527,5 +1781,234 @@ done body
         .expect("apply");
         assert!(out.contains("## Need\n\nnew need"));
         assert!(out.contains("### Rationale\n\nwhy"));
+    }
+
+    // ── Line-op content guard (`expect`) ──────────────────────────
+
+    #[test]
+    fn a_stray_field_on_an_op_is_rejected() {
+        let raw = r#"{"op":"delete_lines","start":0,"end":1,"bogus":true}"#;
+        let err = serde_json::from_str::<MemoryEditOp>(raw).expect_err("must reject");
+        assert!(err.to_string().contains("bogus"));
+    }
+
+    #[test]
+    fn a_stray_field_on_line_expect_is_rejected() {
+        let raw =
+            r#"{"op":"delete_lines","start":0,"end":1,"expect":{"lines":["a"],"bogus":true}}"#;
+        let err = serde_json::from_str::<MemoryEditOp>(raw).expect_err("must reject");
+        assert!(err.to_string().contains("bogus"));
+    }
+
+    #[test]
+    fn mismatched_lines_report_every_occurrence_in_found_at() {
+        let body = "one\ntwo\nthree\ntwo\nfive\n";
+        let err = apply_ops(
+            body,
+            &[MemoryEditOp::ReplaceLines {
+                start: 0,
+                end: 1,
+                content: "x".into(),
+                expect: Some(LineExpect {
+                    lines: vec!["two".into()],
+                    ..Default::default()
+                }),
+            }],
+        )
+        .expect_err("must error");
+        match err {
+            MemoryEditError::LineContentMismatch {
+                expected, found_at, ..
+            } => {
+                assert_eq!(expected, vec!["two".to_string()]);
+                assert_eq!(found_at, vec![1, 3]);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_non_empty_range_without_a_guard_is_refused() {
+        let body = "alpha\nbeta\n";
+        for op in [
+            MemoryEditOp::ReplaceLines {
+                start: 0,
+                end: 1,
+                content: "x".into(),
+                expect: None,
+            },
+            MemoryEditOp::DeleteLines {
+                start: 0,
+                end: 1,
+                expect: None,
+            },
+        ] {
+            let err = apply_ops(body, &[op]).expect_err("must error");
+            assert!(matches!(err, MemoryEditError::LineGuardRequired { .. }));
+        }
+    }
+
+    #[test]
+    fn an_insert_on_a_non_empty_body_without_a_neighbour_is_refused() {
+        let body = "alpha\nbeta\n";
+        let err = apply_ops(
+            body,
+            &[MemoryEditOp::InsertAtLine {
+                line: 1,
+                content: "x".into(),
+                expect: Some(LineExpect::default()),
+            }],
+        )
+        .expect_err("must error");
+        assert!(matches!(err, MemoryEditError::LineGuardRequired { .. }));
+    }
+
+    #[test]
+    fn an_empty_range_replace_on_a_non_empty_body_without_a_neighbour_is_refused() {
+        let body = "alpha\nbeta\n";
+        let err = apply_ops(
+            body,
+            &[MemoryEditOp::ReplaceLines {
+                start: 1,
+                end: 1,
+                content: "x".into(),
+                expect: None,
+            }],
+        )
+        .expect_err("must error");
+        assert!(matches!(err, MemoryEditError::LineGuardRequired { .. }));
+    }
+
+    #[test]
+    fn a_crlf_body_guard_matches_terminator_stripped_content() {
+        let body = "a\r\nb\r\nc\r\n";
+        apply_ops(
+            body,
+            &[MemoryEditOp::ReplaceLines {
+                start: 1,
+                end: 2,
+                content: "x".into(),
+                expect: Some(LineExpect {
+                    lines: vec!["b".into()],
+                    ..Default::default()
+                }),
+            }],
+        )
+        .expect("a CRLF line must match its terminator-stripped expectation");
+    }
+
+    #[test]
+    fn a_before_neighbour_at_line_zero_does_not_exist() {
+        let body = "alpha\nbeta\n";
+        let err = apply_ops(
+            body,
+            &[MemoryEditOp::InsertAtLine {
+                line: 0,
+                content: "x".into(),
+                expect: Some(LineExpect {
+                    before: Some("anything".into()),
+                    ..Default::default()
+                }),
+            }],
+        )
+        .expect_err("must error: there is no line before index 0");
+        match err {
+            MemoryEditError::LineContentMismatch { found, .. } => assert!(found.is_empty()),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_after_neighbour_at_end_of_body_does_not_exist() {
+        let body = "alpha\nbeta\n";
+        let err = apply_ops(
+            body,
+            &[MemoryEditOp::InsertAtLine {
+                line: 2,
+                content: "x".into(),
+                expect: Some(LineExpect {
+                    after: Some("anything".into()),
+                    ..Default::default()
+                }),
+            }],
+        )
+        .expect_err("must error: there is no line at end of body");
+        match err {
+            MemoryEditError::LineContentMismatch { found, .. } => assert!(found.is_empty()),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_empty_range_delete_on_an_empty_body_needs_no_guard() {
+        let out = apply_ops(
+            "",
+            &[MemoryEditOp::DeleteLines {
+                start: 0,
+                end: 0,
+                expect: None,
+            }],
+        )
+        .expect("empty body, empty range: exempt from the guard");
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn a_descending_batch_targets_the_lines_it_expects() {
+        let body = "one\ntwo\nthree\nfour\n";
+        let out = apply_ops(
+            body,
+            &[
+                MemoryEditOp::DeleteLines {
+                    start: 3,
+                    end: 4,
+                    expect: Some(LineExpect {
+                        lines: vec!["four".into()],
+                        ..Default::default()
+                    }),
+                },
+                MemoryEditOp::DeleteLines {
+                    start: 1,
+                    end: 2,
+                    expect: Some(LineExpect {
+                        lines: vec!["two".into()],
+                        ..Default::default()
+                    }),
+                },
+            ],
+        )
+        .expect("descending start order must keep each op's target stable");
+        assert_eq!(out, "one\nthree\n");
+    }
+
+    /// The same two deletions issued in ascending order, with each op's `expect` computed
+    /// against the ORIGINAL body: the first op's removal shifts the second op's line index
+    /// onto different content, and the guard refuses rather than silently deleting it.
+    #[test]
+    fn an_ascending_batch_computed_against_the_original_body_is_refused() {
+        let body = "one\ntwo\nthree\nfour\nfive\n";
+        let err = apply_ops(
+            body,
+            &[
+                MemoryEditOp::DeleteLines {
+                    start: 1,
+                    end: 2,
+                    expect: Some(LineExpect {
+                        lines: vec!["two".into()],
+                        ..Default::default()
+                    }),
+                },
+                MemoryEditOp::DeleteLines {
+                    start: 3,
+                    end: 4,
+                    expect: Some(LineExpect {
+                        lines: vec!["four".into()],
+                        ..Default::default()
+                    }),
+                },
+            ],
+        )
+        .expect_err("the second op's target shifted after the first deletion");
+        assert!(matches!(err, MemoryEditError::LineContentMismatch { .. }));
     }
 }

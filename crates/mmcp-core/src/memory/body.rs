@@ -311,6 +311,16 @@ pub fn render_sections(raw: &str, sections: &[Section]) -> String {
     out
 }
 
+/// Number of lines in `body`, counting a final unterminated line.
+/// Shared definition every line-indexed body consumer (the line-op
+/// content guard, `read_memory_body_sections`'s reported line
+/// count) uses instead of re-deriving `split_inclusive('\n')`
+/// itself.
+#[must_use]
+pub fn line_count(body: &str) -> usize {
+    body.split_inclusive('\n').count()
+}
+
 /// Slugify a heading into a kebab-case token. Unicode-folded +
 /// whitespace-collapsed, matching the `slug` crate's behaviour.
 /// The leading-hyphen / trailing-hyphen corner cases are handled
@@ -555,6 +565,13 @@ body
         let sections = parse_sections(with).expect("parse");
         let rendered = render_sections(with, &sections);
         assert_eq!(rendered, with);
+    }
+
+    #[test]
+    fn line_count_matches_split_inclusive_and_counts_a_trailing_unterminated_line() {
+        assert_eq!(line_count(""), 0);
+        assert_eq!(line_count("a\nb\n"), 2);
+        assert_eq!(line_count("a\nb"), 2);
     }
 
     #[test]

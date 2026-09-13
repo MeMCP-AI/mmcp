@@ -86,11 +86,12 @@ pub use memory::{
     MemoryFileRef, MemoryFrontmatterEntry, MemorySlugDir, MoveMemoryOutcome, ResolvedMemory,
     SynthFrontmatter, WriteFileOptions, WriteMemoryOptions, delete_file_at_path, import_memory,
     list_all_memory_files, list_memory_slug_dirs, move_memory_path, parse_creatable_kind,
-    parse_kind, read_frontmatter, read_frontmatters_in_group, resolve_group, resolve_memory,
-    slugify_filename, validate_id_mismatch, validate_memory_slug, validate_slug_segment,
-    write_file_at_path, write_memory_by_id,
+    parse_kind, parse_memory_file_bytes, read_and_apply_body_ops, read_frontmatter,
+    read_frontmatters_in_group, resolve_group, resolve_memory, slugify_filename,
+    validate_id_mismatch, validate_memory_slug, validate_slug_segment, write_file_at_path,
+    write_memory_by_id,
 };
-pub use memory_ops::{MemoryEditError, MemoryEditOp, apply_ops};
+pub use memory_ops::{LineExpect, MemoryEditError, MemoryEditOp, apply_ops};
 pub use milestones::{
     AddSpec as MilestoneAddSpec, MilestoneError, MilestoneRecord, MilestoneRollup, RollupStatus,
     UpdateSpec as MilestoneUpdateSpec, add_milestone, list_milestones, read_milestone,
