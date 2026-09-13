@@ -36,22 +36,20 @@ use serde::Serialize;
 /// The theoretical worst case runs closer to 838 bytes, well above this constant.
 /// `name` and `slug` each reach their 256-byte maximum in that case.
 /// `slug` is also re-encoded a second time into `path`, plus JSON punctuation.
-/// [`DEFAULT_LIST_MEMORIES_LIMIT`] therefore fits the client result ceiling for the typical record sizes actually observed.
+/// [`DEFAULT_LIST_MEMORIES_LIMIT`] therefore fits the client result ceiling for typical record sizes.
 /// It is not a hard guarantee for a group of unusually long slugs and names.
 pub const COMPACT_RECORD_ESTIMATED_BYTES: usize = 512;
 
-/// Default page size for `list_memories` pagination when the caller
-/// sets `offset` and/or `limit` but omits an explicit `limit` value.
-/// Derived from [`crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES`] divided by one
-/// compact record's estimated size.
-/// The default page fits the client result ceiling with margin left over for the
-/// wrapper object and the mandatory set.
+/// Default page size for `list_memories` pagination.
+/// Used when the caller sets `offset` and/or `limit` but omits an explicit `limit` value.
+/// Derived from [`crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES`] over one compact record's estimated size.
+/// The default page fits the client result ceiling with margin left over for the wrapper object and the mandatory set.
 pub const DEFAULT_LIST_MEMORIES_LIMIT: usize =
     crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES / COMPACT_RECORD_ESTIMATED_BYTES;
 
 /// Hard upper clamp on a caller-supplied `limit`, independent of [`DEFAULT_LIST_MEMORIES_LIMIT`].
-/// The largest real group measured on this project's own mmcp mirror carries 471 memories
-/// (the `hubedia` architecture-cleanup-sweep group).
+/// The largest real group measured on this project's own mmcp mirror carries 471 memories.
+/// That is the `hubedia` architecture-cleanup-sweep group.
 /// 512 keeps roughly 1.1x headroom above that observed maximum.
 /// It still bounds a pathological caller-supplied limit.
 pub const MAX_LIST_MEMORIES_LIMIT: usize = 512;
