@@ -175,7 +175,8 @@ pub enum ImportError {
 }
 
 impl ImportError {
-    /// One code per variant; no wildcard, so a new variant needs its own arm.
+    /// Stable wire code for this error.
+    /// Exhaustive match, so a new variant needs its own arm.
     #[must_use]
     pub fn code(&self) -> &'static str {
         match self {

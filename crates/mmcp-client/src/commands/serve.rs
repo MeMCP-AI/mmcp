@@ -7439,7 +7439,8 @@ fn map_archive_error_to_mcp(err: mmcp_store::ArchiveError) -> McpError {
     }
 }
 
-/// One code per variant; no wildcard, so a new variant needs its own arm.
+/// Maps an [`ImportError`] to an [`McpError`] whose payload carries `err.code()` plus variant fields.
+/// The `Edit` arm delegates to [`memory_edit_error_payload`].
 fn map_memory_error_to_mcp(err: ImportError) -> McpError {
     let message = err.to_string();
     let code = err.code();
