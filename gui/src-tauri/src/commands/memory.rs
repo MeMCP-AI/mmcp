@@ -424,6 +424,27 @@ pub async fn list_memory_descriptors(
     list_descriptors_in(&state.backend, &entry.handle, &group_id).await
 }
 
+/// Core of [`load_memory`]: resolve `slug` and return its file DTO, body included whole.
+/// Extracted so a test can drive it with a real git backend without needing a live Tauri `State`.
+/// No size cap applies at any step: `read_file` returns every byte the blob holds,
+/// and `MemoryFileDto::from` copies the parsed body verbatim.
+async fn load_memory_file(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    slug: &str,
+) -> GuiResult<MemoryFileDto> {
+    let resolved = resolve_memory(backend, handle, Some(slug), None)
+        .await
+        .map_err(GuiError::from)?;
+    let bytes = backend
+        .read_file(handle, &resolved.path, &Rev::head())
+        .await
+        .map_err(GuiError::from)?;
+    let text = std::str::from_utf8(&bytes)?;
+    let mf = MemoryFile::parse(text).map_err(GuiError::from)?;
+    Ok(MemoryFileDto::from(&mf))
+}
+
 #[tauri::command]
 pub async fn load_memory(
     group_id: String,
@@ -432,17 +453,7 @@ pub async fn load_memory(
 ) -> GuiResult<MemoryFileDto> {
     tracing::debug!(group_id = %group_id, slug = %slug, "ipc: load_memory");
     let entry = group_entry(&state, &group_id).await?;
-    let resolved = resolve_memory(&state.backend, &entry.handle, Some(&slug), None)
-        .await
-        .map_err(GuiError::from)?;
-    let bytes = state
-        .backend
-        .read_file(&entry.handle, &resolved.path, &Rev::head())
-        .await
-        .map_err(GuiError::from)?;
-    let text = std::str::from_utf8(&bytes)?;
-    let mf = MemoryFile::parse(text).map_err(GuiError::from)?;
-    Ok(MemoryFileDto::from(&mf))
+    load_memory_file(&state.backend, &entry.handle, &slug).await
 }
 
 fn to_memory_file(dto: MemoryFileDto) -> GuiResult<MemoryFile> {
@@ -592,6 +603,7 @@ mod tests {
     use super::*;
     use mmcp_core::id::UserId;
     use mmcp_core::manifest::GroupManifest;
+    use mmcp_git::CommitSpec;
     use mmcp_store::{ResolvedAuthor, import_memory};
     use tempfile::TempDir;
 
@@ -778,5 +790,44 @@ mod tests {
         );
         assert!(!slugs.contains(&"git"));
         assert!(!slugs.contains(&"comments"));
+    }
+
+    /// Regression lock for "reads never limited": a body written past the
+    /// write-time content-length ceiling (bypassed here via a raw commit,
+    /// standing in for data written before that ceiling existed, or by
+    /// another client) is still returned whole by the read path.
+    #[tokio::test]
+    async fn load_memory_file_returns_a_body_larger_than_the_write_time_cap_whole() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let id = Uuid::now_v7();
+        let slug = "big";
+        let path =
+            mmcp_core::conventions::memory_path(slug, mmcp_core::id::MemoryId::from_uuid(id));
+
+        // One byte past MAX_BODY_LENGTH, the cap write_file_at_path enforces at write time.
+        let oversized_len = mmcp_core::memory::MAX_BODY_LENGTH + 1;
+        let body = "x".repeat(oversized_len);
+        let rendered = format!(
+            "+++\nid = \"{id}\"\nname = \"big\"\ndescription = \"big\"\nkind = \"rule\"\nmandatory = false\ntags = []\n+++\n{body}\n"
+        );
+        let author = test_author();
+        backend
+            .write_commit(
+                &handle,
+                CommitSpec::mmcp_commit(
+                    "seed oversized memory",
+                    vec![(path, Some(rendered.into_bytes()))],
+                    &author.name,
+                    &author.email,
+                ),
+            )
+            .await
+            .expect("write oversized memory, bypassing write-time validation");
+
+        let dto = load_memory_file(&backend, &handle, slug)
+            .await
+            .expect("load large body");
+        let x_count = dto.body.chars().filter(|&c| c == 'x').count();
+        assert_eq!(x_count, oversized_len);
     }
 }
