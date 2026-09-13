@@ -92,30 +92,29 @@ pub enum SyncError {
         name: String,
     },
 
-    /// [`crate::engine::GroupHandleResolver::resolve`]
-    /// returned `Ok(None)` for a group `push` scheduled to send: the
-    /// group is genuinely not indexed locally (the caller named a
-    /// group the local index has never seen, or it was removed
-    /// between candidate enumeration and this lookup). Not transient:
-    /// retrying without first re-indexing the group will not resolve
-    /// it. Surfaced as a per-group [`crate::GroupSyncFailure`] instead
-    /// of a silent skip, so an operator running `push` can see
-    /// exactly which group was dropped and why; every other scheduled
-    /// group still completes normally.
+    /// [`crate::engine::GroupHandleResolver::resolve`] returned `Ok(None)`.
+    /// This happens for a group `push` scheduled to send.
+    /// The group is genuinely not indexed locally.
+    /// The caller may have named a group the local index has never seen.
+    /// The group may also have been removed between candidate enumeration and this lookup.
+    /// Not transient: retrying without first re-indexing the group will not resolve it.
+    /// Surfaced as a per-group [`crate::GroupSyncFailure`] instead of a silent skip.
+    /// An operator running `push` can see exactly which group was dropped and why.
+    /// Every other scheduled group still completes normally.
     #[error("group {group} is not indexed locally")]
     GroupNotIndexed {
         /// The group id `resolve` reported as not indexed.
         group: Uuid,
     },
 
-    /// [`crate::engine::GroupHandleResolver::resolve`]
-    /// returned `Err(IndexContended)` for a group `push` scheduled to
-    /// send: the local index's lock was held by a concurrent writer
-    /// when the lookup ran. Transient: a retry on this same group is
-    /// expected to succeed once the concurrent index refresh
-    /// finishes. Surfaced as its own [`crate::GroupSyncFailure`],
-    /// distinct from [`SyncError::GroupNotIndexed`], so an operator
-    /// can tell "retry" from "investigate" without reading source.
+    /// [`crate::engine::GroupHandleResolver::resolve`] returned `Err(IndexContended)`.
+    /// This happens for a group `push` scheduled to send.
+    /// The local index's lock was held by a concurrent writer when the lookup ran.
+    /// Transient: a retry on this same group is expected to succeed.
+    /// Success follows once the concurrent index refresh finishes.
+    /// Surfaced as its own [`crate::GroupSyncFailure`].
+    /// Distinct from [`SyncError::GroupNotIndexed`].
+    /// An operator can tell "retry" from "investigate" without reading source.
     #[error("local repo handle lookup for group {group} was contended, retry")]
     GroupIndexContended {
         /// The group id whose `resolve` call hit a contended index.
