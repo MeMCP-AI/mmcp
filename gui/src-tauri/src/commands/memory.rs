@@ -408,8 +408,8 @@ pub async fn list_memory_descriptors(
 
 /// Core of [`load_memory`]: resolve `slug` and return its file DTO, body included whole.
 /// Extracted so a test can drive it with a real git backend without needing a live Tauri `State`.
-/// No size cap applies at any step: `read_file` returns every byte the blob holds,
-/// and `MemoryFileDto::from` copies the parsed body verbatim.
+/// No size cap applies at any step.
+/// `read_file` returns every byte the blob holds, and `MemoryFileDto::from` copies the parsed body verbatim.
 async fn load_memory_file(
     backend: &NativeBackend,
     handle: &RepoHandle,
