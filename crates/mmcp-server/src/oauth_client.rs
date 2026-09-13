@@ -59,19 +59,16 @@ pub fn build_oauth_client(cfg: &OAuthProviderConfig, origin: &str) -> Result<Oau
 /// Build the dedicated async HTTP client for the OAuth token exchange.
 /// `crate::routes::auth::oauth_callback` passes it to [`oauth2::CodeTokenRequest::request_async`].
 ///
-/// `oauth2`'s `reqwest` feature implements its `AsyncHttpClient`
-/// trait only for ITS OWN transitively pulled `reqwest` major
-/// version (re-exported as [`oauth2::reqwest`]), which is a different
-/// type from this workspace's own `reqwest` dependency (used
-/// everywhere else in this crate, including this same handler's
-/// GitHub-specific userinfo fetch): the two cannot be swapped for
-/// each other, so the token exchange gets this client and every
-/// other HTTP call in the crate keeps using the workspace's own.
+/// `oauth2`'s `reqwest` feature implements `AsyncHttpClient` only for its own pulled `reqwest` version.
+/// That version is re-exported as [`oauth2::reqwest`].
+/// It is a different type from this workspace's own `reqwest` dependency.
+/// This crate's own `reqwest` is used everywhere else, including this handler's GitHub userinfo fetch.
+/// The two types cannot be swapped for each other.
+/// So the token exchange uses this client, while every other HTTP call in the crate keeps using the workspace's own.
 ///
-/// `redirect(Policy::none())`: the token endpoint is not expected to
-/// redirect, and blindly following one on a POST that carries the
-/// client secret and authorization code would replay both to
-/// whatever the response's `Location` pointed at.
+/// `redirect(Policy::none())`: the token endpoint is not expected to redirect.
+/// Blindly following a redirect on this POST would replay the client secret and authorization code.
+/// Those would go to whatever the response's `Location` header pointed at.
 pub fn build_oauth_exchange_http_client() -> oauth2::reqwest::Client {
     // NOTE: this builder carries no I/O and no proxy/TLS override,
     // the one class of configuration that can make `build()` fail;

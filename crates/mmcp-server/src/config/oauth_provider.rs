@@ -12,7 +12,7 @@ pub struct OAuthProviderConfig {
 }
 
 impl OAuthProviderConfig {
-    /// Build the GitHub OAuth provider config: the only provider wired up today.
+    /// Build the GitHub OAuth provider config: the only provider wired up.
     /// `client_id` comes from `MMCP_OAUTH_GITHUB_CLIENT_ID`.
     /// `client_secret` comes from `MMCP_OAUTH_GITHUB_CLIENT_SECRET`.
     /// The endpoint URLs are GitHub's own fixed OAuth endpoints.
