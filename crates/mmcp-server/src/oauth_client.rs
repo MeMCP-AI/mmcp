@@ -59,7 +59,8 @@ pub fn build_oauth_client(cfg: &OAuthProviderConfig, origin: &str) -> Result<Oau
 /// Build the dedicated async HTTP client for the OAuth token exchange.
 /// `crate::routes::auth::oauth_callback` passes it to [`oauth2::CodeTokenRequest::request_async`].
 ///
-/// [`oauth2::reqwest::Client`] is a different type from this crate's own `reqwest` dependency; the two cannot be swapped.
+/// [`oauth2::reqwest::Client`] is a different type from this crate's own `reqwest` dependency.
+/// The two cannot be swapped for each other.
 /// This crate's own `reqwest` serves every other HTTP call, including `oauth_callback`'s GitHub userinfo fetch.
 /// So the token exchange uses this client, while every other HTTP call in the crate keeps using its own.
 ///
