@@ -1615,6 +1615,126 @@ mod tests {
         (backend, handle, tmp)
     }
 
+    /// This table doubles as the MCP wire compatibility lock.
+    /// Every expected string is a live wire code.
+    #[test]
+    fn import_error_code_locks_every_variant_to_its_current_wire_code() {
+        let cases: Vec<(ImportError, &str)> = vec![
+            (ImportError::InvalidSlug("x".to_string()), "invalid_slug"),
+            (
+                ImportError::MissingFrontmatter,
+                "memory_missing_frontmatter",
+            ),
+            (
+                ImportError::Parse(mmcp_core::memory::MemoryParseError::NoFrontmatter),
+                "memory_parse_failed",
+            ),
+            (
+                ImportError::Git(GitError::PathNotFound("x".to_string())),
+                "git_backend",
+            ),
+            (ImportError::Render("x".to_string()), "memory_render_failed"),
+            (
+                ImportError::UnknownKind(mmcp_core::memory::MemoryKindParseError {
+                    input: "x".to_string(),
+                }),
+                "memory_unknown_kind",
+            ),
+            (
+                ImportError::GroupNotFound("g".to_string()),
+                "group_not_found",
+            ),
+            (
+                ImportError::MemoryAlreadyExists {
+                    slug: "x".to_string(),
+                },
+                "memory_already_exists",
+            ),
+            (
+                ImportError::MemoryNotFound {
+                    slug: Some("x".to_string()),
+                    id: None,
+                },
+                "memory_not_found",
+            ),
+            (
+                ImportError::MemoryAmbiguous {
+                    slug: "x".to_string(),
+                    candidates: vec![Uuid::now_v7()],
+                },
+                "memory_ambiguous",
+            ),
+            (
+                ImportError::MemoryIdMismatch {
+                    slug: "x".to_string(),
+                    expected: Uuid::now_v7(),
+                    got: Uuid::now_v7(),
+                },
+                "memory_id_mismatch",
+            ),
+            (
+                ImportError::IdMismatchOnFilenameWrite {
+                    path: "x".to_string(),
+                    filename: Uuid::now_v7(),
+                    frontmatter: Uuid::now_v7(),
+                },
+                "id_mismatch_on_filename_write",
+            ),
+            (ImportError::ResolveArgsMissing, "resolve_args_missing"),
+            (
+                ImportError::FieldTooLong(mmcp_core::memory::FieldLengthError::TooLong {
+                    field: "name",
+                    max: 1,
+                    actual: 2,
+                }),
+                "field_too_long",
+            ),
+            (
+                ImportError::FieldTooLong(mmcp_core::memory::FieldLengthError::TooMany {
+                    field: "tags",
+                    max: 1,
+                    actual: 2,
+                }),
+                "field_too_many",
+            ),
+            (
+                ImportError::NotACreatableKind {
+                    kind: "feature".to_string(),
+                },
+                "not_a_creatable_kind",
+            ),
+            (
+                {
+                    let bytes: Vec<u8> = vec![0x80];
+                    ImportError::NotUtf8 {
+                        path: "x".to_string(),
+                        source: std::str::from_utf8(&bytes).unwrap_err(),
+                    }
+                },
+                "memory_not_utf8",
+            ),
+            (
+                ImportError::TicketCounterOverflow,
+                "ticket_counter_overflow",
+            ),
+            (
+                ImportError::Edit(Box::new(
+                    crate::memory_ops::MemoryEditError::SectionNotFound {
+                        path: "x".to_string(),
+                    },
+                )),
+                "memory_edit_failed",
+            ),
+            (
+                ImportError::BodyResultTooLarge { limit: 1, size: 2 },
+                "body_result_too_large",
+            ),
+        ];
+        for (err, expected) in cases {
+            assert_eq!(err.code(), expected, "wire code drifted for {err:?}");
+        }
+    }
+
     #[test]
     fn validate_memory_slug_accepts_single_segment() {
         assert!(validate_memory_slug("hello").is_ok());
