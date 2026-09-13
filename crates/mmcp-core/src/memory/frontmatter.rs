@@ -15,7 +15,7 @@ use crate::memory::{
 /// A key written by a newer mmcp is silently dropped when an older mmcp rewrites the file.
 ///
 /// The `version` field records this memory's server-tracked published version, when known.
-/// No push path in this workspace currently writes an assigned version back into this field.
+/// No push path in this workspace writes an assigned version back into this field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryFrontmatter {
     /// Canonical primary key. Assigned once (UUIDv7) at create time
