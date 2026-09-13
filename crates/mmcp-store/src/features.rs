@@ -2,7 +2,7 @@
 //!
 //! Wraps the generic memory layer with FR-aware semantics:
 //! every write/read through this module commits a memory whose
-//! [`MemoryKind`] is `Fr`,
+//! [`MemoryKind`] is [`Feature`](MemoryKind::Feature),
 //! carrying a structured [`FeatureMetadata`] block in frontmatter,
 //! so the tool surface never has to parse the body to classify a memory.
 //!
@@ -84,10 +84,10 @@ pub enum FeatureError {
     #[error("failed to load project config at {path}: {detail}")]
     ProjectConfigBroken { path: String, detail: String },
 
-    /// Malformed cross-reference input parsed through [`mmcp_core::memory::XrefError`].
-    /// Surfaces both the `InvalidCrossRef` and `InvalidMemoryRef` cases
-    /// so `map_feature_error_to_mcp` and the CLI handlers can pattern-match through one variant
-    /// on the feature side without losing the field-attribution detail the parser recorded.
+    /// Raised by `parse_cross_refs` or `parse_memory_refs` on malformed cross-reference input.
+    /// One variant covers both `InvalidCrossRef` and `InvalidMemoryRef`.
+    /// `map_feature_error_to_mcp` and the CLI handlers pattern-match on this variant alone.
+    /// Each case keeps the parser's own field-attribution detail.
     #[error(transparent)]
     Xref(#[from] mmcp_core::memory::XrefError),
 

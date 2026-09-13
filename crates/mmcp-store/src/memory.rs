@@ -714,9 +714,9 @@ pub(crate) async fn read_frontmatter_at(
     path: &str,
 ) -> Result<MemoryFrontmatter, ImportError> {
     let bytes = backend.read_file(handle, path, rev).await?;
-    // Zero-copy: borrow `bytes` as UTF-8 instead of lossily substituting the replacement
-    // character, which would silently corrupt frontmatter/body content on a genuinely
-    // malformed blob (pattern already used correctly at diagnostics.rs's per-file walk).
+    // Borrow `bytes` as UTF-8 instead of lossily substituting the replacement character.
+    // A malformed blob surfaces as `ImportError::NotUtf8`, carrying its path.
+    // This avoids silently corrupting frontmatter or body content.
     let text = std::str::from_utf8(&bytes).map_err(|source| ImportError::NotUtf8 {
         path: path.to_string(),
         source,
