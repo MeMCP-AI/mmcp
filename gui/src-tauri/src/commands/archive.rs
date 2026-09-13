@@ -193,7 +193,7 @@ pub async fn export_archive(
 /// The canonicalized path is also stashed as the one path
 /// `inspect_archive` / `import_archive` will accept, so those commands
 /// never trust an arbitrary IPC-supplied filesystem path (see
-/// [`read_confined_archive`]).
+/// `read_confined_archive`).
 #[tauri::command]
 pub async fn pick_import_path(app: AppHandle) -> GuiResult<Option<String>> {
     let main = app
