@@ -14,7 +14,8 @@ use crate::memory::{
 /// An undeclared TOML key is dropped by `serde` on parse, not preserved for round-trip.
 /// A key written by a newer mmcp is silently dropped when an older mmcp rewrites the file.
 ///
-/// The `version` field records this memory's server-tracked published version, when known.
+/// No edit tool exposes this field for a client to set through a partial update.
+/// Import and raw file writes keep whatever value the supplied content already carries.
 /// No push path in this workspace writes an assigned version back into this field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryFrontmatter {
@@ -39,7 +40,7 @@ pub struct MemoryFrontmatter {
     pub mandatory: bool,
 
     /// Current published version, when known.
-    /// Ignored on incoming client edits: no write path in this workspace accepts a client-supplied value here.
+    /// No edit tool exposes this field; import and raw file writes keep whatever the supplied content carries.
     #[serde(default)]
     pub version: Option<semver::Version>,
 
@@ -47,8 +48,8 @@ pub struct MemoryFrontmatter {
     #[serde(default)]
     pub tags: Vec<String>,
 
-    /// Bump intent hint for the next version assignment. Editors set
-    /// this; the server consumes and clears it at push time.
+    /// Bump intent hint for the next version assignment.
+    /// Nothing in this workspace currently reads or clears this field.
     #[serde(default)]
     pub bump_intent: Option<BumpIntent>,
 
@@ -198,8 +199,8 @@ impl MemoryFrontmatter {
         self
     }
 
-    /// Override the `bump_intent` hint. Editors set this before a
-    /// push so the server can assign the next semantic version.
+    /// Override the `bump_intent` hint.
+    /// Nothing in this workspace currently reads or clears this field.
     #[must_use]
     pub fn with_bump_intent(mut self, bump_intent: Option<BumpIntent>) -> Self {
         self.bump_intent = bump_intent;
