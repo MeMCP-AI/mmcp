@@ -855,6 +855,7 @@ fn enforce_result_ceiling(rendered: &str, existing: Option<&str>) -> Result<(), 
 /// Reads the stored blob at `path` only when `rendered`'s own estimate already exceeds the ceiling.
 /// The common case (a small memory) pays no extra read.
 /// A missing file (a create) or an undecodable stored blob both count as "no existing content", the same as `None`.
+/// Any other read error propagates instead of being mistaken for a create.
 async fn enforce_write_result_ceiling(
     backend: &NativeBackend,
     handle: &RepoHandle,
@@ -866,7 +867,8 @@ async fn enforce_write_result_ceiling(
     }
     let existing = match backend.read_file(handle, path, &Rev::head()).await {
         Ok(bytes) => std::str::from_utf8(&bytes).ok().map(str::to_string),
-        Err(_) => None,
+        Err(GitError::PathNotFound(_)) => None,
+        Err(err) => return Err(ImportError::Git(err)),
     };
     enforce_result_ceiling(rendered, existing.as_deref())
 }
@@ -3392,5 +3394,47 @@ mod tests {
         )
         .await
         .expect("a shrinking edit must not be refused");
+    }
+
+    /// A git read failure other than `PathNotFound`, hit while checking the grow-only exemption,
+    /// propagates as `ImportError::Git`.
+    /// It must never be swallowed as "no existing content" and misreported as `body_result_too_large`.
+    #[tokio::test]
+    async fn grow_only_check_propagates_a_non_not_found_git_error() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let id = Uuid::now_v7();
+        let path = mmcp_core::conventions::memory_path("corrupt-repo", MemoryId::from_uuid(id));
+
+        // Simulate a transient or corrupt read: the repo directory
+        // vanishes out from under the handle before the write runs.
+        std::fs::remove_dir_all(backend.repo_path(handle.group_id)).expect("remove repo dir");
+
+        let rendered = {
+            let mut file = MemoryFile {
+                frontmatter: MemoryFrontmatter::new("n", "d", MemoryKind::Rule),
+                body: "a".repeat(60_000),
+                format: mmcp_core::memory::FrontmatterFormat::TomlPlus,
+            };
+            file.frontmatter = file.frontmatter.with_id(id);
+            file.to_string().expect("render")
+        };
+        let err = write_file_at_path(
+            &backend,
+            &handle,
+            &path,
+            &rendered,
+            &author,
+            WriteFileOptions {
+                addressing_mode: AddressingMode::ByFilename,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, ImportError::Git(GitError::RepoNotFound(_))),
+            "a non-not-found git error must propagate, not be reported as body_result_too_large: {err:?}"
+        );
     }
 }
