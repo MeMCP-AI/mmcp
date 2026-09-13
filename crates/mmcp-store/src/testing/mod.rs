@@ -33,6 +33,10 @@ use crate::home::{MmcpHome, ResolvedAuthor};
 use crate::memory::{ImportError, read_frontmatter_at, resolve_memory};
 use crate::sessions::SessionStore;
 
+mod corrupt_seed_error;
+
+pub use corrupt_seed_error::CorruptSeedError;
+
 /// An [`MmcpHome`] rooted inside a fresh tempdir, pre-wired with a backend, group index, and session store.
 ///
 /// The `TempDir` is kept alive by the fixture so dropping the `ScratchHome` cleans the directory.
@@ -181,7 +185,7 @@ pub async fn read_current_frontmatter(
 ///
 /// A field left at its type default (`Vec::new()`, `false`, `None`) cannot prove preservation.
 /// A bug that resets the field to its default would pass unnoticed.
-/// `id`, `name`, `description`, `kind`, and the tracker metadata blocks stay untouched here.
+/// `id`, `name`, `description`, `kind`, and the tracker metadata blocks are not modified here.
 /// Callers set those through the ordinary [`MemoryFrontmatter`] constructors.
 #[must_use]
 pub fn seed_unowned_fields(frontmatter: MemoryFrontmatter) -> MemoryFrontmatter {
@@ -231,9 +235,15 @@ pub async fn overwrite_raw_bytes(
     Ok(())
 }
 
+/// Continuation byte invalid at any position in a UTF-8 stream.
+///
+/// `0x80` never starts a valid UTF-8 sequence and never appears as a bare lead byte, so writing it
+/// anywhere always breaks decoding at that offset.
+const INVALID_UTF8_CONTINUATION_BYTE: u8 = 0x80;
+
 /// Corrupt `source` into invalid UTF-8 at the byte offset where `marker` starts.
 ///
-/// Replaces that one byte with `0x80`, a lone continuation byte invalid at any position.
+/// Replaces that one byte with [`INVALID_UTF8_CONTINUATION_BYTE`].
 /// `marker` pins the corruption to a caller-chosen region, e.g. a frontmatter field or the body.
 /// A test can target the frontmatter block or the body at will by choosing where `marker` sits.
 /// Returns `None` when `marker` is not found in `source`.
@@ -241,25 +251,8 @@ pub async fn overwrite_raw_bytes(
 pub fn corrupt_one_byte(source: &str, marker: &str) -> Option<Vec<u8>> {
     let offset = source.find(marker)?;
     let mut bytes = source.as_bytes().to_vec();
-    bytes[offset] = 0x80;
+    bytes[offset] = INVALID_UTF8_CONTINUATION_BYTE;
     Some(bytes)
-}
-
-/// Failure while staging a corrupted memory file ahead of a test.
-#[derive(Debug)]
-pub enum CorruptSeedError {
-    /// The underlying git read or write failed.
-    Git(mmcp_git::GitError),
-    /// The seeded file was not valid UTF-8 before corruption, so a test marker cannot be placed.
-    NotUtf8,
-    /// `marker` was not found in the seeded file's contents.
-    MarkerNotFound,
-}
-
-impl From<mmcp_git::GitError> for CorruptSeedError {
-    fn from(source: mmcp_git::GitError) -> Self {
-        Self::Git(source)
-    }
 }
 
 /// Corrupt `path`'s stored file at `marker`, in a new commit, and return the corrupted bytes.
@@ -276,7 +269,7 @@ pub async fn corrupt_stored_file(
     author: &ResolvedAuthor,
 ) -> Result<Vec<u8>, CorruptSeedError> {
     let valid_bytes = read_raw_bytes(backend, handle, path).await?;
-    let valid_text = String::from_utf8(valid_bytes).map_err(|_| CorruptSeedError::NotUtf8)?;
+    let valid_text = String::from_utf8(valid_bytes).map_err(CorruptSeedError::NotUtf8)?;
     let corrupted =
         corrupt_one_byte(&valid_text, marker).ok_or(CorruptSeedError::MarkerNotFound)?;
     overwrite_raw_bytes(backend, handle, path, corrupted.clone(), author).await?;
