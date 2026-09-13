@@ -16,10 +16,9 @@ use crate::memory::{
 /// written back out verbatim, so future mmcp versions can add fields
 /// without breaking older clients.
 ///
-/// The `version` field is server-managed. Clients do not hand-edit it;
-/// the server assigns it at push time using the
-/// [`BumpIntent`] that accompanied the
-/// commit.
+/// The `version` field is server-managed.
+/// Clients do not hand-edit it; the server assigns it at push time using the commit's
+/// [`BumpIntent`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryFrontmatter {
     /// Canonical primary key. Assigned once (UUIDv7) at create time
