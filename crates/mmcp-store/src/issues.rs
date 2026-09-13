@@ -9,7 +9,6 @@
 //!
 //! The hybrid model permits a memory to carry both a `[feature]` and an `[issue]` block.
 //! This module's create path always writes a pure-issue memory.
-//! No mmcp tool adds a `[feature]` or `[issue]` block to an existing memory.
 //!
 //! A supersede target must be an issue in the caller's project group.
 //! `resolve_supersede_target` reads it through `read_issue`.
