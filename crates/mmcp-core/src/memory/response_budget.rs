@@ -30,14 +30,13 @@ use serde::Serialize;
 /// Estimated TYPICAL serialized JSON size of one COMPACT `list_memories` descriptor.
 /// Fields: `slug`, `path`, `name`, `kind`, `mandatory`, plus object/array punctuation.
 /// This is a measured average, not a worst-case bound.
-/// Field lengths observed on this project's own mmcp mirror: name averages ~52 chars,
-/// slug ~72 chars, path ~74 chars, per the measured evidence in the module doc above.
+/// Field lengths observed on this project's own mirror average name ~52 chars.
+/// Slug averages ~72 chars, path ~74 chars.
+/// See the measured evidence in the module doc above.
 /// The theoretical worst case runs closer to 838 bytes, well above this constant.
-/// That worst case: `name` at [`crate::memory::MAX_NAME_LENGTH`] (256 bytes) and `slug`
-/// at mmcp-store's `MAX_SLUG_LENGTH` (256 bytes, re-encoded a second time into `path`),
-/// plus JSON punctuation.
-/// [`DEFAULT_LIST_MEMORIES_LIMIT`] therefore fits the client result ceiling for the
-/// typical record sizes actually observed.
+/// `name` and `slug` each reach their 256-byte maximum in that case.
+/// `slug` is also re-encoded a second time into `path`, plus JSON punctuation.
+/// [`DEFAULT_LIST_MEMORIES_LIMIT`] therefore fits the client result ceiling for the typical record sizes actually observed.
 /// It is not a hard guarantee for a group of unusually long slugs and names.
 pub const COMPACT_RECORD_ESTIMATED_BYTES: usize = 512;
 

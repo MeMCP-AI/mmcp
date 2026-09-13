@@ -67,7 +67,7 @@ pub const MAX_TAG_COUNT: usize = 32;
 
 /// Measured hard ceiling on how many characters a calling MCP client inlines a single tool result.
 /// Past this, the client saves the result to a file instead of returning it in the conversation.
-/// Measured against Claude Code 2.1.266 (2026-09-13).
+/// Measured against Claude Code 2.1.266 (13 September 2026).
 /// Inline up to roughly 49,730 characters; saved to a file at 50,130.
 /// A saved-to-file result is not a reliable read for an agent.
 /// A memory WRITE bounds the new body to this many bytes (see `mmcp_store::memory::validate_write_content_lengths`).
