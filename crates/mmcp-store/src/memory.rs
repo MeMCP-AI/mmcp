@@ -1428,9 +1428,9 @@ pub fn parse_kind(s: &str) -> Result<MemoryKind, ImportError> {
 }
 
 /// The six kinds a plain memory CREATE (or `edit --kind`) may target.
-/// Tracked kinds are deliberately excluded: they are created through their own dedicated command
-/// (`add_feature` / `add_issue` / `add_milestone`), which populates the structured metadata subtable
-/// this path never does.
+/// Tracked kinds are deliberately excluded.
+/// They are created through their own dedicated command (`add_feature` / `add_issue` / `add_milestone`).
+/// That command populates the structured metadata subtable this path never does.
 const CREATABLE_KINDS: &[MemoryKind] = &[
     MemoryKind::Rule,
     MemoryKind::Snapshot,
