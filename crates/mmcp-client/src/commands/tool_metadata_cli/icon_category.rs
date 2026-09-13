@@ -7,11 +7,12 @@ use super::defaults::{
 use super::registry::tool_metadata_for_name;
 
 /// Per-tool category that drives icon selection.
-/// Declared per tool in `registry::tool_metadata`, the single exhaustive
-/// registry backing icons, `_meta`, and argument risk hints alike;
-/// there is no default arm, so a `#[tool]` method without a
-/// [`mmcp_proto::McpToolId`] variant and a `tool_metadata` arm fails to compile
-/// instead of shipping a generic glyph that misleads operators.
+/// Declared per tool in `registry::tool_metadata`.
+/// That is the single exhaustive registry backing icons, `_meta`, and argument risk hints alike.
+/// There is no default arm.
+/// A `#[tool]` method needs both a [`mmcp_proto::McpToolId`] variant and a `tool_metadata` arm.
+/// Missing either one fails to compile.
+/// This never ships a generic glyph that misleads operators.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ToolIconCategory {
     /// Read-only tools that walk the local mirror without writing.

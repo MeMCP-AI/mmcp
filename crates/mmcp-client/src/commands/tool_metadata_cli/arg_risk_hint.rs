@@ -24,10 +24,10 @@ pub(crate) struct ArgRiskHint {
     pub reason: &'static str,
 }
 
-/// Curated per-argument risk hints for the live tool named
-/// `tool_name`. Entries are hand-maintained in `registry::tool_metadata`:
-/// there is no derive macro that inspects the args struct, and most
-/// tool args are not risk-bearing, so the registry stays short.
+/// Curated per-argument risk hints for the live tool named `tool_name`.
+/// Entries are hand-maintained in `registry::tool_metadata`.
+/// There is no derive macro that inspects the args struct.
+/// Most tool args are not risk-bearing, so the registry stays short.
 pub(crate) fn arg_risk_hints_for(tool_name: &str) -> &'static [ArgRiskHint] {
     tool_metadata_for_name(tool_name).risk_hints
 }
