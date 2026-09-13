@@ -277,8 +277,8 @@ impl FeatureSummary {
 }
 
 /// Create a new FR in the group.
-/// Errors with `FeatureError::Memory(ImportError::MemoryAlreadyExists)` when the slug already points
-/// at something on disk, mirroring the strict-create contract the rest of the memory surface enforces.
+/// Errors with `FeatureError::Memory(ImportError::MemoryAlreadyExists)` if `memories/<slug>/<id>.md` exists.
+/// The id is freshly minted, so this can only be a UUID collision.
 ///
 /// When `spec.supersedes` is set, the call runs the two-commit supersede flow:
 ///
@@ -289,9 +289,9 @@ impl FeatureSummary {
 /// 3. Commit B: re-write the old FR with `status = Superseded` and `superseded_by` pointing at commit A.
 ///
 /// Commits A and B are sequential.
-/// The inconsistency window between them is small and recoverable: if B fails, callers complete the chain
-/// with `update_feature(old_slug, UpdateSpec { status: Some(Superseded), superseded_by: Some(ref), .. })`
-/// carrying the new FR's ref.
+/// The inconsistency window between them is small and recoverable.
+/// If commit B fails, callers finish the chain via `update_feature`.
+/// Pass `status: Superseded` and `superseded_by` set to commit A's ref.
 pub async fn add_feature(
     backend: &NativeBackend,
     entry: &GroupEntry,

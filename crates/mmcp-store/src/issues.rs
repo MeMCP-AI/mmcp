@@ -194,10 +194,11 @@ struct SupersedeTarget {
 }
 
 /// Create a new issue in the group.
-/// Errors with `IssueError::Memory(ImportError::MemoryAlreadyExists)` when the slug already points at something on disk.
+/// Errors with `IssueError::Memory(ImportError::MemoryAlreadyExists)` if `memories/<slug>/<id>.md` exists.
+/// The id is freshly minted, so this can only be a UUID collision.
 ///
-/// When `spec.supersedes` is set, runs the two-commit supersede flow against the resolved target
-/// (same kind, same group only in v1).
+/// When `spec.supersedes` is set, runs the two-commit supersede flow against the resolved target.
+/// The target must share the same kind and the same group, in v1.
 pub async fn add_issue(
     backend: &NativeBackend,
     entry: &GroupEntry,

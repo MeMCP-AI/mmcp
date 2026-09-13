@@ -76,8 +76,8 @@ pub enum ImportError {
     #[error("group not found: {0}")]
     GroupNotFound(String),
 
-    /// A `create` was attempted against a slug that is already on disk.
-    /// The caller picks between `update` (edit-in-place) and `create` with an explicit override to replace.
+    /// The file `memories/<slug>/<id>.md` already exists.
+    /// The caller chooses `update` (edit-in-place) or `create` with an explicit override to replace.
     #[error("memory '{slug}' already exists in this group")]
     MemoryAlreadyExists { slug: String },
 

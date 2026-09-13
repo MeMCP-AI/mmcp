@@ -106,13 +106,12 @@ pub struct MilestoneRecord {
 }
 
 /// Create a new milestone in the group.
-/// Errors with `MilestoneError::Memory(ImportError::MemoryAlreadyExists)`,
-/// when the slug already points at something on disk.
+/// Errors with `MilestoneError::Memory(ImportError::MemoryAlreadyExists)` if `memories/<slug>/<id>.md` exists.
+/// The id is freshly minted, so this can only be a UUID collision.
 ///
-/// The returned record's rollup is always the trivial zero-features [`RollupStatus::Planning`]:
-/// a freshly-minted UUID cannot yet have any feature pointing at it,
-/// so this path skips the cache query entirely,
-/// rather than pay for a lookup that can only ever come back empty.
+/// The returned record's rollup is always the trivial zero-features [`RollupStatus::Planning`].
+/// A freshly-minted UUID cannot yet have any feature pointing at it.
+/// This path skips the cache query entirely rather than pay for a lookup that always comes back empty.
 pub async fn add_milestone(
     backend: &NativeBackend,
     entry: &GroupEntry,
