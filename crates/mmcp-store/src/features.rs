@@ -79,7 +79,8 @@ pub enum FeatureError {
     ProjectConfigBroken { path: String, detail: String },
 
     /// Raised by `parse_cross_refs` or `parse_memory_refs` on malformed cross-reference input.
-    /// One variant covers both `InvalidCrossRef` and `InvalidMemoryRef`, keeping the parser's own field-attribution detail.
+    /// One variant covers both `InvalidCrossRef` and `InvalidMemoryRef`.
+    /// Keeps the parser's own field-attribution detail.
     #[error(transparent)]
     Xref(#[from] mmcp_core::memory::XrefError),
 

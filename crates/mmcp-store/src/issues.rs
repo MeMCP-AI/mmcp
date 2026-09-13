@@ -4,17 +4,16 @@
 //! Wraps the generic memory layer with issue-aware semantics.
 //! `add_issue` commits a memory of kind `Issue` carrying an [`IssueMetadata`] block; updates keep the on-disk kind.
 //! Cross-references take any UUID, so an issue may depend on a feature, another issue, or any future tracker kind.
-//! The shared ticket counter lives in [`crate::tracker`],
-//! so feature and issue numbers occupy one per-group monotonic sequence (GitHub-style).
+//! The shared ticket counter lives in [`crate::tracker`].
+//! Feature and issue numbers occupy one per-group monotonic sequence (GitHub-style).
 //!
 //! The hybrid model permits a memory to carry both a `[feature]` and an `[issue]` block.
-//! This module's create path always writes a pure-issue memory;
-//! hybrid promotion is a future workflow on top of the existing memory editor surface.
+//! This module's create path always writes a pure-issue memory.
+//! Hybrid promotion goes through the existing memory editor surface instead.
 //!
-//! Cross-kind and cross-group supersede generalisation is staged
-//! for a later slice. v1 supersede targets resolve in the caller's
-//! project group only; the data model itself supports the broader
-//! shape.
+//! Cross-kind and cross-group supersede generalisation is staged for a later slice.
+//! v1 supersede targets resolve in the caller's project group only.
+//! The data model itself supports the broader shape.
 
 use mmcp_core::memory::{
     FrontmatterFormat, IssueMetadata, IssueStatus, MemoryFile, MemoryFrontmatter, MemoryKind,
