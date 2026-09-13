@@ -8,10 +8,8 @@ use super::registry::tool_metadata_for_name;
 
 /// Per-tool category that drives icon selection.
 /// Declared per tool in `registry::tool_metadata`.
-/// That is the single exhaustive registry backing icons, `_meta`, and argument risk hints alike.
-/// There is no default arm.
-/// A `#[tool]` method needs both a [`mmcp_proto::McpToolId`] variant and a `tool_metadata` arm.
-/// Missing either one fails to compile.
+/// A `McpToolId` variant without a `tool_metadata` arm fails to compile: the match has no wildcard.
+/// A `#[tool]` method without a `McpToolId` variant panics in `registry::tool_metadata_for_name`.
 /// This never ships a generic glyph that misleads operators.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ToolIconCategory {
