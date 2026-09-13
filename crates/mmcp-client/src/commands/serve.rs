@@ -2832,7 +2832,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "CREATE a new memory in a group. All metadata fields (name, description, kind, tags, mandatory) are typed parameters: the server builds the frontmatter. Errors with code `memory_already_exists` when the slug is already on disk; use `edit_memory` to apply partial updates, `delete_memory` to remove, or pass `override: true` to deliberately replace the whole file (bulk-reset flows only; the default should almost always stay false). Group `slug` under a subject prefix nested with `/` (`<product>/<component>/...`), never a hyphenated `product-component`; a memory too large to write splits into a prefixed family.",
+        description = "CREATE a new memory in a group. All metadata fields (name, description, kind, tags, mandatory) are typed parameters: the server builds the frontmatter. Errors with code `memory_already_exists` when `memories/<slug>/<id>.md` already exists; use `edit_memory` to apply partial updates, `delete_memory` to remove, or pass `override: true` to deliberately replace the whole file (bulk-reset flows only; the default should almost always stay false). Group `slug` under a subject prefix nested with `/` (`<product>/<component>/...`), never a hyphenated `product-component`; a memory too large to write splits into a prefixed family.",
         annotations(
             title = "Create memory",
             read_only_hint = false,
