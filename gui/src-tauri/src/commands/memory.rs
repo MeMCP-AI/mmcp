@@ -341,7 +341,7 @@ async fn list_descriptors_in(
                 paths.push(resolved.path);
             }
             Err(err) => {
-                let code = mmcp_store::tracker::import_error_code(&err);
+                let code = err.code();
                 tracing::warn!(group_id = %group_id, slug = %dir.slug, error = %err, "list_memory_descriptors: skipping unresolvable slug");
                 skipped.push(skip_finding(
                     group_id,
@@ -681,10 +681,7 @@ mod tests {
         assert_eq!(value["skipped"][0]["slug"], "bad");
     }
 
-    /// The GUI's skip code for a resolve failure comes from `mmcp_store::tracker::import_error_code`.
-    /// The MCP tool layer's `map_memory_error_to_mcp` uses that same function.
-    /// The two surfaces can never drift back to reporting different wire names for one variant.
-    /// This was `memory_missing` here vs. `memory_not_found` there.
+    /// One code per variant, taken directly from `ImportError::code()`.
     #[test]
     fn resolve_error_code_matches_the_shared_mcp_vocabulary() {
         let missing = ImportError::MemoryNotFound {
@@ -695,14 +692,8 @@ mod tests {
             slug: "x".to_string(),
             candidates: vec![Uuid::now_v7(), Uuid::now_v7()],
         };
-        assert_eq!(
-            mmcp_store::tracker::import_error_code(&missing),
-            "memory_not_found"
-        );
-        assert_eq!(
-            mmcp_store::tracker::import_error_code(&ambiguous),
-            "memory_ambiguous"
-        );
+        assert_eq!(missing.code(), "memory_not_found");
+        assert_eq!(ambiguous.code(), "memory_ambiguous");
     }
 
     /// A folder-only path segment (`git`, `comments`) is never probed as its own slug.
