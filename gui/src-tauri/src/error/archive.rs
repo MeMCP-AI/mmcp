@@ -8,10 +8,6 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum GuiArchiveError {
-    /// `value` does not name a recognized memory kind.
-    #[error("unknown memory kind '{0}'")]
-    UnknownKind(String),
-
     /// Export was requested with no groups selected.
     #[error("no groups to export")]
     NoGroupsSelected,

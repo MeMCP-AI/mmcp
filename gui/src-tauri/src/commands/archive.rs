@@ -19,7 +19,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 use crate::commands::sync::MIRROR_CHANGED_EVENT;
-use crate::error::{GuiArchiveError, GuiDialogError, GuiResult};
+use crate::error::{GuiArchiveError, GuiDialogError, GuiError, GuiResult};
 use crate::state::AppState;
 
 /// Maximum size, in bytes, `inspect_archive` / `import_archive` will
@@ -92,10 +92,7 @@ fn scope_str(scope: mmcp_core::manifest::GroupScope) -> &'static str {
 fn parse_kinds(values: &[String]) -> GuiResult<Vec<mmcp_core::memory::MemoryKind>> {
     values
         .iter()
-        .map(|value| {
-            parse_memory_kind(value)
-                .ok_or_else(|| GuiArchiveError::UnknownKind(value.clone()).into())
-        })
+        .map(|value| parse_memory_kind(value).map_err(GuiError::from))
         .collect()
 }
 
@@ -518,5 +515,18 @@ mod tests {
     fn size_within_the_cap_is_accepted() {
         ensure_within_size_cap("archive.tar", 50, 100).unwrap();
         ensure_within_size_cap("archive.tar", 100, 100).unwrap();
+    }
+
+    #[test]
+    fn unknown_kind_chains_to_the_real_parse_error() {
+        use std::error::Error as _;
+        let err = parse_kinds(&["bogus".to_string()]).unwrap_err();
+        assert!(matches!(err, GuiError::InvalidMemoryKind(_)));
+        let source = err.source().expect("must chain to the real parse error");
+        assert!(
+            source
+                .downcast_ref::<mmcp_core::memory::MemoryKindParseError>()
+                .is_some()
+        );
     }
 }

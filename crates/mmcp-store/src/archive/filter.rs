@@ -5,7 +5,7 @@
 //! Search is full-text over name, description, tags, slug, and body.
 //! An empty filter matches everything, so the "all memories" path pays no cost.
 
-use mmcp_core::memory::{MemoryFrontmatter, MemoryKind};
+use mmcp_core::memory::{MemoryFrontmatter, MemoryKind, MemoryKindParseError};
 
 /// Selection facets applied to the memories an archive op touches.
 ///
@@ -120,13 +120,12 @@ impl MemoryFilter {
 }
 
 /// Parse a memory-kind facet string, case-insensitively.
-/// Delegates to the canonical [`MemoryKind::from_str`](std::str::FromStr) parser
-/// (after lowercasing, this facet's one point of divergence from the create-time `parse_kind`)
-/// so the accepted-kind set stays identical everywhere.
-/// Returns `None` for an unknown kind so callers can reject the input with a clear message.
-#[must_use]
-pub fn parse_memory_kind(value: &str) -> Option<MemoryKind> {
-    value.trim().to_lowercase().parse().ok()
+/// Delegates to the canonical [`MemoryKind::from_str`](std::str::FromStr) parser.
+/// Lowercasing first is this facet's one point of divergence from the create-time `parse_kind`.
+/// The accepted-kind set stays identical everywhere regardless.
+/// The `Err` case names every accepted kind, sourced from `MemoryKind::VARIANTS`.
+pub fn parse_memory_kind(value: &str) -> Result<MemoryKind, MemoryKindParseError> {
+    value.trim().to_lowercase().parse()
 }
 
 #[cfg(test)]
@@ -206,10 +205,10 @@ mod tests {
 
     #[test]
     fn parse_memory_kind_covers_every_kind() {
-        assert_eq!(parse_memory_kind("rule"), Some(MemoryKind::Rule));
-        assert_eq!(parse_memory_kind("Feature"), Some(MemoryKind::Feature));
-        assert_eq!(parse_memory_kind("issue"), Some(MemoryKind::Issue));
-        assert_eq!(parse_memory_kind("nope"), None);
+        assert_eq!(parse_memory_kind("rule"), Ok(MemoryKind::Rule));
+        assert_eq!(parse_memory_kind("Feature"), Ok(MemoryKind::Feature));
+        assert_eq!(parse_memory_kind("issue"), Ok(MemoryKind::Issue));
+        assert!(parse_memory_kind("nope").is_err());
     }
 
     #[test]
@@ -217,6 +216,6 @@ mod tests {
         // The `fr` alias was retired in the same unit that added
         // MemoryKind::from_str as the one canonical parser; this
         // facet must reject it exactly like every other decoder.
-        assert_eq!(parse_memory_kind("fr"), None);
+        assert!(parse_memory_kind("fr").is_err());
     }
 }

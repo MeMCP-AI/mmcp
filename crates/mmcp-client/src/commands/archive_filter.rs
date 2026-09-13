@@ -6,7 +6,7 @@
 //! kind names and folds the two boolean mandatory flags into the
 //! store's tri-state.
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use mmcp_core::memory::MemoryKind;
 use mmcp_store::{MemoryFilter, parse_memory_kind};
 
@@ -113,12 +113,40 @@ impl MemoryFilterArgs {
 fn parse_kinds(values: &[String]) -> Result<Vec<MemoryKind>> {
     let mut out = Vec::with_capacity(values.len());
     for value in values {
-        match parse_memory_kind(value) {
-            Some(kind) => out.push(kind),
-            None => bail!(
-                "unknown kind '{value}': expected rule, snapshot, log, reference, scratch, feature, or issue"
-            ),
-        }
+        out.push(parse_memory_kind(value)?);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+    use strum::VariantArray as _;
+
+    use super::*;
+
+    #[test]
+    fn parse_kinds_rejection_names_every_memory_kind() {
+        // The rejection message is built from `MemoryKind::VARIANTS` at the point of failure.
+        // A kind added later still appears here without touching this file.
+        let err = parse_kinds(&["bogus".to_string()]).expect_err("unknown kind must be rejected");
+        let message = err.to_string();
+        for kind in MemoryKind::VARIANTS {
+            assert!(
+                message.contains(kind.as_str()),
+                "expected '{}' in rejection message, got: {message}",
+                kind.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn parse_kinds_rejection_preserves_the_typed_source() {
+        let err = parse_kinds(&["bogus".to_string()]).expect_err("unknown kind must be rejected");
+        assert!(
+            err.downcast_ref::<mmcp_core::memory::MemoryKindParseError>()
+                .is_some(),
+            "rejection must carry the typed MemoryKindParseError, not a stringified copy"
+        );
+    }
 }

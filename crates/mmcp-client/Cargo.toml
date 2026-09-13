@@ -44,6 +44,7 @@ mmcp-store = { workspace = true, features = ["testing"] }
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
+strum = { workspace = true }
 
 [build-dependencies]
 anyhow = { workspace = true }

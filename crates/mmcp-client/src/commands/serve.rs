@@ -2135,9 +2135,9 @@ fn parse_filter_kinds(values: &[String]) -> Result<Vec<mmcp_core::memory::Memory
     values
         .iter()
         .map(|value| {
-            mmcp_store::parse_memory_kind(value).ok_or_else(|| {
+            mmcp_store::parse_memory_kind(value).map_err(|err| {
                 McpError::invalid_params(
-                    Cow::Owned(format!("unknown kind '{value}'")),
+                    Cow::Owned(err.to_string()),
                     Some(json!({ "code": "unknown_kind", "kind": value })),
                 )
             })
