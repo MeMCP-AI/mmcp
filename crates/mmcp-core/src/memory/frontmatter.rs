@@ -12,8 +12,7 @@ use crate::memory::{
 ///
 /// Every field except `name`, `description`, and `kind` is optional.
 /// An undeclared TOML key is dropped by `serde` on parse, not preserved for round-trip.
-/// Extending the schema without an explicit migration silently loses that data on rewrite.
-/// Round-tripping unknown fields is tracked separately as mmcp issue 419.
+/// A key written by a newer mmcp is silently dropped when an older mmcp rewrites the file.
 ///
 /// The `version` field is server-managed.
 /// Clients do not hand-edit it; the server assigns it at push time using the commit's [`BumpIntent`].
