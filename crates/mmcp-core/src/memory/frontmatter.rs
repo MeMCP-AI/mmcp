@@ -49,7 +49,7 @@ pub struct MemoryFrontmatter {
     pub tags: Vec<String>,
 
     /// Bump intent hint for the next version assignment.
-    /// Nothing in this workspace currently reads or clears this field.
+    /// Nothing in this workspace reads or clears this field.
     #[serde(default)]
     pub bump_intent: Option<BumpIntent>,
 
@@ -200,7 +200,7 @@ impl MemoryFrontmatter {
     }
 
     /// Override the `bump_intent` hint.
-    /// Nothing in this workspace currently reads or clears this field.
+    /// Nothing in this workspace reads or clears this field.
     #[must_use]
     pub fn with_bump_intent(mut self, bump_intent: Option<BumpIntent>) -> Self {
         self.bump_intent = bump_intent;
