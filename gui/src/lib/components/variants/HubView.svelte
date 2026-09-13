@@ -429,7 +429,7 @@
         placeholder="Search memories, groups, tags…"
         widthClass="w-72"
         onFocus={() => (globalOpen = true)}
-        onBlur={() => setTimeout(() => (globalOpen = false), 120)}
+        onBlur={() => (globalOpen = false)}
       />
       {#if globalOpen && globalQuery.trim().length >= 2}
         <div
