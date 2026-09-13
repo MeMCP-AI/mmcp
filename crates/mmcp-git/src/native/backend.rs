@@ -304,10 +304,7 @@ impl GitBackend for NativeBackend {
     /// `clone`/`fetch`/`push` shell out to the `git` binary for the actual network transfer.
     /// They are genuinely `async fn` built on `tokio::process::Command`.
     /// Each is bounded by its own `tokio::time::timeout` (see `crate::native::repo_ops`).
-    /// Unlike every other `GitBackend` method here, they run directly on the calling task.
-    /// They never run inside `spawn_blocking`.
-    /// This path has no synchronous `gix`/filesystem work to offload.
-    /// Wrapping them would only cost a blocking-pool thread for no benefit.
+    /// Their `git` subprocess is awaited on the calling task, never inside `spawn_blocking`.
     async fn clone_to(
         &self,
         remote_url: &str,
@@ -340,6 +337,7 @@ impl GitBackend for NativeBackend {
         repo_ops::fetch(repo_path, remote_url, &refspecs, creds).await
     }
 
+    /// `push` first offloads its synchronous `preflight_local_refs` check to `spawn_blocking`.
     async fn push(
         &self,
         repo: &RepoHandle,
@@ -353,10 +351,8 @@ impl GitBackend for NativeBackend {
             .map(|r| (r.local.clone(), r.remote.clone(), r.force))
             .collect();
         let repo_cache = self.repo_cache.clone();
-        // The local-ref preflight check needs the synchronous `gix`
-        // view, so it still runs inside `spawn_blocking`; the actual
-        // network push below no longer holds a `gix::Repository` at
-        // all and awaits directly.
+        // The local-ref preflight check needs the synchronous `gix` view, so it runs inside `spawn_blocking`.
+        // The network push below does not hold a `gix::Repository` and awaits directly.
         let preflight_path = repo_path.clone();
         let preflight_refspecs = refspecs.clone();
         tokio::task::spawn_blocking(move || {

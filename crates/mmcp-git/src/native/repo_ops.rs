@@ -646,8 +646,8 @@ fn is_ancestor(
 
 /// Verify every local ref named in the outgoing refspecs actually resolves in `repo`.
 /// Turns git's opaque "src refspec does not match any" into an actionable `nothing to push` error.
-/// The error names the offending ref, which otherwise looks identical to a remote rejection.
-/// That similarity sends debuggers down the wrong path.
+/// The error names the offending ref.
+/// Git's own message otherwise looks identical to a remote rejection and misdirects debugging.
 ///
 /// An empty refspec list, used by tests exercising error paths, skips this check.
 /// The subprocess then surfaces its own error instead.
