@@ -8,17 +8,15 @@ use crate::memory::{
     BumpIntent, FeatureMetadata, IssueMetadata, MemoryKind, MemoryRef, MilestoneMetadata,
 };
 
-/// User-visible metadata written in the `+++`-delimited TOML block at
-/// the top of a memory file.
+/// User-visible metadata written in the `+++`-delimited TOML block at the top of a memory file.
 ///
 /// Every field except `name`, `description`, and `kind` is optional.
-/// Unknown fields encountered on disk are preserved by the parser and
-/// written back out verbatim, so future mmcp versions can add fields
-/// without breaking older clients.
+/// An undeclared TOML key is dropped by `serde` on parse, not preserved for round-trip.
+/// Extending the schema without an explicit migration silently loses that data on rewrite.
+/// Round-tripping unknown fields is tracked separately (mmcp issue #419).
 ///
 /// The `version` field is server-managed.
-/// Clients do not hand-edit it; the server assigns it at push time using the commit's
-/// [`BumpIntent`].
+/// Clients do not hand-edit it; the server assigns it at push time using the commit's [`BumpIntent`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryFrontmatter {
     /// Canonical primary key. Assigned once (UUIDv7) at create time
