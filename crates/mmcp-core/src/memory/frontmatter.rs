@@ -13,10 +13,6 @@ use crate::memory::{
 /// Every field except `name`, `description`, and `kind` is optional.
 /// An undeclared TOML key is dropped by `serde` on parse, not preserved for round-trip.
 /// A key written by a newer mmcp is silently dropped when an older mmcp rewrites the file.
-///
-/// No edit tool exposes this field for a client to set through a partial update.
-/// Import and raw file writes keep whatever value the supplied content already carries.
-/// No push path in this workspace writes an assigned version back into this field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryFrontmatter {
     /// Canonical primary key. Assigned once (UUIDv7) at create time
@@ -49,7 +45,6 @@ pub struct MemoryFrontmatter {
     pub tags: Vec<String>,
 
     /// Bump intent hint for the next version assignment.
-    /// Nothing in this workspace reads or clears this field.
     #[serde(default)]
     pub bump_intent: Option<BumpIntent>,
 
@@ -200,7 +195,6 @@ impl MemoryFrontmatter {
     }
 
     /// Override the `bump_intent` hint.
-    /// Nothing in this workspace reads or clears this field.
     #[must_use]
     pub fn with_bump_intent(mut self, bump_intent: Option<BumpIntent>) -> Self {
         self.bump_intent = bump_intent;
