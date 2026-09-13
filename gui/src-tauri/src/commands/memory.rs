@@ -4,7 +4,7 @@ use mmcp_core::id::GroupId;
 use mmcp_core::memory::{MemoryFile, MemoryFrontmatter, MemoryKind};
 use mmcp_git::{GitBackend, NativeBackend, RepoHandle, Rev};
 use mmcp_store::{
-    AddressingMode, MemorySlugDir, WriteFileOptions, WriteMemoryOptions, delete_file_at_path,
+    AddressingMode, ImportError, WriteFileOptions, WriteMemoryOptions, delete_file_at_path,
     list_memory_slug_dirs, resolve_memory, write_file_at_path, write_memory_by_id,
 };
 use serde::{Deserialize, Serialize};
@@ -273,8 +273,7 @@ pub async fn list_memory_slugs(
 ) -> GuiResult<Vec<String>> {
     tracing::debug!(group_id = %group_id, "ipc: list_memory_slugs");
     let entry = group_entry(&state, &group_id).await?;
-    // `list_memory_slug_dirs` already sorts by slug and already excludes
-    // folder-only path segments (see `list_descriptors_in` below).
+    // `list_memory_slug_dirs` already sorts by slug and excludes a folder-only path segment.
     let slugs = list_memory_slug_dirs(&state.backend, &entry.handle, &Rev::head())
         .await
         .map_err(GuiError::from)?
@@ -284,20 +283,12 @@ pub async fn list_memory_slugs(
     Ok(slugs)
 }
 
-/// Locate the single UUID-named memory blob inside a resolved slug directory.
-/// [`list_memory_slug_dirs`] guarantees at least one `.md`-suffixed filename per entry;
-/// this narrows that guarantee to exactly one UUID-stemmed filename, the shape
-/// every memory file on disk follows.
-fn slug_dir_memory_path(dir: &MemorySlugDir) -> Result<String, &'static str> {
-    let ext = mmcp_core::conventions::MEMORY_EXTENSION;
-    let mut uuid_filenames = dir.filenames.iter().filter(|f| {
-        f.strip_suffix(ext)
-            .is_some_and(|stem| Uuid::parse_str(stem).is_ok())
-    });
-    match (uuid_filenames.next(), uuid_filenames.next()) {
-        (Some(only), None) => Ok(format!("{}/{}", dir.dir, only)),
-        (None, _) => Err("no UUID-named memory file in slug directory"),
-        (Some(_), Some(_)) => Err("ambiguous slug directory: multiple memory files"),
+/// Maps a slug-resolution failure to its own skip code, distinct per cause.
+fn skip_code_for_resolve_error(err: &ImportError) -> &'static str {
+    match err {
+        ImportError::MemoryNotFound { .. } => "memory_missing",
+        ImportError::MemoryAmbiguous { .. } => "memory_ambiguous",
+        _ => "memory_unresolvable",
     }
 }
 
@@ -330,21 +321,11 @@ fn classify_memory_bytes(
     ))
 }
 
-/// Core of [`list_memory_descriptors`]: frontmatter for every memory in one group,
-/// plus the group tip commit.
+/// Core of [`list_memory_descriptors`]: frontmatter for every memory in one group, plus the group tip commit.
 /// Extracted so a test can drive it with a real git backend without needing a live Tauri `State`.
-///
-/// Walks [`list_memory_slug_dirs`] instead of a one-level directory listing, so a
-/// folder-only path segment (for example `git`, holding only nested `git/tooling`
-/// and never a memory file of its own) is never probed as a candidate slug: it is
-/// excluded upstream, before this function ever sees it, rather than resolved and
-/// rejected here. A slug directory this function DOES receive but that carries zero
-/// or several UUID-named files is a genuine data defect, still reported via `skipped`.
-///
-/// A slug that cannot be resolved, read, decoded as UTF-8, or parsed is logged
-/// AND reported back in the response's `skipped` list, never dropped silently:
-/// `Ok(descriptors)` alone would let the caller mistake a truncated listing for
-/// a complete one, with no way to tell the two apart.
+/// Candidate slugs come from [`list_memory_slug_dirs`], which excludes a folder-only path segment.
+/// Each candidate resolves through [`resolve_memory`], the store's own typed slug resolver.
+/// A slug that cannot be resolved, read, decoded as UTF-8, or parsed is reported in `skipped`, never dropped silently.
 async fn list_descriptors_in(
     backend: &NativeBackend,
     handle: &RepoHandle,
@@ -363,18 +344,19 @@ async fn list_descriptors_in(
     let mut resolved_slugs = Vec::with_capacity(slug_dirs.len());
     let mut paths = Vec::with_capacity(slug_dirs.len());
     for dir in slug_dirs {
-        match slug_dir_memory_path(&dir) {
-            Ok(path) => {
+        match resolve_memory(backend, handle, Some(&dir.slug), None).await {
+            Ok(resolved) => {
                 resolved_slugs.push(dir.slug);
-                paths.push(path);
+                paths.push(resolved.path);
             }
-            Err(reason) => {
-                tracing::warn!(group_id = %group_id, slug = %dir.slug, reason, "list_memory_descriptors: skipping malformed slug directory");
+            Err(err) => {
+                let code = skip_code_for_resolve_error(&err);
+                tracing::warn!(group_id = %group_id, slug = %dir.slug, error = %err, "list_memory_descriptors: skipping unresolvable slug");
                 skipped.push(skip_finding(
                     group_id,
                     dir.slug,
-                    "memory_unresolvable",
-                    format!("unresolvable: {reason}"),
+                    code,
+                    format!("unresolvable: {err}"),
                 ));
             }
         }
@@ -617,8 +599,7 @@ mod tests {
     }
 
     /// Real git-backed group repo, one per call, torn down with the returned `TempDir`.
-    /// Mirrors `mmcp_store::memory::tests::test_backend`, kept as its own copy here since
-    /// that one is private to its crate and this crate exercises a different command surface.
+    /// Mirrors `mmcp_store::memory::tests::test_backend`, copied here since that helper is private to its own crate.
     async fn test_backend() -> (NativeBackend, RepoHandle, TempDir) {
         let tmp = TempDir::new().expect("tempdir");
         let backend = NativeBackend::new(tmp.path()).expect("backend");
@@ -710,46 +691,21 @@ mod tests {
     }
 
     #[test]
-    fn slug_dir_memory_path_rejects_a_folder_only_directory() {
-        let dir = MemorySlugDir {
-            slug: "comments".to_string(),
-            dir: "memories/comments".to_string(),
-            filenames: vec![],
+    fn skip_code_for_resolve_error_distinguishes_missing_from_ambiguous() {
+        let missing = ImportError::MemoryNotFound {
+            slug: Some("x".to_string()),
+            id: None,
         };
-        assert!(slug_dir_memory_path(&dir).is_err());
+        let ambiguous = ImportError::MemoryAmbiguous {
+            slug: "x".to_string(),
+            candidates: vec![Uuid::now_v7(), Uuid::now_v7()],
+        };
+        assert_eq!(skip_code_for_resolve_error(&missing), "memory_missing");
+        assert_eq!(skip_code_for_resolve_error(&ambiguous), "memory_ambiguous");
     }
 
-    #[test]
-    fn slug_dir_memory_path_rejects_an_ambiguous_directory() {
-        let dir = MemorySlugDir {
-            slug: "twin".to_string(),
-            dir: "memories/twin".to_string(),
-            filenames: vec![
-                format!("{}.md", Uuid::now_v7()),
-                format!("{}.md", Uuid::now_v7()),
-            ],
-        };
-        assert!(slug_dir_memory_path(&dir).is_err());
-    }
-
-    #[test]
-    fn slug_dir_memory_path_accepts_a_single_uuid_file() {
-        let id = Uuid::now_v7();
-        let dir = MemorySlugDir {
-            slug: "flat".to_string(),
-            dir: "memories/flat".to_string(),
-            filenames: vec![format!("{id}.md")],
-        };
-        let path = slug_dir_memory_path(&dir).expect("single uuid file resolves");
-        assert_eq!(path, format!("memories/flat/{id}.md"));
-    }
-
-    /// Regression lock for the root cause behind "skipping unresolvable slug": a
-    /// folder-only path segment (`git`, `comments`) is never probed as its own
-    /// slug, and every nested slug still surfaces.
-    /// Fails on the pre-fix one-level `list_subtrees` walk, which enumerated `git`
-    /// and `comments` themselves (both unresolvable, both warned on) and never
-    /// reached `git/tooling`, `git/branches`, `comments/comments`, `comments/child`.
+    /// A folder-only path segment (`git`, `comments`) is never probed as its own slug.
+    /// Every nested slug still surfaces, at any depth.
     #[tokio::test]
     async fn list_descriptors_in_never_treats_a_folder_prefix_as_its_own_slug() {
         let (backend, handle, _tmp) = test_backend().await;
@@ -792,10 +748,30 @@ mod tests {
         assert!(!slugs.contains(&"comments"));
     }
 
-    /// Regression lock for "reads never limited": a body written past the
-    /// write-time content-length ceiling (bypassed here via a raw commit,
-    /// standing in for data written before that ceiling existed, or by
-    /// another client) is still returned whole by the read path.
+    /// A slug directory holding two memory files reports one `memory_ambiguous` skip.
+    #[tokio::test]
+    async fn list_descriptors_in_reports_a_distinct_code_for_an_ambiguous_slug() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let content = std::str::from_utf8(VALID_MEMORY_BYTES).expect("ascii fixture");
+        import_memory(&backend, &handle, "twin", content, None, &author, false)
+            .await
+            .expect("seed twin, first file");
+        import_memory(&backend, &handle, "twin", content, None, &author, false)
+            .await
+            .expect("seed twin, second file");
+
+        let result = list_descriptors_in(&backend, &handle, "test-group")
+            .await
+            .expect("list descriptors");
+
+        assert!(result.descriptors.is_empty());
+        assert_eq!(result.skipped.len(), 1);
+        assert_eq!(result.skipped[0].code, "memory_ambiguous");
+    }
+
+    /// A body past the write-time content-length ceiling is still returned whole by the read path.
+    /// The raw commit here writes such a body directly, bypassing that write-time check.
     #[tokio::test]
     async fn load_memory_file_returns_a_body_larger_than_the_write_time_cap_whole() {
         let (backend, handle, _tmp) = test_backend().await;
