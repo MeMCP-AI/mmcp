@@ -221,7 +221,7 @@ impl Credentials {
     }
 }
 
-/// Outcome of a local [`GitBackend::fast_forward`] call.
+/// Outcome of a local [`crate::GitBackend::fast_forward`] call.
 ///
 /// Fast-forward advances a local branch ref to match the commit at
 /// another ref (typically a remote-tracking ref just populated by

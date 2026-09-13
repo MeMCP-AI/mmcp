@@ -304,7 +304,7 @@ impl GitBackend for NativeBackend {
     /// `clone`/`fetch`/`push` shell out to the `git` binary for the
     /// actual network transfer and are genuinely `async fn` built on
     /// `tokio::process::Command`, each bounded by its own
-    /// `tokio::time::timeout` (see [`crate::native::repo_ops`]).
+    /// `tokio::time::timeout` (see `crate::native::repo_ops`).
     /// Unlike every other `GitBackend` method here, they run directly
     /// on the calling task instead of inside `spawn_blocking`: there is
     /// no synchronous `gix`/filesystem work left to offload, so

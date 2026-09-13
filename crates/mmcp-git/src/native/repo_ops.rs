@@ -14,7 +14,7 @@
 //! `tokio::process::Command`. Each subprocess call runs under
 //! `tokio::time::timeout`; on expiry the child is explicitly killed
 //! and reaped before the function returns
-//! [`GitError::Timeout`](crate::error::GitError::Timeout), so a dead
+//! [`GitError::Timeout`], so a dead
 //! or unresponsive remote fails within a bounded window instead of
 //! pinning the calling task (or, with the old `spawn_blocking` design,
 //! an entire blocking-pool thread) indefinitely.
@@ -657,7 +657,7 @@ fn is_ancestor(
 /// Empty refspec lists (used by tests exercising error paths) skip
 /// the check so the subprocess surfaces its own error.
 ///
-/// `pub(crate)`: [`crate::native::NativeBackend::push`] runs this
+/// `pub(crate)`: [`crate::GitBackend::push`] runs this
 /// against the open `gix::Repository` handle inside its own
 /// `spawn_blocking`, before awaiting the async [`push`] subprocess
 /// call, which no longer holds a `gix::Repository` at all.

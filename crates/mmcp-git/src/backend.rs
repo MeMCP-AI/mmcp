@@ -148,7 +148,7 @@ pub trait GitBackend: Send + Sync {
     ) -> Result<Vec<String>, GitError>;
 
     /// List every subtree (directory) directly under `path_prefix` at the given revision.
-    /// Mirror of [`list_tree`] but for directory entries,
+    /// Mirror of [`Self::list_tree`] but for directory entries,
     /// so resolvers can enumerate slug directories under `memories/`.
     ///
     /// Returned values are the subtree names *relative to* `path_prefix`.
