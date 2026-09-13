@@ -10,9 +10,10 @@
 // Chosen rule: `foo` renders as its own leaf node, sibling to the `foo/` folder node `foo/bar` introduces.
 // Both sit at the same nesting depth.
 // They are never merged into one node.
-// A folder carries no frontmatter of its own to show.
-// A leaf row and a folder row are different renderable shapes.
-// Merging them would drop the leaf's row or invent frontmatter for the folder.
+//
+// A master memory names a folder by repeating its own last segment (e.g. `coding/coding`, `comments/comments`).
+// Its entry attaches to that folder's `master` field instead of becoming a child leaf.
+// A folder without such an entry carries no frontmatter of its own, exactly as before.
 
 export interface MemoryTreeLeaf<T> {
   type: 'leaf';
@@ -30,6 +31,8 @@ export interface MemoryTreeFolder<T> {
   /** Full '/'-joined prefix up to and including this folder, used as its stable identity. */
   path: string;
   children: MemoryTreeNode<T>[];
+  /** This folder's own master memory (slug `<path>/<name>`), when one exists. */
+  master?: T;
 }
 
 export type MemoryTreeNode<T> = MemoryTreeLeaf<T> | MemoryTreeFolder<T>;
@@ -49,6 +52,7 @@ export function buildMemoryTree<T extends { slug: string }>(
     const segments = entry.slug.split('/');
     let siblings = root;
     let pathSoFar = '';
+    let parentFolder: MemoryTreeFolder<T> | undefined;
     for (let i = 0; i < segments.length - 1; i++) {
       pathSoFar = pathSoFar === '' ? segments[i] : `${pathSoFar}/${segments[i]}`;
       let folder = foldersByPath.get(pathSoFar);
@@ -57,9 +61,16 @@ export function buildMemoryTree<T extends { slug: string }>(
         foldersByPath.set(pathSoFar, folder);
         siblings.push(folder);
       }
+      parentFolder = folder;
       siblings = folder.children;
     }
-    siblings.push({ type: 'leaf', slug: entry.slug, name: segments[segments.length - 1], entry });
+
+    const name = segments[segments.length - 1];
+    if (parentFolder && name === parentFolder.name) {
+      parentFolder.master = entry;
+    } else {
+      siblings.push({ type: 'leaf', slug: entry.slug, name, entry });
+    }
   }
 
   return root;

@@ -1,7 +1,10 @@
 <script lang="ts">
   // Recursive slug folder-tree renderer over the memory_tree utility's already-nested `nodes`.
-  // A folder node is a collapsible row (Folder / FolderOpen icon, distinct from MemoryRow's per-kind icons).
+  // A folder node is a collapsible row: a Folder / FolderOpen icon, plus its master
+  // memory's kind icon when `buildMemoryTree` attached one.
   // A leaf node falls back to the existing MemoryRow.
+  // The chevron toggles expansion; the rest of the folder row selects its master memory when
+  // one is present, and otherwise also toggles expansion.
   // Manual expand/collapse is local per-folder state keyed by folder path.
   // It survives `nodes` changing reference, as long as this component instance stays mounted.
   // Folders start collapsed.
@@ -12,6 +15,7 @@
   // None of them should stay collapsed and hide it.
 
   import { ChevronRight, Folder, FolderOpen } from '@lucide/svelte';
+  import KindBadge from '../KindBadge.svelte';
   import MemoryRow from './MemoryRow.svelte';
   import MemoryTree from './MemoryTree.svelte';
   import type { MemoryTreeNode } from '$lib/utils/memory_tree';
@@ -56,20 +60,34 @@
     />
   {:else}
     <div>
-      <button
-        type="button"
-        class="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
-        onclick={() => toggle(node.path)}
-        aria-expanded={isExpanded(node.path)}
+      <div
+        class="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
       >
-        <ChevronRight size={12} class={isExpanded(node.path) ? 'rotate-90' : ''} />
-        {#if isExpanded(node.path)}
-          <FolderOpen size={13} />
-        {:else}
-          <Folder size={13} />
-        {/if}
-        <span class="truncate">{node.name}</span>
-      </button>
+        <button
+          type="button"
+          class="shrink-0"
+          onclick={() => toggle(node.path)}
+          aria-expanded={isExpanded(node.path)}
+          aria-label={isExpanded(node.path) ? 'Collapse folder' : 'Expand folder'}
+        >
+          <ChevronRight size={12} class={isExpanded(node.path) ? 'rotate-90' : ''} />
+        </button>
+        <button
+          type="button"
+          class="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+          onclick={() => (node.master ? onSelect(node.master.slug) : toggle(node.path))}
+        >
+          {#if isExpanded(node.path)}
+            <FolderOpen size={13} />
+          {:else}
+            <Folder size={13} />
+          {/if}
+          {#if node.master?.body}
+            <KindBadge kind={node.master.body.frontmatter.kind} mode="icon" />
+          {/if}
+          <span class="truncate">{node.name}</span>
+        </button>
+      </div>
       {#if isExpanded(node.path)}
         <!-- `pl-4` is the whole indentation mechanism. -->
         <!-- Each recursion nests one more of these, so depth accumulates structurally. -->

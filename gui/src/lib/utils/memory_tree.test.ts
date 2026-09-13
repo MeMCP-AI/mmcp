@@ -72,4 +72,47 @@ describe('buildMemoryTree', () => {
     expect(b.children.map((n) => n.type === 'leaf' && n.slug)).toEqual(['a/b/c', 'a/b/d']);
     expect(a.children[1]).toEqual({ type: 'leaf', slug: 'a/e', name: 'e', entry: entries[2] });
   });
+
+  test('a slug repeating its folder name is the folder master, not a sibling leaf', () => {
+    const entries: Entry[] = [{ slug: 'coding/coding' }, { slug: 'coding/dry' }];
+    const tree = buildMemoryTree(entries);
+    expect(tree).toHaveLength(1);
+    const folder = expectFolder(tree[0]);
+    expect(folder.master).toEqual(entries[0]);
+    expect(folder.children).toEqual([
+      { type: 'leaf', slug: 'coding/dry', name: 'dry', entry: entries[1] }
+    ]);
+  });
+
+  test('a lone master entry still renders its folder, with empty children', () => {
+    const entries: Entry[] = [{ slug: 'comments/comments' }];
+    const tree = buildMemoryTree(entries);
+    expect(tree).toHaveLength(1);
+    const folder = expectFolder(tree[0]);
+    expect(folder.path).toBe('comments');
+    expect(folder.master).toEqual(entries[0]);
+    expect(folder.children).toEqual([]);
+  });
+
+  test('a master at a nested prefix attaches to its immediate parent folder', () => {
+    const entries: Entry[] = [{ slug: 'a/b/b' }];
+    const tree = buildMemoryTree(entries);
+    const a = expectFolder(tree[0]);
+    expect(a.master).toBeUndefined();
+    const b = expectFolder(a.children[0]);
+    expect(b.path).toBe('a/b');
+    expect(b.master).toEqual(entries[0]);
+    expect(b.children).toEqual([]);
+  });
+
+  test('a top-level leaf and a same-named folder master coexist without merging', () => {
+    const entries: Entry[] = [{ slug: 'foo' }, { slug: 'foo/foo' }];
+    const tree = buildMemoryTree(entries);
+    expect(tree).toHaveLength(2);
+    expect(tree[0]).toEqual({ type: 'leaf', slug: 'foo', name: 'foo', entry: entries[0] });
+    const folder = expectFolder(tree[1]);
+    expect(folder.path).toBe('foo');
+    expect(folder.master).toEqual(entries[1]);
+    expect(folder.children).toEqual([]);
+  });
 });
