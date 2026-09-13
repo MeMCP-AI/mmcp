@@ -92,7 +92,7 @@
           onmousedown={guardMouseDown}
           aria-expanded={node.master ? undefined : isExpanded(node.path)}
           aria-label={node.master
-            ? `Open ${node.master.body?.frontmatter.name ?? node.master.slug}`
+            ? `${node.name}: open ${node.master.body?.frontmatter.name ?? node.master.slug}`
             : undefined}
         >
           {#if isExpanded(node.path)}
