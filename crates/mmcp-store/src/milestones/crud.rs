@@ -641,6 +641,270 @@ mod tests {
         });
     }
 
+    /// A memory blob corrupted inside the frontmatter block surfaces a typed `NotUtf8` error.
+    /// The stored bytes are unchanged: a rejected update must not touch the file on disk.
+    #[tokio::test]
+    async fn update_rejects_invalid_utf8_in_the_frontmatter_block() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("milestone-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+        let (_tmp, pool) = scratch_pool().await;
+
+        add_milestone(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("corrupt-frontmatter".into()),
+                title: "Corrupt target".into(),
+                description: "distinctive-frontmatter-marker".into(),
+                body: "body text".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed milestone");
+
+        let resolved = resolve_memory(
+            scratch.backend(),
+            &entry.handle,
+            Some("corrupt-frontmatter"),
+            None,
+        )
+        .await
+        .expect("resolve seeded milestone");
+        let corrupted = crate::testing::corrupt_stored_file(
+            scratch.backend(),
+            &entry.handle,
+            &resolved.path,
+            "distinctive-frontmatter-marker",
+            scratch.author(),
+        )
+        .await
+        .expect("corrupt the seeded file's frontmatter block");
+
+        let err = update_milestone(
+            scratch.backend(),
+            &entry,
+            &pool,
+            scratch.groups(),
+            "corrupt-frontmatter",
+            UpdateSpec {
+                status: Some(MilestoneStatus::Active),
+                ..UpdateSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect_err("update must reject invalid utf8");
+        match err {
+            MilestoneError::Memory(ImportError::NotUtf8 { path, .. }) => {
+                assert_eq!(
+                    path, resolved.path,
+                    "the error must name the corrupted path"
+                );
+            }
+            other => panic!("expected ImportError::NotUtf8, got {other:?}"),
+        }
+
+        let after_bytes =
+            crate::testing::read_raw_bytes(scratch.backend(), &entry.handle, &resolved.path)
+                .await
+                .expect("read bytes after rejected update");
+        assert_eq!(
+            after_bytes, corrupted,
+            "a rejected update must not modify the stored bytes"
+        );
+    }
+
+    /// Same as the frontmatter case, but the corruption sits in the markdown body instead.
+    #[tokio::test]
+    async fn update_rejects_invalid_utf8_in_the_body() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("milestone-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+        let (_tmp, pool) = scratch_pool().await;
+
+        add_milestone(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("corrupt-body".into()),
+                title: "Corrupt target".into(),
+                description: "unchanged description".into(),
+                body: "distinctive-body-marker text".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed milestone");
+
+        let resolved = resolve_memory(scratch.backend(), &entry.handle, Some("corrupt-body"), None)
+            .await
+            .expect("resolve seeded milestone");
+        let corrupted = crate::testing::corrupt_stored_file(
+            scratch.backend(),
+            &entry.handle,
+            &resolved.path,
+            "distinctive-body-marker",
+            scratch.author(),
+        )
+        .await
+        .expect("corrupt the seeded file's body");
+
+        let err = update_milestone(
+            scratch.backend(),
+            &entry,
+            &pool,
+            scratch.groups(),
+            "corrupt-body",
+            UpdateSpec {
+                status: Some(MilestoneStatus::Active),
+                ..UpdateSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect_err("update must reject invalid utf8");
+        match err {
+            MilestoneError::Memory(ImportError::NotUtf8 { path, .. }) => {
+                assert_eq!(
+                    path, resolved.path,
+                    "the error must name the corrupted path"
+                );
+            }
+            other => panic!("expected ImportError::NotUtf8, got {other:?}"),
+        }
+
+        let after_bytes =
+            crate::testing::read_raw_bytes(scratch.backend(), &entry.handle, &resolved.path)
+                .await
+                .expect("read bytes after rejected update");
+        assert_eq!(
+            after_bytes, corrupted,
+            "a rejected update must not modify the stored bytes"
+        );
+    }
+
+    /// Reading a corrupted milestone directly must surface the typed `NotUtf8` error
+    /// rather than silently substituting text.
+    #[tokio::test]
+    async fn read_milestone_rejects_invalid_utf8_in_the_frontmatter_block() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("milestone-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+        let (_tmp, pool) = scratch_pool().await;
+
+        add_milestone(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("direct-read-corrupt".into()),
+                title: "Corrupt target".into(),
+                description: "direct-read-frontmatter-marker".into(),
+                body: "body text".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed milestone");
+
+        let resolved = resolve_memory(
+            scratch.backend(),
+            &entry.handle,
+            Some("direct-read-corrupt"),
+            None,
+        )
+        .await
+        .expect("resolve seeded milestone");
+        crate::testing::corrupt_stored_file(
+            scratch.backend(),
+            &entry.handle,
+            &resolved.path,
+            "direct-read-frontmatter-marker",
+            scratch.author(),
+        )
+        .await
+        .expect("corrupt the seeded file's frontmatter block");
+
+        let err = read_milestone(
+            scratch.backend(),
+            &entry,
+            &pool,
+            scratch.groups(),
+            "direct-read-corrupt",
+            None,
+        )
+        .await
+        .expect_err("a direct read of a corrupted file must fail");
+        match err {
+            MilestoneError::Memory(ImportError::NotUtf8 { path, .. }) => {
+                assert_eq!(
+                    path, resolved.path,
+                    "the error must name the corrupted path"
+                );
+            }
+            other => panic!("expected ImportError::NotUtf8, got {other:?}"),
+        }
+    }
+
+    /// A corrupted member of a group must surface as a `memory_not_utf8` finding in
+    /// `list_milestones`, not silently included with replacement characters and not aborting
+    /// the whole listing.
+    #[tokio::test]
+    async fn list_milestones_reports_invalid_utf8_as_a_finding() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("milestone-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+        let (_tmp, pool) = scratch_pool().await;
+
+        add_milestone(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("list-corrupt".into()),
+                title: "Corrupt target".into(),
+                description: "list-frontmatter-marker".into(),
+                body: "body text".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed milestone");
+
+        let resolved = resolve_memory(scratch.backend(), &entry.handle, Some("list-corrupt"), None)
+            .await
+            .expect("resolve seeded milestone");
+        crate::testing::corrupt_stored_file(
+            scratch.backend(),
+            &entry.handle,
+            &resolved.path,
+            "list-frontmatter-marker",
+            scratch.author(),
+        )
+        .await
+        .expect("corrupt the seeded file's frontmatter block");
+
+        let (records, findings) =
+            list_milestones(scratch.backend(), &entry, &pool, scratch.groups(), true)
+                .await
+                .expect("a corrupted member must degrade to a finding, not an error");
+        assert!(
+            records.iter().all(|record| record.slug != "list-corrupt"),
+            "a corrupted member must not appear among the returned records"
+        );
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one finding, got {findings:?}"
+        );
+        assert_eq!(findings[0].code, "memory_not_utf8");
+        assert_eq!(findings[0].slug.as_deref(), Some("list-corrupt"));
+    }
+
     #[tokio::test]
     async fn read_refuses_when_slug_is_not_a_milestone() {
         let scratch = ScratchHome::new().await.expect("scratch home");

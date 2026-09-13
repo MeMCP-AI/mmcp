@@ -1302,6 +1302,253 @@ mod tests {
         });
     }
 
+    /// A memory blob corrupted inside the frontmatter block surfaces a typed `NotUtf8` error.
+    /// The stored bytes are unchanged: a rejected update must not touch the file on disk.
+    #[tokio::test]
+    async fn update_rejects_invalid_utf8_in_the_frontmatter_block() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("corrupt-frontmatter".into()),
+                title: "Corrupt target".into(),
+                description: "distinctive-frontmatter-marker".into(),
+                body: "body text".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed feature");
+
+        let resolved = resolve_memory(
+            scratch.backend(),
+            &entry.handle,
+            Some("corrupt-frontmatter"),
+            None,
+        )
+        .await
+        .expect("resolve seeded feature");
+        let corrupted = crate::testing::corrupt_stored_file(
+            scratch.backend(),
+            &entry.handle,
+            &resolved.path,
+            "distinctive-frontmatter-marker",
+            scratch.author(),
+        )
+        .await
+        .expect("corrupt the seeded file's frontmatter block");
+
+        let err = update_feature(
+            scratch.backend(),
+            &entry,
+            "corrupt-frontmatter",
+            UpdateSpec {
+                status: Some(FeatureStatus::Completed),
+                ..UpdateSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect_err("update must reject invalid utf8");
+        match err {
+            FeatureError::Memory(ImportError::NotUtf8 { path, .. }) => {
+                assert_eq!(
+                    path, resolved.path,
+                    "the error must name the corrupted path"
+                );
+            }
+            other => panic!("expected ImportError::NotUtf8, got {other:?}"),
+        }
+
+        let after_bytes =
+            crate::testing::read_raw_bytes(scratch.backend(), &entry.handle, &resolved.path)
+                .await
+                .expect("read bytes after rejected update");
+        assert_eq!(
+            after_bytes, corrupted,
+            "a rejected update must not modify the stored bytes"
+        );
+    }
+
+    /// Same as the frontmatter case, but the corruption sits in the markdown body instead.
+    #[tokio::test]
+    async fn update_rejects_invalid_utf8_in_the_body() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("corrupt-body".into()),
+                title: "Corrupt target".into(),
+                description: "unchanged description".into(),
+                body: "distinctive-body-marker text".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed feature");
+
+        let resolved = resolve_memory(scratch.backend(), &entry.handle, Some("corrupt-body"), None)
+            .await
+            .expect("resolve seeded feature");
+        let corrupted = crate::testing::corrupt_stored_file(
+            scratch.backend(),
+            &entry.handle,
+            &resolved.path,
+            "distinctive-body-marker",
+            scratch.author(),
+        )
+        .await
+        .expect("corrupt the seeded file's body");
+
+        let err = update_feature(
+            scratch.backend(),
+            &entry,
+            "corrupt-body",
+            UpdateSpec {
+                status: Some(FeatureStatus::Completed),
+                ..UpdateSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect_err("update must reject invalid utf8");
+        match err {
+            FeatureError::Memory(ImportError::NotUtf8 { path, .. }) => {
+                assert_eq!(
+                    path, resolved.path,
+                    "the error must name the corrupted path"
+                );
+            }
+            other => panic!("expected ImportError::NotUtf8, got {other:?}"),
+        }
+
+        let after_bytes =
+            crate::testing::read_raw_bytes(scratch.backend(), &entry.handle, &resolved.path)
+                .await
+                .expect("read bytes after rejected update");
+        assert_eq!(
+            after_bytes, corrupted,
+            "a rejected update must not modify the stored bytes"
+        );
+    }
+
+    /// Reading a corrupted feature directly, with no accompanying `read_frontmatter_at` guard,
+    /// must surface the same typed `NotUtf8` error rather than silently substituting text.
+    #[tokio::test]
+    async fn read_feature_rejects_invalid_utf8_in_the_frontmatter_block() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("direct-read-corrupt".into()),
+                title: "Corrupt target".into(),
+                description: "direct-read-frontmatter-marker".into(),
+                body: "body text".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed feature");
+
+        let resolved = resolve_memory(
+            scratch.backend(),
+            &entry.handle,
+            Some("direct-read-corrupt"),
+            None,
+        )
+        .await
+        .expect("resolve seeded feature");
+        crate::testing::corrupt_stored_file(
+            scratch.backend(),
+            &entry.handle,
+            &resolved.path,
+            "direct-read-frontmatter-marker",
+            scratch.author(),
+        )
+        .await
+        .expect("corrupt the seeded file's frontmatter block");
+
+        let err = read_feature(scratch.backend(), &entry, "direct-read-corrupt", None)
+            .await
+            .expect_err("a direct read of a corrupted file must fail");
+        match err {
+            FeatureError::Memory(ImportError::NotUtf8 { path, .. }) => {
+                assert_eq!(
+                    path, resolved.path,
+                    "the error must name the corrupted path"
+                );
+            }
+            other => panic!("expected ImportError::NotUtf8, got {other:?}"),
+        }
+    }
+
+    /// A corrupted member of a group must surface as a `memory_not_utf8` finding in `list_features`,
+    /// not silently included with replacement characters and not aborting the whole listing.
+    #[tokio::test]
+    async fn list_features_reports_invalid_utf8_as_a_finding() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("fr-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        add_feature(
+            scratch.backend(),
+            &entry,
+            AddSpec {
+                slug: Some("list-corrupt".into()),
+                title: "Corrupt target".into(),
+                description: "list-frontmatter-marker".into(),
+                body: "body text".into(),
+                ..AddSpec::default()
+            },
+            scratch.author(),
+        )
+        .await
+        .expect("seed feature");
+
+        let resolved = resolve_memory(scratch.backend(), &entry.handle, Some("list-corrupt"), None)
+            .await
+            .expect("resolve seeded feature");
+        crate::testing::corrupt_stored_file(
+            scratch.backend(),
+            &entry.handle,
+            &resolved.path,
+            "list-frontmatter-marker",
+            scratch.author(),
+        )
+        .await
+        .expect("corrupt the seeded file's frontmatter block");
+
+        let (records, findings) = list_features(scratch.backend(), &entry, None, true)
+            .await
+            .expect("a corrupted member must degrade to a finding, not an error");
+        assert!(
+            records.iter().all(|record| record.slug != "list-corrupt"),
+            "a corrupted member must not appear among the returned records"
+        );
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one finding, got {findings:?}"
+        );
+        assert_eq!(findings[0].code, "memory_not_utf8");
+        assert_eq!(findings[0].slug.as_deref(), Some("list-corrupt"));
+    }
+
     /// A hybrid record carries both a `[feature]` and an `[issue]` block (see `kind.rs`).
     /// `update_feature` must leave the `issue` block and the primary `kind` untouched.
     #[tokio::test]

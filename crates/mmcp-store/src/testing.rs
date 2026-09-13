@@ -23,7 +23,7 @@ use std::sync::Arc;
 use mmcp_core::id::{GroupId, UserId};
 use mmcp_core::manifest::GroupManifest;
 use mmcp_core::memory::{BumpIntent, MemoryFrontmatter, MemoryRef};
-use mmcp_git::{GitBackend, NativeBackend, RepoHandle, Rev};
+use mmcp_git::{CommitSpec, GitBackend, NativeBackend, RepoHandle, Rev};
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -179,10 +179,10 @@ pub async fn read_current_frontmatter(
 
 /// Set every tracker-non-owned [`MemoryFrontmatter`] field to a non-default value.
 ///
-/// A field left at its type default (`Vec::new()`, `false`, `None`) cannot prove preservation:
-/// a bug that resets the field to its default would pass unnoticed.
-/// `id`, `name`, `description`, `kind`, and the tracker metadata blocks are untouched here;
-/// callers set those through the ordinary [`MemoryFrontmatter`] constructors.
+/// A field left at its type default (`Vec::new()`, `false`, `None`) cannot prove preservation.
+/// A bug that resets the field to its default would pass unnoticed.
+/// `id`, `name`, `description`, `kind`, and the tracker metadata blocks stay untouched here.
+/// Callers set those through the ordinary [`MemoryFrontmatter`] constructors.
 #[must_use]
 pub fn seed_unowned_fields(frontmatter: MemoryFrontmatter) -> MemoryFrontmatter {
     // "1.2.3" is a fixed valid semver literal: this parse can never fail.
@@ -197,10 +197,96 @@ pub fn seed_unowned_fields(frontmatter: MemoryFrontmatter) -> MemoryFrontmatter 
         .with_refs(vec![MemoryRef::new(Uuid::now_v7(), "deadbeefcafe")])
 }
 
+/// Read `path`'s raw bytes at `HEAD`.
+pub async fn read_raw_bytes(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    path: &str,
+) -> Result<Vec<u8>, mmcp_git::GitError> {
+    Ok(backend
+        .read_file(handle, path, &Rev::head())
+        .await?
+        .to_vec())
+}
+
+/// Overwrite `path` with `bytes` in a new commit, as an operator's raw git surgery would.
+pub async fn overwrite_raw_bytes(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    path: &str,
+    bytes: Vec<u8>,
+    author: &ResolvedAuthor,
+) -> Result<(), mmcp_git::GitError> {
+    backend
+        .write_commit(
+            handle,
+            CommitSpec::mmcp_commit(
+                format!("test: overwrite {path}"),
+                vec![(path.to_string(), Some(bytes))],
+                &author.name,
+                &author.email,
+            ),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Corrupt `source` into invalid UTF-8 at the byte offset where `marker` starts.
+///
+/// Replaces that one byte with `0x80`, a lone continuation byte invalid at any position.
+/// `marker` pins the corruption to a caller-chosen region, e.g. a frontmatter field or the body.
+/// A test can target the frontmatter block or the body at will by choosing where `marker` sits.
+/// Returns `None` when `marker` is not found in `source`.
+#[must_use]
+pub fn corrupt_one_byte(source: &str, marker: &str) -> Option<Vec<u8>> {
+    let offset = source.find(marker)?;
+    let mut bytes = source.as_bytes().to_vec();
+    bytes[offset] = 0x80;
+    Some(bytes)
+}
+
+/// Failure while staging a corrupted memory file ahead of a test.
+#[derive(Debug)]
+pub enum CorruptSeedError {
+    /// The underlying git read or write failed.
+    Git(mmcp_git::GitError),
+    /// The seeded file was not valid UTF-8 before corruption, so a test marker cannot be placed.
+    NotUtf8,
+    /// `marker` was not found in the seeded file's contents.
+    MarkerNotFound,
+}
+
+impl From<mmcp_git::GitError> for CorruptSeedError {
+    fn from(source: mmcp_git::GitError) -> Self {
+        Self::Git(source)
+    }
+}
+
+/// Corrupt `path`'s stored file at `marker`, in a new commit, and return the corrupted bytes.
+///
+/// Reads the current bytes, flips the byte at `marker`'s offset to an invalid UTF-8 continuation
+/// byte via [`corrupt_one_byte`], and writes the result back via [`overwrite_raw_bytes`].
+/// Callers assert both a rejected update's error and that the file on disk still matches the
+/// returned bytes afterward, proving the rejected write left the stored file untouched.
+pub async fn corrupt_stored_file(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    path: &str,
+    marker: &str,
+    author: &ResolvedAuthor,
+) -> Result<Vec<u8>, CorruptSeedError> {
+    let valid_bytes = read_raw_bytes(backend, handle, path).await?;
+    let valid_text = String::from_utf8(valid_bytes).map_err(|_| CorruptSeedError::NotUtf8)?;
+    let corrupted =
+        corrupt_one_byte(&valid_text, marker).ok_or(CorruptSeedError::MarkerNotFound)?;
+    overwrite_raw_bytes(backend, handle, path, corrupted.clone(), author).await?;
+    Ok(corrupted)
+}
+
 /// Assert that `after` differs from `before` in exactly the fields `apply_owned` mutates.
 ///
-/// Clones `before`, applies `apply_owned` to the clone, and compares the result against `after`
-/// field by field via [`MemoryFrontmatter`]'s `PartialEq`.
+/// Clones `before`, applies `apply_owned` to the clone, and compares against `after`.
+/// Comparison is field by field via [`MemoryFrontmatter`]'s `PartialEq`.
 /// Covers every field the struct declares, including a field added later.
 pub fn assert_update_changed_only(
     before: &MemoryFrontmatter,
