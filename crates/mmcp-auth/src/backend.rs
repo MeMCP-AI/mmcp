@@ -90,7 +90,7 @@ pub enum Credentials {
     /// [`MmcpAuthBackend::new`]'s `allow_self_registration` is
     /// `true`, JIT-provisions a new user; a first-time login while it
     /// is `false` fails with
-    /// [`AuthError::SelfRegistrationDisabled`](crate::error::AuthError::SelfRegistrationDisabled)
+    /// [`AuthError::SelfRegistrationDisabled`]
     /// instead of silently creating an account.
     OAuth {
         provider: String,
@@ -285,7 +285,7 @@ impl AuthnBackend for MmcpAuthBackend {
 ///
 /// Tries the preferred `{provider}_{provider_user_id}` identifier
 /// first (bounded to `max_handle_length` bytes, the caller's already
-/// config-resolved effective bound; see [`MAX_HANDLE_LENGTH`]'s doc
+/// config-resolved effective bound; see [`crate::defaults::MAX_HANDLE_LENGTH`]'s doc
 /// comment for the cascade it comes from), then falls back to
 /// numeric-suffixed candidates when it collides with an existing
 /// user. The collision path exists because `/auth/register` places
