@@ -577,7 +577,7 @@ mod tests {
     use mmcp_core::id::UserId;
     use mmcp_core::manifest::GroupManifest;
     use mmcp_git::CommitSpec;
-    use mmcp_store::{ImportError, ResolvedAuthor, import_memory};
+    use mmcp_store::{ResolvedAuthor, import_memory};
     use tempfile::TempDir;
 
     const VALID_MEMORY_BYTES: &[u8] = b"+++\nname = \"Rust Coding Rules\"\ndescription = \"Strict Rust coding conventions\"\nkind = \"rule\"\nmandatory = true\n+++\n# Rust Coding Rules\n\nBody text.\n";
@@ -679,21 +679,6 @@ mod tests {
         assert_eq!(value["descriptors"].as_array().unwrap().len(), 1);
         assert_eq!(value["skipped"].as_array().unwrap().len(), 1);
         assert_eq!(value["skipped"][0]["slug"], "bad");
-    }
-
-    /// One code per variant, taken directly from `ImportError::code()`.
-    #[test]
-    fn resolve_error_code_matches_the_shared_mcp_vocabulary() {
-        let missing = ImportError::MemoryNotFound {
-            slug: Some("x".to_string()),
-            id: None,
-        };
-        let ambiguous = ImportError::MemoryAmbiguous {
-            slug: "x".to_string(),
-            candidates: vec![Uuid::now_v7(), Uuid::now_v7()],
-        };
-        assert_eq!(missing.code(), "memory_not_found");
-        assert_eq!(ambiguous.code(), "memory_ambiguous");
     }
 
     /// A folder-only path segment (`git`, `comments`) is never probed as its own slug.

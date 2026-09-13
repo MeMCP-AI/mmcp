@@ -1616,10 +1616,9 @@ mod tests {
         (backend, handle, tmp)
     }
 
-    /// This table doubles as the MCP wire compatibility lock.
-    /// Every expected string is a live wire code.
+    /// Locks every `code()` string.
     #[test]
-    fn import_error_code_locks_every_variant_to_its_current_wire_code() {
+    fn code_maps_every_variant_to_its_wire_code() {
         let cases: Vec<(ImportError, &str)> = vec![
             (ImportError::InvalidSlug("x".to_string()), "invalid_slug"),
             (
