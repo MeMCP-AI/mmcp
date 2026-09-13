@@ -32,5 +32,4 @@ pub(crate) const SUFFIX_RESERVE_BYTES: usize =
 
 /// Smallest `max_handle_length` that still leaves `SUFFIX_RESERVE_BYTES` of room after truncating the base handle.
 /// Below it, the collision retry produces duplicate or empty-base candidates.
-/// The config cascade rejects any tier below this minimum.
 pub const MIN_VIABLE_MAX_HANDLE_LENGTH: usize = SUFFIX_RESERVE_BYTES + 1;

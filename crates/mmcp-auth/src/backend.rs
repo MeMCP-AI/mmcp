@@ -87,8 +87,7 @@ pub enum Credentials {
     /// OAuth callback: the token exchange already happened.
     /// The handler already resolved the provider-side user ID.
     /// The backend finds the linked account when one exists.
-    /// Otherwise it JIT-provisions a new user.
-    /// [`MmcpAuthBackend::new`]'s `allow_self_registration` gates this JIT-provisioning.
+    /// Otherwise, when `allow_self_registration` is `true`, it JIT-provisions a new user.
     /// A first-time login fails when `allow_self_registration` is `false`.
     /// It fails with [`AuthError::SelfRegistrationDisabled`], never silently creating an account.
     OAuth {
@@ -293,7 +292,7 @@ impl AuthnBackend for MmcpAuthBackend {
 ///
 /// Suffixed candidates truncate from a base already shortened by [`SUFFIX_RESERVE_BYTES`].
 /// That differs from the full-length `base` returned when unsuffixed.
-/// Truncating onto an already-capped base would instead collapse every candidate onto `base`.
+/// Truncating the suffixed candidate onto an already-capped base would collapse every candidate back onto `base`.
 /// See [`SUFFIX_RESERVE_BYTES`]'s doc comment for why.
 async fn provision_oauth_handle(
     conn: &DatabaseConnection,
