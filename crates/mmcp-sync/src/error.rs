@@ -92,7 +92,7 @@ pub enum SyncError {
         name: String,
     },
 
-    /// [`crate::engine::resolver::GroupHandleResolver::resolve`]
+    /// [`crate::engine::GroupHandleResolver::resolve`]
     /// returned `Ok(None)` for a group `push` scheduled to send: the
     /// group is genuinely not indexed locally (the caller named a
     /// group the local index has never seen, or it was removed
@@ -108,7 +108,7 @@ pub enum SyncError {
         group: Uuid,
     },
 
-    /// [`crate::engine::resolver::GroupHandleResolver::resolve`]
+    /// [`crate::engine::GroupHandleResolver::resolve`]
     /// returned `Err(IndexContended)` for a group `push` scheduled to
     /// send: the local index's lock was held by a concurrent writer
     /// when the lookup ran. Transient: a retry on this same group is
