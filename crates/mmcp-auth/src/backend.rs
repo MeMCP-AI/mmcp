@@ -291,11 +291,10 @@ impl AuthnBackend for MmcpAuthBackend {
 /// An attacker could pre-register the literal string a real OAuth user would be assigned.
 /// That would permanently deny the real user their first OAuth login.
 ///
-/// Suffixed candidates truncate from a base already shortened by
-/// [`SUFFIX_RESERVE_BYTES`], not from the full-length `base`
-/// returned when unsuffixed: see that constant's doc comment for why
-/// truncating the suffix onto an already-capped base would otherwise
-/// collapse every candidate back onto `base` itself.
+/// Suffixed candidates truncate from a base already shortened by [`SUFFIX_RESERVE_BYTES`].
+/// That differs from the full-length `base` returned when unsuffixed.
+/// Truncating onto an already-capped base would instead collapse every candidate onto `base`.
+/// See [`SUFFIX_RESERVE_BYTES`]'s doc comment for why.
 async fn provision_oauth_handle(
     conn: &DatabaseConnection,
     provider: &str,
