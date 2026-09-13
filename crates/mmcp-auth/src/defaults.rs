@@ -30,6 +30,8 @@ const fn decimal_digit_count(mut value: u32) -> usize {
 pub(crate) const SUFFIX_RESERVE_BYTES: usize =
     1 + decimal_digit_count(MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS);
 
-/// Smallest `max_handle_length` that still leaves `SUFFIX_RESERVE_BYTES` of room after truncating the base handle.
-/// Below it the collision retry produces duplicate or empty-base candidates, so the config cascade rejects that tier.
+/// Smallest `max_handle_length` that still leaves `SUFFIX_RESERVE_BYTES` of room.
+/// That room remains after truncating the base handle.
+/// Below it, the collision retry produces duplicate or empty-base candidates.
+/// The config cascade rejects any tier below this minimum.
 pub const MIN_VIABLE_MAX_HANDLE_LENGTH: usize = SUFFIX_RESERVE_BYTES + 1;

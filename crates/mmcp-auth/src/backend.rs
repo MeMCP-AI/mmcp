@@ -84,14 +84,13 @@ pub enum Credentials {
     /// Handle + plaintext password.
     Password { handle: String, password: String },
 
-    /// OAuth callback: the token exchange already happened and the
-    /// handler resolved the provider-side user ID. The backend
-    /// either finds the linked account or, when
-    /// [`MmcpAuthBackend::new`]'s `allow_self_registration` is
-    /// `true`, JIT-provisions a new user; a first-time login while it
-    /// is `false` fails with
-    /// [`AuthError::SelfRegistrationDisabled`]
-    /// instead of silently creating an account.
+    /// OAuth callback: the token exchange already happened.
+    /// The handler already resolved the provider-side user ID.
+    /// The backend finds the linked account when one exists.
+    /// Otherwise it JIT-provisions a new user.
+    /// [`MmcpAuthBackend::new`]'s `allow_self_registration` gates this JIT-provisioning.
+    /// A first-time login fails when `allow_self_registration` is `false`.
+    /// It fails with [`AuthError::SelfRegistrationDisabled`], never silently creating an account.
     OAuth {
         provider: String,
         provider_user_id: String,
@@ -283,16 +282,14 @@ impl AuthnBackend for MmcpAuthBackend {
 
 /// Resolve a free handle for a first-time OAuth login.
 ///
-/// Tries the preferred `{provider}_{provider_user_id}` identifier
-/// first (bounded to `max_handle_length` bytes, the caller's already
-/// config-resolved effective bound; see [`crate::defaults::MAX_HANDLE_LENGTH`]'s doc
-/// comment for the cascade it comes from), then falls back to
-/// numeric-suffixed candidates when it collides with an existing
-/// user. The collision path exists because `/auth/register` places
-/// no namespace restriction on `handle`: an attacker who
-/// pre-registers the literal string a real OAuth user would be
-/// assigned could otherwise permanently deny that user their first
-/// OAuth login.
+/// Tries the preferred `{provider}_{provider_user_id}` identifier first.
+/// Bounded to `max_handle_length` bytes.
+/// That bound is the caller's already config-resolved effective bound.
+/// See [`crate::defaults::MAX_HANDLE_LENGTH`]'s doc for the cascade it comes from.
+/// On collision with an existing user, this falls back to numeric-suffixed candidates.
+/// The collision path exists because `/auth/register` places no namespace restriction on `handle`.
+/// An attacker could pre-register the literal string a real OAuth user would be assigned.
+/// That would permanently deny the real user their first OAuth login.
 ///
 /// Suffixed candidates truncate from a base already shortened by
 /// [`SUFFIX_RESERVE_BYTES`], not from the full-length `base`
