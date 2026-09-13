@@ -531,9 +531,9 @@ async fn next_feature_number(
 }
 
 /// Read an FR by slug.
-/// When `rev` is `None`, reads the group's current `main`; otherwise parses `rev` through
-/// [`Rev`] so branch names, tags, and commit hexes all work the same way
-/// the generic `read_memory` tool does.
+/// When `rev` is `None`, this reads the group's current `main`.
+/// Otherwise `rev` is parsed through [`Rev`], accepting a branch name, tag, or commit hex.
+/// This matches the generic `read_memory` tool's own `rev` handling.
 pub async fn read_feature(
     backend: &NativeBackend,
     entry: &GroupEntry,

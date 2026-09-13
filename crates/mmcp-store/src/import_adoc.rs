@@ -17,10 +17,11 @@
 //! for the `~~~~~`/`^^^^^` underline styles to parse as headings:
 //! the upstream default is off.
 //!
-//! Rather than forking the converter, this module wraps it:
-//! a small pre-processor rewrites the constructs acdc can't faithfully render into ones it can,
-//! (see `preprocess_adoc`), the converter does the AST -> markdown translation,
-//! and `postprocess_markdown` strips warning comments and the `linkgit:` macro residue.
+//! Rather than forking the converter, this module wraps it in three steps.
+//! A small pre-processor rewrites the constructs acdc can't faithfully render into ones it can.
+//! See `preprocess_adoc`.
+//! The converter does the AST -> markdown translation.
+//! `postprocess_markdown` strips warning comments and the `linkgit:` macro residue.
 //! Each step is independently testable.
 //!
 //! `DocumentAttributes` on the parsed AsciiDoc side are NOT currently promoted into the memory's TOML frontmatter.

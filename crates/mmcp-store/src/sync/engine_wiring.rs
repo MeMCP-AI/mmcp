@@ -1,10 +1,12 @@
 //! Sync engine wiring shared across every mmcp consumer.
 //!
-//! `build_engine` constructs a ready-to-use [`SyncEngine`] and its [`IndexResolver`],
-//! which maps group UUIDs to the local bare repo via the `GroupIndex` cache.
-//! Callers, CLI `mmcp pull`/`mmcp push`/`mmcp sync`, the MCP `sync_pull`/`sync_push`/`sync` tools,
-//! and `mmcp-gui`'s sync action handlers, all go through this one helper,
-//! so the engine configuration never drifts between surfaces.
+//! `build_engine` constructs a ready-to-use [`SyncEngine`] and its [`IndexResolver`].
+//! [`IndexResolver`] maps group UUIDs to the local bare repo via the `GroupIndex` cache.
+//! Every caller goes through this one helper.
+//! That includes the CLI's `mmcp pull`/`mmcp push`/`mmcp sync` commands.
+//! The MCP `sync_pull`/`sync_push`/`sync` tools go through it too.
+//! So does `mmcp-gui`'s sync action handler.
+//! This keeps the engine configuration from drifting between surfaces.
 //!
 //! The CLI `run` function (clap dispatch, stdout formatting, exit-code mapping) stays in the client crate.
 

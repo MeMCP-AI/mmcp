@@ -34,10 +34,9 @@ pub enum RemoteLevel {
 /// One remote from the effective set.
 #[derive(Debug, Clone)]
 pub struct ResolvedRemote {
-    /// The parsed remote itself. For a `server_url` legacy shorthand
-    /// entry, a synthesized `Remote::MmcpServer` carrying
-    /// `USER_LEGACY_REMOTE_NAME` / `PROJECT_LEGACY_REMOTE_NAME`
-    /// as its `name`.
+    /// The parsed remote itself.
+    /// For a `server_url` legacy shorthand entry, this is a synthesized `Remote::MmcpServer`.
+    /// Its `name` is `USER_LEGACY_REMOTE_NAME` or `PROJECT_LEGACY_REMOTE_NAME`.
     pub remote: Remote,
     /// Which config file this entry came from.
     pub level: RemoteLevel,
@@ -78,15 +77,14 @@ impl ResolvedRemote {
 
 /// Effective, fully-resolved remote set for a sync operation.
 ///
-/// Both fields are private: `default_index`, when `Some`, is only
-/// ever a valid index into `remotes`, and the invariant is enforced
-/// at construction time ([`resolve_effective_remotes`] and
-/// [`EffectiveRemotes::from_remotes`] are the only two constructors,
-/// both computing `default_index` via `resolve_default_index`
-/// rather than accepting a caller-supplied one), so
-/// [`EffectiveRemotes::default_remote`] can never panic on an
-/// out-of-bounds index. A public struct literal would let a caller
-/// hand-build an inconsistent pair instead.
+/// Both fields are private.
+/// `default_index`, when `Some`, is only ever a valid index into `remotes`.
+/// The invariant is enforced at construction time.
+/// [`resolve_effective_remotes`] and [`EffectiveRemotes::from_remotes`] are the only constructors.
+/// Both compute `default_index` via `resolve_default_index`.
+/// Neither accepts a caller-supplied index.
+/// This means [`EffectiveRemotes::default_remote`] can never panic on an out-of-bounds index.
+/// A public struct literal would let a caller hand-build an inconsistent pair.
 #[derive(Debug, Clone)]
 pub struct EffectiveRemotes {
     /// Every remote in the effective set, user remotes (unless
@@ -101,27 +99,24 @@ pub struct EffectiveRemotes {
 }
 
 impl EffectiveRemotes {
-    /// Construct an effective remote set from an already-merged,
-    /// precedence-ordered remote list, applying the same per-remote
-    /// name validation and cross-entry collision check
-    /// [`resolve_effective_remotes`] runs via `collect_level` and
-    /// `check_name_collisions`, then computing the default through
-    /// the same `resolve_default_index` precedence. This is the
-    /// second (and only other) construction path, for a caller that
-    /// already has a merged `Vec<ResolvedRemote>` in hand (tests
-    /// fixturing a specific remote list; a future caller merging from
-    /// a source other than `UserConfig`/`ProjectConfig`) without
-    /// re-deriving `default_index` itself. Skipping these checks here
-    /// would let a caller hand-build a `ResolvedRemote` list where a
-    /// project-level entry shares a real user-level remote's name and
-    /// inherits that name's ambient `MMCP_SYNC_TOKEN_<NAME>`
-    /// credential while pointing the connection elsewhere, the exact
-    /// attack [`resolve_effective_remotes`]'s doc comment describes.
-    /// A synthesized legacy-shorthand entry
-    /// (`ResolvedRemote::is_legacy_shorthand`) is exempt from the
-    /// charset/reserved-name check, matching `collect_level`, which
-    /// never runs `validate_remote_name` against the entry it
-    /// synthesizes from `server_url` either.
+    /// Construct an effective remote set from an already-merged, precedence-ordered remote list.
+    /// Applies the same per-remote name validation and cross-entry collision check.
+    /// [`resolve_effective_remotes`] runs that check via `collect_level` and `check_name_collisions`.
+    /// Computes the default through the same `resolve_default_index` precedence.
+    /// This is the second, and only other, construction path.
+    /// It is for a caller that already has a merged `Vec<ResolvedRemote>` in hand.
+    /// Example callers: tests fixturing a specific remote list.
+    /// Or a future caller merging from a source other than `UserConfig`/`ProjectConfig`.
+    /// This path does not require the caller to re-derive `default_index` itself.
+    /// Skipping these checks would let a caller hand-build an inconsistent `ResolvedRemote` list.
+    /// In that list, a project-level entry could share a real user-level remote's name.
+    /// Such an entry would inherit that name's ambient `MMCP_SYNC_TOKEN_<NAME>` credential.
+    /// It could point the connection elsewhere while doing so.
+    /// That is the exact attack [`resolve_effective_remotes`]'s doc comment describes.
+    /// A synthesized legacy-shorthand entry (`ResolvedRemote::is_legacy_shorthand`) is exempt.
+    /// It skips the charset/reserved-name check.
+    /// This matches `collect_level`.
+    /// `collect_level` never runs `validate_remote_name` against its own synthesized entry either.
     ///
     /// # Errors
     /// [`StoreError::InvalidRemoteName`] for a non-legacy-shorthand

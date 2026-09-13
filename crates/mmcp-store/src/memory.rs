@@ -1188,13 +1188,13 @@ pub fn validate_memory_slug(slug: &str) -> Result<(), ImportError> {
 /// [`MAX_SLUG_LENGTH`] still governs what `validate_memory_slug` *accepts*, and stays untouched.
 ///
 /// Value fixed at 64, not independently derived from a specific reference system.
-/// The LOWEST-precedence tier of `resolve_max_auto_slug_length`,
-/// overridable per-call, per-machine (env var), or per-user (config file);
-/// see that function's doc comment for the full cascade.
-/// Duplicate slugs are legal regardless of which tier wins,
-/// since memories address by slug+UUID, not slug alone,
-/// so two long titles colliding on the same truncated slug is not a correctness problem
-/// needing a disambiguating suffix.
+/// The LOWEST-precedence tier of `resolve_max_auto_slug_length`.
+/// Overridable per-call, per-machine (env var), or per-user (config file).
+/// See that function's doc comment for the full cascade.
+/// Duplicate slugs are legal regardless of which tier wins.
+/// Memories address by slug+UUID, not slug alone.
+/// Two long titles can collide on the same truncated slug.
+/// That is not a correctness problem needing a disambiguating suffix.
 pub const DEFAULT_MAX_AUTO_SLUG_LENGTH: usize = 64;
 
 /// Environment variable that overrides the auto-slug length cap for every invocation on this machine,
@@ -1212,19 +1212,20 @@ pub const MAX_AUTO_SLUG_LENGTH_ENV: &str = "MMCP_MAX_AUTO_SLUG_LENGTH";
 /// `coding-rules.adoc` gets the `coding-rules` slug rather than
 /// `coding-rules-adoc`; the on-disk memory still lands as `.md`.
 ///
-/// The result is then capped via `truncate_slug_at_hyphen_boundary`
-/// at `resolve_max_auto_slug_length`'s compiled-in default tier (no per-call override)
-/// so an auto-derived slug from a long title stays a sane, readable identifier
-/// instead of growing unboundedly with the title.
+/// The result is then capped via `truncate_slug_at_hyphen_boundary`.
+/// The cap uses `resolve_max_auto_slug_length`'s compiled-in default tier (no per-call override).
+/// This keeps an auto-derived slug from a long title a sane, readable identifier.
+/// It does not grow unboundedly with the title.
 /// Callers that need a one-off cap call [`slugify_filename_with_cap`] directly.
 pub fn slugify_filename(filename: &str) -> String {
     slugify_filename_with_cap(filename, None)
 }
 
-/// Same as [`slugify_filename`], but `override_max_len`, when `Some` and non-zero,
-/// takes precedence over every other tier of `resolve_max_auto_slug_length`.
-/// Exists so a future MCP tool / CLI flag can request a one-off cap
-/// without touching the env var or user config that every other call on the machine shares.
+/// Same as [`slugify_filename`], with one difference.
+/// `override_max_len`, when `Some` and non-zero, takes precedence over every other tier.
+/// That tier is `resolve_max_auto_slug_length`'s cascade.
+/// A future MCP tool / CLI flag can use this for a one-off cap.
+/// The env var and user config that every other call shares stay untouched.
 pub fn slugify_filename_with_cap(filename: &str, override_max_len: Option<usize>) -> String {
     let stem = strip_known_import_extension(filename);
     let slug = slug::slugify(stem);
@@ -1412,10 +1413,11 @@ const CREATABLE_KINDS: &[MemoryKind] = &[
 ];
 
 /// Parse a kind string for `mmcp memory create` / `mmcp memory edit --kind`.
-/// Delegates to [`parse_kind`] for syntax (so the error text on a genuinely unknown kind
-/// matches every other kind-parsing call site), then re-applies the create-time policy restriction
-/// to `CREATABLE_KINDS`, returning [`ImportError::NotACreatableKind`] for a syntactically valid
-/// but tracked kind instead of silently creating a memory the tracked-kind tooling will reject.
+/// Delegates to [`parse_kind`] for syntax.
+/// This matches the error text on a genuinely unknown kind to every other kind-parsing call site.
+/// Then re-applies the create-time policy restriction to `CREATABLE_KINDS`.
+/// A syntactically valid but tracked kind returns [`ImportError::NotACreatableKind`].
+/// This never silently creates a memory the tracked-kind tooling will reject.
 pub fn parse_creatable_kind(s: &str) -> Result<MemoryKind, ImportError> {
     let kind = parse_kind(s)?;
     if CREATABLE_KINDS.contains(&kind) {

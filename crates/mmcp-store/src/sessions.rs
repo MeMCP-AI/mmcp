@@ -11,8 +11,8 @@
 //! A future need for stronger guarantees can layer `fs2`-based advisory locks on top,
 //! without changing the public API.
 //!
-//! The store uses [`StoreError`],
-//! the consolidated error type covering sessions alongside groups, memory, sync, and diagnostics.
+//! The store uses [`StoreError`].
+//! It is the consolidated error type covering sessions, groups, memory, sync, and diagnostics.
 
 use std::path::{Path, PathBuf};
 
