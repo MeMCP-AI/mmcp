@@ -233,15 +233,14 @@ pub async fn overwrite_raw_bytes(
     Ok(())
 }
 
-/// Continuation byte invalid at any position in a UTF-8 stream.
+/// UTF-8 continuation byte (`10xxxxxx`): invalid wherever a character starts.
 ///
-/// `0x80` never starts a valid UTF-8 sequence and never appears as a bare lead byte.
-/// Writing it anywhere always breaks decoding at that offset.
-const INVALID_UTF8_CONTINUATION_BYTE: u8 = 0x80;
+/// `0x80` never starts a valid UTF-8 sequence, so writing it at a char boundary breaks decoding there.
+const UTF8_CONTINUATION_BYTE: u8 = 0x80;
 
 /// Corrupt `source` into invalid UTF-8 at the byte offset where `marker` starts.
 ///
-/// Replaces that one byte with `INVALID_UTF8_CONTINUATION_BYTE`.
+/// Replaces that one byte with `UTF8_CONTINUATION_BYTE`.
 /// `marker` pins the corruption to a caller-chosen region, e.g. a frontmatter field or the body.
 /// A test can target the frontmatter block or the body at will by choosing where `marker` sits.
 /// Returns `None` when `marker` is not found in `source`.
@@ -249,7 +248,7 @@ const INVALID_UTF8_CONTINUATION_BYTE: u8 = 0x80;
 pub fn corrupt_one_byte(source: &str, marker: &str) -> Option<Vec<u8>> {
     let offset = source.find(marker)?;
     let mut bytes = source.as_bytes().to_vec();
-    bytes[offset] = INVALID_UTF8_CONTINUATION_BYTE;
+    bytes[offset] = UTF8_CONTINUATION_BYTE;
     Some(bytes)
 }
 
