@@ -217,9 +217,8 @@ pub async fn read_milestone(
             }
             other => MilestoneError::Memory(ImportError::Git(other)),
         })?;
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    let file =
-        MemoryFile::parse(&text).map_err(|e| MilestoneError::Memory(ImportError::Parse(e)))?;
+    let file = crate::memory::parse_memory_file_bytes(&bytes, &resolved.path)
+        .map_err(MilestoneError::Memory)?;
     // Validate the `[milestone]` block is present BEFORE paying for the rollup's DB query: this
     // is pure and DB-free, so a slug that is not a milestone fails fast with `NotAMilestone`,
     // never with a cache error surfaced by a rollup query it never needed. The extracted
@@ -360,6 +359,14 @@ pub async fn list_milestones(
                     &entry.manifest.group_id.to_string(),
                     &slug_dir.slug,
                     &err,
+                ));
+            }
+            // Same soft-finding treatment for a memory blob that is not valid UTF-8.
+            Err(MilestoneError::Memory(ImportError::NotUtf8 { source, .. })) => {
+                findings.push(crate::tracker::not_utf8_finding(
+                    &entry.manifest.group_id.to_string(),
+                    &slug_dir.slug,
+                    &source,
                 ));
             }
             Err(other) => return Err(other),

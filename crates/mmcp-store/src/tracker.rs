@@ -301,8 +301,7 @@ where
             .await
             .map_err(|e| E::from(ImportError::Git(e)))?;
 
-        let text = String::from_utf8_lossy(&bytes).into_owned();
-        let file = MemoryFile::parse(&text).map_err(|e| E::from(ImportError::Parse(e)))?;
+        let file = crate::memory::parse_memory_file_bytes(&bytes, &old_path).map_err(E::from)?;
         if let Some(err) = reject_foreign(&file) {
             return Err(err);
         }
@@ -418,10 +417,7 @@ pub(crate) async fn read_all_slug_files(
         let outcome = match candidate {
             Err(err) => Err(err),
             Ok((id, path)) => match bytes_by_path.remove(&path) {
-                Some(Ok(bytes)) => {
-                    let text = String::from_utf8_lossy(&bytes).into_owned();
-                    MemoryFile::parse(&text).map_err(ImportError::Parse)
-                }
+                Some(Ok(bytes)) => crate::memory::parse_memory_file_bytes(&bytes, &path),
                 Some(Err(GitError::PathNotFound(_))) => Err(ImportError::MemoryNotFound {
                     slug: Some(slug.clone()),
                     id: Some(id),

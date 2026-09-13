@@ -707,6 +707,20 @@ pub async fn read_frontmatters_in_group(
     Ok(out)
 }
 
+/// Decode `bytes` as UTF-8 and parse them as a [`MemoryFile`].
+///
+/// Borrows `bytes` as UTF-8 instead of lossily substituting the replacement character.
+/// A malformed blob surfaces as [`ImportError::NotUtf8`], carrying `path`.
+/// This avoids silently corrupting frontmatter or body content.
+/// Every memory-file reader in this crate goes through this one strict decode.
+pub(crate) fn parse_memory_file_bytes(bytes: &[u8], path: &str) -> Result<MemoryFile, ImportError> {
+    let text = std::str::from_utf8(bytes).map_err(|source| ImportError::NotUtf8 {
+        path: path.to_string(),
+        source,
+    })?;
+    Ok(MemoryFile::parse(text)?)
+}
+
 pub(crate) async fn read_frontmatter_at(
     backend: &NativeBackend,
     handle: &RepoHandle,
@@ -714,14 +728,7 @@ pub(crate) async fn read_frontmatter_at(
     path: &str,
 ) -> Result<MemoryFrontmatter, ImportError> {
     let bytes = backend.read_file(handle, path, rev).await?;
-    // Borrow `bytes` as UTF-8 instead of lossily substituting the replacement character.
-    // A malformed blob surfaces as `ImportError::NotUtf8`, carrying its path.
-    // This avoids silently corrupting frontmatter or body content.
-    let text = std::str::from_utf8(&bytes).map_err(|source| ImportError::NotUtf8 {
-        path: path.to_string(),
-        source,
-    })?;
-    let file = MemoryFile::parse(text)?;
+    let file = parse_memory_file_bytes(&bytes, path)?;
     Ok(file.frontmatter)
 }
 

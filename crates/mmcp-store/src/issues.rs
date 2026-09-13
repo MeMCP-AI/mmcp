@@ -397,8 +397,8 @@ pub async fn read_issue(
             }
             other => IssueError::Memory(ImportError::Git(other)),
         })?;
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    let file = MemoryFile::parse(&text).map_err(|e| IssueError::Memory(ImportError::Parse(e)))?;
+    let file = crate::memory::parse_memory_file_bytes(&bytes, &resolved.path)
+        .map_err(IssueError::Memory)?;
     record_from_file(slug, file, String::new())
 }
 
@@ -696,6 +696,14 @@ pub async fn list_issues(
                     &entry.manifest.group_id.to_string(),
                     &slug,
                     &err,
+                ));
+            }
+            // Same soft-finding treatment for a memory blob that is not valid UTF-8.
+            Err(ImportError::NotUtf8 { source, .. }) => {
+                findings.push(crate::tracker::not_utf8_finding(
+                    &entry.manifest.group_id.to_string(),
+                    &slug,
+                    &source,
                 ));
             }
             Err(other) => return Err(IssueError::Memory(other)),
