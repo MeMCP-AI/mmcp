@@ -9759,9 +9759,9 @@ mod tests {
 
     #[tokio::test]
     async fn read_memory_returns_the_whole_body_even_when_oversized() {
-        // `read_memory` carries no read-time limit: an existing body far above the
-        // write-time result ceiling (seeded straight through the backend, bypassing
-        // that write check) still reads back byte-for-byte, never truncated.
+        // `read_memory` carries no read-time limit.
+        // An existing body far above the write-time result ceiling, seeded straight through
+        // the backend and bypassing that write check, still reads back byte-for-byte.
         let (state, _tmp) = test_state().await;
         let oversized_len = mmcp_core::memory::MCP_CLIENT_RESULT_CEILING_BYTES * 4;
         let big_body = "y".repeat(oversized_len);

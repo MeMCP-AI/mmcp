@@ -751,9 +751,9 @@ fn stage_create(
     outcome: &mut GroupImportOutcome,
 ) -> Result<(), ArchiveError> {
     validate_memory_slug(slug)?;
-    // Archive restore never refuses existing content: only the hard body-length bound
-    // applies here, never the write-time inline-result ceiling `write_file_at_path` enforces
-    // for a caller-authored write.
+    // Archive restore never refuses existing content.
+    // Only the hard body-length bound applies here.
+    // The write-time inline-result ceiling is reserved for a caller-authored write.
     validate_write_content_lengths(&rendered)?;
     let path = memory_path(slug, MemoryId::from_uuid(id));
     if existing.occupied_paths.contains(&path) {
@@ -2180,8 +2180,8 @@ mod tests {
         );
     }
 
-    /// Restoring an archived memory whose body sits far above the write-time
-    /// result ceiling still succeeds: archive restore never refuses existing content.
+    /// Restoring an archived memory whose body sits far above the write-time result ceiling still succeeds.
+    /// Archive restore never refuses existing content.
     #[tokio::test]
     async fn restore_of_an_over_ceiling_memory_succeeds() {
         let home = ScratchHome::new().await.expect("home");

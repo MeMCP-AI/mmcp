@@ -94,8 +94,8 @@ impl ToolMetadataBuilder {
 ///   cleanly.
 fn tool_metadata(id: McpToolId) -> ToolMetadata {
     match id {
-        // `read_memory` returns a memory body whole, with no truncation: declare the calling
-        // client's own inline-result ceiling so a client honoring the key never side-files it.
+        // `read_memory` returns a memory body whole, with no truncation.
+        // Declares the calling client's own inline-result ceiling, so a client honoring the key never side-files it.
         McpToolId::ReadMemory => ToolMetadataBuilder::new(ToolIconCategory::Read)
             .max_result_size_chars(CLAUDE_CODE_MAX_RESULT_SIZE_CHARS)
             .build(),

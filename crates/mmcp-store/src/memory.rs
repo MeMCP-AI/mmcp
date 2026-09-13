@@ -166,8 +166,8 @@ pub enum ImportError {
     #[error(transparent)]
     Edit(#[from] Box<crate::memory_ops::MemoryEditError>),
 
-    /// A write's estimated inline-result size exceeds the calling MCP client's result ceiling,
-    /// and the write is not merely shrinking or leaving alone an already-oversized stored body.
+    /// A write's estimated inline-result size exceeds the calling MCP client's result ceiling.
+    /// The write is not merely shrinking or leaving alone an already-oversized stored body.
     #[error(
         "estimated result size {size} bytes exceeds the {limit}-byte inline-result ceiling; split this memory into a family under a subject prefix (e.g. `<subject>/<part>`)"
     )]
@@ -805,9 +805,9 @@ pub(crate) fn validate_write_content_lengths(rendered: &str) -> Result<(), Impor
     Ok(())
 }
 
-/// Reserve added to the JSON-escaped body and frontmatter estimate for the wrapper fields
-/// `read_memory`'s response adds beyond those two (`group`, `slug`, `id`, `version`, and
-/// object/array punctuation), so the estimate does not need to build the whole response
+/// Reserve added to the JSON-escaped body and frontmatter estimate for the wrapper fields.
+/// `read_memory`'s response adds `group`, `slug`, `id`, `version`, and object/array punctuation
+/// beyond the body and frontmatter, so the estimate does not need to build the whole response
 /// just to measure it.
 const RESULT_ENVELOPE_RESERVE_BYTES: usize = 1024;
 
@@ -816,8 +816,8 @@ fn body_result_bytes(body: &str) -> usize {
     serde_json::to_string(body).map_or(usize::MAX, |s| s.len())
 }
 
-/// Estimated inline-result byte size of `rendered`'s frontmatter and body: the JSON-escaped
-/// byte length of each, plus [`RESULT_ENVELOPE_RESERVE_BYTES`].
+/// Estimated inline-result byte size of `rendered`'s frontmatter and body.
+/// The JSON-escaped byte length of each, plus [`RESULT_ENVELOPE_RESERVE_BYTES`].
 /// Matches what `read_memory`'s response returns for a memory holding this content.
 fn estimated_result_bytes(rendered: &str) -> Result<usize, ImportError> {
     let file = MemoryFile::parse(rendered)?;
@@ -828,12 +828,13 @@ fn estimated_result_bytes(rendered: &str) -> Result<usize, ImportError> {
         .saturating_add(RESULT_ENVELOPE_RESERVE_BYTES))
 }
 
-/// Refuse `rendered` only when its estimated result size exceeds
-/// [`mmcp_core::memory::MCP_CLIENT_RESULT_CEILING_BYTES`] AND its body is larger than
-/// `existing`'s body (`existing` is the content stored at this path today; `None` for a
-/// create, which has no existing body to compare against and so cannot pass the exemption).
-/// The comparison is body-only, so a metadata-only edit (name, tags, frontmatter fields)
-/// never trips the gate on an already-oversized body, however far its own frontmatter grows.
+/// Refuse `rendered` only when its estimated result size exceeds [`mmcp_core::memory::MCP_CLIENT_RESULT_CEILING_BYTES`].
+/// The refusal also requires its body to be larger than `existing`'s body.
+/// `existing` is the content stored at this path today.
+/// `None` means a create, which has no existing body to compare against and so cannot pass the exemption.
+/// The comparison is body-only.
+/// A metadata-only edit (name, tags, frontmatter fields) never trips the gate on an already-oversized body.
+/// This holds however far its own frontmatter grows.
 /// Never refuses a write that shrinks, or leaves unchanged, an already-oversized body.
 fn enforce_result_ceiling(rendered: &str, existing: Option<&str>) -> Result<(), ImportError> {
     let limit = mmcp_core::memory::MCP_CLIENT_RESULT_CEILING_BYTES;
@@ -852,10 +853,9 @@ fn enforce_result_ceiling(rendered: &str, existing: Option<&str>) -> Result<(), 
 }
 
 /// Enforce [`enforce_result_ceiling`] for a write through [`write_file_at_path`].
-/// Reads the stored blob at `path` only when `rendered`'s own estimate already exceeds the
-/// ceiling, so the common case (a small memory) pays no extra read.
-/// A missing file (a create) or an undecodable stored blob both count as "no existing
-/// content", the same as an explicit `None`.
+/// Reads the stored blob at `path` only when `rendered`'s own estimate already exceeds the ceiling.
+/// The common case (a small memory) pays no extra read.
+/// A missing file (a create) or an undecodable stored blob both count as "no existing content", the same as `None`.
 async fn enforce_write_result_ceiling(
     backend: &NativeBackend,
     handle: &RepoHandle,
@@ -3217,9 +3217,9 @@ mod tests {
         assert!(matches!(err, ImportError::FieldTooLong(_)));
     }
 
-    /// A body at the old hard bound is now refused by the write-time result ceiling instead,
-    /// since [`ImportError::FieldTooLong`] only fires past [`mmcp_core::memory::MAX_BODY_LENGTH`],
-    /// well above the ceiling `import_memory` (a create) enforces.
+    /// A body at [`mmcp_core::memory::MAX_BODY_LENGTH`] is refused by the write-time result ceiling.
+    /// [`ImportError::FieldTooLong`] only fires past that hard bound, well above the ceiling
+    /// `import_memory` (a create) enforces.
     #[tokio::test]
     async fn import_memory_at_the_hard_bound_is_refused_by_the_result_ceiling() {
         let (backend, handle, _tmp) = test_backend().await;
@@ -3299,8 +3299,8 @@ mod tests {
         }
     }
 
-    /// An edit that shrinks an already-oversized body is accepted; the same body left larger
-    /// than its stored size is refused.
+    /// An edit that shrinks an already-oversized body is accepted.
+    /// The same body left larger than its stored size is refused.
     #[tokio::test]
     async fn edit_of_an_oversized_body_is_grow_only_gated() {
         let (backend, handle, _tmp) = test_backend().await;
@@ -3330,7 +3330,8 @@ mod tests {
             .await
             .expect("seed");
 
-        // Metadata-only edit: body unchanged, still oversized. Must not be refused.
+        // Metadata-only edit: body unchanged, still oversized.
+        // Must not be refused.
         let metadata_only = {
             let mut file = MemoryFile::parse(&original).expect("parse");
             file.frontmatter.name = "renamed".to_string();
@@ -3350,7 +3351,8 @@ mod tests {
         .await
         .expect("a metadata-only edit of an oversized body must not be refused");
 
-        // Growing edit: still oversized, but larger than what is currently stored. Refused.
+        // Growing edit: still oversized, and larger than the stored body.
+        // Refused.
         let grown = {
             let mut file = MemoryFile::parse(&metadata_only).expect("parse");
             file.body = "b".repeat(70_000);
@@ -3371,7 +3373,8 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, ImportError::BodyResultTooLarge { .. }));
 
-        // Shrinking edit: body drops below the ceiling. Must not be refused.
+        // Shrinking edit: body drops below the ceiling.
+        // Must not be refused.
         let shrunk = {
             let mut file = MemoryFile::parse(&metadata_only).expect("parse");
             file.body = "small".to_string();

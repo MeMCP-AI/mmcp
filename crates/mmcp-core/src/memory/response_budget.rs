@@ -1,13 +1,13 @@
 //! Pagination-only output-size bounding for MCP tool responses.
 //!
 //! Peer of [`crate::memory::limits`], which bounds a memory's own stored fields at WRITE time.
-//! This module bounds a different thing: how many items a single MCP tool RESPONSE returns to
-//! the calling client, independent of how large the underlying stored data legally is.
-//! A group whose individual records are all small can still overflow a client's per-response
-//! ceiling once an unfiltered `list_memories` call returns hundreds of them.
-//! `read_memory` itself carries no bound here: a memory body reads back whole regardless of
-//! size, per the operator directive recorded alongside [`crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES`],
-//! the one owner of the write-time body ceiling this module's page-size defaults derive from.
+//! This module bounds a different thing: how many items a single MCP tool RESPONSE returns to the calling client.
+//! That is independent of how large the underlying stored data legally is.
+//! A group whose individual records are all small can still overflow a client's per-response ceiling.
+//! An unfiltered `list_memories` call returning hundreds of them is enough.
+//! `read_memory` itself carries no bound here: a memory body reads back whole regardless of size.
+//! See the operator directive recorded alongside [`crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES`].
+//! That constant is the one owner of the write-time body ceiling this module's page-size defaults derive from.
 //!
 //! ## Evidence (measured response sizes)
 //!
@@ -20,42 +20,36 @@
 //!
 //! ## Shared shape
 //!
-//! [`ResponseEnvelope`] is the ONE pagination shape used by every tool that pages its response
-//! below the full result set: `list_memories` (offset/limit pagination of the non-mandatory
-//! window), `list_versions`, and `list_groups`.
+//! [`ResponseEnvelope`] is the ONE pagination shape used by every tool that pages its response below the full result set.
+//! Tools using it: `list_memories` (offset/limit pagination of the non-mandatory window), `list_versions`, and `list_groups`.
 //! A caller learns the pattern once instead of once per tool.
 
 use serde::Serialize;
 
-/// Estimated TYPICAL serialized JSON size of one COMPACT
-/// `list_memories` descriptor (`slug`, `path`, `name`, `kind`,
-/// `mandatory`, plus object/array punctuation). This is a measured
-/// average, not a worst-case bound: field lengths observed on this
-/// project's own mmcp mirror average name ~52 chars, slug ~72 chars,
-/// and path ~74 chars, per the measured evidence in the module doc
-/// above. The theoretical worst case, with `name` at
-/// [`crate::memory::MAX_NAME_LENGTH`] (256 bytes) and `slug` at
-/// mmcp-store's `MAX_SLUG_LENGTH` (256 bytes, re-encoded a second
-/// time into `path`), plus JSON punctuation, runs closer to 838
-/// bytes, well above this constant. [`DEFAULT_LIST_MEMORIES_LIMIT`]
-/// therefore fits the client result ceiling for the typical record
-/// sizes actually observed, not as a hard guarantee for a group of
-/// unusually long slugs and names.
+/// Estimated TYPICAL serialized JSON size of one COMPACT `list_memories` descriptor
+/// (`slug`, `path`, `name`, `kind`, `mandatory`, plus object/array punctuation).
+/// This is a measured average, not a worst-case bound.
+/// Field lengths observed on this project's own mmcp mirror average name ~52 chars, slug
+/// ~72 chars, and path ~74 chars, per the measured evidence in the module doc above.
+/// The theoretical worst case runs closer to 838 bytes, well above this constant: `name` at
+/// [`crate::memory::MAX_NAME_LENGTH`] (256 bytes) and `slug` at mmcp-store's `MAX_SLUG_LENGTH`
+/// (256 bytes, re-encoded a second time into `path`), plus JSON punctuation.
+/// [`DEFAULT_LIST_MEMORIES_LIMIT`] therefore fits the client result ceiling for the typical
+/// record sizes actually observed, not as a hard guarantee for a group of unusually long
+/// slugs and names.
 pub const COMPACT_RECORD_ESTIMATED_BYTES: usize = 512;
 
 /// Default page size for `list_memories` pagination when the caller
 /// sets `offset` and/or `limit` but omits an explicit `limit` value.
-/// Derived from [`crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES`] divided by one
-/// compact record's estimated size, so the default page fits the client result ceiling with
-/// margin left over for the wrapper object and the always-included mandatory set.
+/// Derived from [`crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES`] divided by one compact record's estimated size.
+/// The default page fits the client result ceiling with margin left over for the wrapper object and the mandatory set.
 pub const DEFAULT_LIST_MEMORIES_LIMIT: usize =
     crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES / COMPACT_RECORD_ESTIMATED_BYTES;
 
-/// Hard upper clamp on a caller-supplied `limit`, independent of
-/// [`DEFAULT_LIST_MEMORIES_LIMIT`]. The largest real group measured
-/// on this project's own mmcp mirror carries 471 memories (the
-/// `hubedia` architecture-cleanup-sweep group). 512 keeps roughly
-/// 1.1x headroom above that observed maximum while still bounding a
+/// Hard upper clamp on a caller-supplied `limit`, independent of [`DEFAULT_LIST_MEMORIES_LIMIT`].
+/// The largest real group measured on this project's own mmcp mirror carries 471 memories
+/// (the `hubedia` architecture-cleanup-sweep group).
+/// 512 keeps roughly 1.1x headroom above that observed maximum while still bounding a
 /// pathological caller-supplied limit.
 pub const MAX_LIST_MEMORIES_LIMIT: usize = 512;
 
@@ -72,8 +66,8 @@ const _: () = assert!(
         <= crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES
 );
 
-/// Shared pagination envelope. See the module doc's "Shared shape" section for which tools
-/// reuse it and why.
+/// Shared pagination envelope.
+/// See the module doc's "Shared shape" section for which tools reuse it and why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ResponseEnvelope {
     /// `true` exactly when `returned < total`. Computed, never

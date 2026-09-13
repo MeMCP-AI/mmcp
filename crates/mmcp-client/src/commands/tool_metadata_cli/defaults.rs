@@ -13,8 +13,8 @@ pub(super) const META_PROTECTED_GROUP_GATED: &str = "mmcp.protected_group_gated"
 pub(super) const META_ANTHROPIC_MAX_RESULT_SIZE_CHARS: &str = "anthropic/maxResultSizeChars";
 
 /// Claude Code's documented hard ceiling on a single tool result, in characters.
-/// `read_memory` declares this via [`META_ANTHROPIC_MAX_RESULT_SIZE_CHARS`] so a client honoring
-/// the key never truncates or side-files a body this tool promises to return whole.
+/// `read_memory` declares this via [`META_ANTHROPIC_MAX_RESULT_SIZE_CHARS`].
+/// A client honoring the key never truncates or side-files a body this tool promises to return whole.
 pub(super) const CLAUDE_CODE_MAX_RESULT_SIZE_CHARS: u64 = 500_000;
 
 // Tiny inline-SVG data URIs so the icon ships with the

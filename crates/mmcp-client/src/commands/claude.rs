@@ -1105,8 +1105,8 @@ mod tests {
         assert!(!out.ends_with("..."));
     }
 
-    /// `convert` writes each section through the store's write path, so a section whose body
-    /// exceeds the write-time inline-result ceiling is refused, never committed lossily.
+    /// `convert` writes each section through the store's write path.
+    /// A section whose body exceeds the write-time inline-result ceiling is refused, never committed lossily.
     #[tokio::test]
     async fn convert_refuses_a_section_over_the_result_ceiling() {
         let tmp = tempfile::tempdir().expect("tempdir");
