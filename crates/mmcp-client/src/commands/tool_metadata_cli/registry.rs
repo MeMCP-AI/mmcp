@@ -4,8 +4,8 @@ use mmcp_proto::McpToolId;
 
 use super::arg_risk_hint::ArgRiskHint;
 use super::defaults::{
-    META_DEBUG_GATED, META_NETWORK, META_PROTECTED_GROUP_GATED, META_REQUIRES_PROJECT,
-    META_REQUIRES_SYNC,
+    CLAUDE_CODE_MAX_RESULT_SIZE_CHARS, META_ANTHROPIC_MAX_RESULT_SIZE_CHARS, META_DEBUG_GATED,
+    META_NETWORK, META_PROTECTED_GROUP_GATED, META_REQUIRES_PROJECT, META_REQUIRES_SYNC,
 };
 use super::icon_category::ToolIconCategory;
 
@@ -18,6 +18,8 @@ pub(super) struct ToolMetadata {
     /// Namespaced `_meta` keys this tool sets to `true`; empty means
     /// no advisory bits, so the wire `_meta` stays absent.
     pub(super) meta_keys: &'static [&'static str],
+    /// Value for the numeric `anthropic/maxResultSizeChars` `_meta` key; `None` omits it.
+    pub(super) max_result_size_chars: Option<u64>,
     pub(super) risk_hints: &'static [ArgRiskHint],
 }
 
@@ -29,6 +31,7 @@ pub(super) struct ToolMetadata {
 struct ToolMetadataBuilder {
     category: ToolIconCategory,
     meta_keys: &'static [&'static str],
+    max_result_size_chars: Option<u64>,
     risk_hints: &'static [ArgRiskHint],
 }
 
@@ -37,12 +40,18 @@ impl ToolMetadataBuilder {
         Self {
             category,
             meta_keys: &[],
+            max_result_size_chars: None,
             risk_hints: &[],
         }
     }
 
     fn meta_keys(mut self, meta_keys: &'static [&'static str]) -> Self {
         self.meta_keys = meta_keys;
+        self
+    }
+
+    fn max_result_size_chars(mut self, chars: u64) -> Self {
+        self.max_result_size_chars = Some(chars);
         self
     }
 
@@ -55,6 +64,7 @@ impl ToolMetadataBuilder {
         ToolMetadata {
             category: self.category,
             meta_keys: self.meta_keys,
+            max_result_size_chars: self.max_result_size_chars,
             risk_hints: self.risk_hints,
         }
     }
@@ -84,10 +94,14 @@ impl ToolMetadataBuilder {
 ///   cleanly.
 fn tool_metadata(id: McpToolId) -> ToolMetadata {
     match id {
+        // `read_memory` returns a memory body whole, with no truncation: declare the calling
+        // client's own inline-result ceiling so a client honoring the key never side-files it.
+        McpToolId::ReadMemory => ToolMetadataBuilder::new(ToolIconCategory::Read)
+            .max_result_size_chars(CLAUDE_CODE_MAX_RESULT_SIZE_CHARS)
+            .build(),
         // Read-only tools.
         McpToolId::ListGroups
         | McpToolId::ListMemories
-        | McpToolId::ReadMemory
         | McpToolId::ListVersions
         | McpToolId::GroupInfo
         | McpToolId::SearchMemories
@@ -246,14 +260,20 @@ pub(super) fn tool_metadata_for_name(name: &str) -> ToolMetadata {
 /// shape stays absent rather than `{}` for unrelated tools.
 /// Vocabulary and per-tool assignment live in [`tool_metadata`].
 pub(crate) fn meta_for_tool(name: &str) -> Option<rmcp::model::MetaObject> {
-    let keys = tool_metadata_for_name(name).meta_keys;
-    if keys.is_empty() {
+    let metadata = tool_metadata_for_name(name);
+    if metadata.meta_keys.is_empty() && metadata.max_result_size_chars.is_none() {
         return None;
     }
     let mut meta = rmcp::model::MetaObject::new();
-    for k in keys {
+    for k in metadata.meta_keys {
         meta.0
             .insert((*k).to_string(), serde_json::Value::Bool(true));
+    }
+    if let Some(chars) = metadata.max_result_size_chars {
+        meta.0.insert(
+            META_ANTHROPIC_MAX_RESULT_SIZE_CHARS.to_string(),
+            serde_json::Value::Number(chars.into()),
+        );
     }
     Some(meta)
 }
@@ -304,5 +324,16 @@ mod tests {
         // stays absent, not `{}`. `list_groups` is a pure-local
         // read with no preconditions.
         assert!(meta_for_tool("list_groups").is_none());
+    }
+
+    #[test]
+    fn read_memory_declares_the_anthropic_max_result_size_chars_key() {
+        let meta = meta_for_tool("read_memory").expect("read_memory has meta");
+        assert_eq!(
+            meta.0.get("anthropic/maxResultSizeChars"),
+            Some(&serde_json::Value::Number(
+                CLAUDE_CODE_MAX_RESULT_SIZE_CHARS.into()
+            )),
+        );
     }
 }

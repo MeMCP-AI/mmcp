@@ -165,6 +165,13 @@ pub enum ImportError {
     /// This is the variant that would otherwise set every `ImportError`-wrapping error type's minimum size.
     #[error(transparent)]
     Edit(#[from] Box<crate::memory_ops::MemoryEditError>),
+
+    /// A write's estimated inline-result size exceeds the calling MCP client's result ceiling,
+    /// and the write is not merely shrinking or leaving alone an already-oversized stored body.
+    #[error(
+        "estimated result size {size} bytes exceeds the {limit}-byte inline-result ceiling; split this memory into a family under a subject prefix (e.g. `<subject>/<part>`)"
+    )]
+    BodyResultTooLarge { limit: usize, size: usize },
 }
 
 /// Per-file reference to a memory on disk.
@@ -798,6 +805,73 @@ pub(crate) fn validate_write_content_lengths(rendered: &str) -> Result<(), Impor
     Ok(())
 }
 
+/// Reserve added to the JSON-escaped body and frontmatter estimate for the wrapper fields
+/// `read_memory`'s response adds beyond those two (`group`, `slug`, `id`, `version`, and
+/// object/array punctuation), so the estimate does not need to build the whole response
+/// just to measure it.
+const RESULT_ENVELOPE_RESERVE_BYTES: usize = 1024;
+
+/// JSON-escaped byte length of `body`, matching how `read_memory`'s response renders it.
+fn body_result_bytes(body: &str) -> usize {
+    serde_json::to_string(body).map_or(usize::MAX, |s| s.len())
+}
+
+/// Estimated inline-result byte size of `rendered`'s frontmatter and body: the JSON-escaped
+/// byte length of each, plus [`RESULT_ENVELOPE_RESERVE_BYTES`].
+/// Matches what `read_memory`'s response returns for a memory holding this content.
+fn estimated_result_bytes(rendered: &str) -> Result<usize, ImportError> {
+    let file = MemoryFile::parse(rendered)?;
+    let frontmatter_bytes =
+        serde_json::to_string(&file.frontmatter).map_or(usize::MAX, |s| s.len());
+    Ok(body_result_bytes(&file.body)
+        .saturating_add(frontmatter_bytes)
+        .saturating_add(RESULT_ENVELOPE_RESERVE_BYTES))
+}
+
+/// Refuse `rendered` only when its estimated result size exceeds
+/// [`mmcp_core::memory::MCP_CLIENT_RESULT_CEILING_BYTES`] AND its body is larger than
+/// `existing`'s body (`existing` is the content stored at this path today; `None` for a
+/// create, which has no existing body to compare against and so cannot pass the exemption).
+/// The comparison is body-only, so a metadata-only edit (name, tags, frontmatter fields)
+/// never trips the gate on an already-oversized body, however far its own frontmatter grows.
+/// Never refuses a write that shrinks, or leaves unchanged, an already-oversized body.
+fn enforce_result_ceiling(rendered: &str, existing: Option<&str>) -> Result<(), ImportError> {
+    let limit = mmcp_core::memory::MCP_CLIENT_RESULT_CEILING_BYTES;
+    let size = estimated_result_bytes(rendered)?;
+    if size <= limit {
+        return Ok(());
+    }
+    if let Some(existing) = existing {
+        let new_file = MemoryFile::parse(rendered)?;
+        let existing_file = MemoryFile::parse(existing)?;
+        if body_result_bytes(&new_file.body) <= body_result_bytes(&existing_file.body) {
+            return Ok(());
+        }
+    }
+    Err(ImportError::BodyResultTooLarge { limit, size })
+}
+
+/// Enforce [`enforce_result_ceiling`] for a write through [`write_file_at_path`].
+/// Reads the stored blob at `path` only when `rendered`'s own estimate already exceeds the
+/// ceiling, so the common case (a small memory) pays no extra read.
+/// A missing file (a create) or an undecodable stored blob both count as "no existing
+/// content", the same as an explicit `None`.
+async fn enforce_write_result_ceiling(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    path: &str,
+    rendered: &str,
+) -> Result<(), ImportError> {
+    if estimated_result_bytes(rendered)? <= mmcp_core::memory::MCP_CLIENT_RESULT_CEILING_BYTES {
+        return Ok(());
+    }
+    let existing = match backend.read_file(handle, path, &Rev::head()).await {
+        Ok(bytes) => std::str::from_utf8(&bytes).ok().map(str::to_string),
+        Err(_) => None,
+    };
+    enforce_result_ceiling(rendered, existing.as_deref())
+}
+
 /// Resolve the commit message for a write in this crate: validate
 /// an explicit caller-supplied override against
 /// [`mmcp_core::memory::validate_message_length`], or synthesize
@@ -867,6 +941,7 @@ pub async fn write_file_at_path(
         message,
     } = options;
     validate_write_content_lengths(rendered)?;
+    enforce_write_result_ceiling(backend, handle, path, rendered).await?;
     let validation = validate_id_mismatch(path, rendered, addressing_mode, force)?;
     let commit_message = resolve_commit_message(message, || format!("write {path}"))?;
     let commit_id = backend
@@ -3142,10 +3217,11 @@ mod tests {
         assert!(matches!(err, ImportError::FieldTooLong(_)));
     }
 
-    /// Same end-to-end check on the accept side: a body exactly at
-    /// the limit is written successfully.
+    /// A body at the old hard bound is now refused by the write-time result ceiling instead,
+    /// since [`ImportError::FieldTooLong`] only fires past [`mmcp_core::memory::MAX_BODY_LENGTH`],
+    /// well above the ceiling `import_memory` (a create) enforces.
     #[tokio::test]
-    async fn import_memory_accepts_body_at_limit_end_to_end() {
+    async fn import_memory_at_the_hard_bound_is_refused_by_the_result_ceiling() {
         let (backend, handle, _tmp) = test_backend().await;
         let author = test_author();
         let content = rendered_with(
@@ -3154,11 +3230,165 @@ mod tests {
             vec![],
             &"a".repeat(mmcp_core::memory::MAX_BODY_LENGTH),
         );
-        let result = import_memory(
-            &backend, &handle, "at-limit", &content, None, &author, false,
+        let err = import_memory(
+            &backend,
+            &handle,
+            "at-hard-bound",
+            &content,
+            None,
+            &author,
+            false,
         )
         .await
-        .expect("write at the limit succeeds");
+        .unwrap_err();
+        assert!(matches!(err, ImportError::BodyResultTooLarge { .. }));
+    }
+
+    /// A body comfortably under the write-time result ceiling is written and reads back whole.
+    #[tokio::test]
+    async fn import_memory_accepts_a_body_within_the_result_ceiling() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let body = "a".repeat(40_000);
+        let content = rendered_with("n", "d", vec![], &body);
+        let result = import_memory(
+            &backend,
+            &handle,
+            "within-ceiling",
+            &content,
+            None,
+            &author,
+            false,
+        )
+        .await
+        .expect("write within the ceiling succeeds");
         assert!(!result.commit_id.is_empty());
+        let path =
+            mmcp_core::conventions::memory_path("within-ceiling", MemoryId::from_uuid(result.id));
+        let bytes = backend
+            .read_file(&handle, &path, &Rev::head())
+            .await
+            .expect("read back");
+        let file = MemoryFile::parse(std::str::from_utf8(&bytes).expect("utf8")).expect("parse");
+        assert_eq!(file.body, body, "the whole body must round-trip unchanged");
+    }
+
+    /// A create over the write-time result ceiling is refused, naming the limit and the size.
+    #[tokio::test]
+    async fn import_memory_create_over_the_result_ceiling_is_refused() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let content = rendered_with("n", "d", vec![], &"a".repeat(60_000));
+        let err = import_memory(
+            &backend,
+            &handle,
+            "over-ceiling",
+            &content,
+            None,
+            &author,
+            false,
+        )
+        .await
+        .unwrap_err();
+        match err {
+            ImportError::BodyResultTooLarge { limit, size } => {
+                assert_eq!(limit, mmcp_core::memory::MCP_CLIENT_RESULT_CEILING_BYTES);
+                assert!(size > limit);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// An edit that shrinks an already-oversized body is accepted; the same body left larger
+    /// than its stored size is refused.
+    #[tokio::test]
+    async fn edit_of_an_oversized_body_is_grow_only_gated() {
+        let (backend, handle, _tmp) = test_backend().await;
+        let author = test_author();
+        let id = Uuid::now_v7();
+        let oversized = "a".repeat(60_000);
+        let original = {
+            let mut file = MemoryFile {
+                frontmatter: MemoryFrontmatter::new("n", "d", MemoryKind::Rule),
+                body: oversized.clone(),
+                format: mmcp_core::memory::FrontmatterFormat::TomlPlus,
+            };
+            file.frontmatter = file.frontmatter.with_id(id);
+            file.to_string().expect("render")
+        };
+        let path = mmcp_core::conventions::memory_path("oversized", MemoryId::from_uuid(id));
+        backend
+            .write_commit(
+                &handle,
+                CommitSpec::mmcp_commit(
+                    "seed oversized memory".to_string(),
+                    vec![(path.clone(), Some(original.as_bytes().to_vec()))],
+                    &author.name,
+                    &author.email,
+                ),
+            )
+            .await
+            .expect("seed");
+
+        // Metadata-only edit: body unchanged, still oversized. Must not be refused.
+        let metadata_only = {
+            let mut file = MemoryFile::parse(&original).expect("parse");
+            file.frontmatter.name = "renamed".to_string();
+            file.to_string().expect("render")
+        };
+        write_file_at_path(
+            &backend,
+            &handle,
+            &path,
+            &metadata_only,
+            &author,
+            WriteFileOptions {
+                addressing_mode: AddressingMode::ByFilename,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("a metadata-only edit of an oversized body must not be refused");
+
+        // Growing edit: still oversized, but larger than what is currently stored. Refused.
+        let grown = {
+            let mut file = MemoryFile::parse(&metadata_only).expect("parse");
+            file.body = "b".repeat(70_000);
+            file.to_string().expect("render")
+        };
+        let err = write_file_at_path(
+            &backend,
+            &handle,
+            &path,
+            &grown,
+            &author,
+            WriteFileOptions {
+                addressing_mode: AddressingMode::ByFilename,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ImportError::BodyResultTooLarge { .. }));
+
+        // Shrinking edit: body drops below the ceiling. Must not be refused.
+        let shrunk = {
+            let mut file = MemoryFile::parse(&metadata_only).expect("parse");
+            file.body = "small".to_string();
+            file.to_string().expect("render")
+        };
+        write_file_at_path(
+            &backend,
+            &handle,
+            &path,
+            &shrunk,
+            &author,
+            WriteFileOptions {
+                addressing_mode: AddressingMode::ByFilename,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("a shrinking edit must not be refused");
     }
 }

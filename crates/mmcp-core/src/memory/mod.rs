@@ -37,15 +37,15 @@ pub use issue::{IssueMetadata, IssueStatus, IssueStatusParseError, IssueSupersed
 pub use kind::{MemoryKind, MemoryKindParseError};
 pub use limits::{
     FieldLengthError, MAX_BODY_LENGTH, MAX_DESCRIPTION_LENGTH, MAX_MESSAGE_LENGTH, MAX_NAME_LENGTH,
-    MAX_TAG_COUNT, MAX_TAG_LENGTH, validate_body_length, validate_field_length,
-    validate_frontmatter_lengths, validate_message_length, validate_tags,
+    MAX_TAG_COUNT, MAX_TAG_LENGTH, MCP_CLIENT_RESULT_CEILING_BYTES, validate_body_length,
+    validate_field_length, validate_frontmatter_lengths, validate_message_length, validate_tags,
 };
 pub use milestone::{MilestoneMetadata, MilestoneStatus, MilestoneStatusParseError};
 pub use parser::{FrontmatterFormat, MemoryFile, MemoryParseError, parse_frontmatter};
 pub use refs::{COMMIT_SHA_HEX_LEN, InvalidCommit, MemoryRef, looks_like_commit_sha};
 pub use response_budget::{
-    COMPACT_RECORD_ESTIMATED_BYTES, DEFAULT_LIST_MEMORIES_LIMIT, DEFAULT_RESPONSE_BUDGET_BYTES,
-    MAX_LIST_MEMORIES_LIMIT, ResponseEnvelope,
+    COMPACT_RECORD_ESTIMATED_BYTES, DEFAULT_LIST_MEMORIES_LIMIT, MAX_LIST_MEMORIES_LIMIT,
+    ResponseEnvelope,
 };
 pub use splice::{SpliceError, line_terminator, splice};
 pub use status::Status;

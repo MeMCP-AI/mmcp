@@ -65,14 +65,32 @@ pub const MAX_TAG_LENGTH: usize = 64;
 /// so 32 keeps 4x headroom above that observed maximum while bounding an unbounded-list attack on the frontmatter.
 pub const MAX_TAG_COUNT: usize = 32;
 
+/// Measured hard ceiling on how many characters a calling MCP client inlines a single tool
+/// result before saving it to a file instead of returning it to the conversation.
+/// Measured against Claude Code 2.1.266 (2026-09-13): inline up to roughly 49,730 characters,
+/// saved to a file at 50,130.
+/// A saved-to-file result is not a reliable read for an agent, so a memory WRITE bounds the
+/// new body to this many bytes (see `mmcp_store::memory::validate_write_content_lengths`)
+/// while `read_memory` itself stays unbounded: an existing body already above this ceiling
+/// still reads back whole.
+pub const MCP_CLIENT_RESULT_CEILING_BYTES: usize = 48 * 1024;
+
+/// Multiplier applied to [`MCP_CLIENT_RESULT_CEILING_BYTES`] to derive [`MAX_BODY_LENGTH`].
+/// A stored body may already sit above the write-time ceiling (archive restore, sync, or an
+/// edit that does not grow an already-oversized record), so the hard body bound stays a full
+/// order of magnitude above it: [`MAX_BODY_LENGTH`] guards the git-blob size, not the
+/// inline-result size the write-time ceiling owns.
+const MAX_BODY_LENGTH_CEILING_MULTIPLIER: usize = 12;
+
 /// Maximum byte length of a memory body.
 /// Memories are Markdown documents, not blob storage.
 /// The longest real bodies observed (multi-section rule memories such as `global-worktree-orchestration`)
-/// run to a few tens of KiB.
-/// The existing 512 KiB (`512 * 1024` bytes) bound is untouched by real data.
+/// run to a few tens of KiB; the largest observed in the wild is 388 KB.
+/// Derived from [`MCP_CLIENT_RESULT_CEILING_BYTES`] so the two bounds move together.
 /// It stays generous for even a long-form design document or a large generated report,
 /// while keeping a single memory from becoming a multi-gigabyte, permanent, non-reclaimable git blob.
-pub const MAX_BODY_LENGTH: usize = 512 * 1024;
+pub const MAX_BODY_LENGTH: usize =
+    MCP_CLIENT_RESULT_CEILING_BYTES * MAX_BODY_LENGTH_CEILING_MULTIPLIER;
 
 /// Maximum byte length of an explicit commit-message override
 /// accepted by `write_memory` / `edit_memory` / `import_memory` /

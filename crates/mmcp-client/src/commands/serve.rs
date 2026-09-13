@@ -293,19 +293,6 @@ struct ReadMemoryArgs {
     /// Optional branch name, tag name, or commit hex. Defaults to `main`.
     #[serde(default)]
     pub version: Option<String>,
-    /// Cap the returned `body` to this many bytes. When
-    /// the stored body exceeds it, `body` is truncated at a UTF-8
-    /// char boundary, `envelope.truncated` is `true`, and a note
-    /// promotes the caller toward `read_memory_body_sections` for
-    /// addressable, budget-safe reads of the rest. Defaults to
-    /// [`mmcp_core::memory::DEFAULT_RESPONSE_BUDGET_BYTES`] when
-    /// absent: `read_memory` never returns an unbounded body, since
-    /// that is exactly the measured failure mode: bodies up to
-    /// 388,000 bytes forced callers to read raw git objects on disk.
-    /// Pass an explicit larger value to widen the cap for a single
-    /// call.
-    #[serde(default)]
-    pub max_bytes: Option<usize>,
 }
 
 /// Default page size for `list_versions` pagination when the caller
@@ -2442,7 +2429,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Read a memory by group and slug. Returns the TOML frontmatter and the Markdown body exactly as stored in git. Set `version` to a branch name, tag, or commit hex to read a specific revision; defaults to the latest `main`. `body` is bounded by `max_bytes` (default: the shared response budget); pass a smaller `max_bytes` for a large body. When the stored body is larger, `body` is truncated at a char boundary, `envelope.truncated` is `true`, and a note promotes `read_memory_body_sections` for reading the rest as addressable sections.",
+        description = "Read a memory by group and slug. Returns the TOML frontmatter and the Markdown body exactly as stored in git, always the whole body: no max_bytes, no truncation, no pagination. Set `version` to a branch name, tag, or commit hex to read a specific revision; defaults to the latest `main`.",
         annotations(
             title = "Read a memory",
             read_only_hint = true,
@@ -2490,40 +2477,7 @@ impl McpServer {
         // signals are worth surfacing so callers know to reconcile.
         // Shape matches what `mcp:diagnose` flags, but returned through the
         // notes channel per-read.
-        let mut notes = malformed_frontmatter_notes(&resolved.slug, resolved.id, &file);
-
-        // Never return an unbounded body: the measured failure mode
-        // was bodies up to 388,000 bytes, forcing callers to read
-        // raw git objects on disk instead of this tool.
-        let max_bytes = args
-            .max_bytes
-            .unwrap_or(mmcp_core::memory::DEFAULT_RESPONSE_BUDGET_BYTES);
-        let total_bytes = file.body.len();
-        let (returned_body, envelope) = if total_bytes > max_bytes {
-            let truncated_body = truncate_body_to_budget(&file.body, max_bytes);
-            let returned_bytes = truncated_body.len();
-            notes.push(
-                mmcp_proto::Note::info(
-                    "body_truncated",
-                    format!(
-                        "body is {total_bytes} bytes, exceeding the {max_bytes}-byte budget; returned the first {returned_bytes} bytes. Call read_memory_body_sections(group, slug|id) to read the rest as addressable sections, or pass a larger max_bytes."
-                    ),
-                )
-                .with_context(json!({
-                    "suggested_tool": "read_memory_body_sections",
-                    "suggested_args": { "group": args.group, "slug": resolved.slug },
-                })),
-            );
-            (
-                truncated_body,
-                mmcp_core::memory::ResponseEnvelope::new(total_bytes, returned_bytes, None),
-            )
-        } else {
-            (
-                file.body.clone(),
-                mmcp_core::memory::ResponseEnvelope::new(total_bytes, total_bytes, None),
-            )
-        };
+        let notes = malformed_frontmatter_notes(&resolved.slug, resolved.id, &file);
 
         Ok(ok_json_with_notes(
             json!({
@@ -2532,8 +2486,7 @@ impl McpServer {
                 "id": resolved.id.to_string(),
                 "version": rev_label(&rev),
                 "frontmatter": frontmatter_to_json(&file.frontmatter),
-                "body": returned_body,
-                "envelope": envelope,
+                "body": file.body,
             }),
             notes,
         ))
@@ -4174,7 +4127,7 @@ impl McpServer {
             json!({
                 "instructions": SESSION_INSTRUCTIONS,
                 "next_action": {
-                    "imperative_mandatory": "For each entry in `groups_in_scope`, call list_memories(group=<uuid>) and read every memory whose `mandatory == true`. For a large group, pass compact=true and page with offset/limit instead of one unbounded call. The bodies are NOT in this response; read_memory(group, slug, max_bytes=<n>) fetches each one, bounding a large body with max_bytes.",
+                    "imperative_mandatory": "For each entry in `groups_in_scope`, call list_memories(group=<uuid>) and read every memory whose `mandatory == true`. For a large group, pass compact=true and page with offset/limit instead of one unbounded call. The bodies are NOT in this response; read_memory(group, slug) fetches each one, always in full.",
                     "imperative_optional": "Inspect the same `list_memories` results for non-mandatory entries that match this task. Use subscribe(kind='memory'|'tag'|'group'|'language', value=...) to pin the ones relevant to this project; subscribed entries appear in `subscribed_reads` next bootstrap.",
                     "groups_in_scope": groups_in_scope,
                     "subscribed_reads": subscribed_reads,
@@ -7578,6 +7531,12 @@ fn map_memory_error_to_mcp(err: ImportError) -> McpError {
             "code": "ticket_counter_overflow",
         }),
         ImportError::Edit(inner) => memory_edit_error_payload(inner),
+        ImportError::BodyResultTooLarge { limit, size } => json!({
+            "code": "body_result_too_large",
+            "limit": limit,
+            "size": size,
+            "retry_hint": "split this memory into a family under a subject prefix (e.g. `<subject>/<part>`)",
+        }),
     };
     McpError::invalid_params(message, Some(payload))
 }
@@ -7711,8 +7670,8 @@ const SESSION_INSTRUCTIONS: &str = concat!(
     "non-mandatory ones) and call `read_memory(group, slug)` for each. Do not ",
     "write code, do not commit, do not answer the user's task until every ",
     "mandatory entry's BODY has been fetched. For a large group, pass ",
-    "`compact=true` and page with `offset`/`limit` on `list_memories`, and ",
-    "bound `read_memory` with `max_bytes`, instead of one unbounded call.\n\n",
+    "`compact=true` and page with `offset`/`limit` on `list_memories`, instead ",
+    "of one unbounded call. `read_memory` always returns the whole body.\n\n",
     "## Subscriptions: opt into non-mandatory memories per project\n\n",
     "Non-mandatory rules from in-scope groups are visible through ",
     "`list_memories` but the AI typically should not read them all. Instead, ",
@@ -8225,21 +8184,6 @@ fn claude_md_notes(project_root: Option<&Path>) -> Vec<mmcp_proto::Note> {
         "suggested_tool": "init_claude",
         "suggested_args": { "action": "append" },
     }))]
-}
-
-/// Truncate `body` to at most `max_bytes`, respecting UTF-8 char
-/// boundaries so the returned prefix is always valid UTF-8 for
-/// `read_memory`'s `max_bytes` bound. Returns the body unchanged
-/// when it already fits.
-fn truncate_body_to_budget(body: &str, max_bytes: usize) -> String {
-    if body.len() <= max_bytes {
-        return body.to_string();
-    }
-    let mut end = max_bytes;
-    while end > 0 && !body.is_char_boundary(end) {
-        end -= 1;
-    }
-    body[..end].to_string()
 }
 
 fn frontmatter_to_json(fm: &MemoryFrontmatter) -> serde_json::Value {
@@ -9445,10 +9389,10 @@ mod tests {
             _ => panic!("expected text content"),
         };
         assert!(
-            text.len() > mmcp_core::memory::DEFAULT_RESPONSE_BUDGET_BYTES,
+            text.len() > mmcp_core::memory::MCP_CLIENT_RESULT_CEILING_BYTES,
             "fixture must reproduce the overflow: unbounded response was {} bytes, budget is {} bytes",
             text.len(),
-            mmcp_core::memory::DEFAULT_RESPONSE_BUDGET_BYTES,
+            mmcp_core::memory::MCP_CLIENT_RESULT_CEILING_BYTES,
         );
     }
 
@@ -9527,7 +9471,7 @@ mod tests {
             Some(5)
         );
         assert!(
-            text_len < mmcp_core::memory::DEFAULT_RESPONSE_BUDGET_BYTES,
+            text_len < mmcp_core::memory::MCP_CLIENT_RESULT_CEILING_BYTES,
             "compact paginated response must stay under the shared budget: {text_len} bytes"
         );
 
@@ -9756,7 +9700,6 @@ mod tests {
                 slug: Some("rules".into()),
                 id: None,
                 version: None,
-                max_bytes: None,
             }))
             .await
             .expect("read_memory");
@@ -9788,7 +9731,6 @@ mod tests {
                 slug: Some("missing".into()),
                 id: None,
                 version: None,
-                max_bytes: None,
             }))
             .await
             .expect_err("should be an error");
@@ -9798,65 +9740,30 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn read_memory_max_bytes_truncates_and_signals_via_envelope() {
-        // An explicit `max_bytes` bounds the returned
-        // body and signals truncation through the shared envelope
-        // plus a promotion note, never silently.
-        let (state, _tmp) = test_state().await;
-        let big_body = "x".repeat(1000);
-        let source = format!(
-            "+++\nname = \"Big\"\ndescription = \"A big memory\"\nkind = \"rule\"\nmandatory = false\ntags = []\n+++\n{big_body}"
-        );
-        let group = seed_group_with_memory(&state, "team-rust", "big", &source).await;
-        let server = McpServer::new(state, ServeMode::Full);
-
-        let res = server
-            .read_memory(Parameters(ReadMemoryArgs {
-                group: group.to_string(),
-                slug: Some("big".into()),
-                id: None,
-                version: None,
-                max_bytes: Some(100),
-            }))
-            .await
-            .expect("read_memory");
-        let parsed = parse_ok_json(res);
-        let body = parsed.get("body").and_then(|v| v.as_str()).expect("body");
-        assert_eq!(body.len(), 100, "body must be truncated to max_bytes");
-        let envelope = parsed.get("envelope").expect("envelope present");
-        assert_eq!(
-            envelope.get("truncated").and_then(|v| v.as_bool()),
-            Some(true)
-        );
-        assert_eq!(envelope.get("returned").and_then(|v| v.as_u64()), Some(100));
-        assert_eq!(envelope.get("total").and_then(|v| v.as_u64()), Some(1000));
-        assert_eq!(
-            envelope.get("next_offset"),
-            None,
-            "next_offset must be omitted, not null, for read_memory"
-        );
-        let notes = parsed
-            .get("notes")
-            .and_then(|v| v.as_array())
-            .expect("notes present");
+    #[test]
+    fn read_memory_args_schema_has_no_max_bytes() {
+        let schema = rmcp::schemars::schema_for!(ReadMemoryArgs);
+        let schema_json = serde_json::to_value(&schema).expect("schema to json");
         assert!(
-            notes
-                .iter()
-                .any(|n| n.get("code").and_then(|v| v.as_str()) == Some("body_truncated")),
-            "must surface a body_truncated note promoting read_memory_body_sections: {notes:?}"
+            schema_json.pointer("/properties/max_bytes").is_none(),
+            "ReadMemoryArgs schema must not declare max_bytes: {schema_json:?}",
+        );
+        // deny_unknown_fields also refuses the field at the deserialize boundary.
+        let raw = json!({ "group": "g", "slug": "s", "max_bytes": 100 });
+        let result: Result<ReadMemoryArgs, _> = serde_json::from_value(raw);
+        assert!(
+            result.is_err(),
+            "max_bytes must be rejected, got: {result:?}"
         );
     }
 
     #[tokio::test]
-    async fn read_memory_without_max_bytes_still_bounds_an_oversized_body() {
-        // `read_memory` must never return an unbounded body by
-        // default; bodies up to 388,000 bytes were observed forcing
-        // callers to read raw git objects on disk. Seed a body larger
-        // than the shared default budget and confirm the default
-        // alone (no explicit `max_bytes`) still truncates it.
+    async fn read_memory_returns_the_whole_body_even_when_oversized() {
+        // `read_memory` carries no read-time limit: an existing body far above the
+        // write-time result ceiling (seeded straight through the backend, bypassing
+        // that write check) still reads back byte-for-byte, never truncated.
         let (state, _tmp) = test_state().await;
-        let oversized_len = mmcp_core::memory::DEFAULT_RESPONSE_BUDGET_BYTES + 1000;
+        let oversized_len = mmcp_core::memory::MCP_CLIENT_RESULT_CEILING_BYTES * 4;
         let big_body = "y".repeat(oversized_len);
         let source = format!(
             "+++\nname = \"Huge\"\ndescription = \"A huge memory\"\nkind = \"rule\"\nmandatory = false\ntags = []\n+++\n{big_body}"
@@ -9870,96 +9777,17 @@ mod tests {
                 slug: Some("huge".into()),
                 id: None,
                 version: None,
-                max_bytes: None,
             }))
             .await
             .expect("read_memory");
         let parsed = parse_ok_json(res);
         let body = parsed.get("body").and_then(|v| v.as_str()).expect("body");
-        assert!(
-            body.len() <= mmcp_core::memory::DEFAULT_RESPONSE_BUDGET_BYTES,
-            "default must bound the body even without explicit max_bytes: {} bytes",
+        assert_eq!(
             body.len(),
+            oversized_len,
+            "read_memory must return every byte of the stored body",
         );
-        let envelope = parsed.get("envelope").expect("envelope present");
-        assert_eq!(
-            envelope.get("truncated").and_then(|v| v.as_bool()),
-            Some(true)
-        );
-        assert_eq!(
-            envelope.get("total").and_then(|v| v.as_u64()),
-            Some(oversized_len as u64)
-        );
-    }
-
-    #[tokio::test]
-    async fn read_memory_body_under_budget_is_not_truncated() {
-        let (state, _tmp) = test_state().await;
-        let group = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
-        let server = McpServer::new(state, ServeMode::Full);
-
-        let res = server
-            .read_memory(Parameters(ReadMemoryArgs {
-                group: group.to_string(),
-                slug: Some("rules".into()),
-                id: None,
-                version: None,
-                max_bytes: None,
-            }))
-            .await
-            .expect("read_memory");
-        let parsed = parse_ok_json(res);
-        let envelope = parsed.get("envelope").expect("envelope present");
-        assert_eq!(
-            envelope.get("truncated").and_then(|v| v.as_bool()),
-            Some(false)
-        );
-        assert_eq!(
-            envelope.get("total").and_then(|v| v.as_u64()),
-            envelope.get("returned").and_then(|v| v.as_u64()),
-        );
-        if let Some(notes) = parsed.get("notes").and_then(|v| v.as_array()) {
-            assert!(
-                !notes
-                    .iter()
-                    .any(|n| n.get("code").and_then(|v| v.as_str()) == Some("body_truncated")),
-                "no body_truncated note when nothing was truncated: {notes:?}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn read_memory_max_bytes_truncates_at_a_char_boundary() {
-        // A naive byte-slice truncation could land mid-UTF-8
-        // sequence and panic (or return invalid UTF-8). Place a
-        // multi-byte character (an emoji, 4 bytes in UTF-8) so it
-        // straddles the requested cut point at byte 100.
-        let (state, _tmp) = test_state().await;
-        let prefix = "a".repeat(98);
-        let body = format!("{prefix}\u{1F600}rest of body");
-        let source = format!(
-            "+++\nname = \"Emoji\"\ndescription = \"d\"\nkind = \"rule\"\nmandatory = false\ntags = []\n+++\n{body}"
-        );
-        let group = seed_group_with_memory(&state, "team-rust", "emoji", &source).await;
-        let server = McpServer::new(state, ServeMode::Full);
-
-        let res = server
-            .read_memory(Parameters(ReadMemoryArgs {
-                group: group.to_string(),
-                slug: Some("emoji".into()),
-                id: None,
-                version: None,
-                max_bytes: Some(100),
-            }))
-            .await
-            .expect("read_memory must not panic on a mid-character cut");
-        let parsed = parse_ok_json(res);
-        let returned_body = parsed
-            .get("body")
-            .and_then(|v| v.as_str())
-            .expect("body is valid UTF-8 text");
-        assert!(returned_body.len() <= 100);
-        assert!(returned_body.starts_with(&prefix));
+        assert!(parsed.get("envelope").is_none());
     }
 
     #[tokio::test]
@@ -13063,7 +12891,6 @@ mod tests {
                 slug: Some("with-source".into()),
                 id: Some(written_id),
                 version: None,
-                max_bytes: None,
             }))
             .await
             .expect("read back");
@@ -13444,7 +13271,6 @@ mod tests {
                 slug: Some("first".into()),
                 id: None,
                 version: None,
-                max_bytes: None,
             }))
             .await
             .expect("read");
@@ -13483,7 +13309,6 @@ mod tests {
                 slug: Some("taggy".into()),
                 id: None,
                 version: None,
-                max_bytes: None,
             }))
             .await
             .expect("read");
@@ -14313,7 +14138,6 @@ mod tests {
                 slug: Some("rules".into()),
                 id: None,
                 version: None,
-                max_bytes: None,
             }))
             .await
             .expect("read");
@@ -14368,7 +14192,6 @@ mod tests {
                 slug: Some("rules".into()),
                 id: None,
                 version: None,
-                max_bytes: None,
             }))
             .await
             .expect("read");

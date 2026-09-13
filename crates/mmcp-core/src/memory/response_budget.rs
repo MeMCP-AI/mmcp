@@ -1,56 +1,31 @@
-//! Response-time output-size bounding for MCP tool responses.
+//! Pagination-only output-size bounding for MCP tool responses.
 //!
-//! Peer of [`crate::memory::limits`], which bounds a memory's own
-//! stored fields at WRITE time (see that module's own doc comment
-//! for why it is a distinct concern). This module bounds a
-//! different thing: how many bytes a single MCP tool RESPONSE
-//! returns to the calling client, independent of how large the
-//! underlying stored data legally is. A memory body that fits
-//! inside [`crate::memory::MAX_BODY_LENGTH`] (512 KiB) still
-//! overflows the calling MCP client's per-response ceiling when
-//! read back whole, and a group whose individual records are all
-//! small still overflows that same ceiling once an unfiltered
-//! `list_memories` call returns hundreds of them.
+//! Peer of [`crate::memory::limits`], which bounds a memory's own stored fields at WRITE time.
+//! This module bounds a different thing: how many items a single MCP tool RESPONSE returns to
+//! the calling client, independent of how large the underlying stored data legally is.
+//! A group whose individual records are all small can still overflow a client's per-response
+//! ceiling once an unfiltered `list_memories` call returns hundreds of them.
+//! `read_memory` itself carries no bound here: a memory body reads back whole regardless of
+//! size, per the operator directive recorded alongside [`crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES`],
+//! the one owner of the write-time body ceiling this module's page-size defaults derive from.
 //!
 //! ## Evidence (measured response sizes)
 //!
-//! Measured live against this project's own mmcp mirror (see the
-//! project memory
-//! `list-memories-bootstrap-context-read-memory-responses-can-exceed-the-mcp-tool-output-size-ceiling-on-long-lived-or-high-subscription-projects`
-//! for the full write-up):
-//! - `list_memories` on the ~90-memory global group: roughly 60-62
-//!   KiB, spilled to a side file by the calling harness rather than
-//!   hard-failing.
-//! - `list_memories` on this project's own ~115-123-memory project
-//!   group: 73,747 bytes, a hard "exceeds maximum allowed tokens"
-//!   failure.
-//! - `list_memories` on a 471-memory project group (`hubedia`):
-//!   308,678 bytes.
-//! - a single `read_memory` body: up to 388,000 bytes observed; 58
-//!   over-the-cap failures in one session, forcing agents to read
-//!   the raw git objects on disk instead of the tool.
-//!
-//! [`DEFAULT_RESPONSE_BUDGET_BYTES`] sits below the smallest
-//! observed spill (roughly 60 KiB) with close to 2x margin, so a
-//! response sized to this budget stays clear of both the soft-spill
-//! and hard-fail thresholds actually observed.
+//! Measured live against this project's own mmcp mirror:
+//! - `list_memories` on the ~90-memory global group: roughly 60-62 KiB, spilled to a side file
+//!   by the calling harness rather than hard-failing.
+//! - `list_memories` on this project's own ~115-123-memory project group: 73,747 bytes, a hard
+//!   "exceeds maximum allowed tokens" failure.
+//! - `list_memories` on a 471-memory project group (`hubedia`): 308,678 bytes.
 //!
 //! ## Shared shape
 //!
-//! [`ResponseEnvelope`] is the ONE truncation/pagination shape used
-//! by every tool that bounds its response below the full result
-//! set: `read_memory` (byte truncation of the body, promoting the
-//! caller toward `read_memory_body_sections`) and `list_memories`
-//! (offset/limit pagination of the non-mandatory window). A caller
-//! learns the pattern once instead of once per tool.
+//! [`ResponseEnvelope`] is the ONE pagination shape used by every tool that pages its response
+//! below the full result set: `list_memories` (offset/limit pagination of the non-mandatory
+//! window), `list_versions`, and `list_groups`.
+//! A caller learns the pattern once instead of once per tool.
 
 use serde::Serialize;
-
-/// Default byte budget for a single MCP tool response payload.
-/// `read_memory`'s inline body cap and `list_memories`'s default
-/// page size are both derived from this one number. See the module
-/// doc for the measured spill/failure thresholds it sits below.
-pub const DEFAULT_RESPONSE_BUDGET_BYTES: usize = 32 * 1024;
 
 /// Estimated TYPICAL serialized JSON size of one COMPACT
 /// `list_memories` descriptor (`slug`, `path`, `name`, `kind`,
@@ -63,19 +38,18 @@ pub const DEFAULT_RESPONSE_BUDGET_BYTES: usize = 32 * 1024;
 /// mmcp-store's `MAX_SLUG_LENGTH` (256 bytes, re-encoded a second
 /// time into `path`), plus JSON punctuation, runs closer to 838
 /// bytes, well above this constant. [`DEFAULT_LIST_MEMORIES_LIMIT`]
-/// therefore fits the shared response budget for the typical record
+/// therefore fits the client result ceiling for the typical record
 /// sizes actually observed, not as a hard guarantee for a group of
 /// unusually long slugs and names.
 pub const COMPACT_RECORD_ESTIMATED_BYTES: usize = 512;
 
 /// Default page size for `list_memories` pagination when the caller
 /// sets `offset` and/or `limit` but omits an explicit `limit` value.
-/// Derived from [`DEFAULT_RESPONSE_BUDGET_BYTES`] divided by one
-/// compact record's estimated size, so the default page fits the
-/// shared response budget with margin left over for the wrapper
-/// object and the always-included mandatory set.
+/// Derived from [`crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES`] divided by one
+/// compact record's estimated size, so the default page fits the client result ceiling with
+/// margin left over for the wrapper object and the always-included mandatory set.
 pub const DEFAULT_LIST_MEMORIES_LIMIT: usize =
-    DEFAULT_RESPONSE_BUDGET_BYTES / COMPACT_RECORD_ESTIMATED_BYTES;
+    crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES / COMPACT_RECORD_ESTIMATED_BYTES;
 
 /// Hard upper clamp on a caller-supplied `limit`, independent of
 /// [`DEFAULT_LIST_MEMORIES_LIMIT`]. The largest real group measured
@@ -94,11 +68,12 @@ pub const MAX_LIST_MEMORIES_LIMIT: usize = 512;
 // worst case it does not cover).
 const _: () = assert!(MAX_LIST_MEMORIES_LIMIT >= DEFAULT_LIST_MEMORIES_LIMIT);
 const _: () = assert!(
-    DEFAULT_LIST_MEMORIES_LIMIT * COMPACT_RECORD_ESTIMATED_BYTES <= DEFAULT_RESPONSE_BUDGET_BYTES
+    DEFAULT_LIST_MEMORIES_LIMIT * COMPACT_RECORD_ESTIMATED_BYTES
+        <= crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES
 );
 
-/// Shared truncation/pagination envelope. See the module doc's
-/// "Shared shape" section for which tools reuse it and why.
+/// Shared pagination envelope. See the module doc's "Shared shape" section for which tools
+/// reuse it and why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ResponseEnvelope {
     /// `true` exactly when `returned < total`. Computed, never
@@ -106,9 +81,7 @@ pub struct ResponseEnvelope {
     /// actually under-returning: truncation is signalled, never
     /// silent.
     pub truncated: bool,
-    /// The full size the caller has not necessarily seen all of.
-    /// Bytes for `read_memory`'s body; item count for
-    /// `list_memories`'s paginated (non-mandatory) window.
+    /// The full item count the caller has not necessarily seen all of.
     pub total: usize,
     /// How much this response actually returned, same unit as
     /// `total`.

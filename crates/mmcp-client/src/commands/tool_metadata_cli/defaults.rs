@@ -8,6 +8,15 @@ pub(super) const META_NETWORK: &str = "mmcp.network";
 pub(super) const META_DEBUG_GATED: &str = "mmcp.debug_gated";
 pub(super) const META_PROTECTED_GROUP_GATED: &str = "mmcp.protected_group_gated";
 
+/// `_meta` key naming the calling client's own maximum inline tool-result size, in characters.
+/// Anthropic-namespaced: this key is a Claude Code convention, not an mmcp one.
+pub(super) const META_ANTHROPIC_MAX_RESULT_SIZE_CHARS: &str = "anthropic/maxResultSizeChars";
+
+/// Claude Code's documented hard ceiling on a single tool result, in characters.
+/// `read_memory` declares this via [`META_ANTHROPIC_MAX_RESULT_SIZE_CHARS`] so a client honoring
+/// the key never truncates or side-files a body this tool promises to return whole.
+pub(super) const CLAUDE_CODE_MAX_RESULT_SIZE_CHARS: u64 = 500_000;
+
 // Tiny inline-SVG data URIs so the icon ships with the
 // binary instead of relying on an external CDN. Each glyph is a
 // single emoji rendered as text inside a 16x16 viewBox; clients

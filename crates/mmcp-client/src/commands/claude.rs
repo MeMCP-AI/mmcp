@@ -13,7 +13,6 @@ use std::process::Command as StdCommand;
 use anyhow::{Context, Result, anyhow, bail};
 use inquire::{InquireError, Select};
 use mmcp_core::memory::{FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryKind};
-use mmcp_git::{CommitSpec, GitBackend};
 
 use mmcp_store::config::{self, PROJECT_MANIFEST};
 use mmcp_store::home::{MmcpHome, ResolvedAuthor};
@@ -628,24 +627,22 @@ async fn convert_and_write(
         let rendered = file
             .to_string()
             .map_err(|e| anyhow!("rendering frontmatter for `{}`: {e}", section.slug))?;
-        let commit_id = backend
-            .write_commit(
-                &entry.handle,
-                CommitSpec::mmcp_commit(
-                    format!("convert CLAUDE.md section: {}", section.title),
-                    vec![(
-                        mmcp_core::conventions::memory_path(
-                            &section.slug,
-                            mmcp_core::id::MemoryId::new(),
-                        ),
-                        Some(rendered.into_bytes()),
-                    )],
-                    &author.name,
-                    &author.email,
-                ),
-            )
-            .await
-            .with_context(|| format!("writing memory {}", section.slug))?;
+        let path =
+            mmcp_core::conventions::memory_path(&section.slug, mmcp_core::id::MemoryId::new());
+        let (commit_id, _validation) = mmcp_store::write_file_at_path(
+            &backend,
+            &entry.handle,
+            &path,
+            &rendered,
+            author,
+            mmcp_store::WriteFileOptions {
+                addressing_mode: mmcp_store::AddressingMode::ByFilename,
+                force: false,
+                message: Some(&format!("convert CLAUDE.md section: {}", section.title)),
+            },
+        )
+        .await
+        .with_context(|| format!("writing memory {}", section.slug))?;
         created.push(MemoryCreated {
             slug: section.slug,
             commit_id,
@@ -832,6 +829,8 @@ fn print_report(report: &ClaudeReport) {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use mmcp_git::GitBackend;
+    use mmcp_store::config::PROJECT_MANIFEST;
 
     fn default_args() -> ClaudeArgs {
         ClaudeArgs {
@@ -1104,5 +1103,44 @@ mod tests {
         let out = first_paragraph(&just_at);
         assert_eq!(out.len(), 160);
         assert!(!out.ends_with("..."));
+    }
+
+    /// `convert` writes each section through the store's write path, so a section whose body
+    /// exceeds the write-time inline-result ceiling is refused, never committed lossily.
+    #[tokio::test]
+    async fn convert_refuses_a_section_over_the_result_ceiling() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = MmcpHome::from_root(tmp.path().join("home"));
+        let (backend, groups) = home.init_backend().await.expect("init backend");
+
+        let group_id = mmcp_core::id::GroupId::new();
+        let owner = mmcp_core::id::UserId::new();
+        let manifest =
+            mmcp_core::manifest::GroupManifest::new_user_owned(group_id, "convert-target", owner);
+        backend
+            .create_group_repo(&manifest)
+            .await
+            .expect("create group repo");
+        groups.refresh().await.expect("refresh");
+
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).expect("mkdir project root");
+        std::fs::write(
+            project_root.join(PROJECT_MANIFEST),
+            format!("project_uuid = \"{}\"\n", group_id.as_uuid()),
+        )
+        .expect("write .mmcp.toml");
+
+        let author = home.resolve_author();
+        let claude_md = format!("## Oversized\n\n{}\n", "a".repeat(60_000));
+        let path = tmp.path().join("CLAUDE.md");
+
+        let err = convert_and_write(&claude_md, &path, &project_root, &home, &author)
+            .await
+            .expect_err("a section over the ceiling must be refused");
+        assert!(
+            format!("{err:#}").contains("inline-result ceiling"),
+            "expected a ceiling error, got: {err:#}"
+        );
     }
 }

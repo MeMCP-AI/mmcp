@@ -751,6 +751,9 @@ fn stage_create(
     outcome: &mut GroupImportOutcome,
 ) -> Result<(), ArchiveError> {
     validate_memory_slug(slug)?;
+    // Archive restore never refuses existing content: only the hard body-length bound
+    // applies here, never the write-time inline-result ceiling `write_file_at_path` enforces
+    // for a caller-authored write.
     validate_write_content_lengths(&rendered)?;
     let path = memory_path(slug, MemoryId::from_uuid(id));
     if existing.occupied_paths.contains(&path) {
@@ -2175,5 +2178,31 @@ mod tests {
             listing[0].memory_slugs,
             vec!["alpha".to_string(), "beta".to_string()]
         );
+    }
+
+    /// Restoring an archived memory whose body sits far above the write-time
+    /// result ceiling still succeeds: archive restore never refuses existing content.
+    #[tokio::test]
+    async fn restore_of_an_over_ceiling_memory_succeeds() {
+        let home = ScratchHome::new().await.expect("home");
+        let seeded = home.seed_group("origin").await.expect("seed");
+        let group_id = *seeded.group_id.as_uuid();
+        let memory_id = Uuid::now_v7();
+        let oversized_body = "a".repeat(60_000);
+        let body = format!(
+            "+++\nid = \"{memory_id}\"\nname = \"n\"\ndescription = \"d\"\nkind = \"reference\"\n+++\n{oversized_body}\n"
+        );
+        let buf = build_archive(group_id, &seeded.manifest, "huge", memory_id, &body);
+
+        let report = import_archive(
+            home.backend(),
+            home.groups(),
+            home.author(),
+            &buf,
+            &ImportArchiveOptions::default(),
+        )
+        .await
+        .expect("restoring an over-ceiling memory must not be refused");
+        assert_eq!(report.groups[0].created, 1);
     }
 }
