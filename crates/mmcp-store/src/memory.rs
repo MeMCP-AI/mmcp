@@ -159,10 +159,12 @@ pub enum ImportError {
     )]
     TicketCounterOverflow,
 
-    /// [`read_and_apply_body_ops`]'s edit batch failed against the body it targeted:
-    /// a section/anchor not found, an out-of-range line, or a line-op content guard mismatch.
+    /// [`read_and_apply_body_ops`]'s edit batch failed against the body it targeted.
+    /// Causes: a section or anchor not found, an out-of-range line, or a line-op content guard mismatch.
+    /// Boxed: `MemoryEditError`'s content-guard variants carry several owned `Vec`s.
+    /// This is the variant that would otherwise set every `ImportError`-wrapping error type's minimum size.
     #[error(transparent)]
-    Edit(#[from] crate::memory_ops::MemoryEditError),
+    Edit(#[from] Box<crate::memory_ops::MemoryEditError>),
 }
 
 /// Per-file reference to a memory on disk.
@@ -824,10 +826,10 @@ pub fn resolve_commit_message(
 
 /// Read the memory file at `path`, apply `ops` to its body, and render the result.
 ///
-/// Callers must hold the memory's exclusive lock (`crate::lock::memory_chain`) before calling:
-/// the read, the ops' application, and the render all run against one snapshot, so a lock
-/// acquired only around the later write leaves the whole application window open to a
-/// concurrent writer shifting the very lines the ops target.
+/// Callers must hold the memory's exclusive lock (`crate::lock::memory_chain`) before calling.
+/// The read, the ops' application, and the render all run against one snapshot.
+/// A lock acquired only around the later write leaves the whole application window open to a concurrent writer.
+/// Such a writer could shift the very lines the ops target.
 /// Decodes strictly via [`parse_memory_file_bytes`], never lossily.
 pub async fn read_and_apply_body_ops(
     backend: &NativeBackend,
@@ -837,7 +839,7 @@ pub async fn read_and_apply_body_ops(
 ) -> Result<(MemoryFile, String), ImportError> {
     let bytes = backend.read_file(handle, path, &Rev::head()).await?;
     let mut file = parse_memory_file_bytes(&bytes, path)?;
-    file.body = crate::memory_ops::apply_ops(&file.body, ops)?;
+    file.body = crate::memory_ops::apply_ops(&file.body, ops).map_err(Box::new)?;
     let rendered = file.to_string()?;
     Ok((file, rendered))
 }

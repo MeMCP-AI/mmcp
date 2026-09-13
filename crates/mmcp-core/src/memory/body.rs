@@ -312,10 +312,7 @@ pub fn render_sections(raw: &str, sections: &[Section]) -> String {
 }
 
 /// Number of lines in `body`, counting a final unterminated line.
-/// Shared definition every line-indexed body consumer (the line-op
-/// content guard, `read_memory_body_sections`'s reported line
-/// count) uses instead of re-deriving `split_inclusive('\n')`
-/// itself.
+/// Shared by the line-op content guard and `read_memory_body_sections`'s reported line count.
 #[must_use]
 pub fn line_count(body: &str) -> usize {
     body.split_inclusive('\n').count()

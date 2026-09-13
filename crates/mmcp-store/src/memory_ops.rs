@@ -173,11 +173,10 @@ pub enum MemoryEditError {
     #[error("line {line} is past the end of the body ({line_count} lines)")]
     LinePastEof { line: u32, line_count: u32 },
 
-    /// A line op's `expect` guard disagreed with the body it targets:
-    /// the expected range content, or a supplied `before`/`after` neighbour, does not match.
-    /// `found_at` lists the indices (capped at [`MAX_FOUND_AT_MATCHES`])
-    /// where the expected content actually occurs in the body,
-    /// so the caller can retarget instead of guessing.
+    /// A line op's `expect` guard disagreed with the body it targets.
+    /// The expected range content, or a supplied `before`/`after` neighbour, does not match.
+    /// `found_at` lists the indices (capped at [`MAX_FOUND_AT_MATCHES`]) where the expected content actually occurs.
+    /// The caller can retarget from that list instead of guessing.
     #[error("line range [{start}, {end}) does not match the caller's expected content")]
     LineContentMismatch {
         start: u32,
@@ -187,9 +186,8 @@ pub enum MemoryEditError {
         found_at: Vec<usize>,
     },
 
-    /// A line op targeted a non-empty range, or a position in a
-    /// non-empty body, without supplying an `expect` guard that
-    /// actually names something to check.
+    /// A line op needs an `expect` guard that actually names something to check.
+    /// This applies to a non-empty range, and to a position op (an insert, or an empty range) on a non-empty body.
     /// Fail-closed: every non-trivial line op must prove it targets what the caller thinks it does.
     #[error("op `{op}` targeting [{start}, {end}) requires a content guard (`expect`)")]
     LineGuardRequired {
@@ -288,7 +286,14 @@ fn apply_one(body: &str, op: &MemoryEditOp) -> Result<String, MemoryEditError> {
             end,
             content,
             expect,
-        } => replace_lines(body, *start, *end, content, expect.as_ref(), "replace_lines"),
+        } => replace_lines(
+            body,
+            *start,
+            *end,
+            content,
+            expect.as_ref(),
+            "replace_lines",
+        ),
         MemoryEditOp::DeleteLines { start, end, expect } => {
             replace_lines(body, *start, *end, "", expect.as_ref(), "delete_lines")
         }
@@ -552,19 +557,19 @@ fn replace_lines(
     Ok(splice(body, start_byte..end_byte, content)?)
 }
 
-/// Cap on how many indices [`MemoryEditError::LineContentMismatch::found_at`] reports,
-/// so content that recurs throughout a large body does not blow up the error payload.
+/// Cap on how many indices [`MemoryEditError::LineContentMismatch::found_at`] reports.
+/// Content that recurs throughout a large body must not blow up the error payload.
 const MAX_FOUND_AT_MATCHES: usize = 20;
 
-/// Validate a line op's `expect` guard against the `[start, end)` range of `lines`
-/// (a single position when `start == end`, covering `InsertAtLine`).
+/// Validate a line op's `expect` guard against the `[start, end)` range of `lines`.
+/// A single position, `start == end`, covers `InsertAtLine`.
 /// Bounds are assumed already checked by the caller, so every index used here is in range.
 ///
-/// Fail-closed: a non-empty range always requires `expect`;
-/// a position op (an insert, or an empty range) requires `expect` naming a `before` or `after`
-/// neighbour whenever the body itself is non-empty.
-/// Once `expect` supplies something to check, any disagreement is a content mismatch,
-/// never a second "guard required" failure.
+/// Fail-closed: a non-empty range always requires `expect`.
+/// A position op (an insert, or an empty range) needs `expect` too, but only when the body is non-empty.
+/// It must name a `before` or `after` neighbour.
+/// Once `expect` supplies something to check, any disagreement is a content mismatch.
+/// It is never a second guard-required failure.
 fn check_line_guard(
     lines: &[&str],
     start: u32,
@@ -629,8 +634,8 @@ fn check_line_guard(
     Ok(())
 }
 
-/// Strip a single trailing line terminator (`\r\n` or `\n`) so a guard comparison
-/// is insensitive to the body's line-ending style.
+/// Strip a single trailing line terminator (`\r\n` or `\n`).
+/// Makes a guard comparison insensitive to the body's line-ending style.
 fn strip_line_terminator(line: &str) -> String {
     line.strip_suffix("\r\n")
         .or_else(|| line.strip_suffix('\n'))
@@ -638,8 +643,8 @@ fn strip_line_terminator(line: &str) -> String {
         .to_string()
 }
 
-/// Every starting index in `lines` where the contiguous, terminator-stripped sequence
-/// `needle` occurs, capped at [`MAX_FOUND_AT_MATCHES`] entries.
+/// Every starting index in `lines` where the contiguous, terminator-stripped sequence `needle` occurs.
+/// Capped at [`MAX_FOUND_AT_MATCHES`] entries.
 fn find_line_sequence(lines: &[&str], needle: &[String]) -> Vec<usize> {
     if needle.is_empty() || needle.len() > lines.len() {
         return Vec::new();
@@ -1981,9 +1986,9 @@ done body
         assert_eq!(out, "one\nthree\n");
     }
 
-    /// The same two deletions issued in ascending order, with each op's `expect` computed
-    /// against the ORIGINAL body: the first op's removal shifts the second op's line index
-    /// onto different content, and the guard refuses rather than silently deleting it.
+    /// The same two deletions issued in ascending order, with each op's `expect` computed against the original body.
+    /// The first op's removal shifts the second op's line index onto different content.
+    /// The guard refuses rather than silently deleting the wrong line.
     #[test]
     fn an_ascending_batch_computed_against_the_original_body_is_refused() {
         let body = "one\ntwo\nthree\nfour\nfive\n";
