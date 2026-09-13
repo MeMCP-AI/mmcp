@@ -8520,6 +8520,42 @@ mod tests {
         group_id
     }
 
+    /// Seed a fresh group whose one memory file is not valid UTF-8.
+    /// Used to prove a decode-path tool call surfaces `memory_not_utf8` rather than parsing lossily.
+    async fn seed_group_with_non_utf8_memory(
+        state: &ClientState,
+        slug: &str,
+        memory_slug: &str,
+    ) -> GroupId {
+        let owner = UserId::new();
+        let group_id = GroupId::new();
+        let manifest = GroupManifest::new_user_owned(group_id, slug, owner);
+        let handle = state
+            .backend
+            .create_group_repo(&manifest)
+            .await
+            .expect("create group repo");
+        let path = mmcp_core::conventions::memory_path(memory_slug, MemoryId::new());
+        // A lone continuation byte can never start a valid UTF-8 sequence.
+        const NOT_UTF8: &[u8] = &[0x80, 0x81, 0x82];
+        state
+            .backend
+            .write_commit(
+                &handle,
+                CommitSpec {
+                    branch: mmcp_core::conventions::MAIN_BRANCH.to_string(),
+                    author_name: "test".into(),
+                    author_email: "test@example.com".into(),
+                    message: format!("seed non-UTF8 memory {memory_slug}"),
+                    files: vec![(path, Some(NOT_UTF8.to_vec()))],
+                },
+            )
+            .await
+            .expect("write commit");
+        state.groups.refresh().await.expect("refresh");
+        group_id
+    }
+
     /// Regression guard for [`build_memory_descriptors_batched`]: it
     /// reads a group's matching files with exactly ONE batched call,
     /// independent of how many files match, instead of the per-file
@@ -13779,6 +13815,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn edit_memory_refuses_a_non_utf8_body() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_non_utf8_memory(&state, "rules", "broken").await;
+        let server = McpServer::new(state, ServeMode::Full);
+        let err = server
+            .edit_memory_unguarded(EditMemoryArgs {
+                group: group.to_string(),
+                slug: Some("broken".into()),
+                id: None,
+                body: Some("n/a".into()),
+                ..Default::default()
+            })
+            .await
+            .expect_err("a non-UTF8 body must be refused, never decoded lossily");
+        let payload = err.data.as_ref().expect("error payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("memory_not_utf8"),
+        );
+    }
+
+    #[tokio::test]
     async fn edit_memory_all_fields_omitted_errors_with_structured_code() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "rules", "untouched", SAMPLE_MEMORY).await;
@@ -14182,6 +14240,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_memory_body_sections_refuses_a_non_utf8_body() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_non_utf8_memory(&state, "team-rust", "broken").await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let err = server
+            .read_memory_body_sections_inner(ReadMemoryBodySectionsArgs {
+                group: group.to_string(),
+                slug: Some("broken".into()),
+                id: None,
+            })
+            .await
+            .expect_err("a non-UTF8 body must be refused, never decoded lossily");
+        let payload = err.data.as_ref().expect("error payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("memory_not_utf8"),
+        );
+    }
+
+    #[tokio::test]
     async fn read_memory_body_sections_reports_body_line_count() {
         let (state, _tmp) = test_state().await;
         let group = seed_group_with_memory(&state, "team-rust", "rules", SECTIONED_MEMORY).await;
@@ -14364,6 +14443,32 @@ mod tests {
         assert_eq!(
             payload.get("code").and_then(|v| v.as_str()),
             Some("empty_ops"),
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_memory_body_refuses_a_non_utf8_body() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_non_utf8_memory(&state, "team-rust", "broken").await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let err = server
+            .edit_memory_body_unguarded(EditMemoryBodyArgs {
+                group: group.to_string(),
+                slug: Some("broken".into()),
+                id: None,
+                ops: vec![ToolMemoryEditOp::DeleteSection {
+                    path: "need".into(),
+                }],
+                message: None,
+                force: false,
+            })
+            .await
+            .expect_err("a non-UTF8 body must be refused, never decoded lossily");
+        let payload = err.data.as_ref().expect("error payload");
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("memory_not_utf8"),
         );
     }
 
