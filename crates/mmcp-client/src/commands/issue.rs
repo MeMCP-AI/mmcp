@@ -54,6 +54,7 @@ pub enum IssueCommand {
 #[derive(Debug, Args, Default)]
 pub struct AddArgs {
     /// Stable slug. Auto-minted from the title when omitted.
+    /// Prefer an explicit slug grouped under a subject prefix (`<area>/<short-slug>`).
     #[arg(long)]
     pub slug: Option<String>,
 
@@ -147,6 +148,7 @@ pub struct RenameArgs {
     pub old_slug: String,
 
     /// Target slug directory.
+    /// Group it under a subject prefix nested with `/`, never a hyphenated form.
     pub new_slug: String,
 
     /// Override for the git commit message.

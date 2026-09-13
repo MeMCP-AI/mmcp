@@ -104,8 +104,9 @@ pub struct MoveArgs {
     /// UUIDs are detected by shape.
     pub addr: String,
 
-    /// New slug path. Multi-segment paths use `/` separators
-    /// (e.g. `feedback/git/commit-phase`).
+    /// New slug path.
+    /// Multi-segment paths use `/` separators (e.g. `feedback/git/commit-phase`).
+    /// Group it under a subject prefix nested with `/`, never a hyphenated form.
     pub new_slug: String,
 
     /// Override the git commit message.
@@ -150,8 +151,9 @@ pub struct WriteArgs {
     /// Target group (UUID or slug).
     pub group: String,
 
-    /// Memory slug (lowercase + hyphens). Duplicate slugs are
-    /// allowed; the server distinguishes by `id`.
+    /// Memory slug (lowercase + hyphens, optionally `/`-nested segments).
+    /// Duplicate slugs are allowed; the server distinguishes by `id`.
+    /// Group it under a subject prefix nested with `/` (`<product>/<component>/...`), never a hyphenated form.
     pub slug: String,
 
     /// Human-readable title.

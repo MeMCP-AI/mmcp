@@ -398,9 +398,9 @@ impl MemoryRefArg {
 struct WriteMemoryArgs {
     /// Target group UUID or slug.
     pub group: String,
-    /// Memory slug (lowercase alphanumeric + hyphens). Duplicate
-    /// slugs are allowed; the server distinguishes memories by
-    /// `id` inside the shared slug directory.
+    /// Memory slug (lowercase alphanumeric + hyphens, optionally `/`-nested segments).
+    /// Duplicate slugs are allowed; the server distinguishes memories by `id` inside the shared slug directory.
+    /// Group it under a subject prefix nested with `/` (`<product>/<component>/...`), never a hyphenated form.
     pub slug: String,
     /// Canonical UUID to stamp into frontmatter and the on-disk path.
     /// Leave absent to mint a fresh UUIDv7.
@@ -1326,8 +1326,9 @@ struct AddFeatureArgs {
     #[serde(default)]
     pub project: Option<String>,
 
-    /// Stable slug for the FR. Auto-minted from the title when
-    /// omitted; when present must satisfy the memory-slug contract.
+    /// Stable slug for the FR. Auto-minted from the title when omitted.
+    /// When present must satisfy the memory-slug contract.
+    /// Prefer an explicit slug grouped under a subject prefix (`<area>/<short-slug>`).
     #[serde(default)]
     pub slug: Option<String>,
 
@@ -1532,9 +1533,10 @@ struct MoveMemoryArgs {
     /// Canonical UUID of the memory.
     #[serde(default)]
     pub id: Option<String>,
-    /// New slug path. May be a single segment (`feedback`) or a
-    /// `/`-joined multi-segment path (`feedback/git/commit-phase`)
-    /// up to [`mmcp_store::MAX_SLUG_SEGMENTS`] segments.
+    /// New slug path.
+    /// May be a single segment (`feedback`) or a `/`-joined multi-segment path
+    /// (`feedback/git/commit-phase`) up to [`mmcp_store::MAX_SLUG_SEGMENTS`] segments.
+    /// Group it under a subject prefix nested with `/`, never a hyphenated form.
     pub new_slug: String,
     /// Optional override for the git commit message.
     #[serde(default)]
@@ -1609,8 +1611,9 @@ struct AddIssueArgs {
     #[serde(default)]
     pub project: Option<String>,
 
-    /// Stable slug for the issue. Auto-minted from the title when
-    /// omitted; when present must satisfy the memory-slug contract.
+    /// Stable slug for the issue. Auto-minted from the title when omitted.
+    /// When present must satisfy the memory-slug contract.
+    /// Prefer an explicit slug grouped under a subject prefix (`<area>/<short-slug>`).
     #[serde(default)]
     pub slug: Option<String>,
 
@@ -1841,8 +1844,8 @@ struct AddMilestoneArgs {
     #[serde(default)]
     pub project: Option<String>,
 
-    /// Stable slug for the milestone. Auto-minted from the title
-    /// when omitted.
+    /// Stable slug for the milestone. Auto-minted from the title when omitted.
+    /// Prefer an explicit slug grouped under a subject prefix (`<area>/<short-slug>`).
     #[serde(default)]
     pub slug: Option<String>,
 
@@ -2794,7 +2797,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "CREATE a new memory in a group. All metadata fields (name, description, kind, tags, mandatory) are typed parameters: the server builds the frontmatter. Errors with code `memory_already_exists` when the slug is already on disk; use `edit_memory` to apply partial updates, `delete_memory` to remove, or pass `override: true` to deliberately replace the whole file (bulk-reset flows only; the default should almost always stay false).",
+        description = "CREATE a new memory in a group. All metadata fields (name, description, kind, tags, mandatory) are typed parameters: the server builds the frontmatter. Errors with code `memory_already_exists` when the slug is already on disk; use `edit_memory` to apply partial updates, `delete_memory` to remove, or pass `override: true` to deliberately replace the whole file (bulk-reset flows only; the default should almost always stay false). Group `slug` under a subject prefix nested with `/` (`<product>/<component>/...`), never a hyphenated `product-component`; a memory too large to write splits into a prefixed family.",
         annotations(
             title = "Create memory",
             read_only_hint = false,
@@ -3330,7 +3333,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Atomically move a memory to a new slug path inside the same group. The memory id stays stable across the move, so cross-references in other memories keep resolving. The new slug may be a single segment (`feedback`) or a `/`-joined multi-segment path (`feedback/git/commit-phase`). Same-slug moves short-circuit as no-ops. Refuses to overwrite an existing memory at the destination with the same id; pick a different target or delete the existing entry first.",
+        description = "Atomically move a memory to a new slug path inside the same group. The memory id stays stable across the move, so cross-references in other memories keep resolving. The new slug may be a single segment (`feedback`) or a `/`-joined multi-segment path (`feedback/git/commit-phase`), grouped under a subject prefix rather than a hyphenated form. Same-slug moves short-circuit as no-ops. Refuses to overwrite an existing memory at the destination with the same id; pick a different target or delete the existing entry first.",
         annotations(
             title = "Move memory to a new slug path",
             read_only_hint = false,
@@ -4890,7 +4893,7 @@ impl McpServer {
     // `init_project` or ask the user to `cd` into the repo.
 
     #[tool(
-        description = "File a new feature request in the current project's group. Slug is auto-minted from the title when omitted. Status defaults to `requested`; supply one of `requested | approved | pending | completed | blocked | deferred | duplicate | superseded` to override. Errors with code `project_not_found` when no `.mmcp.toml` is on any ancestor of the server's cwd, `invalid_slug` when the supplied or derived slug fails validation, and `memory_already_exists` when the slug collides with an existing memory in the project group.",
+        description = "File a new feature request in the current project's group. Slug is auto-minted from the title when omitted; prefer passing an explicit `slug` grouped under a subject prefix (`<area>/<short-slug>`) instead of relying on that auto-mint. Status defaults to `requested`; supply one of `requested | approved | pending | completed | blocked | deferred | duplicate | superseded` to override. Errors with code `project_not_found` when no `.mmcp.toml` is on any ancestor of the server's cwd, `invalid_slug` when the supplied or derived slug fails validation, and `memory_already_exists` when the slug collides with an existing memory in the project group.",
         annotations(
             title = "Add feature request",
             read_only_hint = false,
@@ -5136,7 +5139,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Rename every feature memory under `old_slug` to `new_slug` in a single atomic commit. UUIDs stay stable across the rename so cross-references in other features keep resolving without further rewrites. Duplicate slugs move as a batch: every entry under `memories/<old_slug>/` lands under `memories/<new_slug>/`. Errors with `memory_not_found` when no memory lives at `old_slug` and with `not_a_feature` when the source is a non-FR memory.",
+        description = "Rename every feature memory under `old_slug` to `new_slug` in a single atomic commit. UUIDs stay stable across the rename so cross-references in other features keep resolving without further rewrites. Duplicate slugs move as a batch: every entry under `memories/<old_slug>/` lands under `memories/<new_slug>/`. `new_slug` should group under a subject prefix nested with `/`, never a hyphenated form. Errors with `memory_not_found` when no memory lives at `old_slug` and with `not_a_feature` when the source is a non-FR memory.",
         annotations(
             title = "Rename feature request",
             read_only_hint = false,
@@ -5262,7 +5265,7 @@ impl McpServer {
     // exercise the store-layer behaviour without a mock `Peer`.
 
     #[tool(
-        description = "File a new issue in the current project's group. Slug is auto-minted from the title when omitted. Status defaults to `open`; supply one of `open | closed | wontfix | blocked | deferred | duplicate | superseded` to override. Errors with code `project_not_found` when no `.mmcp.toml` is on any ancestor of the server's cwd, `invalid_slug` when the supplied or derived slug fails validation, and `memory_already_exists` when the slug collides with an existing memory in the project group.",
+        description = "File a new issue in the current project's group. Slug is auto-minted from the title when omitted; prefer passing an explicit `slug` grouped under a subject prefix (`<area>/<short-slug>`) instead of relying on that auto-mint. Status defaults to `open`; supply one of `open | closed | wontfix | blocked | deferred | duplicate | superseded` to override. Errors with code `project_not_found` when no `.mmcp.toml` is on any ancestor of the server's cwd, `invalid_slug` when the supplied or derived slug fails validation, and `memory_already_exists` when the slug collides with an existing memory in the project group.",
         annotations(
             title = "Add issue",
             read_only_hint = false,
@@ -5542,7 +5545,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Rename every issue memory under `old_slug` to `new_slug` in a single atomic commit. UUIDs stay stable across the rename so cross-references in other issues keep resolving without further rewrites. Duplicate slugs move as a batch: every entry under `memories/<old_slug>/` lands under `memories/<new_slug>/`. Errors with `memory_not_found` when no memory lives at `old_slug` and with `not_an_issue` when the source is a non-issue memory.",
+        description = "Rename every issue memory under `old_slug` to `new_slug` in a single atomic commit. UUIDs stay stable across the rename so cross-references in other issues keep resolving without further rewrites. Duplicate slugs move as a batch: every entry under `memories/<old_slug>/` lands under `memories/<new_slug>/`. `new_slug` should group under a subject prefix nested with `/`, never a hyphenated form. Errors with `memory_not_found` when no memory lives at `old_slug` and with `not_an_issue` when the source is a non-issue memory.",
         annotations(
             title = "Rename issue",
             read_only_hint = false,
@@ -7720,6 +7723,15 @@ const SESSION_INSTRUCTIONS: &str = concat!(
     "construct fence blocks by hand. Use `check_health` for surface validation ",
     "(manifest readable, memories parse), `diagnose` for deep structural checks ",
     "(missing fields, empty bodies, cross-group slug collisions, config gaps).\n\n",
+    "## Slug naming: group under a subject prefix\n\n",
+    "Every memory slug groups under a subject prefix nested with `/` ",
+    "(`<product>/<component>/...`), never a hyphenated `product-component`. ",
+    "Feedback lives under `feedback/`, logs under `log/`, incidents under ",
+    "`incident/`: one fact per entry, synthetic, still descriptive. A prefix MAY ",
+    "have a master memory at `<prefix>/<last-segment>` describing its family's ",
+    "scope; never required. `add_issue` / `add_feature` callers pass an explicit ",
+    "prefixed slug instead of relying on title auto-mint. A memory too large to ",
+    "write splits into a prefixed family.\n\n",
     "## CLAUDE.md management\n\n",
     "Never hand-edit CLAUDE.md to add rules. If `bootstrap_context` emits a ",
     "`claude_md_missing` / `claude_md_unmanaged` / `claude_md_stale` diagnostic, ",
