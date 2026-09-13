@@ -817,9 +817,10 @@ fn body_result_bytes(body: &str) -> usize {
 
 /// Estimated inline-result byte size of `rendered`'s frontmatter and body.
 /// The JSON-escaped byte length of each, plus [`RESULT_ENVELOPE_RESERVE_BYTES`].
-/// An estimate, not an exact figure: it serializes `MemoryFrontmatter` directly with serde,
-/// while `read_memory`'s response reshapes frontmatter through the MCP layer's own `frontmatter_to_json`.
-/// The store layer cannot call that function without depending on its caller, so
+/// An estimate, not an exact figure.
+/// It serializes `MemoryFrontmatter` directly with serde.
+/// `read_memory`'s response instead reshapes frontmatter through the MCP layer's own `frontmatter_to_json`.
+/// The store layer cannot call that function without depending on its caller.
 /// [`RESULT_ENVELOPE_RESERVE_BYTES`] absorbs the difference instead of the two being made to match exactly.
 fn estimated_result_bytes(rendered: &str) -> Result<usize, ImportError> {
     let file = MemoryFile::parse(rendered)?;
@@ -3399,8 +3400,8 @@ mod tests {
         .expect("a shrinking edit must not be refused");
     }
 
-    /// A git read failure other than `PathNotFound`, hit while checking the grow-only exemption,
-    /// propagates as `ImportError::Git`.
+    /// A git read failure other than `PathNotFound` propagates as `ImportError::Git`.
+    /// This is checked while evaluating the grow-only exemption.
     /// It must never be swallowed as "no existing content" and misreported as `body_result_too_large`.
     #[tokio::test]
     async fn grow_only_check_propagates_a_non_not_found_git_error() {
@@ -3409,8 +3410,8 @@ mod tests {
         let id = Uuid::now_v7();
         let path = mmcp_core::conventions::memory_path("corrupt-repo", MemoryId::from_uuid(id));
 
-        // Simulate a transient or corrupt read: the repo directory
-        // vanishes out from under the handle before the write runs.
+        // Simulate a transient or corrupt read.
+        // The repo directory vanishes out from under the handle before the write runs.
         std::fs::remove_dir_all(backend.repo_path(handle.group_id)).expect("remove repo dir");
 
         let rendered = {

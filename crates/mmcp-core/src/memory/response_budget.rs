@@ -6,8 +6,8 @@
 //! A group whose individual records are all small can still overflow a client's per-response ceiling.
 //! An unfiltered `list_memories` call returning hundreds of them is enough.
 //! `read_memory` itself carries no bound here: a memory body reads back whole regardless of size.
-//! [`crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES`] is the one owner of the write-time body ceiling
-//! this module's page-size defaults derive from.
+//! [`crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES`] is the one owner of the write-time body ceiling.
+//! This module's page-size defaults derive from it.
 //!
 //! ## Evidence (measured response sizes)
 //!
@@ -48,8 +48,8 @@ pub const LIST_MEMORIES_RESERVE_BYTES: usize = 4096;
 
 /// Default page size for `list_memories` pagination.
 /// Used when the caller sets `offset` and/or `limit` but omits an explicit `limit` value.
-/// Derived from [`crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES`] over one compact record's estimated size,
-/// after withholding [`LIST_MEMORIES_RESERVE_BYTES`].
+/// Derived from [`crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES`] minus [`LIST_MEMORIES_RESERVE_BYTES`].
+/// Divided by one compact record's estimated size.
 /// The default page plus that reserve fits the client result ceiling for a typical mandatory set.
 pub const DEFAULT_LIST_MEMORIES_LIMIT: usize = (crate::memory::limits::MCP_CLIENT_RESULT_CEILING_BYTES
     - LIST_MEMORIES_RESERVE_BYTES)
