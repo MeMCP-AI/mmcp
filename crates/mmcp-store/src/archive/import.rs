@@ -2180,7 +2180,7 @@ mod tests {
         );
     }
 
-    /// Restoring an archived memory whose body sits far above the write-time result ceiling still succeeds.
+    /// Restoring an archived memory whose body exceeds the write-time result ceiling still succeeds.
     /// Archive restore never refuses existing content.
     #[tokio::test]
     async fn restore_of_an_over_ceiling_memory_succeeds() {
@@ -2188,7 +2188,7 @@ mod tests {
         let seeded = home.seed_group("origin").await.expect("seed");
         let group_id = *seeded.group_id.as_uuid();
         let memory_id = Uuid::now_v7();
-        let oversized_body = "a".repeat(60_000);
+        let oversized_body = "a".repeat(mmcp_core::memory::MCP_CLIENT_RESULT_CEILING_BYTES + 1);
         let body = format!(
             "+++\nid = \"{memory_id}\"\nname = \"n\"\ndescription = \"d\"\nkind = \"reference\"\n+++\n{oversized_body}\n"
         );
