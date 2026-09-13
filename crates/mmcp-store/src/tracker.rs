@@ -130,32 +130,36 @@ pub(crate) fn compose_refs(
     out
 }
 
-/// Carry forward every frontmatter field an update does not itself own.
+/// Apply an update's owned fields onto the on-disk frontmatter.
+/// Every other field, including a field added later, carries forward from `current`.
 ///
-/// `updated` supplies `name`, `description`, and its own tracker metadata block.
-/// `current` supplies everything else: `tags`, `mandatory`, `version`, `bump_intent`, `source`.
-/// `current` also supplies `kind` and any `feature`/`issue`/`milestone` block `updated` left unset.
-/// A hybrid record keeps its other tracker block through this carry-forward (see `kind.rs`).
-///
-/// `refs` is `Some` to use a caller-composed cross-reference list.
-/// `None` carries `current.refs` forward unchanged.
+/// Owned, always taken from `updated`: `id`, `name`, `description`.
+/// Each of `feature`, `issue`, `milestone` is owned only when `updated` set that block.
+/// An unset block falls back to `current`, which keeps a hybrid record's sibling block intact.
+/// `refs` is owned when the caller passes `Some`, otherwise it falls back to `current.refs`.
+/// `kind` is never owned: it always comes from `current`.
 pub(crate) fn carry_forward_frontmatter(
     updated: MemoryFrontmatter,
     current: &MemoryFrontmatter,
     refs: Option<Vec<MemoryRef>>,
 ) -> MemoryFrontmatter {
-    let mut updated = updated
-        .with_tags(current.tags.clone())
-        .with_mandatory(current.mandatory)
-        .with_version(current.version.clone())
-        .with_bump_intent(current.bump_intent)
-        .with_source(current.source)
-        .with_refs(refs.unwrap_or_else(|| current.refs.clone()));
-    updated.kind = current.kind;
-    updated.feature = updated.feature.or_else(|| current.feature.clone());
-    updated.issue = updated.issue.or_else(|| current.issue.clone());
-    updated.milestone = updated.milestone.or_else(|| current.milestone.clone());
-    updated
+    let mut result = current.clone();
+    result.id = updated.id;
+    result.name = updated.name;
+    result.description = updated.description;
+    if updated.feature.is_some() {
+        result.feature = updated.feature;
+    }
+    if updated.issue.is_some() {
+        result.issue = updated.issue;
+    }
+    if updated.milestone.is_some() {
+        result.milestone = updated.milestone;
+    }
+    if let Some(refs) = refs {
+        result.refs = refs;
+    }
+    result
 }
 
 /// Decide whether a tracker record carrying `status` survives a listing filter.
