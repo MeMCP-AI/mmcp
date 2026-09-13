@@ -674,9 +674,8 @@ pub async fn update_feature_unlocked(
         .map_err(|e| FeatureError::Memory(ImportError::Render(e.to_string())))?;
 
     let mut file = build_memory_file(title.clone(), description.clone(), body.clone(), metadata);
-    // Preserve the id pinned on disk so the rewrite hits the same
-    // canonical path and stays addressable by UUID across the edit,
-    // and carry forward every frontmatter field this update does not own.
+    // Preserves the on-disk id so the rewrite lands at the same path.
+    // Carries forward every frontmatter field this update does not own.
     file.frontmatter = crate::tracker::carry_forward_frontmatter(
         file.frontmatter.clone().with_id(resolved.id),
         &current_frontmatter,

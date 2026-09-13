@@ -290,6 +290,7 @@ pub async fn update_milestone(
     file.frontmatter = crate::tracker::carry_forward_frontmatter(
         file.frontmatter.clone().with_id(resolved.id),
         &current_frontmatter,
+        // No refs-editing surface here; keep the on-disk value.
         None,
     );
     let rendered = file
