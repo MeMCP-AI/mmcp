@@ -668,6 +668,61 @@ fn feature_add_list_read_round_trips_inside_project() {
         .stdout(predicate::str::contains("1 feature"));
 }
 
+/// The auditor's finding: `run_read` used to leak the raw git error
+/// chain (gix's own "could not be found" text with no framing)
+/// through a bare `map_err(anyhow::Error::from)`. The CLI must now
+/// print the same typed "revision not found: <sha>" classification
+/// `read_memory`'s MCP tool applies, naming the caller's own
+/// `--version` value, not just the backend's internal text.
+#[test]
+fn memory_read_classifies_a_nonexistent_commit_sha() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mmcp_home = tmp.path().join("mmcp-home");
+    mmcp()
+        .args(["init", "project", "--slug", "read-classify"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+    mmcp()
+        .args([
+            "memory",
+            "write",
+            "read-classify",
+            "flat",
+            "--name",
+            "Flat",
+            "--description",
+            "d",
+            "--kind",
+            "scratch",
+            "--body",
+            "content\n",
+        ])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+
+    let never_a_real_commit = "0".repeat(40);
+    mmcp()
+        .args([
+            "memory",
+            "read",
+            "read-classify",
+            "flat",
+            "--version",
+            &never_a_real_commit,
+        ])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(format!(
+            "revision not found: {never_a_real_commit}"
+        )));
+}
+
 #[test]
 fn memory_move_to_group_relocates_across_groups() {
     let tmp = tempfile::tempdir().unwrap();

@@ -20,7 +20,7 @@ use mmcp_core::manifest::GroupScope;
 use mmcp_core::memory::{
     FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryRef, parse_sections,
 };
-use mmcp_git::{GitBackend, NativeBackend, Rev};
+use mmcp_git::{GitBackend, GitError, NativeBackend, Rev};
 use mmcp_store::home::MmcpHome;
 use mmcp_store::{
     AddressingMode, GroupEntry, MemoryEditOp, WriteFileOptions, WriteMemoryOptions,
@@ -608,6 +608,32 @@ async fn run_move_across_groups(
     Ok(())
 }
 
+/// Classify a [`mmcp_store::read_file_following_history_pointer`]
+/// failure into a clean, typed CLI message instead of leaking the
+/// raw git backend chain (`ResolveRev`'s gix text, `RevNotFound`'s
+/// prefixed ref path) straight through `anyhow::Error::from`. The
+/// message names `revision`, the caller's OWN `--version` value
+/// (`HEAD` when absent), never the backend's internal representation
+/// of it; the backend's own text still surfaces, appended, for
+/// diagnosis. Mirrors the same classification `read_memory`'s MCP
+/// tool applies (see `map_err` in `serve.rs`).
+fn classify_read_error(err: mmcp_store::ImportError, revision: Option<&str>) -> anyhow::Error {
+    use mmcp_store::ImportError;
+    let revision = revision.unwrap_or("HEAD");
+    match err {
+        ImportError::Git(GitError::PathNotFound(path)) => {
+            anyhow::anyhow!("memory not found in group (path: {path})")
+        }
+        ImportError::Git(GitError::RevNotFound(detail)) => {
+            anyhow::anyhow!("revision not found: {revision} (detail: {detail})")
+        }
+        ImportError::Git(GitError::ResolveRev { source }) => {
+            anyhow::anyhow!("revision not found: {revision} (detail: {source})")
+        }
+        other => anyhow::Error::from(other),
+    }
+}
+
 async fn run_read(args: ReadArgs) -> Result<()> {
     let home = MmcpHome::discover()?;
     let (backend, groups) = home.init_backend().await?;
@@ -627,7 +653,7 @@ async fn run_read(args: ReadArgs) -> Result<()> {
         &rev,
     )
     .await
-    .map_err(anyhow::Error::from)?;
+    .map_err(|e| classify_read_error(e, args.version.as_deref()))?;
     let text = std::str::from_utf8(&bytes).context("memory file is not valid UTF-8")?;
     let file = MemoryFile::parse(text)
         .map_err(|e| anyhow::anyhow!("memory frontmatter did not parse: {e}"))?;
