@@ -11,6 +11,7 @@
 //!
 //! The helper lives in its own concern-named module so neither tracker surface owns it.
 
+use std::collections::HashSet;
 use std::future::Future;
 
 use mmcp_core::conventions::{MEMORIES_DIR, MEMORY_EXTENSION, memory_path};
@@ -62,10 +63,11 @@ pub async fn next_ticket_number(
 
     // One resolve of the commit and root tree, reused for every path below,
     // instead of once per file like a `read_file`-per-file loop would pay.
-    let max = max_ticket_number_over(paths, |paths| {
+    let numbers = ticket_numbers_over(paths, |paths| {
         backend.read_files(&entry.handle, paths, &rev)
     })
     .await?;
+    let max = numbers.into_iter().max().unwrap_or(0);
     // `max` is accumulated from frontmatter `meta.number`, a value any client can write into a
     // memory file without an upper bound enforced at write time. A plain `max + 1` would wrap to
     // `0` in a release build (overflow-checks off) or panic in debug, either way reissuing an
@@ -73,21 +75,60 @@ pub async fn next_ticket_number(
     max.checked_add(1).ok_or(ImportError::TicketCounterOverflow)
 }
 
+/// Every `feature.number` / `issue.number` currently allocated in `entry`'s group.
+/// Shared fold [`next_ticket_number`] reduces to its maximum, and
+/// [`number_collision`] checks a cross-group move's carried ticket number against.
+pub(crate) async fn ticket_numbers_in_group(
+    backend: &NativeBackend,
+    entry: &GroupEntry,
+) -> Result<HashSet<u32>, ImportError> {
+    let rev = Rev::head();
+    let slug_dirs = list_memory_slug_dirs(backend, &entry.handle, &rev)
+        .await
+        .map_err(ImportError::Git)?;
+    let paths: Vec<String> = slug_dirs
+        .iter()
+        .flat_map(|slug_dir| {
+            slug_dir
+                .filenames
+                .iter()
+                .map(|filename| format!("{}/{filename}", slug_dir.dir))
+        })
+        .collect();
+    ticket_numbers_over(paths, |paths| {
+        backend.read_files(&entry.handle, paths, &rev)
+    })
+    .await
+}
+
+/// Whether `number` is already allocated (as either a `feature.number` or an `issue.number`)
+/// somewhere in `entry`'s group. Used by the cross-group move primitive to refuse
+/// a carried ticket number that collides with the target group's own numbering.
+pub(crate) async fn number_collision(
+    backend: &NativeBackend,
+    entry: &GroupEntry,
+    number: u32,
+) -> Result<bool, ImportError> {
+    Ok(ticket_numbers_in_group(backend, entry)
+        .await?
+        .contains(&number))
+}
+
 /// Fold `feature.number` / `issue.number` out of every path in `paths`, via one call to `read_batch`.
 /// `read_batch` is the batched-read seam: production passes [`NativeBackend::read_files`] directly.
 /// A test can pass a call-counting stub instead, to prove this folds without a per-path round trip.
 /// A per-path read or parse failure is skipped, never aborts the fold.
 /// A hard failure of `read_batch` itself (the whole batch call) is the only error this raises.
-async fn max_ticket_number_over<F, Fut>(
+async fn ticket_numbers_over<F, Fut>(
     paths: Vec<String>,
     read_batch: F,
-) -> Result<u32, ImportError>
+) -> Result<HashSet<u32>, ImportError>
 where
     F: FnOnce(Vec<String>) -> Fut,
     Fut: Future<Output = Result<BatchOutcome, GitError>>,
 {
     let batch = read_batch(paths).await.map_err(ImportError::Git)?;
-    let mut max = 0u32;
+    let mut numbers = HashSet::new();
     for (_path, outcome) in batch {
         let Ok(bytes) = outcome else { continue };
         let Ok(text) = std::str::from_utf8(&bytes) else {
@@ -99,15 +140,15 @@ where
         if let Some(meta) = mf.frontmatter.feature.as_ref()
             && let Some(n) = meta.number
         {
-            max = max.max(n);
+            numbers.insert(n);
         }
         if let Some(meta) = mf.frontmatter.issue.as_ref()
             && let Some(n) = meta.number
         {
-            max = max.max(n);
+            numbers.insert(n);
         }
     }
-    Ok(max)
+    Ok(numbers)
 }
 
 /// Compose the merged cross-reference list for an update.
@@ -623,11 +664,11 @@ mod tests {
     /// `read_file` loop and a single `read_files` batch call are trivially distinguishable.
     const BULK_PATH_COUNT: usize = 25;
 
-    /// [`max_ticket_number_over`] calls its `read_batch` seam exactly once, independent of how
+    /// [`ticket_numbers_over`] calls its `read_batch` seam exactly once, independent of how
     /// many paths it folds. The regression this guards is a per-path `read_file` loop, which
     /// would call the seam once per path instead of once for the whole group.
     #[tokio::test]
-    async fn max_ticket_number_over_reads_the_batch_exactly_once() {
+    async fn ticket_numbers_over_reads_the_batch_exactly_once() {
         let paths: Vec<String> = (0..BULK_PATH_COUNT)
             .map(|i| format!("memories/bulk-{i}/dummy.md"))
             .collect();
@@ -635,7 +676,7 @@ mod tests {
         let call_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = std::sync::Arc::clone(&call_count);
 
-        let max = max_ticket_number_over(paths, move |batched_paths| {
+        let numbers = ticket_numbers_over(paths, move |batched_paths| {
             counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             assert_eq!(
                 batched_paths.len(),
@@ -645,13 +686,54 @@ mod tests {
             async { Ok(BatchOutcome::new()) }
         })
         .await
-        .expect("an empty batch still resolves to max = 0");
+        .expect("an empty batch still resolves to an empty set");
 
         assert_eq!(
             call_count.load(std::sync::atomic::Ordering::SeqCst),
             1,
             "the read seam must be called exactly once regardless of path count"
         );
-        assert_eq!(max, 0);
+        assert!(numbers.is_empty());
+    }
+
+    /// [`number_collision`] reports `true` for an allocated number and `false` for a free one.
+    #[tokio::test]
+    async fn number_collision_detects_an_allocated_ticket_number() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let seeded = scratch.seed_group("collision-group").await.expect("seed");
+        let entry = scratch.groups().get(&seeded.group_id).await.expect("entry");
+
+        let file = MemoryFile {
+            frontmatter: MemoryFrontmatter::new("Ticket 7", "carried number", MemoryKind::Feature)
+                .with_feature(FeatureMetadata {
+                    status: FeatureStatus::Requested,
+                    number: Some(7),
+                    ..FeatureMetadata::default()
+                }),
+            body: "## Need\n\nCarried.\n".to_string(),
+            format: FrontmatterFormat::TomlPlus,
+        };
+        import_memory(
+            scratch.backend(),
+            &entry.handle,
+            "ticket-seven",
+            &file.to_string().expect("render ticket seven"),
+            None,
+            scratch.author(),
+            false,
+        )
+        .await
+        .expect("seed ticket seven");
+
+        assert!(
+            number_collision(scratch.backend(), &entry, 7)
+                .await
+                .expect("collision check")
+        );
+        assert!(
+            !number_collision(scratch.backend(), &entry, 8)
+                .await
+                .expect("collision check")
+        );
     }
 }
