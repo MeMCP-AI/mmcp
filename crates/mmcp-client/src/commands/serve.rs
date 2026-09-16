@@ -7703,6 +7703,15 @@ fn map_memory_error_to_mcp(err: ImportError) -> McpError {
             "target_group": target_group.to_string(),
             "retry_hint": "pass renumber: true to mint a fresh number in the target group",
         }),
+        ImportError::CrossGroupMoveHalfCompleted(detail) => json!({
+            "code": code,
+            "id": detail.id.to_string(),
+            "source_group": detail.source_group.to_string(),
+            "target_group": detail.target_group.to_string(),
+            "target_commit_id": detail.target_commit_id,
+            "detail": detail.source.to_string(),
+            "retry_hint": "retry the same move call; the target write already landed and will be resumed",
+        }),
     };
     McpError::invalid_params(message, Some(payload))
 }
