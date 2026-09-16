@@ -1514,19 +1514,9 @@ struct DeleteFeatureArgs {
     pub message: Option<String>,
 }
 
-/// Args for `move_memory`.
-///
-/// Two distinct operations selected by whether `target_group` is set:
-///
-/// - In-group (the default, `target_group` absent): atomically
-///   rewrites the memory's slug path within `group` in a single
-///   commit. `new_slug` is required. The memory id stays stable
-///   across the move, so cross-refs in other memories remain valid.
-/// - Cross-group (`target_group` set): moves the memory from `group`
-///   into `target_group`, keeping its id and slug. `new_slug` is
-///   ignored: a cross-group move never renames in the same call.
-///   Refuses on a target id collision, or on a carried tracker
-///   number collision unless `renumber` is set.
+/// Args for `move_memory`: an in-group slug rewrite only. A
+/// cross-group move is a separate, destructive tool,
+/// `move_memory_to_group`: see [`MoveMemoryToGroupArgs`].
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
@@ -1540,20 +1530,39 @@ struct MoveMemoryArgs {
     /// Canonical UUID of the memory.
     #[serde(default)]
     pub id: Option<String>,
-    /// New slug path for an in-group move.
+    /// New slug path. Required.
     /// May be a single segment (`feedback`) or a `/`-joined multi-segment path (`feedback/git/commit-phase`).
     /// Up to [`mmcp_store::MAX_SLUG_SEGMENTS`] segments.
     /// Group it under a subject prefix nested with `/`, never a hyphenated form.
-    /// Required when `target_group` is absent; ignored when it is set.
     #[serde(default)]
     pub new_slug: Option<String>,
-    /// Destination group (UUID or slug) for a cross-group move.
-    /// Absent selects the in-group rename behavior instead.
+    /// Optional override for the git commit message.
     #[serde(default)]
-    pub target_group: Option<String>,
-    /// Cross-group only. When the memory carries a tracker `number`
-    /// that collides with one already allocated in `target_group`,
-    /// mint a fresh number there instead of refusing the move.
+    pub message: Option<String>,
+}
+
+/// Args for `move_memory_to_group`: moves a memory into a different
+/// group, keeping its id and slug. `new_slug` has no place here: a
+/// cross-group move never renames in the same call; see
+/// [`MoveMemoryArgs`] for the separate in-group rename tool.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+struct MoveMemoryToGroupArgs {
+    /// Source group (UUID or slug).
+    pub group: String,
+    /// Source slug path. Optional when `id` is supplied; if both
+    /// are present they must address the same memory.
+    #[serde(default)]
+    pub slug: Option<String>,
+    /// Canonical UUID of the memory.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Destination group (UUID or slug).
+    pub target_group: String,
+    /// When the memory carries a tracker `number` that collides with
+    /// one already allocated in `target_group`, mint a fresh number
+    /// there instead of refusing the move.
     #[serde(default)]
     pub renumber: Option<bool>,
     /// Optional override for the git commit message.
@@ -3417,9 +3426,9 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Move a memory. In-group (target_group absent): atomically rewrites the memory's slug path inside the same group in a single commit; new_slug is required, and the memory id stays stable so cross-references in other memories keep resolving. Same-slug moves short-circuit as no-ops. Cross-group (target_group set): moves the memory into a different group, keeping its id, its slug, and its body verbatim; the frontmatter gains a typed pointer back to the pre-move history, joined into list_versions and read_memory automatically. Refuses on a target id collision, or on a carried tracker number collision unless renumber is set. Reports a read-only back-reference list of `[[...]]` documentation links elsewhere that a caller may want to correct by hand.",
+        description = "Rename a memory's slug path within its own group in a single commit. new_slug is required; the memory id stays stable so cross-references in other memories keep resolving. Same-slug moves short-circuit as no-ops. To move a memory into a DIFFERENT group, use move_memory_to_group instead.",
         annotations(
-            title = "Move memory to a new slug path or group",
+            title = "Move memory to a new slug path",
             read_only_hint = false,
             destructive_hint = false,
             idempotent_hint = true,
@@ -3434,10 +3443,6 @@ impl McpServer {
         let entry = self.resolve_group_entry(&args.group).await?;
         let slug_for_guard = memory_label_for_guard(args.slug.as_deref(), args.id.as_deref());
         confirm_protected_write(&peer, &entry, &slug_for_guard, "move").await?;
-        if let Some(target_group_ref) = args.target_group.as_deref() {
-            let target_entry = self.resolve_group_entry(target_group_ref).await?;
-            confirm_protected_write(&peer, &target_entry, &slug_for_guard, "move").await?;
-        }
         self.move_memory_unguarded(args).await
     }
 
@@ -3462,14 +3467,9 @@ impl McpServer {
                 Some(json!({ "code": "missing_address" })),
             ));
         }
-        if let Some(target_group_ref) = args.target_group.clone() {
-            return self
-                .move_memory_across_groups_unguarded(args, id_opt, target_group_ref)
-                .await;
-        }
         let new_slug = args.new_slug.ok_or_else(|| {
             McpError::invalid_params(
-                "move_memory requires new_slug for an in-group move",
+                "move_memory requires new_slug",
                 Some(json!({ "code": "missing_new_slug" })),
             )
         })?;
@@ -3504,18 +3504,54 @@ impl McpServer {
         })))
     }
 
-    /// Cross-group half of `move_memory`, split out once `args.target_group` is set.
+    #[tool(
+        description = "Move a memory into a DIFFERENT group, keeping its id, its slug, and its body verbatim. The frontmatter gains a typed pointer back to the pre-move history, joined into list_versions and read_memory automatically. Refuses on a target id collision, or on a carried tracker number collision unless renumber is set. Reports a read-only back-reference list of `[[...]]` documentation links elsewhere that a caller may want to correct by hand. Never renames in the same call: use move_memory afterward for that.",
+        annotations(
+            title = "Move memory to a different group",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn move_memory_to_group(
+        &self,
+        Parameters(args): Parameters<MoveMemoryToGroupArgs>,
+        peer: Peer<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let source_entry = self.resolve_group_entry(&args.group).await?;
+        let slug_for_guard = memory_label_for_guard(args.slug.as_deref(), args.id.as_deref());
+        confirm_protected_write(&peer, &source_entry, &slug_for_guard, "move").await?;
+        let target_entry = self.resolve_group_entry(&args.target_group).await?;
+        confirm_protected_write(&peer, &target_entry, &slug_for_guard, "move").await?;
+        self.move_memory_to_group_unguarded(args).await
+    }
+
+    /// Peer-less test entry point for `move_memory_to_group`.
     /// Locks both groups via [`mmcp_store::lock::cross_group_move_chain`]
     /// (deterministic order, never the plain in-group coarsening chain),
     /// then reports a read-only back-reference scan alongside the move outcome.
-    async fn move_memory_across_groups_unguarded(
+    async fn move_memory_to_group_unguarded(
         &self,
-        args: MoveMemoryArgs,
-        id_opt: Option<Uuid>,
-        target_group_ref: String,
+        args: MoveMemoryToGroupArgs,
     ) -> Result<CallToolResult, McpError> {
+        let id_opt = match args.id.as_deref() {
+            Some(raw) => Some(Uuid::parse_str(raw).map_err(|e| {
+                McpError::invalid_params(
+                    Cow::Owned(format!("`id` is not a valid UUID: {e}")),
+                    Some(json!({ "code": "invalid_uuid", "id": raw })),
+                )
+            })?),
+            None => None,
+        };
+        if args.slug.is_none() && id_opt.is_none() {
+            return Err(McpError::invalid_params(
+                "move_memory_to_group requires at least one of `slug` or `id`",
+                Some(json!({ "code": "missing_address" })),
+            ));
+        }
         let source_entry = self.resolve_group_entry(&args.group).await?;
-        let target_entry = self.resolve_group_entry(&target_group_ref).await?;
+        let target_entry = self.resolve_group_entry(&args.target_group).await?;
         let _lock_guards =
             mmcp_store::lock::acquire_chain(&mmcp_store::lock::cross_group_move_chain(
                 source_entry.handle.group_id,
@@ -13700,10 +13736,10 @@ mod tests {
 
         let server = McpServer::new(state, ServeMode::Full);
         let res = server
-            .move_memory_unguarded(MoveMemoryArgs {
+            .move_memory_to_group_unguarded(MoveMemoryToGroupArgs {
                 group: source_group.to_string(),
                 slug: Some("moving".into()),
-                target_group: Some(target_group.to_string()),
+                target_group: target_group.to_string(),
                 ..Default::default()
             })
             .await
@@ -15078,6 +15114,11 @@ mod tests {
         check_bits(McpServer::init_claude_tool_attr(), ddel);
         check_bits(McpServer::delete_feature_tool_attr(), ddel);
         check_bits(McpServer::delete_issue_tool_attr(), ddel);
+        // A cross-group move can strand a memory's carried tracker
+        // number or leave a half-completed state on a delete
+        // failure: flagged destructive like delete, not the
+        // non-destructive in-group rename below.
+        check_bits(McpServer::move_memory_to_group_tool_attr(), ddel);
 
         // Non-destructive + idempotent.
         let iden = (Some(false), Some(false), Some(true), Some(false));
@@ -15264,11 +15305,17 @@ mod tests {
         assert!(names.contains("add_feature"));
         assert!(names.contains("sync_fetch"));
         assert!(names.contains("sync_push"));
+        assert!(names.contains("move_memory"));
         assert!(!names.contains("delete_memory"));
         assert!(!names.contains("edit_memory"));
         assert!(!names.contains("update_feature"));
         assert!(!names.contains("sync_pull"));
         assert!(!names.contains("sync"));
+        // The requirement, not the observed bits: a tool that can
+        // delete a memory (a cross-group move's source delete) is
+        // destructive, so Edit mode's registration filter drops it,
+        // exactly like delete_memory above.
+        assert!(!names.contains("move_memory_to_group"));
     }
 
     /// `--mode full` keeps every registered tool.
