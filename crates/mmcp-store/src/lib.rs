@@ -11,6 +11,7 @@
 //! - `groups`: `GroupIndex`, `GroupEntry`, refresh loop.
 //! - `history`: owning primitive for walking a repository path's commit history.
 //! - `memory`: typed read/write/edit/delete primitives.
+//! - `memory_move`: cross-group memory move.
 //! - `memory_ops`: transactional section-level body editing.
 //! - `features`, `issues`, `tracker`: the two CRUD tracker surfaces and their shared plumbing.
 //! - `milestones`: milestone CRUD and rollup computation.
@@ -47,6 +48,7 @@ pub mod import_adoc;
 pub mod issues;
 pub mod lock;
 pub mod memory;
+pub mod memory_move;
 pub mod memory_ops;
 pub mod milestones;
 pub mod sessions;
@@ -94,6 +96,7 @@ pub use memory::{
     validate_id_mismatch, validate_memory_slug, validate_slug_segment, write_file_at_path,
     write_memory_by_id,
 };
+pub use memory_move::{CrossGroupMoveOptions, CrossGroupMoveOutcome, move_memory_across_groups};
 pub use memory_ops::{LineExpect, MemoryEditError, MemoryEditOp, apply_ops};
 pub use milestones::{
     AddSpec as MilestoneAddSpec, MilestoneError, MilestoneRecord, MilestoneRollup, RollupStatus,

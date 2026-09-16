@@ -280,6 +280,58 @@ pub async fn notify_write(
     }
 }
 
+/// Cross-group-move-trigger hook: called by
+/// [`crate::memory::move_memory_across_groups`] right after its
+/// target-write and source-delete commits both land. Best-effort,
+/// same rationale as [`notify_write`]: deletes the source group's
+/// row and upserts the target group's row inside one transaction, so
+/// a reader never observes the memory in both groups or in neither.
+/// A cache-write failure never fails the underlying move: the cache
+/// is a derived artifact the next rebuild repairs.
+pub async fn notify_move(
+    source_group_id: Uuid,
+    target_group_id: Uuid,
+    id: Uuid,
+    slug: &str,
+    path: &str,
+    commit_id: &str,
+    rendered: &str,
+) {
+    let Some(pool) = active_pool() else {
+        return;
+    };
+    let memory_file = match MemoryFile::parse(rendered) {
+        Ok(file) => file,
+        Err(err) => {
+            tracing::warn!(%source_group_id, %target_group_id, %id, %path, error = %err, "cache move-trigger: failed to parse written memory, skipping index update");
+            return;
+        }
+    };
+    let record = build_record(target_group_id, id, slug, path, commit_id, &memory_file);
+    if let Err(err) = move_record(&pool, source_group_id, id, &record).await {
+        tracing::warn!(%source_group_id, %target_group_id, %id, %path, error = %err, "cache move-trigger: failed to move index row");
+    }
+}
+
+/// Delete `source_group_id`'s row for `id` and upsert `record` in its place, inside one transaction.
+/// Extracted from [`notify_move`] so the transaction's error type is inferred once, not per call site.
+async fn move_record(
+    pool: &SqlitePool,
+    source_group_id: Uuid,
+    id: Uuid,
+    record: &IndexedRecord,
+) -> Result<(), CacheError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM indexed_memory WHERE group_id = ? AND id = ?")
+        .bind(source_group_id.to_string())
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    upsert_record(&mut *tx, record).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Pull-trigger hook: called by the CLI (`mmcp pull` / `mmcp sync`) and MCP (`sync_pull`) call sites,
 /// right after `mmcp_sync::SyncEngine::pull` reports which groups advanced.
 /// Best-effort, same rationale as [`notify_write`]: re-indexes exactly `updated_group_ids` via [`rebuild_groups`],

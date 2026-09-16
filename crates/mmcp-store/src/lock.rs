@@ -190,6 +190,30 @@ pub fn coarsen_process_chain() -> Vec<(LockScope, LockMode)> {
     vec![(LockScope::Process, LockMode::Exclusive)]
 }
 
+/// Convenience: chain for a cross-group move.
+///
+/// Both groups are held `Exclusive` under a `Shared Process` root,
+/// always in the same order regardless of which of `a`/`b` is the
+/// move's source or target: the smaller UUID first. Two concurrent
+/// moves between the same two groups in opposite directions (A to B,
+/// B to A) therefore always acquire the pair in the same order and
+/// never deadlock each other.
+#[must_use]
+pub fn cross_group_move_chain(a: Uuid, b: Uuid) -> Vec<(LockScope, LockMode)> {
+    let (first, second) = if a <= b { (a, b) } else { (b, a) };
+    if first == second {
+        return vec![
+            (LockScope::Process, LockMode::Shared),
+            (LockScope::Group(first), LockMode::Exclusive),
+        ];
+    }
+    vec![
+        (LockScope::Process, LockMode::Shared),
+        (LockScope::Group(first), LockMode::Exclusive),
+        (LockScope::Group(second), LockMode::Exclusive),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -350,6 +374,59 @@ mod tests {
     fn coarsen_process_chain_is_exclusive_process_only() {
         let chain = coarsen_process_chain();
         assert_eq!(chain, vec![(process_root(), LockMode::Exclusive)]);
+    }
+
+    /// The cross-group move chain orders the pair by UUID, regardless
+    /// of which argument order the caller passed.
+    #[test]
+    fn cross_group_move_chain_orders_by_uuid_regardless_of_argument_order() {
+        let a = Uuid::now_v7();
+        let b = Uuid::now_v7();
+        let (smaller, larger) = if a <= b { (a, b) } else { (b, a) };
+        assert_eq!(cross_group_move_chain(a, b), cross_group_move_chain(b, a));
+        assert_eq!(
+            cross_group_move_chain(a, b),
+            vec![
+                (process_root(), LockMode::Shared),
+                (LockScope::Group(smaller), LockMode::Exclusive),
+                (LockScope::Group(larger), LockMode::Exclusive),
+            ]
+        );
+    }
+
+    /// Two concurrent cross-group moves in opposite directions between
+    /// the same two groups (A to B, and B to A) never deadlock each
+    /// other: the deterministic chain order forces one to fully
+    /// acquire, run, and release before the other proceeds.
+    #[tokio::test]
+    async fn opposite_direction_cross_group_moves_never_deadlock() {
+        let group_a = Uuid::now_v7();
+        let group_b = Uuid::now_v7();
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+
+        let barrier_a = Arc::clone(&barrier);
+        let move_a_to_b = tokio::spawn(async move {
+            barrier_a.wait().await;
+            let _guards = acquire_chain(&cross_group_move_chain(group_a, group_b)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        });
+
+        let barrier_b = Arc::clone(&barrier);
+        let move_b_to_a = tokio::spawn(async move {
+            barrier_b.wait().await;
+            let _guards = acquire_chain(&cross_group_move_chain(group_b, group_a)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        });
+
+        let outcome = tokio::time::timeout(Duration::from_secs(5), async {
+            move_a_to_b.await.expect("A to B task");
+            move_b_to_a.await.expect("B to A task");
+        })
+        .await;
+        assert!(
+            outcome.is_ok(),
+            "opposite-direction moves must both complete, never deadlock"
+        );
     }
 
     /// A held scope's entry must survive a burst of other-scope lookups that each run the prune sweep.

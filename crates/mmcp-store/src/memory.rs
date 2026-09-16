@@ -172,6 +172,32 @@ pub enum ImportError {
         "estimated result size {size} bytes exceeds the {limit}-byte inline-result ceiling; split this memory into a family under a subject prefix (e.g. `<subject>/<part>`)"
     )]
     BodyResultTooLarge { limit: usize, size: usize },
+
+    /// [`crate::memory_move::move_memory_across_groups`] found the moving memory's id
+    /// already allocated to a different file in the target group.
+    /// The caller picks a different target group or resolves the collision there first.
+    #[error(
+        "memory {id} cannot move from group {source_group} to group {target_group}: the target group already holds a memory with this id"
+    )]
+    CrossGroupIdCollision {
+        id: Uuid,
+        source_group: Uuid,
+        target_group: Uuid,
+    },
+
+    /// [`crate::memory_move::move_memory_across_groups`] found the moving memory's carried
+    /// tracker `number` already allocated in the target group.
+    /// The caller either resolves the collision manually or opts into
+    /// `renumber`, which mints a fresh number under the target group's lock.
+    #[error(
+        "cannot move {kind} #{number} from group {source_group} to group {target_group}: #{number} is already allocated there; pass renumber to mint a new number"
+    )]
+    TrackerNumberCollision {
+        kind: &'static str,
+        number: u32,
+        source_group: Uuid,
+        target_group: Uuid,
+    },
 }
 
 impl ImportError {
@@ -202,6 +228,8 @@ impl ImportError {
             Self::TicketCounterOverflow => "ticket_counter_overflow",
             Self::Edit(_) => "memory_edit_failed",
             Self::BodyResultTooLarge { .. } => "body_result_too_large",
+            Self::CrossGroupIdCollision { .. } => "cross_group_id_collision",
+            Self::TrackerNumberCollision { .. } => "tracker_number_collision",
         }
     }
 }
