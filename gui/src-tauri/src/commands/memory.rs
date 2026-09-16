@@ -38,6 +38,40 @@ impl From<MemoryRefDto> for mmcp_core::memory::MemoryRef {
     }
 }
 
+/// Wire mirror of [`mmcp_core::memory::CrossGroupHistoryPointer`]:
+/// where a memory's pre-move history lives after a cross-group move.
+/// Plain field copy, no shape re-validation at this boundary, the
+/// same convention [`MemoryRefDto`] above already follows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrossGroupHistoryPointerDto {
+    pub source_group: Uuid,
+    pub source_path: String,
+    pub first_commit: String,
+    pub last_commit: String,
+}
+
+impl From<&mmcp_core::memory::CrossGroupHistoryPointer> for CrossGroupHistoryPointerDto {
+    fn from(p: &mmcp_core::memory::CrossGroupHistoryPointer) -> Self {
+        Self {
+            source_group: p.source_group,
+            source_path: p.source_path.clone(),
+            first_commit: p.first_commit.clone(),
+            last_commit: p.last_commit.clone(),
+        }
+    }
+}
+
+impl From<CrossGroupHistoryPointerDto> for mmcp_core::memory::CrossGroupHistoryPointer {
+    fn from(dto: CrossGroupHistoryPointerDto) -> Self {
+        Self {
+            source_group: dto.source_group,
+            source_path: dto.source_path,
+            first_commit: dto.first_commit,
+            last_commit: dto.last_commit,
+        }
+    }
+}
+
 /// Shared wire shape for `FeatureMetadataDto` and `IssueMetadataDto`:
 /// both trackers carry the same status/number/dependency/supersession
 /// fields, only the `status` vocabulary differs, and that vocabulary
@@ -78,6 +112,10 @@ pub struct MemoryFrontmatterDto {
     pub feature: Option<FeatureMetadataDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issue: Option<IssueMetadataDto>,
+    /// Set after a cross-group move; absent on every memory that has
+    /// never moved across groups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_source: Option<CrossGroupHistoryPointerDto>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -111,6 +149,7 @@ impl MemoryFrontmatterDtoBuilder {
                 refs: Vec::new(),
                 feature: None,
                 issue: None,
+                history_source: None,
             },
         }
     }
@@ -142,6 +181,11 @@ impl MemoryFrontmatterDtoBuilder {
 
     fn issue(mut self, issue: Option<IssueMetadataDto>) -> Self {
         self.dto.issue = issue;
+        self
+    }
+
+    fn history_source(mut self, history_source: Option<CrossGroupHistoryPointerDto>) -> Self {
+        self.dto.history_source = history_source;
         self
     }
 
@@ -177,6 +221,11 @@ fn frontmatter_to_dto(fm: &MemoryFrontmatter) -> MemoryFrontmatterDto {
         blocks: im.blocks.clone(),
         superseded_by: im.superseded_by.as_ref().map(MemoryRefDto::from),
     }))
+    .history_source(
+        fm.history_source
+            .as_ref()
+            .map(CrossGroupHistoryPointerDto::from),
+    )
     .build()
 }
 
@@ -482,8 +531,10 @@ fn to_memory_file(dto: MemoryFileDto) -> GuiResult<MemoryFile> {
             .collect(),
         // DTO carries no `source` field: every write drops whatever value was previously on disk.
         source: None,
-        // DTO carries no `history_source` field either: same drop-on-write gap as `source` above.
-        history_source: None,
+        history_source: dto
+            .frontmatter
+            .history_source
+            .map(mmcp_core::memory::CrossGroupHistoryPointer::from),
     };
     Ok(MemoryFile {
         frontmatter: fm,
@@ -756,6 +807,44 @@ mod tests {
         assert_eq!(descriptor.slug, "good-memory");
         assert_eq!(descriptor.commit, "deadbeef");
         assert_eq!(descriptor.frontmatter.name, "Rust Coding Rules");
+    }
+
+    /// `history_source` must survive the DTO round trip the same way
+    /// `refs` already does: `frontmatter_to_dto` maps it out, and
+    /// `to_memory_file` carries it back in, so a GUI edit of a moved
+    /// memory does not silently drop the pointer to its pre-move
+    /// history (the same gap `source` still has, tracked separately).
+    #[test]
+    fn history_source_round_trips_through_the_dto() {
+        let pointer = mmcp_core::memory::CrossGroupHistoryPointer::new(
+            Uuid::now_v7(),
+            "memories/moved/deadbeef.md",
+            "0123456789abcdef0123456789abcdef01234567",
+            "fedcba9876543210fedcba9876543210fedcba98",
+        )
+        .expect("valid pointer shape");
+
+        let fm = MemoryFrontmatter::new("moved", "carries history", MemoryKind::Scratch)
+            .with_history_source(Some(pointer.clone()));
+        let file = MemoryFile {
+            frontmatter: fm,
+            body: "content\n".to_string(),
+            format: mmcp_core::memory::FrontmatterFormat::TomlPlus,
+        };
+
+        let dto = MemoryFileDto::from(&file);
+        assert_eq!(
+            dto.frontmatter.history_source,
+            Some(CrossGroupHistoryPointerDto::from(&pointer)),
+            "frontmatter_to_dto must carry the pointer onto the wire"
+        );
+
+        let round_tripped = to_memory_file(dto).expect("valid dto must convert back");
+        assert_eq!(
+            round_tripped.frontmatter.history_source,
+            Some(pointer),
+            "to_memory_file must carry the pointer back into MemoryFrontmatter"
+        );
     }
 
     /// `MemoryDescriptorListDto` carries `skipped` alongside `descriptors`
