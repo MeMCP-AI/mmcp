@@ -139,6 +139,32 @@ export interface Finding {
   message: string;
 }
 
+/** Wire mirror of the Rust `BackReferenceDto`: one `[[...]]` link a
+ * reader may want to correct after a cross-group move. Read-only;
+ * the move never edits the memory this points at. */
+export interface BackReference {
+  group_slug: string;
+  memory_slug: string;
+  memory_id: string;
+  kind: 'cross_group_link' | 'dangling_same_group_link';
+}
+
+/** Wire mirror of the Rust `MoveMemoryResultDto`, the `move_memory`
+ * (cross-group) response shape. `renumbered` is `[old, new]` when the
+ * carried tracker number collided and the caller opted into
+ * renumbering; `null` when the number carried over unchanged. */
+export interface MoveMemoryResult {
+  id: string;
+  slug: string;
+  source_group: string;
+  target_group: string;
+  target_commit_id: string;
+  source_commit_id: string;
+  renumbered: [number, number] | null;
+  back_references: BackReference[];
+  sync_push_note: string;
+}
+
 export interface GroupReport {
   group_id: string;
   slug: string;

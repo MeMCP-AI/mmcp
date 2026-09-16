@@ -9,6 +9,7 @@
   import {
     AlertTriangle,
     ArrowLeft,
+    ArrowRightLeft,
     ChevronRight,
     FolderGit2,
     Home,
@@ -22,11 +23,13 @@
   import MandatoryToggle from '../primitives/MandatoryToggle.svelte';
   import MemoryReader from '../primitives/MemoryReader.svelte';
   import MemoryTree from '../primitives/MemoryTree.svelte';
+  import MoveMemoryDialog from '../MoveMemoryDialog.svelte';
   import RelatedPanel from '../primitives/RelatedPanel.svelte';
   import ScopeIcon from '../primitives/ScopeIcon.svelte';
   import ScopeTile from '../primitives/ScopeTile.svelte';
   import SearchInput from '../primitives/SearchInput.svelte';
   import ThemeSelector from '../ThemeSelector.svelte';
+  import type { MoveMemoryResult } from '$lib/types';
 
   import { untrack } from 'svelte';
   import { settingsStore } from '$lib/stores/settings.svelte';
@@ -363,6 +366,25 @@
     { id: 'memory', label: 'Memories' },
     { id: 'issue', label: 'Issues' }
   ];
+
+  // ---------------------------------------------------------------
+  //  Cross-group move
+  // ---------------------------------------------------------------
+
+  let showMoveDialog = $state(false);
+
+  // The moved memory no longer exists at its old (group, slug): drop
+  // both groups' cached listings and bodies, then follow it to its
+  // new home instead of leaving the reader pointed at a 404.
+  function handleMoved(result: MoveMemoryResult) {
+    showMoveDialog = false;
+    const oldGroupId = route.t === 'memory' ? route.groupId : null;
+    if (oldGroupId) memoriesStore.invalidate(oldGroupId, result.slug);
+    memoriesStore.invalidate(result.target_group);
+    void memoriesStore.loadDescriptors(result.target_group);
+    if (oldGroupId) void memoriesStore.loadDescriptors(oldGroupId);
+    gotoMemory(result.target_group, result.slug);
+  }
 </script>
 
 <div class="flex h-full w-full flex-col overflow-hidden bg-surface-0 text-fg">
@@ -740,6 +762,15 @@
           Loading memory…
         </div>
       {:else}
+        <div class="mx-auto flex max-w-6xl justify-end px-6 pt-4 sm:px-8">
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 rounded-md border border-line px-2 py-1 text-xs text-fg hover:bg-surface-2"
+            onclick={() => (showMoveDialog = true)}
+          >
+            <ArrowRightLeft size={11} /> Move to group
+          </button>
+        </div>
         <MemoryReader memory={activeBody}>
           {#snippet sidebar()}
             <RelatedPanel
@@ -750,6 +781,14 @@
             />
           {/snippet}
         </MemoryReader>
+        {#if showMoveDialog}
+          <MoveMemoryDialog
+            groupId={route.groupId}
+            slug={route.slug}
+            onClose={() => (showMoveDialog = false)}
+            onMoved={handleMoved}
+          />
+        {/if}
       {/if}
     {/if}
   </div>

@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { MemoryDescriptorList, MemoryFile } from '../types';
+import type { MemoryDescriptorList, MemoryFile, MoveMemoryResult } from '../types';
 
 export const listMemorySlugs = (groupId: string) =>
   invoke<string[]>('list_memory_slugs', { groupId });
@@ -18,3 +18,10 @@ export const updateMemory = (groupId: string, slug: string, memory: MemoryFile) 
 
 export const deleteMemory = (groupId: string, slug: string) =>
   invoke<string>('delete_memory', { groupId, slug });
+
+export const moveMemory = (
+  groupId: string,
+  slug: string,
+  targetGroupId: string,
+  renumber?: boolean
+) => invoke<MoveMemoryResult>('move_memory', { groupId, slug, targetGroupId, renumber });
