@@ -2548,12 +2548,10 @@ impl McpServer {
             mmcp_store::resolve_memory(&self.state.backend, &entry.handle, Some(&args.slug), None)
                 .await
                 .map_err(map_memory_error_to_mcp)?;
-        let history = self
-            .state
-            .backend
-            .walk_history(&entry.handle, &resolved.path, None)
-            .await
-            .map_err(git_error)?;
+        let history =
+            mmcp_store::walk_path_history(&self.state.backend, &entry.handle, &resolved.path, None)
+                .await
+                .map_err(git_error)?;
         let compact = args.compact.unwrap_or(false);
         let versions: Vec<serde_json::Value> = history
             .into_iter()
@@ -3910,12 +3908,10 @@ impl McpServer {
             .as_deref()
             .unwrap_or(mmcp_core::manifest::MANIFEST_FILENAME);
         let limit = args.limit.unwrap_or(DEFAULT_DEBUG_GIT_LOG_LIMIT) as usize;
-        let history = self
-            .state
-            .backend
-            .walk_history(&entry.handle, path, Some(limit))
-            .await
-            .map_err(git_error)?;
+        let history =
+            mmcp_store::walk_path_history(&self.state.backend, &entry.handle, path, Some(limit))
+                .await
+                .map_err(git_error)?;
         let commits: Vec<_> = history
             .into_iter()
             .map(|c| {

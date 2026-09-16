@@ -9,6 +9,7 @@
 //! - `home`: `MmcpHome`, `ResolvedAuthor`, discovery cascade.
 //! - `config`: project-config loader (`find_project_root`, `load`, `save`).
 //! - `groups`: `GroupIndex`, `GroupEntry`, refresh loop.
+//! - `history`: owning primitive for walking a repository path's commit history.
 //! - `memory`: typed read/write/edit/delete primitives.
 //! - `memory_ops`: transactional section-level body editing.
 //! - `features`, `issues`, `tracker`: the two CRUD tracker surfaces and their shared plumbing.
@@ -40,6 +41,7 @@ pub mod diagnostics;
 pub mod error;
 pub mod features;
 pub mod groups;
+pub mod history;
 pub mod home;
 pub mod import_adoc;
 pub mod issues;
@@ -77,6 +79,7 @@ pub use features::{
 // crate root (the only place a cross-crate re-export is allowed),
 // not on a peer module that would imply ownership.
 pub use groups::{GroupEntry, GroupIndex};
+pub use history::walk_path_history;
 pub use home::{MmcpHome, ResolvedAuthor, read_git_global};
 pub use import_adoc::{
     ADOC_EXTENSIONS, AdocConvertError, convert_adoc_to_markdown, is_adoc_filename,

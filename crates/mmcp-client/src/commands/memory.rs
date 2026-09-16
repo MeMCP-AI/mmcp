@@ -556,8 +556,7 @@ async fn run_versions(args: VersionsArgs) -> Result<()> {
     let resolved = resolve_memory(&backend, &entry.handle, slug_opt.as_deref(), id_opt)
         .await
         .map_err(anyhow::Error::from)?;
-    let history = backend
-        .walk_history(&entry.handle, &resolved.path, None)
+    let history = mmcp_store::walk_path_history(&backend, &entry.handle, &resolved.path, None)
         .await
         .map_err(anyhow::Error::from)?;
     if history.is_empty() {
