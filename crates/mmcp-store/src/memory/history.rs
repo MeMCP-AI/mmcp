@@ -226,12 +226,20 @@ async fn read_history_pointer(
 }
 
 /// Read `path` at `rev` from `handle`'s repo. When `rev` names a
-/// commit `handle`'s repo does not have (a `RevNotFound`) and the
-/// memory's current frontmatter carries a cross-group history
-/// pointer, retry against the source group's repo and its pre-move
-/// path: routes a moved memory's old-history reads to the
-/// repository that actually holds the commit, transparent to the
-/// caller.
+/// commit `handle`'s repo does not have (a `RevNotFound` or
+/// `ResolveRev`) and the memory's frontmatter carries a cross-group
+/// history pointer, follow the SAME chain of pointers
+/// `walk_memory_history`'s `follow_history_chain` walks to build its
+/// listing, one hop at a time: each hop's OWN frontmatter is read at
+/// ITS pinned `last_commit`, never at that repo's live HEAD (which no
+/// longer has the path once that hop's own later move deleted it
+/// there), so a further `history_source` recorded on a frozen,
+/// already-moved-away copy is still reachable. Every sha
+/// `list_versions` lists for a memory, however many hops back, is
+/// readable through this function; the chain is not cut after one
+/// hop. Guarded against a corrupted or adversarial pointer cycle by
+/// the same `(group, path, last_commit)` visited set
+/// `follow_history_chain` uses.
 pub async fn read_file_following_history_pointer(
     backend: &NativeBackend,
     handle: &RepoHandle,
@@ -239,29 +247,64 @@ pub async fn read_file_following_history_pointer(
     path: &str,
     rev: &Rev,
 ) -> Result<bytes::Bytes, ImportError> {
-    match backend.read_file(handle, path, rev).await {
-        Ok(bytes) => Ok(bytes),
+    let not_found = match backend.read_file(handle, path, rev).await {
+        Ok(bytes) => return Ok(bytes),
         // A commit sha this repo's object database does not have
         // surfaces as `RevNotFound` (unparseable hex) or `ResolveRev`
         // (parseable hex, missing object): both mean "not in this
         // repo", the shape a cross-group commit produces here since
-        // the target and source repositories share no git objects.
+        // sibling repositories share no git objects.
         Err(err @ (GitError::RevNotFound(_) | GitError::ResolveRev { .. }))
             if matches!(rev, Rev::Commit(_)) =>
         {
-            let Some(pointer) = read_history_pointer(backend, handle, path).await? else {
-                return Err(ImportError::Git(err));
-            };
-            let Some(source_entry) = groups.get(&GroupId::from_uuid(pointer.source_group)).await
-            else {
-                return Err(ImportError::Git(err));
-            };
-            backend
-                .read_file(&source_entry.handle, &pointer.source_path, rev)
-                .await
-                .map_err(ImportError::Git)
+            err
         }
-        Err(err) => Err(ImportError::Git(err)),
+        Err(err) => return Err(ImportError::Git(err)),
+    };
+
+    let Some(mut pointer) = read_history_pointer(backend, handle, path).await? else {
+        return Err(ImportError::Git(not_found));
+    };
+    let mut visited: HashSet<(Uuid, String, String)> = HashSet::new();
+    loop {
+        let key = (
+            pointer.source_group,
+            pointer.source_path.clone(),
+            pointer.last_commit.clone(),
+        );
+        if !visited.insert(key) {
+            return Err(ImportError::Git(not_found));
+        }
+        let Some(source_entry) = groups.get(&GroupId::from_uuid(pointer.source_group)).await else {
+            return Err(ImportError::Git(not_found));
+        };
+
+        match backend
+            .read_file(&source_entry.handle, &pointer.source_path, rev)
+            .await
+        {
+            Ok(bytes) => return Ok(bytes),
+            Err(GitError::RevNotFound(_) | GitError::ResolveRev { .. }) => {
+                let root = Rev::Commit(pointer.last_commit.clone());
+                let next_pointer = match read_frontmatter_at(
+                    backend,
+                    &source_entry.handle,
+                    &root,
+                    &pointer.source_path,
+                )
+                .await
+                {
+                    Ok(frontmatter) => frontmatter.history_source,
+                    Err(ImportError::Git(GitError::PathNotFound(_))) => None,
+                    Err(other) => return Err(other),
+                };
+                match next_pointer {
+                    Some(next) => pointer = next,
+                    None => return Err(ImportError::Git(not_found)),
+                }
+            }
+            Err(other) => return Err(ImportError::Git(other)),
+        }
     }
 }
 
@@ -621,6 +664,127 @@ mod tests {
         assert!(
             owning_groups.contains(group_a.group_id.as_uuid()),
             "must recurse through b's own pointer to reach a's origin commit: {owning_groups:?}"
+        );
+    }
+
+    /// The auditor's live repro: `mmcp memory read <C> <slug>
+    /// --version <A create sha>` failed with a raw git error before
+    /// this fix. After an A to B to C chain (two hops), every sha
+    /// `list_versions` reports on C, including A's own origin
+    /// commit, must be readable through `read_memory` on C: the read
+    /// path follows the same chain the history listing does, not
+    /// only one hop.
+    #[tokio::test]
+    async fn read_file_following_history_pointer_reads_the_origin_commit_after_two_hops() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let group_a = scratch.seed_group("read-chain-a").await.expect("seed a");
+        let group_b = scratch.seed_group("read-chain-b").await.expect("seed b");
+        let group_c = scratch.seed_group("read-chain-c").await.expect("seed c");
+        let entry_a = scratch
+            .groups()
+            .get(&group_a.group_id)
+            .await
+            .expect("entry a");
+        let entry_b = scratch
+            .groups()
+            .get(&group_b.group_id)
+            .await
+            .expect("entry b");
+        let entry_c = scratch
+            .groups()
+            .get(&group_c.group_id)
+            .await
+            .expect("entry c");
+
+        let file = MemoryFile {
+            frontmatter: MemoryFrontmatter::new("chained", "moved twice", MemoryKind::Scratch),
+            body: "origin content, byte for byte\n".to_string(),
+            format: FrontmatterFormat::TomlPlus,
+        };
+        let rendered = file.to_string().expect("render");
+        let seeded = import_memory(
+            scratch.backend(),
+            &entry_a.handle,
+            "chained",
+            &rendered,
+            None,
+            scratch.author(),
+            false,
+        )
+        .await
+        .expect("seed origin memory in a");
+
+        // The origin commit's own path in A, and its actual bytes,
+        // read BEFORE either move so this is real ground truth, not
+        // a copy of `rendered` (which never had the minted id set).
+        let origin_path = mmcp_core::conventions::memory_path(
+            "chained",
+            mmcp_core::id::MemoryId::from_uuid(seeded.id),
+        );
+        let origin_bytes =
+            crate::testing::read_raw_bytes(scratch.backend(), &entry_a.handle, &origin_path)
+                .await
+                .expect("read origin bytes from a");
+
+        move_memory_across_groups(
+            scratch.backend(),
+            &entry_a,
+            &entry_b,
+            None,
+            Some(seeded.id),
+            scratch.author(),
+            CrossGroupMoveOptions::default(),
+        )
+        .await
+        .expect("move a to b");
+        move_memory_across_groups(
+            scratch.backend(),
+            &entry_b,
+            &entry_c,
+            Some("chained"),
+            Some(seeded.id),
+            scratch.author(),
+            CrossGroupMoveOptions::default(),
+        )
+        .await
+        .expect("move b to c");
+
+        let resolved = resolve_memory(scratch.backend(), &entry_c.handle, Some("chained"), None)
+            .await
+            .expect("resolve in c");
+        let outcome = walk_memory_history(
+            scratch.backend(),
+            &entry_c.handle,
+            scratch.groups(),
+            &resolved.path,
+            None,
+        )
+        .await
+        .expect("walk memory history across the whole chain");
+
+        // The oldest entry, tagged with group A, is the origin
+        // creation commit: exactly what `list_versions` on C would
+        // report as the last, oldest entry.
+        let origin_entry = outcome
+            .entries
+            .iter()
+            .find(|e| e.owning_group == *group_a.group_id.as_uuid())
+            .expect("an entry owned by group a must be present");
+
+        let read_bytes = read_file_following_history_pointer(
+            scratch.backend(),
+            &entry_c.handle,
+            scratch.groups(),
+            &resolved.path,
+            &Rev::Commit(origin_entry.commit.id.clone()),
+        )
+        .await
+        .expect("reading the origin commit through c must succeed, not raw-git-error");
+
+        assert_eq!(
+            read_bytes.as_ref(),
+            origin_bytes.as_slice(),
+            "content read through the two-hop chain must match a's actual origin bytes"
         );
     }
 
