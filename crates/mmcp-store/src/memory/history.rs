@@ -80,12 +80,12 @@ pub struct MemoryHistoryOutcome {
 /// further `history_source` (the memory moved more than once), the
 /// walk keeps following it, tagging every group's commits with that
 /// group's id, guarded against a corrupted or adversarial pointer
-/// cycle by [`follow_history_chain`]'s visited set.
+/// cycle by `follow_history_chain`'s visited set.
 ///
 /// `limit` bounds only the target group's own walk; every appended
 /// hop's history is always walked in full, since a moved memory's
 /// per-group history is bounded by construction (see
-/// [`crate::memory_move::move_memory_across_groups`]).
+/// [`crate::memory::memory_move::move_memory_across_groups`]).
 pub async fn walk_memory_history(
     backend: &NativeBackend,
     handle: &RepoHandle,
@@ -269,8 +269,8 @@ pub async fn read_file_following_history_pointer(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use crate::memory::memory_move::{CrossGroupMoveOptions, move_memory_across_groups};
     use crate::memory::{import_memory, resolve_memory};
-    use crate::memory_move::{CrossGroupMoveOptions, move_memory_across_groups};
     use crate::testing::ScratchHome;
     use mmcp_core::memory::{FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryKind};
 

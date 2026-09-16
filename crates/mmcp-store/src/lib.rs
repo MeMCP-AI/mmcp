@@ -9,14 +9,11 @@
 //! - `home`: `MmcpHome`, `ResolvedAuthor`, discovery cascade.
 //! - `config`: project-config loader (`find_project_root`, `load`, `save`).
 //! - `groups`: `GroupIndex`, `GroupEntry`, refresh loop.
-//! - `history`: owning primitive for walking a repository path's commit history.
-//! - `memory`: typed read/write/edit/delete primitives.
-//! - `memory_move`: cross-group memory move.
-//! - `memory_ops`: transactional section-level body editing.
+//! - `memory`: typed read/write/edit/delete primitives, and the memory domain's
+//!   submodules `back_references`, `history`, `memory_move`, `memory_ops`.
 //! - `features`, `issues`, `tracker`: the two CRUD tracker surfaces and their shared plumbing.
 //! - `milestones`: milestone CRUD and rollup computation.
 //! - `archive`: portable group archive export/import.
-//! - `back_references`: read-only `[[...]]` link report after a cross-group move.
 //! - `cache`: local content/semantic SQLite cache.
 //! - `sync`: thin wrappers around `mmcp-sync` for pull/push.
 //! - `diagnostics`: `check_health`/`diagnose` bodies with typed report structs.
@@ -36,7 +33,6 @@
 #![forbid(unsafe_code)]
 
 pub mod archive;
-pub mod back_references;
 pub mod cache;
 pub mod config;
 mod defaults;
@@ -44,14 +40,11 @@ pub mod diagnostics;
 pub mod error;
 pub mod features;
 pub mod groups;
-pub mod history;
 pub mod home;
 pub mod import_adoc;
 pub mod issues;
 pub mod lock;
 pub mod memory;
-pub mod memory_move;
-pub mod memory_ops;
 pub mod milestones;
 pub mod sessions;
 pub mod sync;
@@ -65,9 +58,6 @@ pub use archive::{
     ArchivedGroupMeta, ExportOptions, GroupImportOutcome, ImportArchiveOptions,
     ImportArchiveReport, MemoryConflict, MemoryFilter, collect_group_tags, export_archive,
     export_archive_to_path, import_archive, inspect_archive, list_archive, parse_memory_kind,
-};
-pub use back_references::{
-    BackReference, BackReferenceKind, BackReferenceReport, scan_back_references,
 };
 pub use diagnostics::{
     DiagReport, Finding, GroupReport, diagnose_all, diagnose_group, health_check_all,
@@ -86,14 +76,21 @@ pub use features::{
 // crate root (the only place a cross-crate re-export is allowed),
 // not on a peer module that would imply ownership.
 pub use groups::{GroupEntry, GroupIndex};
-pub use history::{
-    MemoryHistoryOutcome, OwnedHistoryEntry, read_file_following_history_pointer,
-    walk_memory_history, walk_path_history,
-};
 pub use home::{MmcpHome, ResolvedAuthor, read_git_global};
 pub use import_adoc::{
     ADOC_EXTENSIONS, AdocConvertError, convert_adoc_to_markdown, is_adoc_filename,
 };
+pub use memory::back_references::{
+    BackReference, BackReferenceKind, BackReferenceReport, scan_back_references,
+};
+pub use memory::history::{
+    MemoryHistoryOutcome, OwnedHistoryEntry, read_file_following_history_pointer,
+    walk_memory_history, walk_path_history,
+};
+pub use memory::memory_move::{
+    CrossGroupMoveOptions, CrossGroupMoveOutcome, move_memory_across_groups,
+};
+pub use memory::memory_ops::{LineExpect, MemoryEditError, MemoryEditOp, apply_ops};
 pub use memory::{
     AddressingMode, CrossGroupMoveHalfCompletedDetail, IdValidation, ImportError, ImportResult,
     MAX_SLUG_LENGTH, MAX_SLUG_SEGMENTS, MemoryFileRef, MemoryFrontmatterEntry, MemorySlugDir,
@@ -104,8 +101,6 @@ pub use memory::{
     resolve_memory, slugify_filename, validate_id_mismatch, validate_memory_slug,
     validate_slug_segment, write_file_at_path, write_memory_by_id,
 };
-pub use memory_move::{CrossGroupMoveOptions, CrossGroupMoveOutcome, move_memory_across_groups};
-pub use memory_ops::{LineExpect, MemoryEditError, MemoryEditOp, apply_ops};
 pub use milestones::{
     AddSpec as MilestoneAddSpec, MilestoneError, MilestoneRecord, MilestoneRollup, RollupStatus,
     UpdateSpec as MilestoneUpdateSpec, add_milestone, list_milestones, read_milestone,

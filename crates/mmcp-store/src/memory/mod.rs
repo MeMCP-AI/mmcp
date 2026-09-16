@@ -14,6 +14,18 @@
 //! `ImportError` keeps its name even though the module covers broader CRUD concerns;
 //! a rename to `MemoryError` would ripple across every consumer's error mapper,
 //! not worth it for this chain.
+//!
+//! ## Submodules
+//!
+//! - [`back_references`]: read-only `[[...]]` link report after a cross-group move.
+//! - [`history`]: owning primitive for walking a repository path's commit history.
+//! - [`memory_move`]: cross-group memory move.
+//! - [`memory_ops`]: transactional section-level body editing.
+
+pub mod back_references;
+pub mod history;
+pub mod memory_move;
+pub mod memory_ops;
 
 use std::future::Future;
 
@@ -164,7 +176,7 @@ pub enum ImportError {
     /// Boxed: `MemoryEditError`'s content-guard variants carry several owned `Vec`s.
     /// This is the variant that would otherwise set every `ImportError`-wrapping error type's minimum size.
     #[error(transparent)]
-    Edit(#[from] Box<crate::memory_ops::MemoryEditError>),
+    Edit(#[from] Box<memory_ops::MemoryEditError>),
 
     /// A write's estimated inline-result size exceeds the calling MCP client's result ceiling.
     /// The write is not merely shrinking or leaving alone an already-oversized stored body.
@@ -173,7 +185,7 @@ pub enum ImportError {
     )]
     BodyResultTooLarge { limit: usize, size: usize },
 
-    /// [`crate::memory_move::move_memory_across_groups`] found the moving memory's id
+    /// [`crate::memory::memory_move::move_memory_across_groups`] found the moving memory's id
     /// already allocated to a different file in the target group.
     /// The caller picks a different target group or resolves the collision there first.
     #[error(
@@ -185,7 +197,7 @@ pub enum ImportError {
         target_group: Uuid,
     },
 
-    /// [`crate::memory_move::move_memory_across_groups`] found the moving memory's carried
+    /// [`crate::memory::memory_move::move_memory_across_groups`] found the moving memory's carried
     /// tracker `number` already allocated in the target group.
     /// The caller either resolves the collision manually or opts into
     /// `renumber`, which mints a fresh number under the target group's lock.
@@ -199,7 +211,7 @@ pub enum ImportError {
         target_group: Uuid,
     },
 
-    /// [`crate::memory_move::move_memory_across_groups`]'s target
+    /// [`crate::memory::memory_move::move_memory_across_groups`]'s target
     /// write landed, but the source delete that should follow it
     /// then failed. The target group's local cache row is already
     /// updated to the moved copy (best-effort, same as any other
@@ -1007,11 +1019,11 @@ pub async fn read_and_apply_body_ops(
     backend: &NativeBackend,
     handle: &RepoHandle,
     path: &str,
-    ops: &[crate::memory_ops::MemoryEditOp],
+    ops: &[memory_ops::MemoryEditOp],
 ) -> Result<(MemoryFile, String), ImportError> {
     let bytes = backend.read_file(handle, path, &Rev::head()).await?;
     let mut file = parse_memory_file_bytes(&bytes, path)?;
-    file.body = crate::memory_ops::apply_ops(&file.body, ops).map_err(Box::new)?;
+    file.body = memory_ops::apply_ops(&file.body, ops).map_err(Box::new)?;
     let rendered = file.to_string()?;
     Ok((file, rendered))
 }
@@ -1779,11 +1791,9 @@ mod tests {
                 "ticket_counter_overflow",
             ),
             (
-                ImportError::Edit(Box::new(
-                    crate::memory_ops::MemoryEditError::SectionNotFound {
-                        path: "x".to_string(),
-                    },
-                )),
+                ImportError::Edit(Box::new(memory_ops::MemoryEditError::SectionNotFound {
+                    path: "x".to_string(),
+                })),
                 "memory_edit_failed",
             ),
             (

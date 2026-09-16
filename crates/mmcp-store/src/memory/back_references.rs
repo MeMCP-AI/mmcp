@@ -1,6 +1,6 @@
 //! Read-only back-reference report, scanned after a cross-group move.
 //!
-//! A cross-group move ([`crate::memory_move::move_memory_across_groups`])
+//! A cross-group move ([`crate::memory::memory_move::move_memory_across_groups`])
 //! never rewrites another memory's body: a documentation-style
 //! `[[...]]` link is free text, not a typed cross-reference the
 //! move machinery could find and update. This module scans every
@@ -115,7 +115,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::memory::import_memory;
-    use crate::memory_move::{CrossGroupMoveOptions, move_memory_across_groups};
+    use crate::memory::memory_move::{CrossGroupMoveOptions, move_memory_across_groups};
     use crate::testing::ScratchHome;
     use mmcp_core::memory::{FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryKind};
 

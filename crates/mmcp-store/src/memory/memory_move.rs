@@ -20,8 +20,8 @@ use mmcp_git::{CommitSpec, GitBackend, GitError, NativeBackend, Rev};
 use uuid::Uuid;
 
 use crate::groups::GroupEntry;
-use crate::history::walk_path_history;
 use crate::home::ResolvedAuthor;
+use crate::memory::history::walk_path_history;
 use crate::memory::{ImportError, resolve_commit_message, resolve_memory};
 use crate::tracker;
 
