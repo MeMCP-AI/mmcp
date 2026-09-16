@@ -276,6 +276,7 @@ mod tests {
                     number: Some(number),
                     depends_on: vec![Uuid::now_v7()],
                     blocks: vec![Uuid::now_v7()],
+                    milestone: Some(Uuid::now_v7()),
                     ..FeatureMetadata::default()
                 }),
             body: format!("## Need\n\n{name} needs to move.\n"),
@@ -526,6 +527,7 @@ mod tests {
             .depends_on
             .clone();
         let blocks = file.frontmatter.feature.as_ref().unwrap().blocks.clone();
+        let milestone = file.frontmatter.feature.as_ref().unwrap().milestone;
         let outcome = move_memory_across_groups(
             scratch.backend(),
             &source_entry,
@@ -553,5 +555,6 @@ mod tests {
         assert_eq!(moved_feature.number, Some(new_number));
         assert_eq!(moved_feature.depends_on, depends_on);
         assert_eq!(moved_feature.blocks, blocks);
+        assert_eq!(moved_feature.milestone, milestone);
     }
 }
