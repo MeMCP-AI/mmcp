@@ -664,7 +664,7 @@ struct EditMemoryBodyArgs {
     pub force: bool,
 }
 
-/// Tool-layer mirror of `mmcp_store::memory_ops::LineExpect`.
+/// Tool-layer mirror of `mmcp_store::LineExpect`.
 /// See that type's doc comment for the field semantics.
 /// This mirror only adds the `JsonSchema` derive the MCP tool schema needs.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
