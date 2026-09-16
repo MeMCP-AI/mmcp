@@ -178,7 +178,7 @@ fn tool_metadata(id: McpToolId) -> ToolMetadata {
                 reason: "override: true replaces the colliding-id memory in place",
             }])
             .build(),
-        McpToolId::MoveMemory | McpToolId::DeleteMemory => {
+        McpToolId::MoveMemory | McpToolId::MoveMemoryToGroup | McpToolId::DeleteMemory => {
             ToolMetadataBuilder::new(ToolIconCategory::Mutate)
                 .meta_keys(&[META_PROTECTED_GROUP_GATED])
                 .build()
