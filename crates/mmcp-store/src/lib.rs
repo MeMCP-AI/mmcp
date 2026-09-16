@@ -95,14 +95,14 @@ pub use import_adoc::{
     ADOC_EXTENSIONS, AdocConvertError, convert_adoc_to_markdown, is_adoc_filename,
 };
 pub use memory::{
-    AddressingMode, IdValidation, ImportError, ImportResult, MAX_SLUG_LENGTH, MAX_SLUG_SEGMENTS,
-    MemoryFileRef, MemoryFrontmatterEntry, MemorySlugDir, MoveMemoryOutcome, ResolvedMemory,
-    SynthFrontmatter, WriteFileOptions, WriteMemoryOptions, delete_file_at_path, import_memory,
-    list_all_memory_files, list_memory_slug_dirs, move_memory_path, parse_creatable_kind,
-    parse_kind, parse_memory_file_bytes, read_and_apply_body_ops, read_frontmatter,
-    read_frontmatters_in_group, resolve_group, resolve_memory, slugify_filename,
-    validate_id_mismatch, validate_memory_slug, validate_slug_segment, write_file_at_path,
-    write_memory_by_id,
+    AddressingMode, CrossGroupMoveHalfCompletedDetail, IdValidation, ImportError, ImportResult,
+    MAX_SLUG_LENGTH, MAX_SLUG_SEGMENTS, MemoryFileRef, MemoryFrontmatterEntry, MemorySlugDir,
+    MoveMemoryOutcome, ResolvedMemory, SynthFrontmatter, WriteFileOptions, WriteMemoryOptions,
+    delete_file_at_path, import_memory, list_all_memory_files, list_memory_slug_dirs,
+    move_memory_path, parse_creatable_kind, parse_kind, parse_memory_file_bytes,
+    read_and_apply_body_ops, read_frontmatter, read_frontmatters_in_group, resolve_group,
+    resolve_memory, slugify_filename, validate_id_mismatch, validate_memory_slug,
+    validate_slug_segment, write_file_at_path, write_memory_by_id,
 };
 pub use memory_move::{CrossGroupMoveOptions, CrossGroupMoveOutcome, move_memory_across_groups};
 pub use memory_ops::{LineExpect, MemoryEditError, MemoryEditOp, apply_ops};

@@ -198,6 +198,38 @@ pub enum ImportError {
         source_group: Uuid,
         target_group: Uuid,
     },
+
+    /// [`crate::memory_move::move_memory_across_groups`]'s target
+    /// write landed, but the source delete that should follow it
+    /// then failed. The target group's local cache row is already
+    /// updated to the moved copy (best-effort, same as any other
+    /// write); the source file is untouched and still resolves in
+    /// the source group. A retry of the same move call resumes from
+    /// here: `reject_target_id_collision` recognizes the target copy
+    /// by its `history_source` pointer and completes the source
+    /// delete instead of refusing on an id collision.
+    ///
+    /// Boxed: inlining these fields directly in this variant would
+    /// raise every `ImportError`-wrapping error type's minimum size,
+    /// the same rationale as [`Self::Edit`]'s own boxed payload.
+    #[error(transparent)]
+    CrossGroupMoveHalfCompleted(#[from] Box<CrossGroupMoveHalfCompletedDetail>),
+}
+
+/// Detail payload for [`ImportError::CrossGroupMoveHalfCompleted`].
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "move of memory {id} from group {source_group} to group {target_group} half-completed: \
+     the target write landed as commit {target_commit_id}, but the source delete then failed; \
+     retry the same move to resume"
+)]
+pub struct CrossGroupMoveHalfCompletedDetail {
+    pub id: Uuid,
+    pub source_group: Uuid,
+    pub target_group: Uuid,
+    pub target_commit_id: String,
+    #[source]
+    pub source: ImportError,
 }
 
 impl ImportError {
@@ -230,6 +262,7 @@ impl ImportError {
             Self::BodyResultTooLarge { .. } => "body_result_too_large",
             Self::CrossGroupIdCollision { .. } => "cross_group_id_collision",
             Self::TrackerNumberCollision { .. } => "tracker_number_collision",
+            Self::CrossGroupMoveHalfCompleted(_) => "cross_group_move_half_completed",
         }
     }
 }
