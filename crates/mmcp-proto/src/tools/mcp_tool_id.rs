@@ -54,6 +54,7 @@ pub enum McpToolId {
     EditMemory,
     EditMemoryBody,
     MoveMemory,
+    MoveMemoryToGroup,
     DebugWriteFile,
     UpdateFeature,
     UpdateIssue,
