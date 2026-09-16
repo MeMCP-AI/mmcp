@@ -230,8 +230,13 @@ struct McpServer {
     /// Stored so `status` and `get_info` can echo the running posture;
     /// the actual filtering happens once during `new`.
     mode: ServeMode,
-    // NOTE: `tool_router` is read through the `#[tool_handler]` macro's generated plumbing, not from our own code.
-    #[allow(dead_code)]
+    /// Per-instance, mode-filtered router: `McpServer::new` retains
+    /// only the tools `mode.allows` after building it from
+    /// `Self::tool_router()`. `#[tool_handler(router = self.tool_router)]`
+    /// below binds `list_tools`/`call_tool`/`get_tool` to THIS field
+    /// instead of the macro's default `Self::tool_router()`, which
+    /// would rebuild the unfiltered, full-surface router on every
+    /// call and silently defeat the mode filter.
     tool_router: ToolRouter<McpServer>,
 }
 
@@ -7849,7 +7854,7 @@ fn memory_edit_error_payload(err: &mmcp_store::MemoryEditError) -> serde_json::V
     }
 }
 
-#[tool_handler]
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for McpServer {
     fn get_info(&self) -> ServerInfo {
         let mut instructions = SESSION_INSTRUCTIONS.to_string();
@@ -15316,6 +15321,134 @@ mod tests {
         // destructive, so Edit mode's registration filter drops it,
         // exactly like delete_memory above.
         assert!(!names.contains("move_memory_to_group"));
+    }
+
+    /// Spin up a real `McpServer` over an in-process duplex pipe and
+    /// connect a bare `()` client through it: a genuine JSON-RPC
+    /// round trip through `#[tool_handler]`'s generated
+    /// `list_tools`/`call_tool`, not a struct-field inspection.
+    ///
+    /// This is the ONLY way to catch a `#[tool_handler]` bound to the
+    /// wrong router: `server.tool_router` (the mode-filtered
+    /// instance field) can be perfectly correct while the live
+    /// protocol surface still serves the unfiltered
+    /// `Self::tool_router()` the macro defaults to, exactly the
+    /// regression this test exists to catch.
+    async fn connect_in_process(
+        server: McpServer,
+    ) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+        let (client_io, server_io) = tokio::io::duplex(1024 * 1024);
+        tokio::spawn(async move {
+            let running = server.serve(server_io).await.expect("server serve");
+            let _ = running.waiting().await;
+        });
+        ().serve(client_io).await.expect("client serve")
+    }
+
+    /// The auditor's live regression, at the protocol layer: under
+    /// `--mode edit`, `move_memory_to_group` (destructive) must be
+    /// absent from `tools/list` and refused by `tools/call`, while
+    /// `move_memory` (non-destructive) stays listed AND actually
+    /// callable end to end.
+    #[tokio::test]
+    async fn mcp_protocol_edit_mode_lists_and_calls_only_safe_tools() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "protocol-edit", "flat", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Edit);
+        let client = connect_in_process(server).await;
+
+        let tools = client
+            .list_tools(None)
+            .await
+            .expect("tools/list must succeed");
+        let names: std::collections::HashSet<String> =
+            tools.tools.iter().map(|t| t.name.to_string()).collect();
+        assert!(
+            names.contains("move_memory"),
+            "move_memory must be listed under edit mode: {names:?}"
+        );
+        assert!(
+            !names.contains("move_memory_to_group"),
+            "move_memory_to_group must not be listed under edit mode: {names:?}"
+        );
+
+        let refused = client
+            .call_tool(rmcp::model::CallToolRequestParams::new(
+                "move_memory_to_group",
+            ))
+            .await;
+        assert!(
+            refused.is_err(),
+            "a tool dropped from the registration filter must be refused, not silently answered"
+        );
+
+        // move_memory itself is not just listed: it actually runs
+        // end to end through the filtered router.
+        let mut args = serde_json::Map::new();
+        args.insert("group".to_string(), json!(group.to_string()));
+        args.insert("slug".to_string(), json!("flat"));
+        args.insert("new_slug".to_string(), json!("nested/flat"));
+        let result = client
+            .call_tool(rmcp::model::CallToolRequestParams::new("move_memory").with_arguments(args))
+            .await
+            .expect("move_memory must actually run under edit mode");
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "move_memory call must succeed: {result:?}"
+        );
+    }
+
+    /// The auditor's live regression, at the protocol layer: under
+    /// `--mode readonly`, every mutating tool is absent from
+    /// `tools/list` and refused by `tools/call`. The auditor's exact
+    /// repro was `write_memory` committing under `--mode readonly`;
+    /// this proves the call is refused AND that nothing lands (the
+    /// group's memory listing stays exactly as seeded).
+    #[tokio::test]
+    async fn mcp_protocol_readonly_mode_refuses_every_mutation() {
+        let (state, _tmp) = test_state().await;
+        let group =
+            seed_group_with_memory(&state, "protocol-readonly", "flat", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state.clone(), ServeMode::Readonly);
+        let client = connect_in_process(server).await;
+
+        let tools = client
+            .list_tools(None)
+            .await
+            .expect("tools/list must succeed");
+        let names: std::collections::HashSet<String> =
+            tools.tools.iter().map(|t| t.name.to_string()).collect();
+        assert!(!names.contains("write_memory"), "{names:?}");
+        assert!(!names.contains("move_memory"), "{names:?}");
+        assert!(!names.contains("move_memory_to_group"), "{names:?}");
+
+        let mut args = serde_json::Map::new();
+        args.insert("group".to_string(), json!(group.to_string()));
+        args.insert("slug".to_string(), json!("smuggled-in"));
+        args.insert("name".to_string(), json!("Smuggled"));
+        args.insert("description".to_string(), json!("must never land"));
+        args.insert("kind".to_string(), json!("scratch"));
+        args.insert("body".to_string(), json!("content\n"));
+        let refused = client
+            .call_tool(rmcp::model::CallToolRequestParams::new("write_memory").with_arguments(args))
+            .await;
+        assert!(
+            refused.is_err(),
+            "write_memory must be refused under readonly mode, not committed"
+        );
+
+        // Nothing landed: the group's on-disk listing is exactly the
+        // seeded single memory, none added.
+        let entry = state.groups.get(&group).await.expect("group entry");
+        let dirs = mmcp_store::list_memory_slug_dirs(&state.backend, &entry.handle, &Rev::head())
+            .await
+            .expect("list slug dirs");
+        assert_eq!(
+            dirs.len(),
+            1,
+            "the refused write_memory call must not have committed anything: {dirs:?}"
+        );
+        assert_eq!(dirs[0].slug, "flat");
     }
 
     /// `--mode full` keeps every registered tool.
