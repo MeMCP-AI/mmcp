@@ -10,7 +10,10 @@
 //! than an arbitrary repo path (`debug_git_log` walks the latter and
 //! stays on [`walk_path_history`] directly).
 
+use std::collections::HashSet;
+
 use mmcp_core::id::GroupId;
+use mmcp_core::memory::CrossGroupHistoryPointer;
 use mmcp_git::{CommitMeta, GitBackend, GitError, NativeBackend, RepoHandle, Rev};
 use uuid::Uuid;
 
@@ -26,6 +29,21 @@ pub async fn walk_path_history(
     limit: Option<usize>,
 ) -> Result<Vec<CommitMeta>, GitError> {
     backend.walk_history(handle, path, limit).await
+}
+
+/// [`walk_path_history`] rooted at `root` instead of `HEAD`. Used to
+/// walk a history-pointer hop: the pointed-at path no longer exists
+/// at the source repo's `HEAD` once its own move-delete commit
+/// landed there, so the walk has to pin the pointer's own
+/// `last_commit`.
+async fn walk_path_history_from(
+    backend: &NativeBackend,
+    handle: &RepoHandle,
+    root: &Rev,
+    path: &str,
+    limit: Option<usize>,
+) -> Result<Vec<CommitMeta>, GitError> {
+    backend.walk_history_from(handle, root, path, limit).await
 }
 
 /// One history entry tagged with the group whose repository actually holds the commit.
@@ -52,13 +70,22 @@ pub struct MemoryHistoryOutcome {
 
 /// Walk a memory's full history: `handle`'s own commits over `path`,
 /// then, when `path`'s current frontmatter carries a
-/// [`mmcp_core::memory::CrossGroupHistoryPointer`], the source
-/// group's commits over its pre-move path.
+/// [`CrossGroupHistoryPointer`], every group the memory passed
+/// through before landing here, one hop at a time.
 ///
-/// `limit` bounds only the target group's own walk; the appended
-/// source history (when the pointer resolves) is always walked in
-/// full, since a moved memory's pre-move history is bounded by
-/// construction (see [`crate::memory_move::move_memory_across_groups`]).
+/// Each hop reads the pointed-at file's frontmatter AT the pointer's
+/// own `last_commit`, not at the source repo's `HEAD`: the path was
+/// deleted there once that group's own move landed, so `HEAD` no
+/// longer has it. When that frozen frontmatter itself carries a
+/// further `history_source` (the memory moved more than once), the
+/// walk keeps following it, tagging every group's commits with that
+/// group's id, guarded against a corrupted or adversarial pointer
+/// cycle by [`follow_history_chain`]'s visited set.
+///
+/// `limit` bounds only the target group's own walk; every appended
+/// hop's history is always walked in full, since a moved memory's
+/// per-group history is bounded by construction (see
+/// [`crate::memory_move::move_memory_across_groups`]).
 pub async fn walk_memory_history(
     backend: &NativeBackend,
     handle: &RepoHandle,
@@ -84,34 +111,101 @@ pub async fn walk_memory_history(
         });
     };
 
-    let Some(source_entry) = groups.get(&GroupId::from_uuid(pointer.source_group)).await else {
-        return Ok(MemoryHistoryOutcome {
-            entries,
-            unresolved_pointer: Some(format!(
+    let mut visited: HashSet<(Uuid, String, String)> = HashSet::new();
+    let unresolved_pointer =
+        follow_history_chain(backend, groups, pointer, &mut visited, &mut entries)
+            .await
+            .err();
+
+    Ok(MemoryHistoryOutcome {
+        entries,
+        unresolved_pointer,
+    })
+}
+
+/// Follow a chain of cross-group history pointers one hop at a time,
+/// appending each hop's commits (tagged with its owning group) to
+/// `entries`. Starts from `pointer` and keeps going as long as the
+/// hop it lands on itself carries a further `history_source`.
+///
+/// `visited` guards against a cycle: a `(group, path, last_commit)`
+/// hop identity already seen earlier in this same walk stops the
+/// walk immediately, before performing any further git read, rather
+/// than looping. A genuine cycle can only come from a corrupted or
+/// hand-edited pointer (real moves always target a strictly earlier,
+/// already-existing commit, which cannot itself reference a commit
+/// that does not exist yet), so this never fires on organic move
+/// history; it exists as a defensive bound on untrusted input, not
+/// a limit on how many real hops a move chain may have.
+///
+/// Returns `Ok(())` once the chain ends normally (or is cut short by
+/// the cycle guard: the entries gathered so far are still a correct,
+/// if incomplete, answer) and `Err(reason)` when a hop's source group
+/// is not mirrored locally or its history is unreadable; the caller
+/// surfaces `reason` as a `warn` note rather than failing the whole
+/// call.
+async fn follow_history_chain(
+    backend: &NativeBackend,
+    groups: &GroupIndex,
+    mut pointer: CrossGroupHistoryPointer,
+    visited: &mut HashSet<(Uuid, String, String)>,
+    entries: &mut Vec<OwnedHistoryEntry>,
+) -> Result<(), String> {
+    loop {
+        let key = (
+            pointer.source_group,
+            pointer.source_path.clone(),
+            pointer.last_commit.clone(),
+        );
+        if !visited.insert(key) {
+            return Ok(());
+        }
+
+        let Some(source_entry) = groups.get(&GroupId::from_uuid(pointer.source_group)).await else {
+            return Err(format!(
                 "source group {} is not mirrored locally",
                 pointer.source_group
-            )),
-        });
-    };
+            ));
+        };
 
-    match walk_path_history(backend, &source_entry.handle, &pointer.source_path, None).await {
-        Ok(source_history) => {
-            entries.extend(source_history.into_iter().map(|commit| OwnedHistoryEntry {
-                commit,
-                owning_group: pointer.source_group,
-            }));
-            Ok(MemoryHistoryOutcome {
-                entries,
-                unresolved_pointer: None,
-            })
-        }
-        Err(err) => Ok(MemoryHistoryOutcome {
-            entries,
-            unresolved_pointer: Some(format!(
+        let root = Rev::Commit(pointer.last_commit.clone());
+        let source_history = walk_path_history_from(
+            backend,
+            &source_entry.handle,
+            &root,
+            &pointer.source_path,
+            None,
+        )
+        .await
+        .map_err(|err| {
+            format!(
                 "source group {} history unreadable: {err}",
                 pointer.source_group
-            )),
-        }),
+            )
+        })?;
+        entries.extend(source_history.into_iter().map(|commit| OwnedHistoryEntry {
+            commit,
+            owning_group: pointer.source_group,
+        }));
+
+        let next_pointer =
+            match read_frontmatter_at(backend, &source_entry.handle, &root, &pointer.source_path)
+                .await
+            {
+                Ok(frontmatter) => frontmatter.history_source,
+                Err(ImportError::Git(GitError::PathNotFound(_))) => None,
+                Err(err) => {
+                    return Err(format!(
+                        "source group {} pointer target unreadable: {err}",
+                        pointer.source_group
+                    ));
+                }
+            };
+
+        match next_pointer {
+            Some(next) => pointer = next,
+            None => return Ok(()),
+        }
     }
 }
 
@@ -123,7 +217,7 @@ async fn read_history_pointer(
     backend: &NativeBackend,
     handle: &RepoHandle,
     path: &str,
-) -> Result<Option<mmcp_core::memory::CrossGroupHistoryPointer>, ImportError> {
+) -> Result<Option<CrossGroupHistoryPointer>, ImportError> {
     match read_frontmatter_at(backend, handle, &Rev::head(), path).await {
         Ok(frontmatter) => Ok(frontmatter.history_source),
         Err(ImportError::Git(GitError::PathNotFound(_))) => Ok(None),
@@ -360,7 +454,7 @@ mod tests {
             .expect("target entry");
 
         let never_mirrored_source = Uuid::now_v7();
-        let pointer = mmcp_core::memory::CrossGroupHistoryPointer::new(
+        let pointer = CrossGroupHistoryPointer::new(
             never_mirrored_source,
             "memories/gone/deadbeef.md",
             "0123456789abcdef0123456789abcdef01234567",
@@ -419,5 +513,161 @@ mod tests {
             "every entry must stay target-only when the source cannot be resolved"
         );
         assert_eq!(seeded.id, resolved.id);
+    }
+
+    #[tokio::test]
+    async fn walk_memory_history_follows_a_chain_of_two_moves_to_reach_the_origin_group() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let group_a = scratch.seed_group("chain-a").await.expect("seed a");
+        let group_b = scratch.seed_group("chain-b").await.expect("seed b");
+        let group_c = scratch.seed_group("chain-c").await.expect("seed c");
+        let entry_a = scratch
+            .groups()
+            .get(&group_a.group_id)
+            .await
+            .expect("entry a");
+        let entry_b = scratch
+            .groups()
+            .get(&group_b.group_id)
+            .await
+            .expect("entry b");
+        let entry_c = scratch
+            .groups()
+            .get(&group_c.group_id)
+            .await
+            .expect("entry c");
+
+        let file = MemoryFile {
+            frontmatter: MemoryFrontmatter::new("chained", "moved twice", MemoryKind::Scratch),
+            body: "origin content\n".to_string(),
+            format: FrontmatterFormat::TomlPlus,
+        };
+        let seeded = import_memory(
+            scratch.backend(),
+            &entry_a.handle,
+            "chained",
+            &file.to_string().expect("render"),
+            None,
+            scratch.author(),
+            false,
+        )
+        .await
+        .expect("seed origin memory in a");
+
+        // First hop: A -> B. B's copy now carries a one-hop pointer to A.
+        move_memory_across_groups(
+            scratch.backend(),
+            &entry_a,
+            &entry_b,
+            None,
+            Some(seeded.id),
+            scratch.author(),
+            CrossGroupMoveOptions::default(),
+        )
+        .await
+        .expect("move a to b");
+
+        // Second hop: B -> C. C's own pointer keeps only ONE hop (to B);
+        // B's frozen pre-delete content still carries its own pointer to
+        // A, so the walk must recurse through B to reach A.
+        move_memory_across_groups(
+            scratch.backend(),
+            &entry_b,
+            &entry_c,
+            Some("chained"),
+            Some(seeded.id),
+            scratch.author(),
+            CrossGroupMoveOptions::default(),
+        )
+        .await
+        .expect("move b to c");
+
+        let resolved = resolve_memory(scratch.backend(), &entry_c.handle, Some("chained"), None)
+            .await
+            .expect("resolve in c");
+        let target_frontmatter =
+            crate::testing::read_current_frontmatter(scratch.backend(), &entry_c.handle, "chained")
+                .await
+                .expect("read c frontmatter");
+        let pointer = target_frontmatter
+            .history_source
+            .expect("c carries a pointer");
+        assert_eq!(
+            pointer.source_group,
+            *group_b.group_id.as_uuid(),
+            "c's own pointer must name b, one hop, never a directly"
+        );
+
+        let outcome = walk_memory_history(
+            scratch.backend(),
+            &entry_c.handle,
+            scratch.groups(),
+            &resolved.path,
+            None,
+        )
+        .await
+        .expect("walk memory history across the whole chain");
+
+        assert!(outcome.unresolved_pointer.is_none());
+        let owning_groups: Vec<Uuid> = outcome.entries.iter().map(|e| e.owning_group).collect();
+        assert!(
+            owning_groups.contains(group_c.group_id.as_uuid()),
+            "must include c's own write commit: {owning_groups:?}"
+        );
+        assert!(
+            owning_groups.contains(group_b.group_id.as_uuid()),
+            "must include b's frozen commit: {owning_groups:?}"
+        );
+        assert!(
+            owning_groups.contains(group_a.group_id.as_uuid()),
+            "must recurse through b's own pointer to reach a's origin commit: {owning_groups:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn follow_history_chain_stops_at_a_visited_hop_before_any_lookup() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+
+        // Names a group that was never seeded or mirrored: if the
+        // cycle guard did not run BEFORE any group/git lookup, this
+        // hop would either error (`groups.get` misses) or, worse,
+        // silently attempt a lookup. Pre-seeding the exact hop
+        // identity into `visited` must short-circuit before either
+        // happens, so this never resolves the group at all.
+        let never_mirrored = Uuid::now_v7();
+        let pointer = CrossGroupHistoryPointer::new(
+            never_mirrored,
+            "memories/looped/deadbeef.md",
+            "0123456789abcdef0123456789abcdef01234567",
+            "fedcba9876543210fedcba9876543210fedcba98",
+        )
+        .expect("valid pointer shape");
+
+        let key = (
+            pointer.source_group,
+            pointer.source_path.clone(),
+            pointer.last_commit.clone(),
+        );
+        let mut visited = HashSet::new();
+        visited.insert(key);
+        let mut entries = Vec::new();
+
+        let outcome = follow_history_chain(
+            scratch.backend(),
+            scratch.groups(),
+            pointer,
+            &mut visited,
+            &mut entries,
+        )
+        .await;
+
+        assert!(
+            outcome.is_ok(),
+            "a hop whose identity was already visited must stop cleanly, never error"
+        );
+        assert!(
+            entries.is_empty(),
+            "no walk happens once the hop's key is already visited: {entries:?}"
+        );
     }
 }
