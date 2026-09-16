@@ -2527,9 +2527,17 @@ impl McpServer {
                 "memory not found in group",
                 Some(json!({ "group": entry.manifest.group_id.to_string(), "path": p })),
             ),
-            ImportError::Git(mmcp_git::GitError::RevNotFound(r)) => {
-                McpError::invalid_params("revision not found", Some(json!({ "revision": r })))
-            }
+            // `revision` carries the caller's OWN `args.version`, never
+            // the backend's internal representation (a prefixed ref
+            // name for `RevNotFound`, gix's own error text for
+            // `ResolveRev`): a caller comparing the answer against
+            // what they passed in must see it echoed back verbatim.
+            // The backend text still surfaces, under `detail`, on
+            // both arms alike.
+            ImportError::Git(mmcp_git::GitError::RevNotFound(r)) => McpError::invalid_params(
+                "revision not found",
+                Some(json!({ "revision": args.version, "detail": r })),
+            ),
             // A syntactically valid but non-existent commit sha (a
             // parseable 40-char hex string naming no object in
             // either the target or, once
@@ -2542,7 +2550,7 @@ impl McpServer {
             ImportError::Git(mmcp_git::GitError::ResolveRev { source }) => {
                 McpError::invalid_params(
                     "revision not found",
-                    Some(json!({ "revision": source.to_string() })),
+                    Some(json!({ "revision": args.version, "detail": source.to_string() })),
                 )
             }
             other => map_memory_error_to_mcp(other),
@@ -10025,7 +10033,7 @@ mod tests {
                 group: group.to_string(),
                 slug: Some("rules".into()),
                 id: None,
-                version: Some(never_a_real_commit),
+                version: Some(never_a_real_commit.clone()),
             }))
             .await
             .expect_err("a nonexistent commit sha must error");
@@ -10034,9 +10042,61 @@ mod tests {
             err.message, "revision not found",
             "must classify as revision-not-found, not an internal error: {err:?}"
         );
+        let payload = err.data.as_ref().expect("payload present");
+        assert_eq!(
+            payload.get("revision").and_then(|v| v.as_str()),
+            Some(never_a_real_commit.as_str()),
+            "revision must echo the caller's own sha verbatim, never the backend's internal \
+             text: {payload:?}"
+        );
         assert!(
-            err.data.is_some(),
-            "must carry the offending revision in the payload: {err:?}"
+            payload.get("detail").is_some(),
+            "the backend's own error text must still surface, under detail: {payload:?}"
+        );
+    }
+
+    /// Same classification and payload shape, on a memory that HAS
+    /// moved across groups: `read_file_following_history_pointer`
+    /// retries the same nonexistent sha against the source group
+    /// before giving up, but the answer must still echo the caller's
+    /// own sha, not whatever internal text either repo's git backend
+    /// produced along the way.
+    #[tokio::test]
+    async fn read_memory_classifies_a_nonexistent_commit_sha_on_a_moved_memory() {
+        let (state, _tmp) = test_state().await;
+        let source_group =
+            seed_group_with_memory(&state, "moved-source", "moving", SAMPLE_MEMORY).await;
+        let target_group =
+            seed_group_with_memory(&state, "moved-target", "unrelated", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+        server
+            .move_memory_to_group_unguarded(MoveMemoryToGroupArgs {
+                group: source_group.to_string(),
+                slug: Some("moving".into()),
+                target_group: target_group.to_string(),
+                ..Default::default()
+            })
+            .await
+            .expect("cross-group move");
+
+        let never_a_real_commit = "1".repeat(40);
+        let err = server
+            .read_memory(Parameters(ReadMemoryArgs {
+                group: target_group.to_string(),
+                slug: Some("moving".into()),
+                id: None,
+                version: Some(never_a_real_commit.clone()),
+            }))
+            .await
+            .expect_err("a nonexistent commit sha must error even after following the pointer");
+
+        assert_eq!(err.message, "revision not found");
+        let payload = err.data.as_ref().expect("payload present");
+        assert_eq!(
+            payload.get("revision").and_then(|v| v.as_str()),
+            Some(never_a_real_commit.as_str()),
+            "revision must still echo the caller's own sha after the pointer chain \
+             is exhausted: {payload:?}"
         );
     }
 
