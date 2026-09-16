@@ -482,6 +482,8 @@ fn to_memory_file(dto: MemoryFileDto) -> GuiResult<MemoryFile> {
             .collect(),
         // DTO carries no `source` field: every write drops whatever value was previously on disk.
         source: None,
+        // DTO carries no `history_source` field either: same drop-on-write gap as `source` above.
+        history_source: None,
     };
     Ok(MemoryFile {
         frontmatter: fm,

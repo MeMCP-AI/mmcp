@@ -8245,6 +8245,18 @@ fn frontmatter_to_json(fm: &MemoryFrontmatter) -> serde_json::Value {
         // Surface the provenance UUID on read so callers can
         // see who filed a memory without parsing the body.
         "source": fm.source,
+        "history_source": fm.history_source.as_ref().map(history_pointer_to_json),
+    })
+}
+
+fn history_pointer_to_json(
+    pointer: &mmcp_core::memory::CrossGroupHistoryPointer,
+) -> serde_json::Value {
+    json!({
+        "source_group": pointer.source_group,
+        "source_path": pointer.source_path,
+        "first_commit": pointer.first_commit,
+        "last_commit": pointer.last_commit,
     })
 }
 
