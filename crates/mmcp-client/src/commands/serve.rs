@@ -1516,16 +1516,22 @@ struct DeleteFeatureArgs {
 
 /// Args for `move_memory`.
 ///
-/// Atomically rewrites a memory's slug path in a single commit.
-/// The memory id stays stable across the move, so cross-refs in
-/// other memories remain valid.
-/// In-group only: cross-group transfer is a candidate future
-/// extension, adding an optional `target_group` later.
+/// Two distinct operations selected by whether `target_group` is set:
+///
+/// - In-group (the default, `target_group` absent): atomically
+///   rewrites the memory's slug path within `group` in a single
+///   commit. `new_slug` is required. The memory id stays stable
+///   across the move, so cross-refs in other memories remain valid.
+/// - Cross-group (`target_group` set): moves the memory from `group`
+///   into `target_group`, keeping its id and slug. `new_slug` is
+///   ignored: a cross-group move never renames in the same call.
+///   Refuses on a target id collision, or on a carried tracker
+///   number collision unless `renumber` is set.
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 struct MoveMemoryArgs {
-    /// Target group UUID.
+    /// Source group (UUID or slug).
     pub group: String,
     /// Source slug path. Optional when `id` is supplied; if both
     /// are present they must address the same memory.
@@ -1534,11 +1540,22 @@ struct MoveMemoryArgs {
     /// Canonical UUID of the memory.
     #[serde(default)]
     pub id: Option<String>,
-    /// New slug path.
+    /// New slug path for an in-group move.
     /// May be a single segment (`feedback`) or a `/`-joined multi-segment path (`feedback/git/commit-phase`).
     /// Up to [`mmcp_store::MAX_SLUG_SEGMENTS`] segments.
     /// Group it under a subject prefix nested with `/`, never a hyphenated form.
-    pub new_slug: String,
+    /// Required when `target_group` is absent; ignored when it is set.
+    #[serde(default)]
+    pub new_slug: Option<String>,
+    /// Destination group (UUID or slug) for a cross-group move.
+    /// Absent selects the in-group rename behavior instead.
+    #[serde(default)]
+    pub target_group: Option<String>,
+    /// Cross-group only. When the memory carries a tracker `number`
+    /// that collides with one already allocated in `target_group`,
+    /// mint a fresh number there instead of refusing the move.
+    #[serde(default)]
+    pub renumber: Option<bool>,
     /// Optional override for the git commit message.
     #[serde(default)]
     pub message: Option<String>,
@@ -3385,9 +3402,9 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Atomically move a memory to a new slug path inside the same group. The memory id stays stable across the move, so cross-references in other memories keep resolving. The new slug may be a single segment (`feedback`) or a `/`-joined multi-segment path (`feedback/git/commit-phase`), grouped under a subject prefix rather than a hyphenated form. Same-slug moves short-circuit as no-ops. Refuses to overwrite an existing memory at the destination with the same id; pick a different target or delete the existing entry first.",
+        description = "Move a memory. In-group (target_group absent): atomically rewrites the memory's slug path inside the same group in a single commit; new_slug is required, and the memory id stays stable so cross-references in other memories keep resolving. Same-slug moves short-circuit as no-ops. Cross-group (target_group set): moves the memory into a different group, keeping its id, its slug, and its body verbatim; the frontmatter gains a typed pointer back to the pre-move history, joined into list_versions and read_memory automatically. Refuses on a target id collision, or on a carried tracker number collision unless renumber is set. Reports a read-only back-reference list of `[[...]]` documentation links elsewhere that a caller may want to correct by hand.",
         annotations(
-            title = "Move memory to a new slug path",
+            title = "Move memory to a new slug path or group",
             read_only_hint = false,
             destructive_hint = false,
             idempotent_hint = true,
@@ -3402,6 +3419,10 @@ impl McpServer {
         let entry = self.resolve_group_entry(&args.group).await?;
         let slug_for_guard = memory_label_for_guard(args.slug.as_deref(), args.id.as_deref());
         confirm_protected_write(&peer, &entry, &slug_for_guard, "move").await?;
+        if let Some(target_group_ref) = args.target_group.as_deref() {
+            let target_entry = self.resolve_group_entry(target_group_ref).await?;
+            confirm_protected_write(&peer, &target_entry, &slug_for_guard, "move").await?;
+        }
         self.move_memory_unguarded(args).await
     }
 
@@ -3426,6 +3447,17 @@ impl McpServer {
                 Some(json!({ "code": "missing_address" })),
             ));
         }
+        if let Some(target_group_ref) = args.target_group.clone() {
+            return self
+                .move_memory_across_groups_unguarded(args, id_opt, target_group_ref)
+                .await;
+        }
+        let new_slug = args.new_slug.ok_or_else(|| {
+            McpError::invalid_params(
+                "move_memory requires new_slug for an in-group move",
+                Some(json!({ "code": "missing_new_slug" })),
+            )
+        })?;
         let entry = self.resolve_group_entry(&args.group).await?;
         // A slug-rewrite move spans the source and target
         // slug directories, so we need the same coarsening lock the
@@ -3440,7 +3472,7 @@ impl McpServer {
             &entry.handle,
             args.slug.as_deref(),
             id_opt,
-            &args.new_slug,
+            &new_slug,
             &self.state.author,
             args.message.as_deref(),
         )
@@ -3454,6 +3486,61 @@ impl McpServer {
             "old_path":  outcome.old_path,
             "new_path":  outcome.new_path,
             "commit_id": outcome.commit_id,
+        })))
+    }
+
+    /// Cross-group half of `move_memory`, split out once `args.target_group` is set.
+    /// Locks both groups via [`mmcp_store::lock::cross_group_move_chain`]
+    /// (deterministic order, never the plain in-group coarsening chain),
+    /// then reports a read-only back-reference scan alongside the move outcome.
+    async fn move_memory_across_groups_unguarded(
+        &self,
+        args: MoveMemoryArgs,
+        id_opt: Option<Uuid>,
+        target_group_ref: String,
+    ) -> Result<CallToolResult, McpError> {
+        let source_entry = self.resolve_group_entry(&args.group).await?;
+        let target_entry = self.resolve_group_entry(&target_group_ref).await?;
+        let _lock_guards =
+            mmcp_store::lock::acquire_chain(&mmcp_store::lock::cross_group_move_chain(
+                source_entry.handle.group_id,
+                target_entry.handle.group_id,
+            ))
+            .await;
+        let outcome = mmcp_store::move_memory_across_groups(
+            &self.state.backend,
+            &source_entry,
+            &target_entry,
+            args.slug.as_deref(),
+            id_opt,
+            &self.state.author,
+            mmcp_store::CrossGroupMoveOptions {
+                renumber: args.renumber.unwrap_or(false),
+                message: args.message.as_deref(),
+            },
+        )
+        .await
+        .map_err(map_memory_error_to_mcp)?;
+
+        let report = mmcp_store::scan_back_references(
+            &self.state.backend,
+            &self.state.groups,
+            outcome.source_group,
+            &outcome.slug,
+        )
+        .await
+        .map_err(map_memory_error_to_mcp)?;
+
+        Ok(ok_json(json!({
+            "id": outcome.id.to_string(),
+            "slug": outcome.slug,
+            "source_group": outcome.source_group.to_string(),
+            "target_group": outcome.target_group.to_string(),
+            "target_commit_id": outcome.target_commit_id,
+            "source_commit_id": outcome.source_commit_id,
+            "renumbered": outcome.renumbered.map(|(old, new)| json!({ "old": old, "new": new })),
+            "back_references": report.references.iter().map(back_reference_to_json).collect::<Vec<_>>(),
+            "sync_push_note": report.sync_push_note,
         })))
     }
 
@@ -8299,6 +8386,19 @@ fn history_pointer_to_json(
         "source_path": pointer.source_path,
         "first_commit": pointer.first_commit,
         "last_commit": pointer.last_commit,
+    })
+}
+
+fn back_reference_to_json(reference: &mmcp_store::BackReference) -> serde_json::Value {
+    let kind = match reference.kind {
+        mmcp_store::BackReferenceKind::CrossGroupLink => "cross_group_link",
+        mmcp_store::BackReferenceKind::DanglingSameGroupLink => "dangling_same_group_link",
+    };
+    json!({
+        "group_slug": reference.group_slug,
+        "memory_slug": reference.memory_slug,
+        "memory_id": reference.memory_id.to_string(),
+        "kind": kind,
     })
 }
 
@@ -13518,6 +13618,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn move_memory_across_groups_moves_and_reports_back_references() {
+        let (state, _tmp) = test_state().await;
+        let source_group =
+            seed_group_with_memory(&state, "cross-source", "moving", SAMPLE_MEMORY).await;
+        let target_group =
+            seed_group_with_memory(&state, "cross-target", "unrelated", SAMPLE_MEMORY).await;
+        // A same-group sibling referencing the moving memory by its
+        // bare slug: dangles once the move lands.
+        let source_entry = state.groups.get(&source_group).await.expect("source entry");
+        mmcp_store::import_memory(
+            &state.backend,
+            &source_entry.handle,
+            "sibling",
+            "+++\nname = \"Sibling\"\ndescription = \"refers to moving\"\nkind = \"scratch\"\n+++\n\nsee [[moving]]\n",
+            None,
+            &state.author,
+            false,
+        )
+        .await
+        .expect("seed sibling");
+
+        let server = McpServer::new(state, ServeMode::Full);
+        let res = server
+            .move_memory_unguarded(MoveMemoryArgs {
+                group: source_group.to_string(),
+                slug: Some("moving".into()),
+                target_group: Some(target_group.to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("cross-group move");
+        let parsed = parse_ok_json(res);
+        assert_eq!(
+            parsed.get("target_group").and_then(|v| v.as_str()),
+            Some(target_group.to_string().as_str())
+        );
+        assert_eq!(parsed.get("slug").and_then(|v| v.as_str()), Some("moving"));
+        assert!(
+            parsed
+                .get("sync_push_note")
+                .and_then(|v| v.as_str())
+                .is_some_and(|note| note.contains("457"))
+        );
+        let back_refs = parsed
+            .get("back_references")
+            .and_then(|v| v.as_array())
+            .expect("back_references array");
+        assert!(
+            back_refs.iter().any(|r| {
+                r.get("memory_slug").and_then(|v| v.as_str()) == Some("sibling")
+                    && r.get("kind").and_then(|v| v.as_str()) == Some("dangling_same_group_link")
+            }),
+            "must report the dangling same-group link: {back_refs:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn move_memory_relocates_to_nested_path() {
         // Move a flat memory to a nested slug path.
         // The id stays stable; resolving by id surfaces the new slug.
@@ -13528,7 +13685,7 @@ mod tests {
             .move_memory_unguarded(MoveMemoryArgs {
                 group: group.to_string(),
                 slug: Some("flat".into()),
-                new_slug: "nested/path/leaf".into(),
+                new_slug: Some("nested/path/leaf".into()),
                 ..Default::default()
             })
             .await
@@ -13593,7 +13750,7 @@ mod tests {
             .move_memory_unguarded(MoveMemoryArgs {
                 group: group.to_string(),
                 slug: Some("src".into()),
-                new_slug: "../escape".into(),
+                new_slug: Some("../escape".into()),
                 ..Default::default()
             })
             .await
@@ -13618,7 +13775,7 @@ mod tests {
             .move_memory_unguarded(MoveMemoryArgs {
                 group: group.to_string(),
                 slug: Some("top".into()),
-                new_slug: "feedback/git/scope".into(),
+                new_slug: Some("feedback/git/scope".into()),
                 ..Default::default()
             })
             .await
@@ -13730,7 +13887,7 @@ mod tests {
             .move_memory_unguarded(MoveMemoryArgs {
                 group: group.to_string(),
                 slug: Some("deep".into()),
-                new_slug: "feedback/git/scope".into(),
+                new_slug: Some("feedback/git/scope".into()),
                 ..Default::default()
             })
             .await
