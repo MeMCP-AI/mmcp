@@ -132,6 +132,24 @@ pub trait GitBackend: Send + Sync {
         limit: Option<usize>,
     ) -> Result<Vec<CommitMeta>, GitError>;
 
+    /// Walk the commit history that touches `path`, rooted at `root`
+    /// instead of the repository's `HEAD`.
+    ///
+    /// Needed to follow a cross-group history pointer chain: a memory
+    /// moved out of this repo no longer exists at `path` in `HEAD` (its
+    /// move committed a delete), so reading its pre-move frontmatter, or
+    /// walking its pre-move commits, has to be pinned at the pointer's own
+    /// `last_commit` rather than the branch tip. See
+    /// [`Self::walk_history`] for the rest of the contract (most recent
+    /// first, `limit` caps the count, blob-diff filtering).
+    async fn walk_history_from(
+        &self,
+        repo: &RepoHandle,
+        root: &Rev,
+        path: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<CommitMeta>, GitError>;
+
     /// List every blob directly under `path_prefix` at the given revision.
     ///
     /// Returned values are the file names *relative to* `path_prefix` (i.e. without the prefix itself).

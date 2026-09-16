@@ -1439,11 +1439,40 @@ pub fn walk_history(
         Err(GitError::RevNotFound(_)) => return Ok(Vec::new()),
         Err(other) => return Err(other),
     };
+    walk_history_at(repo, head, path, limit)
+}
 
+/// [`walk_history`] rooted at `root` instead of `HEAD`.
+///
+/// Used to follow a cross-group history pointer's `last_commit`:
+/// once a move's delete commit lands, `path` no longer exists at the
+/// source repo's `HEAD`, so both the walk and the frontmatter read
+/// that follows it have to pin an explicit historical commit instead
+/// of resolving the branch tip. Every hop of a move chain (not only
+/// the most recent one) roots its own walk this way, so a memory
+/// moved more than once still reaches every earlier group's history.
+pub fn walk_history_from(
+    repo: &gix::Repository,
+    root: &Rev,
+    path: &str,
+    limit: Option<usize>,
+) -> Result<Vec<CommitMeta>, GitError> {
+    let root_id = resolve_rev(repo, root)?;
+    walk_history_at(repo, root_id, path, limit)
+}
+
+/// Shared walk body for [`walk_history`] and [`walk_history_from`],
+/// parameterized on the already-resolved starting commit.
+fn walk_history_at(
+    repo: &gix::Repository,
+    root: gix::ObjectId,
+    path: &str,
+    limit: Option<usize>,
+) -> Result<Vec<CommitMeta>, GitError> {
     let mut out = Vec::new();
     let mut blob_cache: std::collections::HashMap<gix::ObjectId, Option<gix::ObjectId>> =
         std::collections::HashMap::new();
-    let walk = repo.rev_walk([head]).all().map_err(resolve_rev_err)?;
+    let walk = repo.rev_walk([root]).all().map_err(resolve_rev_err)?;
     for info in walk {
         if limit.is_some_and(|limit| out.len() >= limit) {
             break;
@@ -2523,6 +2552,22 @@ mod tree_lookup_and_history_tests {
             "history must list exactly the commits that changed the blob, \
              most recent first, skipping the unrelated carry-forward commit \
              and the deleting commit"
+        );
+
+        // `walk_history_from`, rooted at `modify` (an ancestor of the
+        // branch tip, not the tip itself), must exclude `modify_again`
+        // and the delete: exactly what a history-pointer hop rooted at
+        // an old commit needs, since the path no longer exists at this
+        // repo's actual `HEAD` once a later move deletes it.
+        let repo = open_thread_local(&repo2_path);
+        let rooted = walk_history_from(&repo, &Rev::Commit(modify.clone()), PATH, None)
+            .expect("walk_history_from rooted at an ancestor");
+        let rooted_ids: Vec<&str> = rooted.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            rooted_ids,
+            vec![modify.as_str(), add.as_str()],
+            "rooting at `modify` must exclude every commit only reachable \
+             through the branch tip, most recent first from the root itself"
         );
     }
 }

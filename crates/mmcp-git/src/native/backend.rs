@@ -445,6 +445,29 @@ impl GitBackend for NativeBackend {
         .await?
     }
 
+    async fn walk_history_from(
+        &self,
+        repo: &RepoHandle,
+        root: &Rev,
+        path: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<CommitMeta>, GitError> {
+        let repo_path = Self::handle_path(repo).to_path_buf();
+        let root = root.clone();
+        let path = path.to_string();
+        let repo_cache = self.repo_cache.clone();
+        tokio::task::spawn_blocking(move || {
+            let handle = Self::open_repo_with_cache(&repo_cache, &repo_path)?;
+            repo_ops::walk_history_from(
+                &Self::thread_local_with_object_cache(&handle),
+                &root,
+                &path,
+                limit,
+            )
+        })
+        .await?
+    }
+
     async fn list_tree(
         &self,
         repo: &RepoHandle,
