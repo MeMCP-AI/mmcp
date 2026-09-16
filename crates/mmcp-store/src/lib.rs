@@ -81,7 +81,10 @@ pub use features::{
 // crate root (the only place a cross-crate re-export is allowed),
 // not on a peer module that would imply ownership.
 pub use groups::{GroupEntry, GroupIndex};
-pub use history::walk_path_history;
+pub use history::{
+    MemoryHistoryOutcome, OwnedHistoryEntry, read_file_following_history_pointer,
+    walk_memory_history, walk_path_history,
+};
 pub use home::{MmcpHome, ResolvedAuthor, read_git_global};
 pub use import_adoc::{
     ADOC_EXTENSIONS, AdocConvertError, convert_adoc_to_markdown, is_adoc_filename,
