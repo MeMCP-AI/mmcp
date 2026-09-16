@@ -2516,6 +2516,21 @@ impl McpServer {
             ImportError::Git(mmcp_git::GitError::RevNotFound(r)) => {
                 McpError::invalid_params("revision not found", Some(json!({ "revision": r })))
             }
+            // A syntactically valid but non-existent commit sha (a
+            // parseable 40-char hex string naming no object in
+            // either the target or, once
+            // `read_file_following_history_pointer` tried it, the
+            // source repo) resolves this far rather than
+            // `RevNotFound`: `Rev::Commit` hex parsing only checks
+            // shape, so a missing object surfaces only when the walk
+            // actually looks it up. Same typed, caller-actionable
+            // answer as `RevNotFound` either way.
+            ImportError::Git(mmcp_git::GitError::ResolveRev { source }) => {
+                McpError::invalid_params(
+                    "revision not found",
+                    Some(json!({ "revision": source.to_string() })),
+                )
+            }
             other => map_memory_error_to_mcp(other),
         })?;
         let text = std::str::from_utf8(&bytes).map_err(|e| {
@@ -9946,6 +9961,41 @@ mod tests {
         assert!(
             err.message.contains("memory not found"),
             "expected memory-not-found error, got: {err:?}"
+        );
+    }
+
+    /// A syntactically valid but non-existent 40-char hex sha names
+    /// no object in either the target repo or (once the history
+    /// pointer follow-through tried it) a source repo:
+    /// `Rev::Commit` hex parsing only checks shape, so this surfaces
+    /// as `GitError::ResolveRev`, not `RevNotFound`. Both must map to
+    /// the same typed `invalid_params` "revision not found" answer,
+    /// never `internal_error`: the caller asked for a sha that does
+    /// not exist, not a server-side failure.
+    #[tokio::test]
+    async fn read_memory_classifies_a_nonexistent_commit_sha_as_revision_not_found() {
+        let (state, _tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "team-rust", "rules", SAMPLE_MEMORY).await;
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let never_a_real_commit = "0".repeat(40);
+        let err = server
+            .read_memory(Parameters(ReadMemoryArgs {
+                group: group.to_string(),
+                slug: Some("rules".into()),
+                id: None,
+                version: Some(never_a_real_commit),
+            }))
+            .await
+            .expect_err("a nonexistent commit sha must error");
+
+        assert_eq!(
+            err.message, "revision not found",
+            "must classify as revision-not-found, not an internal error: {err:?}"
+        );
+        assert!(
+            err.data.is_some(),
+            "must carry the offending revision in the payload: {err:?}"
         );
     }
 
