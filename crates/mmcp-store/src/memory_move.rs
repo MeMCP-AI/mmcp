@@ -57,17 +57,18 @@ pub struct CrossGroupMoveOutcome {
 /// group, keeping its id and body.
 ///
 /// Order of operations, deliberate for crash safety: the target
-/// write lands first, then the source delete. A crash between the
-/// two leaves the memory readable in both groups, a duplicate the
-/// next attempt's id-collision check catches; the reverse order
-/// would risk losing the memory entirely if the target write then
-/// failed.
+/// write lands first, then the source delete. A crash, or any other
+/// failure, between the two leaves the memory readable in both
+/// groups; see [`ImportError::CrossGroupMoveHalfCompleted`] for how a
+/// retry resumes from there instead of refusing on an id collision.
+/// The reverse order would risk losing the memory entirely if the
+/// target write then failed.
 ///
 /// Refuses with [`ImportError::CrossGroupIdCollision`] when the
-/// target group already holds a memory with this id, and with
-/// [`ImportError::TrackerNumberCollision`] when the moving memory
-/// carries a tracker `number` already allocated in the target group,
-/// unless `options.renumber` is set.
+/// target group already holds an UNRELATED memory with this id, and
+/// with [`ImportError::TrackerNumberCollision`] when the moving
+/// memory carries a tracker `number` already allocated in the target
+/// group, unless `options.renumber` is set.
 pub async fn move_memory_across_groups(
     backend: &NativeBackend,
     source_entry: &GroupEntry,
@@ -82,14 +83,30 @@ pub async fn move_memory_across_groups(
 
     let resolved = resolve_memory(backend, &source_entry.handle, slug, id).await?;
 
-    reject_target_id_collision(
+    match reject_target_id_collision(
         backend,
         target_entry,
         resolved.id,
         source_group,
+        &resolved.path,
         target_group,
     )
-    .await?;
+    .await?
+    {
+        TargetIdState::Clear => {}
+        TargetIdState::Resume(target_file) => {
+            return resume_half_completed_move(
+                backend,
+                source_entry,
+                target_entry,
+                &resolved,
+                *target_file,
+                author,
+                options.message,
+            )
+            .await;
+        }
+    }
 
     let bytes = backend
         .read_file(&source_entry.handle, &resolved.path, &Rev::head())
@@ -117,6 +134,12 @@ pub async fn move_memory_across_groups(
     let rendered = file
         .to_string()
         .map_err(|e| ImportError::Render(e.to_string()))?;
+    // The target write below bypasses `write_file_at_path` (it
+    // addresses a different group's handle and must not run that
+    // primitive's id-mismatch/ceiling checks meant for a same-group
+    // caller), so the length validation it would otherwise provide is
+    // run explicitly here instead of silently skipped.
+    crate::memory::validate_write_content_lengths(&rendered)?;
 
     let target_path =
         mmcp_core::conventions::memory_path(&resolved.slug, MemoryId::from_uuid(resolved.id));
@@ -138,14 +161,30 @@ pub async fn move_memory_across_groups(
         )
         .await?;
 
-    let source_commit_id = crate::memory::delete_file_at_path(
+    let source_commit_id = match crate::memory::delete_file_at_path(
         backend,
         &source_entry.handle,
         &resolved.path,
         author,
         Some(&commit_message),
     )
-    .await?;
+    .await
+    {
+        Ok(commit_id) => commit_id,
+        Err(err) => {
+            return Err(half_completed(
+                resolved.id,
+                &resolved.slug,
+                source_group,
+                target_group,
+                &target_path,
+                target_commit_id,
+                &rendered,
+                err,
+            )
+            .await);
+        }
+    };
 
     crate::cache::notify_move(
         source_group,
@@ -169,24 +208,219 @@ pub async fn move_memory_across_groups(
     })
 }
 
-/// Refuse the move when `id` already resolves to a memory in the
-/// target group, naming both groups in the typed error.
+/// Build [`ImportError::CrossGroupMoveHalfCompleted`] after a source
+/// delete failure, first updating the target group's cache row to the
+/// already-landed target write (best-effort, same as any other write)
+/// so a caller inspecting the cache before retrying sees the moved
+/// copy is already there.
+#[allow(clippy::too_many_arguments)]
+async fn half_completed(
+    id: Uuid,
+    slug: &str,
+    source_group: Uuid,
+    target_group: Uuid,
+    target_path: &str,
+    target_commit_id: String,
+    rendered: &str,
+    source: ImportError,
+) -> ImportError {
+    crate::cache::notify_write(
+        target_group,
+        id,
+        slug,
+        target_path,
+        &target_commit_id,
+        rendered,
+    )
+    .await;
+    ImportError::CrossGroupMoveHalfCompleted(Box::new(
+        crate::memory::CrossGroupMoveHalfCompletedDetail {
+            id,
+            source_group,
+            target_group,
+            target_commit_id,
+            source,
+        },
+    ))
+}
+
+/// Outcome of [`reject_target_id_collision`]'s check against the
+/// target group.
+enum TargetIdState {
+    /// No memory in the target group carries this id: the move is
+    /// free to write there.
+    Clear,
+    /// The target group already holds a memory with this id, and its
+    /// own `history_source` names this exact source group and path:
+    /// a prior attempt's target write already landed
+    /// (see [`ImportError::CrossGroupMoveHalfCompleted`]), so only
+    /// the source delete and the cache transition remain.
+    Resume(Box<MemoryFile>),
+}
+
+/// Check whether `id` already resolves to a memory in the target
+/// group. A collision whose target copy's `history_source` names
+/// `source_path` in `source_group` is a resumable half-completed
+/// move, not a genuine collision; any other existing copy refuses
+/// with [`ImportError::CrossGroupIdCollision`], naming both groups.
 async fn reject_target_id_collision(
     backend: &NativeBackend,
     target_entry: &GroupEntry,
     id: Uuid,
     source_group: Uuid,
+    source_path: &str,
     target_group: Uuid,
-) -> Result<(), ImportError> {
-    match resolve_memory(backend, &target_entry.handle, None, Some(id)).await {
-        Ok(_) => Err(ImportError::CrossGroupIdCollision {
+) -> Result<TargetIdState, ImportError> {
+    let existing = match resolve_memory(backend, &target_entry.handle, None, Some(id)).await {
+        Ok(existing) => existing,
+        Err(ImportError::MemoryNotFound { .. }) => return Ok(TargetIdState::Clear),
+        Err(other) => return Err(other),
+    };
+
+    let bytes = backend
+        .read_file(&target_entry.handle, &existing.path, &Rev::head())
+        .await?;
+    let text = std::str::from_utf8(&bytes).map_err(|source| ImportError::NotUtf8 {
+        path: existing.path.clone(),
+        source,
+    })?;
+    let target_file = MemoryFile::parse(text)?;
+
+    let is_resume = target_file
+        .frontmatter
+        .history_source
+        .as_ref()
+        .is_some_and(|pointer| {
+            pointer.source_group == source_group && pointer.source_path == source_path
+        });
+
+    if is_resume {
+        Ok(TargetIdState::Resume(Box::new(target_file)))
+    } else {
+        Err(ImportError::CrossGroupIdCollision {
             id,
             source_group,
             target_group,
-        }),
-        Err(ImportError::MemoryNotFound { .. }) => Ok(()),
-        Err(other) => Err(other),
+        })
     }
+}
+
+/// Complete a previously half-completed move: `target_file` is the
+/// target copy's already-committed content, its `history_source`
+/// already confirmed by [`reject_target_id_collision`] to name this
+/// exact source group and path, so only the source delete and the
+/// cache transition remain.
+async fn resume_half_completed_move(
+    backend: &NativeBackend,
+    source_entry: &GroupEntry,
+    target_entry: &GroupEntry,
+    resolved: &crate::memory::ResolvedMemory,
+    target_file: MemoryFile,
+    author: &ResolvedAuthor,
+    message: Option<&str>,
+) -> Result<CrossGroupMoveOutcome, ImportError> {
+    let source_group = source_entry.handle.group_id;
+    let target_group = target_entry.handle.group_id;
+    let target_path =
+        mmcp_core::conventions::memory_path(&resolved.slug, MemoryId::from_uuid(resolved.id));
+
+    // The prior attempt's own commit id: the most recent (and, since
+    // the target write is a single commit, only) entry touching this
+    // path in the target group.
+    let target_commit_id = walk_path_history(backend, &target_entry.handle, &target_path, Some(1))
+        .await?
+        .into_iter()
+        .next()
+        .map(|commit| commit.id)
+        .ok_or_else(|| ImportError::Git(GitError::PathNotFound(target_path.clone())))?;
+
+    // The source copy's carried tracker number, read before the
+    // delete below removes it, so a resumed move still reports an
+    // earlier attempt's renumber accurately.
+    let source_bytes = backend
+        .read_file(&source_entry.handle, &resolved.path, &Rev::head())
+        .await?;
+    let source_text =
+        std::str::from_utf8(&source_bytes).map_err(|source| ImportError::NotUtf8 {
+            path: resolved.path.clone(),
+            source,
+        })?;
+    let source_file = MemoryFile::parse(source_text)?;
+    let renumbered = match (
+        carried_ticket_number(&source_file),
+        carried_ticket_number(&target_file),
+    ) {
+        (Some(old), Some(new)) if old != new => Some((old, new)),
+        _ => None,
+    };
+
+    let commit_message = resolve_commit_message(message, || {
+        format!(
+            "move memory {} from group {source_group} to group {target_group}",
+            resolved.slug
+        )
+    })?;
+
+    let rendered = target_file
+        .to_string()
+        .map_err(|e| ImportError::Render(e.to_string()))?;
+
+    let source_commit_id = match crate::memory::delete_file_at_path(
+        backend,
+        &source_entry.handle,
+        &resolved.path,
+        author,
+        Some(&commit_message),
+    )
+    .await
+    {
+        Ok(commit_id) => commit_id,
+        Err(err) => {
+            return Err(half_completed(
+                resolved.id,
+                &resolved.slug,
+                source_group,
+                target_group,
+                &target_path,
+                target_commit_id,
+                &rendered,
+                err,
+            )
+            .await);
+        }
+    };
+
+    crate::cache::notify_move(
+        source_group,
+        target_group,
+        resolved.id,
+        &resolved.slug,
+        &target_path,
+        &target_commit_id,
+        &rendered,
+    )
+    .await;
+
+    Ok(CrossGroupMoveOutcome {
+        id: resolved.id,
+        slug: resolved.slug.clone(),
+        source_group,
+        target_group,
+        target_commit_id,
+        source_commit_id,
+        renumbered,
+    })
+}
+
+/// A hybrid memory's carried tracker number: `feature.number`,
+/// falling back to `issue.number` (mirrors the fold
+/// [`tracker::next_ticket_number`] performs when minting one).
+fn carried_ticket_number(file: &MemoryFile) -> Option<u32> {
+    file.frontmatter
+        .feature
+        .as_ref()
+        .and_then(|meta| meta.number)
+        .or_else(|| file.frontmatter.issue.as_ref().and_then(|meta| meta.number))
 }
 
 /// A hybrid memory shares one ticket number across its `feature` and
@@ -205,13 +439,7 @@ async fn reconcile_tracker_number(
     source_group: Uuid,
     target_group: Uuid,
 ) -> Result<Option<(u32, u32)>, ImportError> {
-    let Some(carried_number) = file
-        .frontmatter
-        .feature
-        .as_ref()
-        .and_then(|meta| meta.number)
-        .or_else(|| file.frontmatter.issue.as_ref().and_then(|meta| meta.number))
-    else {
+    let Some(carried_number) = carried_ticket_number(file) else {
         return Ok(None);
     };
 
@@ -556,5 +784,154 @@ mod tests {
         assert_eq!(moved_feature.depends_on, depends_on);
         assert_eq!(moved_feature.blocks, blocks);
         assert_eq!(moved_feature.milestone, milestone);
+    }
+
+    #[tokio::test]
+    async fn move_resumes_a_half_completed_move_when_the_target_already_carries_the_pointer() {
+        let scratch = ScratchHome::new().await.expect("scratch home");
+        let (source_entry, target_entry) = two_groups(&scratch).await;
+
+        let file = feature_body("resumable", 1);
+        let rendered = file.to_string().expect("render");
+        let seeded = import_memory(
+            scratch.backend(),
+            &source_entry.handle,
+            "resumable",
+            &rendered,
+            None,
+            scratch.author(),
+            false,
+        )
+        .await
+        .expect("seed source memory");
+
+        // Hand-construct the state a crashed first attempt would have
+        // left behind: the target write landed (with the history
+        // pointer already set), but the source delete never ran, so
+        // the memory still resolves in BOTH groups.
+        let source_path =
+            mmcp_core::conventions::memory_path("resumable", MemoryId::from_uuid(seeded.id));
+        let history =
+            walk_path_history(scratch.backend(), &source_entry.handle, &source_path, None)
+                .await
+                .expect("walk source history");
+        let pointer = build_history_pointer(source_entry.handle.group_id, &source_path, &history)
+            .expect("build pointer");
+        // Re-parse the ACTUAL post-import source content (which
+        // carries the minted id `import_memory` assigned), not the
+        // pre-import `rendered` string: that one never had an id set,
+        // and writing it as-is would make the hand-crafted target
+        // copy resolve by nothing, defeating the whole setup.
+        let source_bytes =
+            crate::testing::read_raw_bytes(scratch.backend(), &source_entry.handle, &source_path)
+                .await
+                .expect("read actual source bytes");
+        let mut half_moved = MemoryFile::parse(&String::from_utf8(source_bytes).expect("utf8"))
+            .expect("parse seeded content");
+        half_moved.frontmatter.history_source = Some(pointer);
+        let half_moved_rendered = half_moved.to_string().expect("render half-moved content");
+        let prior_target_commit = scratch
+            .backend()
+            .write_commit(
+                &target_entry.handle,
+                CommitSpec::mmcp_commit(
+                    "simulated first attempt: target write",
+                    vec![(source_path.clone(), Some(half_moved_rendered.into_bytes()))],
+                    &scratch.author().name,
+                    &scratch.author().email,
+                ),
+            )
+            .await
+            .expect("simulate the prior attempt's target write");
+
+        // Source is still there: the simulated first attempt never
+        // got as far as the delete.
+        let still_resolves = resolve_memory(
+            scratch.backend(),
+            &source_entry.handle,
+            Some("resumable"),
+            None,
+        )
+        .await;
+        assert!(
+            still_resolves.is_ok(),
+            "source must still resolve before the resume"
+        );
+
+        // Retry the SAME move: `reject_target_id_collision` must
+        // recognize the target copy's pointer and resume instead of
+        // refusing on an id collision.
+        let outcome = move_memory_across_groups(
+            scratch.backend(),
+            &source_entry,
+            &target_entry,
+            None,
+            Some(seeded.id),
+            scratch.author(),
+            CrossGroupMoveOptions::default(),
+        )
+        .await
+        .expect("a matching pointer must resume, not refuse as a collision");
+
+        assert_eq!(outcome.id, seeded.id);
+        assert_eq!(
+            outcome.target_commit_id, prior_target_commit,
+            "resume must report the PRIOR attempt's target commit, never mint a new one"
+        );
+
+        let source_gone = resolve_memory(
+            scratch.backend(),
+            &source_entry.handle,
+            Some("resumable"),
+            None,
+        )
+        .await;
+        assert!(
+            source_gone.is_err(),
+            "resume must complete the source delete"
+        );
+
+        let target_frontmatter =
+            read_current_frontmatter(scratch.backend(), &target_entry.handle, "resumable")
+                .await
+                .expect("read target frontmatter");
+        assert_eq!(target_frontmatter.id, Some(seeded.id));
+    }
+
+    #[tokio::test]
+    async fn half_completed_names_both_groups_and_chains_the_delete_failure() {
+        let id = Uuid::now_v7();
+        let source_group = Uuid::now_v7();
+        let target_group = Uuid::now_v7();
+        let injected = ImportError::MemoryNotFound {
+            slug: Some("whatever".to_string()),
+            id: Some(id),
+        };
+
+        let err = half_completed(
+            id,
+            "resumable",
+            source_group,
+            target_group,
+            "memories/resumable/deadbeef.md",
+            "a".repeat(40),
+            "irrelevant rendered content",
+            injected,
+        )
+        .await;
+
+        match err {
+            ImportError::CrossGroupMoveHalfCompleted(detail) => {
+                assert_eq!(detail.id, id);
+                assert_eq!(detail.source_group, source_group);
+                assert_eq!(detail.target_group, target_group);
+                assert_eq!(detail.target_commit_id, "a".repeat(40));
+                assert!(
+                    matches!(detail.source, ImportError::MemoryNotFound { .. }),
+                    "the original delete failure must chain through as the source"
+                );
+            }
+            other => panic!("expected CrossGroupMoveHalfCompleted, got {other:?}"),
+        }
     }
 }
