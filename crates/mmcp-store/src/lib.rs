@@ -16,6 +16,7 @@
 //! - `features`, `issues`, `tracker`: the two CRUD tracker surfaces and their shared plumbing.
 //! - `milestones`: milestone CRUD and rollup computation.
 //! - `archive`: portable group archive export/import.
+//! - `back_references`: read-only `[[...]]` link report after a cross-group move.
 //! - `cache`: local content/semantic SQLite cache.
 //! - `sync`: thin wrappers around `mmcp-sync` for pull/push.
 //! - `diagnostics`: `check_health`/`diagnose` bodies with typed report structs.
@@ -35,6 +36,7 @@
 #![forbid(unsafe_code)]
 
 pub mod archive;
+pub mod back_references;
 pub mod cache;
 pub mod config;
 mod defaults;
@@ -63,6 +65,9 @@ pub use archive::{
     ArchivedGroupMeta, ExportOptions, GroupImportOutcome, ImportArchiveOptions,
     ImportArchiveReport, MemoryConflict, MemoryFilter, collect_group_tags, export_archive,
     export_archive_to_path, import_archive, inspect_archive, list_archive, parse_memory_kind,
+};
+pub use back_references::{
+    BackReference, BackReferenceKind, BackReferenceReport, scan_back_references,
 };
 pub use diagnostics::{
     DiagReport, Finding, GroupReport, diagnose_all, diagnose_group, health_check_all,
