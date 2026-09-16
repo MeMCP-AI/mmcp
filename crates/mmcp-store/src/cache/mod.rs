@@ -281,7 +281,7 @@ pub async fn notify_write(
 }
 
 /// Cross-group-move-trigger hook: called by
-/// [`crate::memory::move_memory_across_groups`] right after its
+/// [`crate::move_memory_across_groups`] right after its
 /// target-write and source-delete commits both land. Best-effort,
 /// same rationale as [`notify_write`]: deletes the source group's
 /// row and upserts the target group's row inside one transaction, so
