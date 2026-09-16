@@ -173,13 +173,15 @@ pub async fn move_memory_across_groups(
         Ok(commit_id) => commit_id,
         Err(err) => {
             return Err(half_completed(
-                resolved.id,
-                &resolved.slug,
-                source_group,
-                target_group,
-                &target_path,
-                target_commit_id,
-                &rendered,
+                LandedWrite {
+                    id: resolved.id,
+                    slug: &resolved.slug,
+                    source_group,
+                    target_group,
+                    target_path: &target_path,
+                    target_commit_id,
+                    rendered: &rendered,
+                },
                 err,
             )
             .await);
@@ -208,22 +210,36 @@ pub async fn move_memory_across_groups(
     })
 }
 
+/// Context for a target write that already landed before the source
+/// delete that should have followed it failed: the fields
+/// [`crate::cache::notify_write`] needs to keep that write's cache
+/// row current, plus the group pairing the resulting
+/// [`ImportError::CrossGroupMoveHalfCompleted`] names.
+struct LandedWrite<'a> {
+    id: Uuid,
+    slug: &'a str,
+    source_group: Uuid,
+    target_group: Uuid,
+    target_path: &'a str,
+    target_commit_id: String,
+    rendered: &'a str,
+}
+
 /// Build [`ImportError::CrossGroupMoveHalfCompleted`] after a source
 /// delete failure, first updating the target group's cache row to the
 /// already-landed target write (best-effort, same as any other write)
 /// so a caller inspecting the cache before retrying sees the moved
 /// copy is already there.
-#[allow(clippy::too_many_arguments)]
-async fn half_completed(
-    id: Uuid,
-    slug: &str,
-    source_group: Uuid,
-    target_group: Uuid,
-    target_path: &str,
-    target_commit_id: String,
-    rendered: &str,
-    source: ImportError,
-) -> ImportError {
+async fn half_completed(landed: LandedWrite<'_>, source: ImportError) -> ImportError {
+    let LandedWrite {
+        id,
+        slug,
+        source_group,
+        target_group,
+        target_path,
+        target_commit_id,
+        rendered,
+    } = landed;
     crate::cache::notify_write(
         target_group,
         id,
@@ -377,13 +393,15 @@ async fn resume_half_completed_move(
         Ok(commit_id) => commit_id,
         Err(err) => {
             return Err(half_completed(
-                resolved.id,
-                &resolved.slug,
-                source_group,
-                target_group,
-                &target_path,
-                target_commit_id,
-                &rendered,
+                LandedWrite {
+                    id: resolved.id,
+                    slug: &resolved.slug,
+                    source_group,
+                    target_group,
+                    target_path: &target_path,
+                    target_commit_id,
+                    rendered: &rendered,
+                },
                 err,
             )
             .await);
@@ -909,13 +927,15 @@ mod tests {
         };
 
         let err = half_completed(
-            id,
-            "resumable",
-            source_group,
-            target_group,
-            "memories/resumable/deadbeef.md",
-            "a".repeat(40),
-            "irrelevant rendered content",
+            LandedWrite {
+                id,
+                slug: "resumable",
+                source_group,
+                target_group,
+                target_path: "memories/resumable/deadbeef.md",
+                target_commit_id: "a".repeat(40),
+                rendered: "irrelevant rendered content",
+            },
             injected,
         )
         .await;
