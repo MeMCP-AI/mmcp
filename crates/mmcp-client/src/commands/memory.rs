@@ -123,6 +123,13 @@ pub struct MoveArgs {
     /// Override the git commit message.
     #[arg(long)]
     pub message: Option<String>,
+
+    /// Cross-group only. Pre-confirm a move touching a protected
+    /// group (source or target). Without this flag the command
+    /// prompts on TTY and refuses on a non-TTY stdin, same as
+    /// `mmcp memory write`.
+    #[arg(long = "confirm-protected")]
+    pub confirm_protected: bool,
 }
 
 #[derive(Debug, Args)]
@@ -482,18 +489,8 @@ async fn run_move(args: MoveArgs) -> Result<()> {
     let (slug_opt, id_opt) = parse_addr(&args.addr);
     let author = home.resolve_author();
 
-    if let Some(target_group_ref) = &args.target_group {
-        return run_move_across_groups(
-            &backend,
-            &groups,
-            entry,
-            target_group_ref,
-            slug_opt.as_deref(),
-            id_opt,
-            &author,
-            &args,
-        )
-        .await;
+    if args.target_group.is_some() {
+        return run_move_across_groups(&backend, &groups, entry, &author, &args).await;
     }
 
     let new_slug = args
@@ -534,20 +531,32 @@ async fn run_move(args: MoveArgs) -> Result<()> {
 }
 
 /// Cross-group half of `run_move`, split out once `--to-group` is set.
-#[allow(clippy::too_many_arguments)]
+/// Reads `target_group`, the source address, and the write options
+/// from `args` directly rather than duplicating them as separate
+/// parameters.
 async fn run_move_across_groups(
     backend: &NativeBackend,
     groups: &mmcp_store::GroupIndex,
     source_entry: GroupEntry,
-    target_group_ref: &str,
-    slug: Option<&str>,
-    id: Option<Uuid>,
     author: &mmcp_store::ResolvedAuthor,
     args: &MoveArgs,
 ) -> Result<()> {
+    let target_group_ref = args
+        .target_group
+        .as_deref()
+        .context("run_move_across_groups requires target_group to be set")?;
+    let (slug, id) = parse_addr(&args.addr);
     let target_entry = resolve_group(groups, target_group_ref)
         .await
         .map_err(anyhow::Error::from)?;
+
+    // Protected-group gate on BOTH ends: a cross-group move writes
+    // into the target and deletes from the source, so either one
+    // being protected needs the same confirmation a same-group write
+    // would require.
+    protected_confirm(&source_entry, args.confirm_protected)?;
+    protected_confirm(&target_entry, args.confirm_protected)?;
+
     let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::cross_group_move_chain(
         source_entry.handle.group_id,
         target_entry.handle.group_id,
@@ -557,7 +566,7 @@ async fn run_move_across_groups(
         backend,
         &source_entry,
         &target_entry,
-        slug,
+        slug.as_deref(),
         id,
         author,
         mmcp_store::CrossGroupMoveOptions {

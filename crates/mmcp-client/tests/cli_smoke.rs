@@ -736,6 +736,152 @@ fn memory_move_to_group_relocates_across_groups() {
         .failure();
 }
 
+/// A cross-group move touches both groups (writes the target,
+/// deletes from the source), so the protected-group gate must fire
+/// on EITHER end, not only the source: this covers the target side.
+/// `memory_move_to_group_refuses_a_protected_source_without_confirm`
+/// covers the source side.
+#[test]
+fn memory_move_to_group_refuses_a_protected_target_without_confirm() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mmcp_home = tmp.path().join("mmcp-home");
+    mmcp()
+        .args(["group", "create", "move-guard-source"])
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+    mmcp()
+        .args(["group", "create", "move-guard-target", "--protected"])
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+
+    mmcp()
+        .args([
+            "memory",
+            "write",
+            "move-guard-source",
+            "moving-memory",
+            "--name",
+            "Moving",
+            "--description",
+            "will move",
+            "--kind",
+            "scratch",
+            "--body",
+            "content\n",
+        ])
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+
+    // Non-TTY, no --confirm-protected: refuses instead of silently
+    // writing into the protected target.
+    mmcp()
+        .args([
+            "memory",
+            "move",
+            "move-guard-source",
+            "moving-memory",
+            "--to-group",
+            "move-guard-target",
+        ])
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("protected"));
+
+    // The refusal changed nothing: the source memory still resolves.
+    mmcp()
+        .args(["memory", "read", "move-guard-source", "moving-memory"])
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+
+    // --confirm-protected lets the same move through.
+    mmcp()
+        .args([
+            "memory",
+            "move",
+            "move-guard-source",
+            "moving-memory",
+            "--to-group",
+            "move-guard-target",
+            "--confirm-protected",
+        ])
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("moved"));
+}
+
+/// Source-side counterpart of
+/// `memory_move_to_group_refuses_a_protected_target_without_confirm`.
+#[test]
+fn memory_move_to_group_refuses_a_protected_source_without_confirm() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mmcp_home = tmp.path().join("mmcp-home");
+    mmcp()
+        .args(["group", "create", "move-guard-source-2", "--protected"])
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+    mmcp()
+        .args(["group", "create", "move-guard-target-2"])
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+
+    mmcp()
+        .args([
+            "memory",
+            "write",
+            "move-guard-source-2",
+            "moving-memory",
+            "--name",
+            "Moving",
+            "--description",
+            "will move",
+            "--kind",
+            "scratch",
+            "--body",
+            "content\n",
+            "--confirm-protected",
+        ])
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+
+    mmcp()
+        .args([
+            "memory",
+            "move",
+            "move-guard-source-2",
+            "moving-memory",
+            "--to-group",
+            "move-guard-target-2",
+        ])
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("protected"));
+
+    mmcp()
+        .args([
+            "memory",
+            "move",
+            "move-guard-source-2",
+            "moving-memory",
+            "--to-group",
+            "move-guard-target-2",
+            "--confirm-protected",
+        ])
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("moved"));
+}
+
 #[test]
 fn debug_cache_rebuild_forces_a_full_reindex() {
     // `init project` without `--config-only` creates a real local
