@@ -7574,6 +7574,29 @@ fn map_memory_error_to_mcp(err: ImportError) -> McpError {
             "size": size,
             "retry_hint": "split this memory into a family under a subject prefix (e.g. `<subject>/<part>`)",
         }),
+        ImportError::CrossGroupIdCollision {
+            id,
+            source_group,
+            target_group,
+        } => json!({
+            "code": code,
+            "id": id.to_string(),
+            "source_group": source_group.to_string(),
+            "target_group": target_group.to_string(),
+        }),
+        ImportError::TrackerNumberCollision {
+            kind,
+            number,
+            source_group,
+            target_group,
+        } => json!({
+            "code": code,
+            "kind": kind,
+            "number": number,
+            "source_group": source_group.to_string(),
+            "target_group": target_group.to_string(),
+            "retry_hint": "pass renumber: true to mint a fresh number in the target group",
+        }),
     };
     McpError::invalid_params(message, Some(payload))
 }
