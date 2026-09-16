@@ -573,6 +573,111 @@ pub async fn delete_memory(
     Ok(commit)
 }
 
+/// One `[[...]]` link a reader may want to correct after a move.
+/// Wire twin of [`mmcp_store::BackReference`]; `kind` collapses to a
+/// snake_case string so the frontend does not have to mirror the
+/// Rust enum.
+#[derive(Debug, Serialize)]
+pub struct BackReferenceDto {
+    pub group_slug: String,
+    pub memory_slug: String,
+    pub memory_id: Uuid,
+    pub kind: String,
+}
+
+impl From<&mmcp_store::BackReference> for BackReferenceDto {
+    fn from(reference: &mmcp_store::BackReference) -> Self {
+        let kind = match reference.kind {
+            mmcp_store::BackReferenceKind::CrossGroupLink => "cross_group_link",
+            mmcp_store::BackReferenceKind::DanglingSameGroupLink => "dangling_same_group_link",
+        };
+        Self {
+            group_slug: reference.group_slug.clone(),
+            memory_slug: reference.memory_slug.clone(),
+            memory_id: reference.memory_id,
+            kind: kind.to_string(),
+        }
+    }
+}
+
+/// Outcome of [`move_memory`], the cross-group move: the store
+/// primitive's own outcome plus a read-only back-reference report.
+#[derive(Debug, Serialize)]
+pub struct MoveMemoryResultDto {
+    pub id: Uuid,
+    pub slug: String,
+    pub source_group: Uuid,
+    pub target_group: Uuid,
+    pub target_commit_id: String,
+    pub source_commit_id: String,
+    pub renumbered: Option<(u32, u32)>,
+    pub back_references: Vec<BackReferenceDto>,
+    pub sync_push_note: String,
+}
+
+/// Move a memory from `group_id`'s group into `target_group_id`'s
+/// group, keeping its id, slug, and body. Refuses on a target id
+/// collision, or on a carried tracker number collision unless
+/// `renumber` is set. Never renames in the same call: a separate
+/// slug rewrite is a future in-group extension.
+#[tauri::command]
+pub async fn move_memory(
+    group_id: String,
+    slug: String,
+    target_group_id: String,
+    renumber: Option<bool>,
+    state: State<'_, AppState>,
+) -> GuiResult<MoveMemoryResultDto> {
+    tracing::debug!(
+        group_id = %group_id,
+        slug = %slug,
+        target_group_id = %target_group_id,
+        "ipc: move_memory"
+    );
+    let source_entry = group_entry(&state, &group_id).await?;
+    let target_entry = group_entry(&state, &target_group_id).await?;
+    let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::cross_group_move_chain(
+        source_entry.handle.group_id,
+        target_entry.handle.group_id,
+    ))
+    .await;
+    let outcome = mmcp_store::move_memory_across_groups(
+        &state.backend,
+        &source_entry,
+        &target_entry,
+        Some(&slug),
+        None,
+        &*state.author.read().await,
+        mmcp_store::CrossGroupMoveOptions {
+            renumber: renumber.unwrap_or(false),
+            message: None,
+        },
+    )
+    .await
+    .map_err(GuiError::from)?;
+
+    let report = mmcp_store::scan_back_references(
+        &state.backend,
+        &state.index,
+        outcome.source_group,
+        &outcome.slug,
+    )
+    .await
+    .map_err(GuiError::from)?;
+
+    Ok(MoveMemoryResultDto {
+        id: outcome.id,
+        slug: outcome.slug,
+        source_group: outcome.source_group,
+        target_group: outcome.target_group,
+        target_commit_id: outcome.target_commit_id,
+        source_commit_id: outcome.source_commit_id,
+        renumbered: outcome.renumbered,
+        back_references: report.references.iter().map(Into::into).collect(),
+        sync_push_note: report.sync_push_note.to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

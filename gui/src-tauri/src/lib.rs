@@ -84,6 +84,7 @@ pub fn run() {
             commands::memory::create_memory,
             commands::memory::update_memory,
             commands::memory::delete_memory,
+            commands::memory::move_memory,
             commands::sync::sync_status,
             commands::sync::sync_pull,
             commands::sync::sync_push,
