@@ -46,9 +46,9 @@ use crate::commands::tool_metadata_cli::{
     shared_output_schema, tool_icon_category,
 };
 use crate::notes::{
-    collect_known_memory_ids, dangling_ref_notes_for, dangling_ref_notes_with_known,
-    finding_to_note, findings_to_notes, id_validation_to_notes, malformed_frontmatter_notes,
-    sync_group_failure_notes, sync_manifest_failure_notes,
+    collect_known_memory_ids, dangling_history_pointer_notes, dangling_ref_notes_for,
+    dangling_ref_notes_with_known, finding_to_note, findings_to_notes, id_validation_to_notes,
+    malformed_frontmatter_notes, sync_group_failure_notes, sync_manifest_failure_notes,
 };
 use crate::state::{WatcherHandle, spawn_watcher};
 use mmcp_store::config::{PROJECT_MANIFEST, find_project_root, load as load_project_config};
@@ -2483,21 +2483,24 @@ impl McpServer {
             .resolve_memory_address(&args.group, args.slug.as_deref(), args.id.as_deref())
             .await?;
         let rev = parse_rev(args.version.as_deref());
-        let bytes = self
-            .state
-            .backend
-            .read_file(&entry.handle, &resolved.path, &rev)
-            .await
-            .map_err(|e| match e {
-                mmcp_git::GitError::PathNotFound(p) => McpError::invalid_params(
-                    "memory not found in group",
-                    Some(json!({ "group": entry.manifest.group_id.to_string(), "path": p })),
-                ),
-                mmcp_git::GitError::RevNotFound(r) => {
-                    McpError::invalid_params("revision not found", Some(json!({ "revision": r })))
-                }
-                other => git_error(other),
-            })?;
+        let bytes = mmcp_store::read_file_following_history_pointer(
+            &self.state.backend,
+            &entry.handle,
+            &self.state.groups,
+            &resolved.path,
+            &rev,
+        )
+        .await
+        .map_err(|e| match e {
+            ImportError::Git(mmcp_git::GitError::PathNotFound(p)) => McpError::invalid_params(
+                "memory not found in group",
+                Some(json!({ "group": entry.manifest.group_id.to_string(), "path": p })),
+            ),
+            ImportError::Git(mmcp_git::GitError::RevNotFound(r)) => {
+                McpError::invalid_params("revision not found", Some(json!({ "revision": r })))
+            }
+            other => map_memory_error_to_mcp(other),
+        })?;
         let text = std::str::from_utf8(&bytes).map_err(|e| {
             McpError::internal_error(
                 Cow::Owned(format!("memory file is not valid UTF-8: {e}")),
@@ -2548,14 +2551,21 @@ impl McpServer {
             mmcp_store::resolve_memory(&self.state.backend, &entry.handle, Some(&args.slug), None)
                 .await
                 .map_err(map_memory_error_to_mcp)?;
-        let history =
-            mmcp_store::walk_path_history(&self.state.backend, &entry.handle, &resolved.path, None)
-                .await
-                .map_err(git_error)?;
+        let outcome = mmcp_store::walk_memory_history(
+            &self.state.backend,
+            &entry.handle,
+            &self.state.groups,
+            &resolved.path,
+            None,
+        )
+        .await
+        .map_err(map_memory_error_to_mcp)?;
         let compact = args.compact.unwrap_or(false);
-        let versions: Vec<serde_json::Value> = history
+        let versions: Vec<serde_json::Value> = outcome
+            .entries
             .into_iter()
-            .map(|c| {
+            .map(|entry| {
+                let c = entry.commit;
                 if compact {
                     json!({
                         "commit": c.id,
@@ -2563,6 +2573,7 @@ impl McpServer {
                         "author_name": c.author_name,
                         "author_email": c.author_email,
                         "timestamp": c.timestamp,
+                        "owning_group": entry.owning_group,
                     })
                 } else {
                     json!({
@@ -2572,10 +2583,12 @@ impl McpServer {
                         "author_name": c.author_name,
                         "author_email": c.author_email,
                         "timestamp": c.timestamp,
+                        "owning_group": entry.owning_group,
                     })
                 }
             })
             .collect();
+        let notes = dangling_history_pointer_notes(outcome.unresolved_pointer);
 
         if args.offset.is_some() || args.limit.is_some() {
             let (page, envelope) = paginate_records(
@@ -2585,21 +2598,27 @@ impl McpServer {
                 DEFAULT_LIST_VERSIONS_LIMIT,
                 MAX_LIST_VERSIONS_LIMIT,
             );
-            return Ok(ok_json(json!({
-                "group":    entry.manifest.group_id,
-                "slug":     resolved.slug,
-                "id":       resolved.id.to_string(),
-                "versions": page,
-                "envelope": envelope,
-            })));
+            return Ok(ok_json_with_notes(
+                json!({
+                    "group":    entry.manifest.group_id,
+                    "slug":     resolved.slug,
+                    "id":       resolved.id.to_string(),
+                    "versions": page,
+                    "envelope": envelope,
+                }),
+                notes,
+            ));
         }
 
-        Ok(ok_json(json!({
-            "group": entry.manifest.group_id,
-            "slug": resolved.slug,
-            "id": resolved.id.to_string(),
-            "versions": versions,
-        })))
+        Ok(ok_json_with_notes(
+            json!({
+                "group": entry.manifest.group_id,
+                "slug": resolved.slug,
+                "id": resolved.id.to_string(),
+                "versions": versions,
+            }),
+            notes,
+        ))
     }
 
     #[tool(
@@ -10324,6 +10343,90 @@ mod tests {
             .and_then(|v| v.as_str())
             .expect("commit string");
         assert_eq!(commit.len(), 40, "commit should be a 40-char hex id");
+    }
+
+    #[tokio::test]
+    async fn list_versions_lists_target_then_source_tagged_by_owning_group_after_a_move() {
+        let (state, _tmp) = test_state().await;
+        let source_group =
+            seed_group_with_memory(&state, "history-source", "moved", SAMPLE_MEMORY).await;
+        let target_group =
+            seed_group_with_memory(&state, "history-target", "unrelated", SAMPLE_MEMORY).await;
+        let source_entry = state.groups.get(&source_group).await.expect("source entry");
+        let target_entry = state.groups.get(&target_group).await.expect("target entry");
+        let author = ResolvedAuthor {
+            name: "test".to_string(),
+            email: "test@example.com".to_string(),
+        };
+        let moved = mmcp_store::move_memory_across_groups(
+            &state.backend,
+            &source_entry,
+            &target_entry,
+            Some("moved"),
+            None,
+            &author,
+            mmcp_store::CrossGroupMoveOptions::default(),
+        )
+        .await
+        .expect("move across groups");
+
+        let server = McpServer::new(state, ServeMode::Full);
+        let res = server
+            .list_versions(Parameters(ListVersionsArgs {
+                group: target_group.to_string(),
+                slug: "moved".into(),
+                ..Default::default()
+            }))
+            .await
+            .expect("list_versions");
+        let parsed = parse_ok_json(res);
+        let versions = parsed
+            .get("versions")
+            .and_then(|v| v.as_array())
+            .expect("versions array");
+        assert!(
+            versions.len() >= 2,
+            "must list the target write plus at least one source entry"
+        );
+        assert_eq!(
+            versions[0].get("owning_group").and_then(|v| v.as_str()),
+            Some(target_group.to_string().as_str()),
+            "the target's own write commit must come first"
+        );
+        assert_eq!(
+            versions
+                .last()
+                .and_then(|v| v.get("owning_group"))
+                .and_then(|v| v.as_str()),
+            Some(source_group.to_string().as_str()),
+            "the source group's entries must be appended after the target's"
+        );
+        assert!(
+            parsed.get("notes").is_none(),
+            "a resolved pointer must not emit a dangling_ref note"
+        );
+
+        // `read_memory(group = target, version = <source sha>)` must resolve.
+        let source_sha = versions
+            .last()
+            .and_then(|v| v.get("commit"))
+            .and_then(|v| v.as_str())
+            .expect("source commit sha")
+            .to_string();
+        let read = server
+            .read_memory(Parameters(ReadMemoryArgs {
+                group: target_group.to_string(),
+                slug: Some("moved".into()),
+                id: None,
+                version: Some(source_sha),
+            }))
+            .await
+            .expect("read_memory routes a source-group sha");
+        let read_parsed = parse_ok_json(read);
+        assert_eq!(
+            read_parsed.get("id").and_then(|v| v.as_str()),
+            Some(moved.id.to_string().as_str())
+        );
     }
 
     #[tokio::test]

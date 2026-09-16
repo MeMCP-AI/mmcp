@@ -188,6 +188,22 @@ pub(crate) fn dangling_ref_notes_with_known(
     notes
 }
 
+/// Populator helper: build the `dangling_ref` note for an unresolved
+/// cross-group history pointer, as reported by
+/// `mmcp_store::walk_memory_history`'s `unresolved_pointer` field.
+/// Empty when the pointer resolved (the common case) or the memory
+/// never moved across groups.
+#[must_use]
+pub fn dangling_history_pointer_notes(unresolved_pointer: Option<String>) -> Vec<Note> {
+    match unresolved_pointer {
+        Some(reason) => vec![Note::warn(
+            "dangling_ref",
+            format!("cross-group history pointer did not resolve: {reason}"),
+        )],
+        None => Vec::new(),
+    }
+}
+
 /// Populator helper: scan a push report for groups whose
 /// control-plane push succeeded but whose content plane (git
 /// push) did not actually ship bytes. Each such group surfaces

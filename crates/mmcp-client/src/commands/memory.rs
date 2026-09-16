@@ -515,10 +515,15 @@ async fn run_read(args: ReadArgs) -> Result<()> {
         .await
         .map_err(anyhow::Error::from)?;
     let rev = parse_rev(args.version.as_deref());
-    let bytes = backend
-        .read_file(&entry.handle, &resolved.path, &rev)
-        .await
-        .map_err(anyhow::Error::from)?;
+    let bytes = mmcp_store::read_file_following_history_pointer(
+        &backend,
+        &entry.handle,
+        &groups,
+        &resolved.path,
+        &rev,
+    )
+    .await
+    .map_err(anyhow::Error::from)?;
     let text = std::str::from_utf8(&bytes).context("memory file is not valid UTF-8")?;
     let file = MemoryFile::parse(text)
         .map_err(|e| anyhow::anyhow!("memory frontmatter did not parse: {e}"))?;
@@ -556,19 +561,25 @@ async fn run_versions(args: VersionsArgs) -> Result<()> {
     let resolved = resolve_memory(&backend, &entry.handle, slug_opt.as_deref(), id_opt)
         .await
         .map_err(anyhow::Error::from)?;
-    let history = mmcp_store::walk_path_history(&backend, &entry.handle, &resolved.path, None)
-        .await
-        .map_err(anyhow::Error::from)?;
-    if history.is_empty() {
+    let outcome =
+        mmcp_store::walk_memory_history(&backend, &entry.handle, &groups, &resolved.path, None)
+            .await
+            .map_err(anyhow::Error::from)?;
+    if outcome.entries.is_empty() {
         println!("no commits touch {}", resolved.path);
-        return Ok(());
+    } else {
+        for entry in &outcome.entries {
+            // 7-char prefix matches git's default short-hash width.
+            let short: String = entry.commit.id.chars().take(7).collect();
+            println!(
+                "{}  {}  {}  (group {})",
+                short, entry.commit.author_name, entry.commit.subject, entry.owning_group
+            );
+        }
+        println!("\n{} commit(s)", outcome.entries.len());
     }
-    for commit in &history {
-        // 7-char prefix matches git's default short-hash width.
-        let short: String = commit.id.chars().take(7).collect();
-        println!("{}  {}  {}", short, commit.author_name, commit.subject);
-    }
-    println!("\n{} commit(s)", history.len());
+    let notes = crate::notes::dangling_history_pointer_notes(outcome.unresolved_pointer);
+    render_notes_tail(&notes);
     Ok(())
 }
 
