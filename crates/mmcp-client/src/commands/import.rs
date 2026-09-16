@@ -107,7 +107,21 @@ pub struct ImportArgs {
 /// must pass `force = true` explicitly so scripted imports never
 /// silently poke at protected groups. Unprotected groups are a
 /// no-op: the operator's `mmcp import` intent is the confirmation.
+///
+/// `mmcp import`'s own pre-confirmation flag is genuinely `--force`;
+/// every other protected-group-gated command exposes
+/// `--confirm-protected` instead (see [`protected_confirm_named`]).
 pub fn protected_confirm(entry: &GroupEntry, force: bool) -> Result<()> {
+    protected_confirm_named(entry, force, "--force")
+}
+
+/// Same guard as [`protected_confirm`], naming `flag` (the caller's
+/// own pre-confirmation flag) in the non-TTY refusal instead of a
+/// hardcoded `--force`. Every protected-group-gated command besides
+/// `mmcp import` exposes `--confirm-protected`, not `--force`; a
+/// refusal naming a flag the command does not actually accept sends
+/// the operator to try an option that will not work.
+pub fn protected_confirm_named(entry: &GroupEntry, confirmed: bool, flag: &str) -> Result<()> {
     if !entry.manifest.protected {
         return Ok(());
     }
@@ -115,12 +129,12 @@ pub fn protected_confirm(entry: &GroupEntry, force: bool) -> Result<()> {
         "notice: group `{}` is marked protected; writes into it are audited.",
         entry.manifest.slug,
     );
-    if force {
+    if confirmed {
         return Ok(());
     }
     if !std::io::stdin().is_terminal() {
         bail!(
-            "group `{}` is protected; pass --force on non-TTY invocations to confirm the write",
+            "group `{}` is protected; pass {flag} on non-TTY invocations to confirm the write",
             entry.manifest.slug,
         );
     }

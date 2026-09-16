@@ -29,7 +29,7 @@ use mmcp_store::{
 };
 use uuid::Uuid;
 
-use crate::commands::import::protected_confirm;
+use crate::commands::import::{protected_confirm, protected_confirm_named};
 use crate::notes::{id_validation_to_notes, malformed_frontmatter_notes, render_notes_tail};
 
 // ── Clap surface ────────────────────────────────────────────────
@@ -554,8 +554,8 @@ async fn run_move_across_groups(
     // into the target and deletes from the source, so either one
     // being protected needs the same confirmation a same-group write
     // would require.
-    protected_confirm(&source_entry, args.confirm_protected)?;
-    protected_confirm(&target_entry, args.confirm_protected)?;
+    protected_confirm_named(&source_entry, args.confirm_protected, "--confirm-protected")?;
+    protected_confirm_named(&target_entry, args.confirm_protected, "--confirm-protected")?;
 
     let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::cross_group_move_chain(
         source_entry.handle.group_id,

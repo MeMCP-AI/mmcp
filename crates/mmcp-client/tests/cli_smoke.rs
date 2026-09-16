@@ -844,7 +844,11 @@ fn memory_move_to_group_refuses_a_protected_target_without_confirm() {
         .env("MMCP_HOME", &mmcp_home)
         .assert()
         .failure()
-        .stderr(predicate::str::contains("protected"));
+        // The refusal must name the flag this command actually
+        // accepts, `--confirm-protected`, never `--force` (that flag
+        // belongs to `mmcp import`, a different command entirely).
+        .stderr(predicate::str::contains("--confirm-protected"))
+        .stderr(predicate::str::contains("--force").not());
 
     // The refusal changed nothing: the source memory still resolves.
     mmcp()
@@ -919,7 +923,8 @@ fn memory_move_to_group_refuses_a_protected_source_without_confirm() {
         .env("MMCP_HOME", &mmcp_home)
         .assert()
         .failure()
-        .stderr(predicate::str::contains("protected"));
+        .stderr(predicate::str::contains("--confirm-protected"))
+        .stderr(predicate::str::contains("--force").not());
 
     mmcp()
         .args([
