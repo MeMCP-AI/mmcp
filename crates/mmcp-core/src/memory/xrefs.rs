@@ -116,6 +116,57 @@ pub fn parse_memory_refs(
         .collect()
 }
 
+/// One `[[...]]` documentation-style link found in a memory body,
+/// the loose convention mmcp's own memories use (`[[<group-uuid>:<slug>]]`
+/// or bare `[[<slug>]]` for a same-group target).
+///
+/// Distinct from [`MemoryRef`]: a `MemoryRef` is a typed, commit-pinned
+/// cross-reference carried in frontmatter, resolved and kept valid
+/// by tooling. A `BodyLink` is free text inside the Markdown body,
+/// never rewritten by any mmcp operation, so a caller that moves or
+/// renames a memory must find and fix these by hand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BodyLink {
+    /// `[[<group-uuid>:<slug>]]`.
+    CrossGroup { group: Uuid, slug: String },
+    /// `[[<slug>]]`, implicitly the same group as the body it appears in.
+    SameGroup { slug: String },
+}
+
+/// Scan `body` for every `[[...]]` link.
+///
+/// A malformed cross-group prefix (the text before `:` does not parse
+/// as a UUID) is skipped rather than misread as a same-group slug
+/// that happens to contain a colon; slugs never contain `:`.
+#[must_use]
+pub fn find_body_links(body: &str) -> Vec<BodyLink> {
+    let mut out = Vec::new();
+    let mut rest = body;
+    while let Some(start) = rest.find("[[") {
+        let after_open = &rest[start + 2..];
+        let Some(end) = after_open.find("]]") else {
+            break;
+        };
+        let inner = &after_open[..end];
+        match inner.split_once(':') {
+            Some((group_part, slug_part)) => {
+                if let Ok(group) = Uuid::parse_str(group_part) {
+                    out.push(BodyLink::CrossGroup {
+                        group,
+                        slug: slug_part.to_string(),
+                    });
+                }
+            }
+            None if !inner.is_empty() => out.push(BodyLink::SameGroup {
+                slug: inner.to_string(),
+            }),
+            None => {}
+        }
+        rest = &after_open[end + 2..];
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -213,5 +264,57 @@ mod tests {
     fn parse_memory_refs_empty_input_returns_empty_output() {
         let parsed = parse_memory_refs(&[], "refs").expect("empty parse ok");
         assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn find_body_links_extracts_cross_group_and_same_group_forms() {
+        let group = Uuid::now_v7();
+        let body = format!("See [[{group}:coding/dry]] and also [[writing/brevity]] for context.");
+        let links = find_body_links(&body);
+        assert_eq!(
+            links,
+            vec![
+                BodyLink::CrossGroup {
+                    group,
+                    slug: "coding/dry".to_string(),
+                },
+                BodyLink::SameGroup {
+                    slug: "writing/brevity".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn find_body_links_skips_a_malformed_cross_group_prefix() {
+        let body = "[[not-a-uuid:some/slug]]";
+        assert!(find_body_links(body).is_empty());
+    }
+
+    #[test]
+    fn find_body_links_returns_empty_for_plain_text() {
+        assert!(find_body_links("no links here").is_empty());
+    }
+
+    #[test]
+    fn find_body_links_finds_every_occurrence_in_order() {
+        let group = Uuid::now_v7();
+        let body = format!("[[a/one]] then [[{group}:b/two]] then [[c/three]]");
+        let links = find_body_links(&body);
+        assert_eq!(
+            links,
+            vec![
+                BodyLink::SameGroup {
+                    slug: "a/one".to_string()
+                },
+                BodyLink::CrossGroup {
+                    group,
+                    slug: "b/two".to_string(),
+                },
+                BodyLink::SameGroup {
+                    slug: "c/three".to_string()
+                },
+            ]
+        );
     }
 }

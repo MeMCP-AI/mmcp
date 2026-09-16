@@ -52,4 +52,6 @@ pub use response_budget::{
 pub use splice::{SpliceError, line_terminator, splice};
 pub use status::Status;
 pub use version::Version;
-pub use xrefs::{MemoryRefInput, XrefError, parse_cross_refs, parse_memory_refs};
+pub use xrefs::{
+    BodyLink, MemoryRefInput, XrefError, find_body_links, parse_cross_refs, parse_memory_refs,
+};
