@@ -669,6 +669,74 @@ fn feature_add_list_read_round_trips_inside_project() {
 }
 
 #[test]
+fn memory_move_to_group_relocates_across_groups() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mmcp_home = tmp.path().join("mmcp-home");
+    mmcp()
+        .args(["init", "project", "--slug", "move-cli-source"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+    mmcp()
+        .args(["group", "create", "move-cli-target"])
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+
+    mmcp()
+        .args([
+            "memory",
+            "write",
+            "move-cli-source",
+            "moving-memory",
+            "--name",
+            "Moving",
+            "--description",
+            "will move",
+            "--kind",
+            "scratch",
+            "--body",
+            "content\n",
+        ])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success();
+
+    mmcp()
+        .args([
+            "memory",
+            "move",
+            "move-cli-source",
+            "moving-memory",
+            "--to-group",
+            "move-cli-target",
+        ])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("moved"))
+        .stdout(predicate::str::contains("457"));
+
+    mmcp()
+        .args(["memory", "read", "move-cli-target", "moving-memory"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("content"));
+
+    mmcp()
+        .args(["memory", "read", "move-cli-source", "moving-memory"])
+        .current_dir(tmp.path())
+        .env("MMCP_HOME", &mmcp_home)
+        .assert()
+        .failure();
+}
+
+#[test]
 fn debug_cache_rebuild_forces_a_full_reindex() {
     // `init project` without `--config-only` creates a real local
     // bare group repo -- no remote needed -- so the rebuild below

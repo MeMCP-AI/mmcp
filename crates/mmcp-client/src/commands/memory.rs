@@ -97,17 +97,28 @@ pub struct TreeArgs {
 
 #[derive(Debug, Args)]
 pub struct MoveArgs {
-    /// Target group (UUID or slug).
+    /// Source group (UUID or slug).
     pub group: String,
 
     /// Source memory address: slug path or UUID.
     /// UUIDs are detected by shape.
     pub addr: String,
 
-    /// New slug path.
+    /// New slug path for an in-group move.
     /// Multi-segment paths use `/` separators (e.g. `feedback/git/commit-phase`).
     /// Group it under a subject prefix nested with `/`, never a hyphenated form.
-    pub new_slug: String,
+    /// Required unless `--to-group` selects a cross-group move instead, where it is ignored.
+    pub new_slug: Option<String>,
+
+    /// Destination group (UUID or slug): move the memory there instead of renaming it in place.
+    /// Keeps the memory's id, slug, and body; carries a pointer back to its pre-move history.
+    #[arg(long = "to-group")]
+    pub target_group: Option<String>,
+
+    /// Cross-group only. Mint a fresh tracker number in the target
+    /// group instead of refusing on a carried-number collision.
+    #[arg(long)]
+    pub renumber: bool,
 
     /// Override the git commit message.
     #[arg(long)]
@@ -470,6 +481,24 @@ async fn run_move(args: MoveArgs) -> Result<()> {
         .map_err(anyhow::Error::from)?;
     let (slug_opt, id_opt) = parse_addr(&args.addr);
     let author = home.resolve_author();
+
+    if let Some(target_group_ref) = &args.target_group {
+        return run_move_across_groups(
+            &backend,
+            &groups,
+            entry,
+            target_group_ref,
+            slug_opt.as_deref(),
+            id_opt,
+            &author,
+            &args,
+        )
+        .await;
+    }
+
+    let new_slug = args
+        .new_slug
+        .context("new_slug is required for an in-group move")?;
     // A slug-rewrite move spans source + target slug dirs,
     // so coarsen at the group level just like a feature rename does.
     let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::coarsen_group_chain(
@@ -481,7 +510,7 @@ async fn run_move(args: MoveArgs) -> Result<()> {
         &entry.handle,
         slug_opt.as_deref(),
         id_opt,
-        &args.new_slug,
+        &new_slug,
         &author,
         args.message.as_deref(),
     )
@@ -501,6 +530,72 @@ async fn run_move(args: MoveArgs) -> Result<()> {
             outcome.id, outcome.old_slug, outcome.new_slug,
         );
     }
+    Ok(())
+}
+
+/// Cross-group half of `run_move`, split out once `--to-group` is set.
+#[allow(clippy::too_many_arguments)]
+async fn run_move_across_groups(
+    backend: &NativeBackend,
+    groups: &mmcp_store::GroupIndex,
+    source_entry: GroupEntry,
+    target_group_ref: &str,
+    slug: Option<&str>,
+    id: Option<Uuid>,
+    author: &mmcp_store::ResolvedAuthor,
+    args: &MoveArgs,
+) -> Result<()> {
+    let target_entry = resolve_group(groups, target_group_ref)
+        .await
+        .map_err(anyhow::Error::from)?;
+    let _lock_guards = mmcp_store::lock::acquire_chain(&mmcp_store::lock::cross_group_move_chain(
+        source_entry.handle.group_id,
+        target_entry.handle.group_id,
+    ))
+    .await;
+    let outcome = mmcp_store::move_memory_across_groups(
+        backend,
+        &source_entry,
+        &target_entry,
+        slug,
+        id,
+        author,
+        mmcp_store::CrossGroupMoveOptions {
+            renumber: args.renumber,
+            message: args.message.as_deref(),
+        },
+    )
+    .await
+    .map_err(anyhow::Error::from)?;
+
+    let short_target: String = outcome.target_commit_id.chars().take(7).collect();
+    let short_source: String = outcome.source_commit_id.chars().take(7).collect();
+    println!(
+        "moved {} from group `{}` to group `{}` (write {short_target}, delete {short_source})",
+        outcome.id, outcome.source_group, outcome.target_group,
+    );
+    if let Some((old, new)) = outcome.renumbered {
+        println!("renumbered ticket #{old} -> #{new}");
+    }
+
+    let report =
+        mmcp_store::scan_back_references(backend, groups, outcome.source_group, &outcome.slug)
+            .await
+            .map_err(anyhow::Error::from)?;
+    if !report.references.is_empty() {
+        println!("\nback-references to correct by hand:");
+        for reference in &report.references {
+            let kind = match reference.kind {
+                mmcp_store::BackReferenceKind::CrossGroupLink => "cross-group link",
+                mmcp_store::BackReferenceKind::DanglingSameGroupLink => "dangling same-group link",
+            };
+            println!(
+                "  {} / {} ({kind})",
+                reference.group_slug, reference.memory_slug
+            );
+        }
+    }
+    println!("\n{}", report.sync_push_note);
     Ok(())
 }
 
