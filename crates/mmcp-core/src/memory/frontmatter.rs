@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::memory::{
-    BumpIntent, FeatureMetadata, IssueMetadata, MemoryKind, MemoryRef, MilestoneMetadata,
+    BumpIntent, CrossGroupHistoryPointer, FeatureMetadata, IssueMetadata, MemoryKind, MemoryRef,
+    MilestoneMetadata,
 };
 
 /// User-visible metadata written in the `+++`-delimited TOML block at the top of a memory file.
@@ -85,13 +86,23 @@ pub struct MemoryFrontmatter {
     /// agent acting on behalf of an external owner. The UUID
     /// disambiguates by namespace at lookup time: a group UUID
     /// names the source project, a memory UUID names a specific
-    /// source memory (preserving the chain when `move_memory`
-    /// carries provenance forward). Absent on the common case
-    /// where the owning group authored the memory itself; the
-    /// serializer skips the field when unset so existing memories
-    /// keep their wire shape.
+    /// source memory. Absent on the common case where the owning
+    /// group authored the memory itself; the serializer skips the
+    /// field when unset so existing memories keep their wire shape.
+    /// A cross-group move leaves this field untouched: see
+    /// [`Self::history_source`] for that provenance instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<Uuid>,
+
+    /// Pointer to a memory's pre-move history, set by a cross-group
+    /// move (the memory keeps its id and body but starts a fresh
+    /// history in the target group's repository). Absent on every
+    /// memory that has never moved across groups; the serializer
+    /// skips the field when unset so unrelated memories keep their
+    /// existing wire shape. An older binary that rewrites this file
+    /// without knowing the key drops it on save.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_source: Option<CrossGroupHistoryPointer>,
 }
 
 impl MemoryFrontmatter {
@@ -119,6 +130,7 @@ impl MemoryFrontmatter {
             milestone: None,
             refs: Vec::new(),
             source: None,
+            history_source: None,
         }
     }
 
@@ -136,6 +148,13 @@ impl MemoryFrontmatter {
     #[must_use]
     pub fn with_source(mut self, source: Option<Uuid>) -> Self {
         self.source = source;
+        self
+    }
+
+    /// Set the cross-group history pointer, set by a cross-group move.
+    #[must_use]
+    pub fn with_history_source(mut self, history_source: Option<CrossGroupHistoryPointer>) -> Self {
+        self.history_source = history_source;
         self
     }
 

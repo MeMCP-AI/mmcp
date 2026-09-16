@@ -14,6 +14,7 @@ mod bump;
 mod entry;
 mod feature;
 mod frontmatter;
+mod history_pointer;
 mod issue;
 mod kind;
 mod limits;
@@ -33,6 +34,7 @@ pub use bump::BumpIntent;
 pub use entry::Memory;
 pub use feature::{FeatureMetadata, FeatureStatus, FeatureStatusParseError};
 pub use frontmatter::MemoryFrontmatter;
+pub use history_pointer::CrossGroupHistoryPointer;
 pub use issue::{IssueMetadata, IssueStatus, IssueStatusParseError, IssueSupersedeInvariantError};
 pub use kind::{MemoryKind, MemoryKindParseError};
 pub use limits::{
