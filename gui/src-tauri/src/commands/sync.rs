@@ -140,16 +140,24 @@ pub async fn sync_status(state: State<'_, AppState>) -> GuiResult<SyncStatusDto>
 pub async fn sync_pull(app: AppHandle, state: State<'_, AppState>) -> GuiResult<PullReportDto> {
     let guard = state.sync.read().await;
     let bundle = guard.as_ref().ok_or(GuiError::SyncNotConfigured)?;
-    // `IndexResolver` implements both `GroupHandleResolver` and
-    // `ScopeIndex`, so it plays both roles in the engine's new
-    // three-arg signature. `SyncFilter::All` iterates every
-    // locally-indexed group — the GUI doesn't expose a subset
-    // picker yet, matching what the CLI's default pull does.
-    let report = bundle
-        .engine
-        .pull(SyncFilter::All, &bundle.resolver, &bundle.resolver)
+    let (engine, resolver, filter) = mmcp_store::sync::prepare_pull(
+        state.backend.clone(),
+        state.index.clone(),
+        &bundle.effective,
+        mmcp_store::sync::PullSelector::All,
+    )
+    .await
+    .map_err(GuiError::from)?;
+    let report = engine
+        .pull(filter, &resolver, &resolver)
         .await
         .map_err(GuiError::from)?;
+    let updated = report
+        .updated
+        .iter()
+        .map(|g| g.group_id)
+        .collect::<Vec<_>>();
+    mmcp_store::cache::notify_pull(&state.backend, &state.index, &updated).await;
     // A pull touched one or more groups' refs — tell every frontend
     // listener so views refresh silently. We don't itemise which
     // groups changed because the pull report isn't per-group here;
@@ -173,14 +181,15 @@ pub async fn sync_push(state: State<'_, AppState>) -> GuiResult<PushReportDto> {
     // `PushScope::Default` matches the CLI's own default landing
     // point (`mmcp push` with no `--all-remotes`/`--remote` flag);
     // the GUI doesn't expose a remote-scope picker yet.
-    let report = bundle
-        .engine
-        .push(
-            SyncFilter::All,
-            PushScope::Default,
-            &bundle.resolver,
-            &bundle.resolver,
-        )
+    let (engine, resolver) = mmcp_store::build_engine(
+        state.backend.clone(),
+        state.index.clone(),
+        &bundle.effective,
+    )
+    .await
+    .map_err(GuiError::from)?;
+    let report = engine
+        .push(SyncFilter::All, PushScope::Default, &resolver, &resolver)
         .await
         .map_err(GuiError::from)?;
     Ok(PushReportDto {

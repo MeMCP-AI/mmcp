@@ -862,3 +862,118 @@ async fn write_commit_rejects_intra_commit_write_through_a_blob() {
         "expected a Commit error for the blob/directory collision, got {err:?}"
     );
 }
+
+#[tokio::test]
+async fn clone_bare_preserves_manifest_history_and_worktree_clone_behavior() {
+    let (source, _source_tmp) = backend_in_tempdir();
+    let manifest = sample_manifest();
+    let source_repo = source.create_group_repo(&manifest).await.unwrap();
+    let first = source
+        .write_commit(
+            &source_repo,
+            sample_commit("alice", "main", "memories/a.md", "first"),
+        )
+        .await
+        .unwrap();
+    let second = source
+        .write_commit(
+            &source_repo,
+            sample_commit("alice", "main", "memories/a.md", "second"),
+        )
+        .await
+        .unwrap();
+    let remote_url = format!("file://{}", source_repo.locator.replace('\\', "/"));
+    let (destination, destination_tmp) = backend_in_tempdir();
+    let path = destination.repo_path(*manifest.group_id.as_uuid());
+    destination
+        .clone_bare_to(&remote_url, &path, &mmcp_git::Credentials::None)
+        .await
+        .unwrap();
+
+    assert!(gix::open(&path).unwrap().is_bare());
+    assert!(!path.join(".git").exists());
+    assert!(!path.join(MANIFEST_FILENAME).exists());
+    let cloned = mmcp_git::RepoHandle::new(
+        *manifest.group_id.as_uuid(),
+        path.to_string_lossy().into_owned(),
+    );
+    assert_eq!(destination.read_manifest(&cloned).await.unwrap(), manifest);
+    let contents = destination
+        .read_file(&cloned, "memories/a.md", &Rev::Head)
+        .await
+        .unwrap();
+    assert_eq!(contents.as_ref(), b"second");
+    let history = destination
+        .walk_history(&cloned, "memories/a.md", None)
+        .await
+        .unwrap();
+    assert!(history.iter().any(|commit| commit.id == first));
+    assert!(history.iter().any(|commit| commit.id == second));
+
+    let working_tree = destination_tmp.path().join("working-tree");
+    destination
+        .clone_to(&remote_url, &working_tree, &mmcp_git::Credentials::None)
+        .await
+        .unwrap();
+    assert!(!gix::open(&working_tree).unwrap().is_bare());
+    assert!(working_tree.join(".git").is_dir());
+    assert_eq!(
+        std::fs::read(working_tree.join("memories/a.md")).unwrap(),
+        b"second"
+    );
+}
+
+#[tokio::test]
+async fn clone_bare_requires_main_and_ignores_a_different_remote_head() {
+    let (source, _source_tmp) = backend_in_tempdir();
+    let manifest = sample_manifest();
+    let source_repo = source.create_group_repo(&manifest).await.unwrap();
+    source
+        .write_commit(
+            &source_repo,
+            sample_commit(
+                "alice",
+                "develop",
+                MANIFEST_FILENAME,
+                "invalid manifest on develop",
+            ),
+        )
+        .await
+        .unwrap();
+    let source_path = source.repo_path(*manifest.group_id.as_uuid());
+    std::fs::write(source_path.join("HEAD"), b"ref: refs/heads/develop\n").unwrap();
+    let (destination, destination_tmp) = backend_in_tempdir();
+    let path = destination.repo_path(*manifest.group_id.as_uuid());
+    let remote_url = format!("file://{}", source_repo.locator.replace('\\', "/"));
+    destination
+        .clone_bare_to(&remote_url, &path, &mmcp_git::Credentials::None)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(path.join("HEAD")).unwrap().trim(),
+        "ref: refs/heads/main"
+    );
+    let cloned = mmcp_git::RepoHandle::new(
+        *manifest.group_id.as_uuid(),
+        path.to_string_lossy().into_owned(),
+    );
+    assert_eq!(destination.read_manifest(&cloned).await.unwrap(), manifest);
+
+    // Only develop remains; silently accepting its manifest would initialize
+    // a mirror that subsequent main-based pull cannot synchronize.
+    let deleted = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&source_path)
+        .args(["update-ref", "-d", "refs/heads/main"])
+        .status()
+        .unwrap();
+    assert!(deleted.success());
+    let missing_main = destination_tmp.path().join("missing-main.git");
+    assert!(
+        destination
+            .clone_bare_to(&remote_url, &missing_main, &mmcp_git::Credentials::None)
+            .await
+            .is_err()
+    );
+    assert!(!missing_main.exists());
+}

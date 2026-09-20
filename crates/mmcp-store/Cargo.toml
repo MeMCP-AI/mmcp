@@ -41,9 +41,9 @@ acdc-parser = { workspace = true }
 acdc-converters-core = { workspace = true }
 acdc-converters-markdown = { workspace = true }
 
-# Optional, pulled in only when the `testing` feature is enabled,
-# so downstream consumers can activate the fixture module without paying the tempfile compile cost at release time.
-tempfile = { version = "3", optional = true }
+# Temporary directories isolate first-pull validation from the live mirror.
+# Also used by the opt-in testing fixtures.
+tempfile = "3"
 
 # Portable archive container for `archive::export_archive`/`import_archive`.
 # `tar` packages a group's verbatim memory files into one stream;
@@ -74,8 +74,8 @@ wiremock = { workspace = true }
 # gating them behind a feature lets downstream crates,
 # mmcp-client integration tests, mmcp-gui widget tests, future third-party consumers,
 # pull in the same helpers via `mmcp-store = { ..., features = ["testing"] }`,
-# without paying the fixture compile cost at release time.
-testing = ["dep:tempfile"]
+# without exposing fixture helpers in release builds.
+testing = []
 
 [lints]
 workspace = true

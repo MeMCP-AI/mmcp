@@ -80,6 +80,21 @@ impl NativeBackend {
         self.root.join(format!("{group_id}.git"))
     }
 
+    /// Clone a remote into a bare repository suitable for the local mirror.
+    ///
+    /// Unlike [`GitBackend::clone_to`], this creates no working tree and
+    /// preserves the remote branches directly under `refs/heads`.
+    /// HEAD is pinned to the required `main` branch, regardless of the
+    /// remote default branch; a remote without `main` is rejected.
+    pub async fn clone_bare_to(
+        &self,
+        remote_url: &str,
+        dst: &Path,
+        creds: &Credentials,
+    ) -> Result<(), GitError> {
+        repo_ops::clone_bare(remote_url, dst, creds).await
+    }
+
     /// Resolve a repo handle into a filesystem path.
     fn handle_path(handle: &RepoHandle) -> &Path {
         Path::new(&handle.locator)
