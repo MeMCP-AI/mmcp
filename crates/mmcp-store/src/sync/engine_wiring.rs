@@ -152,7 +152,7 @@ async fn resolve_group_id(
 /// unchanged from the single-remote era. Every other remote (named
 /// `mmcp-server` or `direct-git`) resolves via the name-derived
 /// `SyncConfig::token_env_name` / `push_token_env_name` env vars.
-fn resolve_credentials(
+pub(super) fn resolve_credentials(
     resolved: &ResolvedRemote,
     get_env: &impl Fn(&str) -> Option<String>,
 ) -> (Option<String>, Option<String>) {

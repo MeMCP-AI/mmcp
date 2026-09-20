@@ -144,6 +144,26 @@ pub async fn resolve_sync_filter(
     );
 }
 
+/// Validate the selector before pull preparation can contact or import a remote.
+fn pull_selector(selector: &SyncSelector) -> Result<mmcp_store::sync::PullSelector> {
+    let count = usize::from(selector.all)
+        + usize::from(selector.scope.is_some())
+        + usize::from(selector.group.is_some());
+    if count != 1 {
+        bail!(
+            "sync selector required: pass exactly one of `--group <uuid|slug>`, `--scope <global|shared|project>`, or `--all`"
+        );
+    }
+    if selector.all {
+        Ok(mmcp_store::sync::PullSelector::All)
+    } else if let Some(scope) = selector.scope {
+        Ok(mmcp_store::sync::PullSelector::Scope(scope.into()))
+    } else if let Some(group) = &selector.group {
+        Ok(mmcp_store::sync::PullSelector::Group(group.clone()))
+    } else {
+        unreachable!("selector count was validated")
+    }
+}
 /// Load the project + user config, resolve the effective remote set,
 /// and bail loudly when it is empty: every sync verb needs at least
 /// one remote to do anything.
@@ -237,6 +257,7 @@ pub async fn run_fetch(selector: SyncSelector) -> Result<()> {
 /// project discovery / config loading / error wording.
 async fn prepare(
     selector: &SyncSelector,
+    bootstrap: bool,
 ) -> Result<(
     String,
     mmcp_sync::SyncEngine,
@@ -252,11 +273,17 @@ async fn prepare(
 
     let mmcp_home = MmcpHome::discover()?;
     let (backend, group_index) = mmcp_home.init_backend().await?;
-    let filter = resolve_sync_filter(selector, &group_index).await?;
     // Keep our own handle on the backend for the pull-trigger cache
     // hook below; `build_engine` takes ownership of a clone.
     let backend_for_cache = backend.clone();
-    let (engine, resolver) = build_engine(backend, group_index, &effective).await?;
+    let (engine, resolver, filter) = if bootstrap {
+        let selection = pull_selector(selector)?;
+        mmcp_store::sync::prepare_pull(backend, group_index, &effective, selection).await?
+    } else {
+        let filter = resolve_sync_filter(selector, &group_index).await?;
+        let (engine, resolver) = build_engine(backend, group_index, &effective).await?;
+        (engine, resolver, filter)
+    };
     Ok((label, engine, resolver, filter, backend_for_cache))
 }
 
@@ -264,7 +291,7 @@ async fn prepare(
 /// the local tracking ref, then fast-forward local `main` from the
 /// default remote only.
 pub async fn run_pull(selector: SyncSelector) -> Result<()> {
-    let (label, engine, resolver, filter, backend) = prepare(&selector).await?;
+    let (label, engine, resolver, filter, backend) = prepare(&selector, true).await?;
     let report = engine
         .pull(filter, &resolver, &resolver)
         .await
@@ -311,7 +338,7 @@ pub async fn run_pull(selector: SyncSelector) -> Result<()> {
 /// remote when neither `--all-remotes` nor `--remote <name>` is
 /// given).
 pub async fn run_push(selector: SyncSelector, remote_scope: RemoteScopeArgs) -> Result<()> {
-    let (label, engine, resolver, filter, _backend) = prepare(&selector).await?;
+    let (label, engine, resolver, filter, _backend) = prepare(&selector, false).await?;
     let report = engine
         .push(filter, remote_scope.resolve(), &resolver, &resolver)
         .await
@@ -364,7 +391,7 @@ pub async fn run_push(selector: SyncSelector, remote_scope: RemoteScopeArgs) -> 
 /// an `anyhow::Error` carrying `SyncError::Conflict` on conflict
 /// (caller maps to exit 2), any other `anyhow::Error` generic (1).
 pub async fn run_sync(selector: SyncSelector, remote_scope: RemoteScopeArgs) -> Result<()> {
-    let (label, engine, resolver, filter, backend) = prepare(&selector).await?;
+    let (label, engine, resolver, filter, backend) = prepare(&selector, true).await?;
     let pulled = engine
         .pull(filter, &resolver, &resolver)
         .await

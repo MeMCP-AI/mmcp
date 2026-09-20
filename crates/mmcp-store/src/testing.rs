@@ -9,7 +9,7 @@
 //!
 //! Gated behind the `testing` Cargo feature,
 //! so downstream crates opt in via `mmcp-store = { ..., features = ["testing"] }`,
-//! and release builds don't pay the `tempfile` compile cost.
+//! so release builds do not expose fixture helpers.
 //! A `#[cfg(test)]` equivalent inside the source tree wouldn't let outside crates reach these helpers,
 //! hence the feature flag.
 //!

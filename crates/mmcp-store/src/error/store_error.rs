@@ -177,6 +177,22 @@ pub enum StoreError {
         source: crate::memory::ImportError,
     },
 
+    /// A first pull could not safely adopt its configured repository.
+    #[error("cannot bootstrap direct-git remote {remote_name}: {reason}")]
+    DirectGitBootstrap {
+        /// Configured remote name.
+        remote_name: String,
+        /// Identity, manifest, or destination validation failure.
+        reason: String,
+    },
+
+    /// A pull selector has no matching local or configured group.
+    #[error("group not found: {query}")]
+    PullGroupNotFound {
+        /// User-supplied UUID or slug.
+        query: String,
+    },
+
     /// A test fixture could not create its scratch directory under
     /// the OS temp root.
     ///

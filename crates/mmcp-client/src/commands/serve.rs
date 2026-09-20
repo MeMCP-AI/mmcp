@@ -4433,17 +4433,16 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         let (cfg, effective) = self.require_sync_configured()?;
         let label = effective.summary_label();
-        let filter = resolve_sync_filter(&args, &self.state.groups).await?;
+        let selection = pull_selector(&args)?;
         let report = run_sync_with_timeout(SYNC_SINGLE_OP_TIMEOUT, "pull", &label, async {
-            let (engine, resolver) = mmcp_store::sync::build_engine(
+            let (engine, resolver, filter) = mmcp_store::sync::prepare_pull(
                 self.state.backend.clone(),
                 self.state.groups.clone(),
                 &effective,
+                selection,
             )
             .await
-            .map_err(|e| {
-                McpError::internal_error(format!("failed to build sync engine: {e}"), None)
-            })?;
+            .map_err(map_pull_preparation_error)?;
             engine
                 .pull(filter, &resolver, &resolver)
                 .await
@@ -4565,17 +4564,16 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         let (cfg, effective) = self.require_sync_configured()?;
         let label = effective.summary_label();
-        let filter = resolve_sync_filter(&args, &self.state.groups).await?;
+        let selection = pull_selector(&args)?;
         let report = run_sync_with_timeout(SYNC_FULL_TIMEOUT, "sync", &label, async {
-            let (engine, resolver) = mmcp_store::sync::build_engine(
+            let (engine, resolver, filter) = mmcp_store::sync::prepare_pull(
                 self.state.backend.clone(),
                 self.state.groups.clone(),
                 &effective,
+                selection,
             )
             .await
-            .map_err(|e| {
-                McpError::internal_error(format!("failed to build sync engine: {e}"), None)
-            })?;
+            .map_err(map_pull_preparation_error)?;
             engine
                 .sync(filter, &resolver, &resolver)
                 .await
@@ -6498,18 +6496,9 @@ fn push_partial_failures_to_json(report: &mmcp_sync::PushReport) -> Vec<serde_js
         .collect()
 }
 
-/// Resolve a [`SyncToolArgs`] into a [`mmcp_sync::SyncFilter`].
-///
-/// Structured error payloads follow the same code convention as
-/// the other tool error mappers so AI clients branch on state
-/// instead of parsing prose. Empty selector falls back to
-/// `SyncFilter::All` for this commit; the follow-up commit turns
-/// that fallback into a `selector_required` error so CLI and MCP
-/// reject bare calls simultaneously.
-async fn resolve_sync_filter(
-    args: &SyncToolArgs,
-    groups: &GroupIndex,
-) -> Result<mmcp_sync::SyncFilter, McpError> {
+/// Validate selector shape without requiring its group to be mirrored already.
+/// Validation precedes pull preparation so invalid calls cannot import a remote.
+fn pull_selector(args: &SyncToolArgs) -> Result<mmcp_store::sync::PullSelector, McpError> {
     let all_flag = args.all.unwrap_or(false);
     let provided: Vec<&str> = [
         args.group.is_some().then_some("group"),
@@ -6529,26 +6518,13 @@ async fn resolve_sync_filter(
         ));
     }
     if all_flag {
-        return Ok(mmcp_sync::SyncFilter::All);
+        return Ok(mmcp_store::sync::PullSelector::All);
     }
     if let Some(scope) = args.scope {
-        return Ok(mmcp_sync::SyncFilter::Scope(scope.into_core()));
+        return Ok(mmcp_store::sync::PullSelector::Scope(scope.into_core()));
     }
-    if let Some(query) = args.group.as_deref() {
-        let entry = mmcp_store::resolve_group(groups, query)
-            .await
-            .map_err(|e| {
-                McpError::invalid_params(
-                    e.to_string(),
-                    Some(json!({
-                        "code": "unknown_group",
-                        "query": query,
-                    })),
-                )
-            })?;
-        return Ok(mmcp_sync::SyncFilter::Group(
-            *entry.manifest.group_id.as_uuid(),
-        ));
+    if let Some(query) = &args.group {
+        return Ok(mmcp_store::sync::PullSelector::Group(query.clone()));
     }
     Err(McpError::invalid_params(
         "sync selector required: pass exactly one of `group`, `scope`, or `all`",
@@ -6559,6 +6535,39 @@ async fn resolve_sync_filter(
     ))
 }
 
+fn map_pull_preparation_error(err: mmcp_store::StoreError) -> McpError {
+    match err {
+        mmcp_store::StoreError::PullGroupNotFound { query } => McpError::invalid_params(
+            format!("group not found: {query}"),
+            Some(json!({ "code": "unknown_group", "query": query })),
+        ),
+        other => McpError::internal_error(format!("failed to prepare pull: {other}"), None),
+    }
+}
+async fn resolve_sync_filter(
+    args: &SyncToolArgs,
+    groups: &GroupIndex,
+) -> Result<mmcp_sync::SyncFilter, McpError> {
+    match pull_selector(args)? {
+        mmcp_store::sync::PullSelector::All => Ok(mmcp_sync::SyncFilter::All),
+        mmcp_store::sync::PullSelector::Scope(scope) => Ok(mmcp_sync::SyncFilter::Scope(scope)),
+        mmcp_store::sync::PullSelector::Group(query) => {
+            let entry = mmcp_store::resolve_group(groups, &query)
+                .await
+                .map_err(|e| {
+                    McpError::invalid_params(
+                        e.to_string(),
+                        Some(json!({
+                            "code": "unknown_group", "query": query,
+                        })),
+                    )
+                })?;
+            Ok(mmcp_sync::SyncFilter::Group(
+                *entry.manifest.group_id.as_uuid(),
+            ))
+        }
+    }
+}
 /// Read the server process's current working directory, mapping
 /// `io::Error` onto `McpError::internal_error` so every FR tool
 /// surfaces the failure identically. Factored out because five

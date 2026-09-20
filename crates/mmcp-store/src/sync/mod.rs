@@ -11,8 +11,10 @@
 //! concern (pure config resolution, no backend, no network) from the
 //! engine construction `engine_wiring` does with its output.
 
+mod adoption;
 mod engine_wiring;
 mod remotes;
 
+pub use adoption::{PullSelector, prepare_pull};
 pub use engine_wiring::{IndexResolver, build_engine, build_engine_with_env};
 pub use remotes::{EffectiveRemotes, RemoteLevel, ResolvedRemote, resolve_effective_remotes};

@@ -479,6 +479,29 @@ pub async fn clone(remote_url: &str, dst: &Path, creds: &Credentials) -> Result<
     Ok(())
 }
 
+/// Clone `remote_url` into a bare `dst`, using the same credential
+/// handling and timeout as a working-tree clone.
+pub async fn clone_bare(remote_url: &str, dst: &Path, creds: &Credentials) -> Result<(), GitError> {
+    let mut cmd = Command::new(git_binary());
+    apply_credentials(&mut cmd, creds, None).await;
+    cmd.arg("clone")
+        .arg("--bare")
+        .arg("--branch")
+        .arg("main")
+        .arg("--")
+        .arg(remote_url)
+        .arg(dst);
+    let output = run_git_subprocess(cmd, defaults::CLONE_TIMEOUT, "clone", remote_url).await?;
+    if !output.status.success() {
+        return Err(GitError::transport(
+            "clone",
+            remote_url,
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ));
+    }
+    Ok(())
+}
+
 /// Fetch `refspecs` from `remote_url` into the bare repo at
 /// `repo_path`, bounded by [`defaults::FETCH_PUSH_TIMEOUT`]. An
 /// `origin` remote is configured on the fly so subsequent fetches

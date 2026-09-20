@@ -14,10 +14,9 @@ use std::time::Duration;
 use mmcp_core::config::{ProjectConfig, Remote, UserConfig};
 use mmcp_git::NativeBackend;
 use mmcp_store::{
-    EffectiveRemotes, GroupIndex, IndexResolver, MmcpHome, ResolvedAuthor, build_engine,
-    config as project_config, resolve_effective_remotes,
+    EffectiveRemotes, GroupIndex, MmcpHome, ResolvedAuthor, config as project_config,
+    resolve_effective_remotes,
 };
-use mmcp_sync::SyncEngine;
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{Debouncer, new_debouncer};
 use tauri::async_runtime::JoinHandle;
@@ -28,11 +27,10 @@ use uuid::Uuid;
 use crate::commands::sync::MIRROR_CHANGED_EVENT;
 use crate::error::{GuiError, GuiResult};
 
-/// Handle to a live sync engine plus the resolved remote-set summary
+/// Resolved sync configuration plus the remote-set summary
 /// the frontend shows in the status bar.
 pub struct SyncBundle {
-    pub engine: SyncEngine,
-    pub resolver: IndexResolver,
+    pub effective: EffectiveRemotes,
     /// Human-readable label for the effective remote set. See
     /// [`EffectiveRemotes::summary_label`].
     pub remotes_summary: String,
@@ -280,14 +278,32 @@ async fn build_sync(
     let Some(effective) = load_effective_remotes(home, reference_point)? else {
         return Ok(None);
     };
+    // Keep constructor validation at startup. A missing default group, including
+    // other remotes bound to that same group, can wait for the first pull.
+    // Unrelated invalid remotes remain visible regardless of configuration order.
+    let bootstrap_group = effective
+        .default_remote()
+        .and_then(|remote| remote.direct_git_group.as_deref());
+    for remote in &effective.remotes {
+        let validation = EffectiveRemotes {
+            remotes: vec![remote.clone()],
+            default_index: Some(0),
+        };
+        match mmcp_store::build_engine(backend.clone(), index.clone(), &validation).await {
+            Ok(_) => {}
+            Err(mmcp_store::StoreError::DirectGitGroupNotFound { group_ref, .. })
+                if bootstrap_group.is_some_and(|reference| {
+                    reference == group_ref
+                        || matches!((Uuid::parse_str(reference), Uuid::parse_str(&group_ref)),
+                        (Ok(default_id), Ok(remote_id)) if default_id == remote_id)
+                }) => {}
+            Err(error) => return Err(GuiError::from(error)),
+        }
+    }
     let remotes_summary = effective.summary_label();
     let probe_url = default_probe_url(&effective);
-    let (engine, resolver) = build_engine(Arc::clone(backend), index.clone(), &effective)
-        .await
-        .map_err(GuiError::from)?;
     Ok(Some(SyncBundle {
-        engine,
-        resolver,
+        effective,
         remotes_summary,
         probe_url,
     }))
@@ -527,5 +543,108 @@ mod tests {
             classify_watch_path(Path::new("019d955d-4cce-77f2-a0b3-0b79ed394612/HEAD")),
             WatchTarget::Root
         );
+    }
+    #[tokio::test]
+    async fn fresh_device_sync_configuration_is_available_without_contacting_git() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let home = MmcpHome::from_root(temp.path().join("home"));
+        let (backend, index) = home.init_backend().await.expect("backend");
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).expect("project dir");
+        let mut config = ProjectConfig {
+            project_uuid: mmcp_core::id::ProjectUuid::new(),
+            project_slug: None,
+            sync: Default::default(),
+            project_remote_only: false,
+            subscriptions: Default::default(),
+        };
+        config.sync.remotes.push(Remote::DirectGit {
+            name: "portable".into(),
+            url: "http://127.0.0.1:1/unreachable.git".into(),
+            auth: RemoteAuth::None,
+            group: Some("portable-project".into()),
+            default: true,
+            include_in_push_all: true,
+        });
+        project_config::save(&project, &config).expect("config");
+        let bundle = build_sync(&backend, &index, &home, Some(&project))
+            .await
+            .expect("startup must not need a local mirror or Git connection")
+            .expect("configured");
+        assert_eq!(bundle.effective.remotes.len(), 1);
+        assert!(index.try_list_ids().is_empty());
+    }
+    #[tokio::test]
+    async fn fresh_device_startup_does_not_hide_an_unmirrored_nondefault_group() {
+        for default_first in [true, false] {
+            let temp = tempfile::TempDir::new().expect("tempdir");
+            let home = MmcpHome::from_root(temp.path().join("home"));
+            let (backend, index) = home.init_backend().await.expect("backend");
+            let project = temp.path().join("project");
+            std::fs::create_dir_all(&project).expect("project dir");
+            let mut config = ProjectConfig {
+                project_uuid: mmcp_core::id::ProjectUuid::new(),
+                project_slug: None,
+                sync: Default::default(),
+                project_remote_only: false,
+                subscriptions: Default::default(),
+            };
+            for default in [default_first, !default_first] {
+                config.sync.remotes.push(Remote::DirectGit {
+                    name: if default { "primary" } else { "secondary" }.into(),
+                    url: "http://127.0.0.1:1/unreachable.git".into(),
+                    auth: RemoteAuth::None,
+                    group: Some(
+                        if default {
+                            "primary-group"
+                        } else {
+                            "secondary-group"
+                        }
+                        .into(),
+                    ),
+                    default,
+                    include_in_push_all: true,
+                });
+            }
+            project_config::save(&project, &config).expect("config");
+            let result = build_sync(&backend, &index, &home, Some(&project)).await;
+            let Err(error) = result else {
+                panic!("nondefault group error must remain visible")
+            };
+            assert!(error.to_string().contains("secondary"));
+            assert!(index.try_list_ids().is_empty());
+        }
+    }
+    #[tokio::test]
+    async fn fresh_device_startup_accepts_multiple_remotes_for_the_default_group() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let home = MmcpHome::from_root(temp.path().join("home"));
+        let (backend, index) = home.init_backend().await.expect("backend");
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).expect("project dir");
+        let mut config = ProjectConfig {
+            project_uuid: mmcp_core::id::ProjectUuid::new(),
+            project_slug: None,
+            sync: Default::default(),
+            project_remote_only: false,
+            subscriptions: Default::default(),
+        };
+        for (name, default) in [("primary", true), ("secondary", false)] {
+            config.sync.remotes.push(Remote::DirectGit {
+                name: name.into(),
+                url: "http://127.0.0.1:1/unreachable.git".into(),
+                auth: RemoteAuth::None,
+                group: (!default).then(|| config.project_uuid.to_string().to_uppercase()),
+                default,
+                include_in_push_all: true,
+            });
+        }
+        project_config::save(&project, &config).expect("config");
+        let bundle = build_sync(&backend, &index, &home, Some(&project))
+            .await
+            .expect("same default group can be initialized once on first pull")
+            .expect("configured");
+        assert_eq!(bundle.effective.remotes.len(), 2);
+        assert!(index.try_list_ids().is_empty());
     }
 }
