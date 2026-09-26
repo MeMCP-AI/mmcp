@@ -196,8 +196,13 @@ pub fn read_git_global(key: &str) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
-/// Resolve the user's home directory from environment variables.
-fn resolve_user_home() -> Result<PathBuf, StoreError> {
+/// Resolve the user's home directory from `HOME`, then `USERPROFILE`.
+/// The one owner of home-directory resolution: every consumer calls it.
+///
+/// # Errors
+///
+/// [`StoreError::HomeDirUnresolved`] when neither variable is set.
+pub fn resolve_user_home() -> Result<PathBuf, StoreError> {
     if let Ok(home) = std::env::var("HOME") {
         return Ok(PathBuf::from(home));
     }

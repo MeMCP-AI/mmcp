@@ -76,7 +76,7 @@ pub use features::{
 // crate root (the only place a cross-crate re-export is allowed),
 // not on a peer module that would imply ownership.
 pub use groups::{GroupEntry, GroupIndex};
-pub use home::{MmcpHome, ResolvedAuthor, read_git_global};
+pub use home::{MmcpHome, ResolvedAuthor, read_git_global, resolve_user_home};
 pub use import_adoc::{
     ADOC_EXTENSIONS, AdocConvertError, convert_adoc_to_markdown, is_adoc_filename,
 };
