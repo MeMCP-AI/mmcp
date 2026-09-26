@@ -11723,8 +11723,7 @@ mod tests {
         );
         assert!(target.exists(), "stub must have been written");
         let body = std::fs::read_to_string(&target).expect("read stub");
-        assert!(body.contains("mmcp is mandatory"));
-        assert!(body.contains("bootstrap_context"));
+        assert_eq!(body, crate::commands::claude::stub_contents());
     }
 
     // ── Milestone tools ─────────────────────────────────────────
