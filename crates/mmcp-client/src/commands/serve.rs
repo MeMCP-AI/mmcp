@@ -7898,12 +7898,8 @@ impl ServerHandler for McpServer {
     }
 }
 
-/// Session-start protocol delivered to every MCP client on handshake.
-///
-/// This text is the authoritative reading order: CLAUDE.md points at
-/// it rather than duplicating it.
-/// When the checkpoint list or tool usage changes, update this
-/// constant; no other surface repeats the protocol.
+/// Session instructions delivered to every MCP client on handshake and returned by `bootstrap_context`.
+/// They state when the rules are read, what each memory kind is worth, the conduct while mmcp is unreachable, and the CLAUDE.md upgrade flow.
 const SESSION_INSTRUCTIONS: &str = concat!(
     "REQUIRED FIRST ACTION: call `bootstrap_context` before answering the user ",
     "or invoking any other tool. The rules for this project live in mmcp ",
@@ -7938,18 +7934,28 @@ const SESSION_INSTRUCTIONS: &str = concat!(
     "is otherwise out of scope (`mmcp` Shared groups).\n",
     "- `kind=language`: every memory in the matching `lang/<name>` group.\n",
     "Use `unsubscribe(kind=..., value=...)` to remove a pin.\n\n",
-    "## Session-start protocol (MANDATORY)\n\n",
-    "Call `bootstrap_context` at the start of every session and again at EACH of ",
-    "the following checkpoints. These are not suggestions; skipping any of them ",
-    "leaves you working against stale rules.\n\n",
-    "- Session start, before any other tool call or file write.\n",
-    "- After ANY context compaction. Compaction summaries are NOT authoritative; ",
-    "the memories are. Never trust a compaction report.\n",
-    "- Before starting a new phase or task.\n",
-    "- Before a commit cycle (git conventions may have shipped updates).\n",
-    "- After a commit cycle (re-align before picking up the next step).\n",
-    "- Any time a rule is corrected, added, or discussed: the memory may have ",
-    "been updated; re-read it.\n\n",
+    "## When the rules are read\n\n",
+    "At the session start, call `bootstrap_context` before any other tool call ",
+    "and read every rule it points at, in full.\n",
+    "After a context compaction, read the rules again. A compaction invalidates ",
+    "the rules only.\n",
+    "Between those two moments, read the memory governing the subject at hand ",
+    "before working on it.\n",
+    "The operator may waive this procedure for a session.\n\n",
+    "## What each memory kind is worth\n\n",
+    "A rule is absolute. It changes only after the operator's approval.\n",
+    "A feedback memory is a rule candidate and a suggestion. It never outranks a rule.\n",
+    "Every other kind is a record, trusted as written.\n\n",
+    "## When mmcp is unreachable\n\n",
+    "The work in flight continues on the rules already read, review and audit included.\n",
+    "A task whose rules were not read does not start until the server is back.\n",
+    "Write every report meant for mmcp into a temporary Claude Code memory of the project.\n",
+    "Replay it into mmcp once the server is back.\n\n",
+    "## CLAUDE.md management\n\n",
+    "Rules live in memories, never in CLAUDE.md.\n",
+    "When `bootstrap_context` emits a `claude_md_update_available`, `claude_md_missing` ",
+    "or `claude_md_unmanaged` note, present the proposed block to the user.\n",
+    "Call `init_claude` only after their approval.\n\n",
     "## On-demand lookups\n\n",
     "Outside the mandatory set, use `search_memories(query)` for cross-group ",
     "substring matches, `list_memories(group)` to enumerate a group, and ",
@@ -7982,11 +7988,6 @@ const SESSION_INSTRUCTIONS: &str = concat!(
     "scope; never required. `add_issue` / `add_feature` callers pass an explicit ",
     "prefixed slug instead of relying on title auto-mint. A memory too large to ",
     "write splits into a prefixed family.\n\n",
-    "## CLAUDE.md management\n\n",
-    "Never hand-edit CLAUDE.md to add rules. If `bootstrap_context` emits a ",
-    "`claude_md_missing` / `claude_md_unmanaged` / `claude_md_stale` diagnostic, ",
-    "act on it by calling `init_claude` explicitly; otherwise leave the file ",
-    "alone. Rules live in memories, not in CLAUDE.md.\n\n",
     "## Debug tools\n\n",
     "`debug_toggle` / `debug_read_file` / `debug_write_file` / `debug_list_tree` ",
     "/ `debug_git_log` provide raw git access for troubleshooting. They require ",
@@ -10987,6 +10988,35 @@ mod tests {
 
     const OPTIONAL_MEMORY: &str = "+++\nname = \"Optional Note\"\ndescription = \"Nice to read but not required\"\nkind = \"reference\"\nmandatory = false\ntags = [\"reference\"]\n+++\n\nSome background.\n";
 
+    /// The four operator-approved instruction sections, verbatim and contiguous.
+    const APPROVED_INSTRUCTION_SECTIONS: &str = concat!(
+        "## When the rules are read\n",
+        "\n",
+        "At the session start, call `bootstrap_context` before any other tool call and read every rule it points at, in full.\n",
+        "After a context compaction, read the rules again. A compaction invalidates the rules only.\n",
+        "Between those two moments, read the memory governing the subject at hand before working on it.\n",
+        "The operator may waive this procedure for a session.\n",
+        "\n",
+        "## What each memory kind is worth\n",
+        "\n",
+        "A rule is absolute. It changes only after the operator's approval.\n",
+        "A feedback memory is a rule candidate and a suggestion. It never outranks a rule.\n",
+        "Every other kind is a record, trusted as written.\n",
+        "\n",
+        "## When mmcp is unreachable\n",
+        "\n",
+        "The work in flight continues on the rules already read, review and audit included.\n",
+        "A task whose rules were not read does not start until the server is back.\n",
+        "Write every report meant for mmcp into a temporary Claude Code memory of the project.\n",
+        "Replay it into mmcp once the server is back.\n",
+        "\n",
+        "## CLAUDE.md management\n",
+        "\n",
+        "Rules live in memories, never in CLAUDE.md.\n",
+        "When `bootstrap_context` emits a `claude_md_update_available`, `claude_md_missing` or `claude_md_unmanaged` note, present the proposed block to the user.\n",
+        "Call `init_claude` only after their approval.\n",
+    );
+
     #[tokio::test]
     async fn bootstrap_context_returns_instruction_only_no_memory_metadata() {
         // The post-slice-2c shape carries NO `memories` field and
@@ -11067,9 +11097,26 @@ mod tests {
             .and_then(|v| v.as_str())
             .expect("instructions string");
         assert!(
-            instructions.contains("Session-start protocol"),
-            "instructions must carry the session protocol preamble",
+            instructions.contains("## When the rules are read\n"),
+            "instructions must carry the reading triggers",
         );
+        assert!(
+            instructions.contains(APPROVED_INSTRUCTION_SECTIONS),
+            "instructions must carry the four approved sections verbatim",
+        );
+        for retired in [
+            "Session-start protocol",
+            "Before starting a new phase or task",
+            "Before a commit cycle",
+            "After a commit cycle",
+            "Any time a rule is corrected, added, or discussed",
+            "Never hand-edit CLAUDE.md to add rules",
+        ] {
+            assert!(
+                !instructions.contains(retired),
+                "the six-checkpoint protocol must be gone; found `{retired}`",
+            );
+        }
         assert!(
             instructions.contains("STOP"),
             "instructions must lead with the STOP imperative so callers can't skim past it",
