@@ -24,7 +24,7 @@ mod partial_fence_error;
 pub use fence::{Fence, scan_fence};
 pub use partial_fence_error::PartialFenceError;
 
-// ── Public CLI entry point ───────────────────────────────────────────
+// Public CLI entry point
 
 /// Flags accepted by `mmcp init claude`.
 #[derive(Debug, Clone, clap::Args)]
@@ -109,7 +109,7 @@ pub async fn run(args: ClaudeArgs) -> Result<()> {
     Ok(())
 }
 
-// ── Shared types ─────────────────────────────────────────────────────
+// Shared types
 
 /// Resolved intent for the command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,7 +184,7 @@ pub struct MemoryCreated {
     pub source_section: String,
 }
 
-// ── Constants the MCP side also reaches for ──────────────────────────
+// File names, managed block and fence markers the MCP side also reaches for
 
 /// File name of a Claude Code instruction file.
 pub const CLAUDE_MD_FILE_NAME: &str = "CLAUDE.md";
@@ -274,7 +274,7 @@ pub fn render_block() -> String {
     format!("{}\n{BLOCK_BODY}{}", begin_marker(), end_marker())
 }
 
-// ── Action resolution ────────────────────────────────────────────────
+// Action resolution
 
 fn resolve_action(args: &ClaudeArgs, is_tty: bool) -> Result<Action> {
     match (args.r#override, args.convert, args.append) {
@@ -308,9 +308,9 @@ enum ActionChoice {
 impl fmt::Display for ActionChoice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            ActionChoice::Override => "override — replace CLAUDE.md with a fresh mmcp stub",
-            ActionChoice::Append => "append — insert/replace the mmcp block inside CLAUDE.md",
-            ActionChoice::Convert => "convert — split CLAUDE.md into typed memories, then stub",
+            ActionChoice::Override => "override: replace CLAUDE.md with a fresh mmcp stub",
+            ActionChoice::Append => "append: insert/replace the mmcp block inside CLAUDE.md",
+            ActionChoice::Convert => "convert: split CLAUDE.md into typed memories, then stub",
             ActionChoice::Cancel => "cancel",
         };
         f.write_str(s)
@@ -324,7 +324,7 @@ fn prompt_action_interactive() -> Result<Action> {
         ActionChoice::Convert,
         ActionChoice::Cancel,
     ];
-    match Select::new("mmcp init claude — pick an action:", options).prompt() {
+    match Select::new("mmcp init claude: pick an action", options).prompt() {
         Ok(ActionChoice::Override) => Ok(Action::Override),
         Ok(ActionChoice::Append) => Ok(Action::Append),
         Ok(ActionChoice::Convert) => Ok(Action::Convert),
@@ -335,7 +335,7 @@ fn prompt_action_interactive() -> Result<Action> {
     }
 }
 
-// ── File state detection ─────────────────────────────────────────────
+// File state detection
 
 /// Inspect the file on disk and report its state relative to git.
 pub fn inspect(path: &Path) -> FileState {
@@ -385,7 +385,7 @@ fn git_status_of(path: &Path) -> GitStatus {
     }
 }
 
-// ── Safety prompts ───────────────────────────────────────────────────
+// Safety prompts
 
 fn default_backup(args: &ClaudeArgs, state: &FileState) -> bool {
     if args.backup {
@@ -461,7 +461,7 @@ fn prompt_conflict_interactive(state: FileState) -> Result<ConflictChoice> {
     }
 }
 
-// ── Execution ────────────────────────────────────────────────────────
+// Execution
 
 pub async fn execute(
     plan: &ClaudePlan,
@@ -474,7 +474,7 @@ pub async fn execute(
         && matches!(plan.state, FileState::Missing)
     {
         bail!(
-            "cannot {} a missing CLAUDE.md — run with --override to write the stub first",
+            "cannot {} a missing CLAUDE.md; run with --override to write the stub first",
             match plan.action {
                 Action::Append => "append to",
                 Action::Convert => "convert",
@@ -531,7 +531,7 @@ fn backup_file(path: &Path) -> Result<PathBuf> {
     Ok(bak)
 }
 
-// ── Stub content (override mode) ─────────────────────────────────────
+// Stub content (override mode)
 
 /// The generated CLAUDE.md: the title, then the managed block alone.
 #[must_use]
@@ -539,7 +539,7 @@ pub fn stub_contents() -> String {
     format!("# CLAUDE.md\n\n{}\n", render_block())
 }
 
-// ── Append mode (fenced mmcp block) ──────────────────────────────────
+// Append mode (fenced mmcp block)
 
 /// Insert the mmcp-managed block into `existing`, or replace a fenced region of any version in place.
 /// Every byte outside the fence is preserved.
@@ -569,7 +569,7 @@ pub fn splice_block(existing: &str) -> Result<String, PartialFenceError> {
     Ok(out)
 }
 
-// ── Convert mode ─────────────────────────────────────────────────────
+// Convert mode
 
 async fn convert_and_write(
     existing: &str,
@@ -802,7 +802,7 @@ fn collect_h3_tags(body: &str) -> Vec<String> {
     out
 }
 
-// ── Reporting ────────────────────────────────────────────────────────
+// Reporting
 
 fn print_plan(plan: &ClaudePlan) {
     eprintln!("--dry-run: would apply plan:");
@@ -828,8 +828,6 @@ fn print_report(report: &ClaudeReport) {
         );
     }
 }
-
-// ── Tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -1117,7 +1115,7 @@ mod tests {
         assert!(sections[0].tags.iter().any(|t| t == "commits"));
     }
 
-    // ── Fence-marker identity ───────────────────────────────────
+    // Fence-marker identity
 
     #[test]
     fn markers_include_block_version_and_polarity() {
@@ -1128,7 +1126,7 @@ mod tests {
         assert_eq!(end_marker(), "<!-- mmcp:end v2 -->");
     }
 
-    // ── Action resolution per explicit flag ─────────────────────
+    // Action resolution per explicit flag
 
     #[test]
     fn resolve_action_recognizes_convert_flag() {
@@ -1152,7 +1150,7 @@ mod tests {
         assert!(resolve_action(&args, false).is_err());
     }
 
-    // ── splice_block boundary conditions ────────────────────────
+    // splice_block boundary conditions
 
     #[test]
     fn splice_block_refuses_when_only_begin_marker_is_present() {
@@ -1186,7 +1184,7 @@ mod tests {
         assert_eq!(err, PartialFenceError::LoneBeginMarker);
     }
 
-    // ── slugify: pure-function coverage ─────────────────────────
+    // slugify: pure-function coverage
 
     #[test]
     fn slugify_empty_input_falls_back_to_section_prefix() {
@@ -1211,7 +1209,7 @@ mod tests {
         assert_eq!(slugify("MixedCase"), "imported-mixedcase");
     }
 
-    // ── uniquify: collision resolution ──────────────────────────
+    // uniquify: collision resolution
 
     #[test]
     fn uniquify_appends_sequential_suffix_for_repeated_collisions() {
@@ -1232,7 +1230,7 @@ mod tests {
         assert_eq!(uniquify("rules", &mut seen), "rules-2");
     }
 
-    // ── first_paragraph: pure-function coverage ─────────────────
+    // first_paragraph: pure-function coverage
 
     #[test]
     fn first_paragraph_returns_first_non_empty_paragraph() {
