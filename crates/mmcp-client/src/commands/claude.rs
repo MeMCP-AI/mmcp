@@ -14,13 +14,14 @@ use anyhow::{Context, Result, anyhow, bail};
 use inquire::{InquireError, Select};
 use mmcp_core::memory::{FrontmatterFormat, MemoryFile, MemoryFrontmatter, MemoryKind};
 
+use mmcp_store::StoreError;
 use mmcp_store::config::{self, PROJECT_MANIFEST};
 use mmcp_store::home::{MmcpHome, ResolvedAuthor};
 
 mod fence;
 mod partial_fence_error;
 
-pub use fence::scan_fence;
+pub use fence::{Fence, scan_fence};
 pub use partial_fence_error::PartialFenceError;
 
 // ── Public CLI entry point ───────────────────────────────────────────
@@ -187,6 +188,20 @@ pub struct MemoryCreated {
 
 /// File name of a Claude Code instruction file.
 pub const CLAUDE_MD_FILE_NAME: &str = "CLAUDE.md";
+
+/// Claude Code's user-level directory, under the user's home.
+const USER_CLAUDE_DIR: &str = ".claude";
+
+/// The user-level instruction file, `~/.claude/CLAUDE.md`.
+///
+/// # Errors
+///
+/// [`StoreError::HomeDirUnresolved`] when the user's home cannot be resolved.
+pub fn user_claude_md_path() -> Result<PathBuf, StoreError> {
+    Ok(mmcp_store::resolve_user_home()?
+        .join(USER_CLAUDE_DIR)
+        .join(CLAUDE_MD_FILE_NAME))
+}
 
 /// Version tag of the mmcp-managed block, carried by both fence markers.
 pub const BLOCK_VERSION: &str = "v2";
@@ -921,6 +936,17 @@ mod tests {
 
     /// Number of lines of the approved block that end with a two-space hard break.
     const APPROVED_HARD_BREAK_LINES: usize = 9;
+
+    #[test]
+    fn user_claude_md_path_is_the_claude_directory_under_the_home() {
+        match (mmcp_store::resolve_user_home(), user_claude_md_path()) {
+            (Ok(home), Ok(path)) => {
+                assert_eq!(path, home.join(".claude").join("CLAUDE.md"));
+            }
+            (Err(StoreError::HomeDirUnresolved), Err(StoreError::HomeDirUnresolved)) => {}
+            (home, path) => panic!("home {home:?} and path {path:?} must agree"),
+        }
+    }
 
     #[test]
     fn render_block_is_the_approved_v2_block() {

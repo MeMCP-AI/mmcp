@@ -94,6 +94,8 @@ struct ClientStateInner {
     watcher: WatcherHandle,
     /// Resolved commit author from user config cascade.
     author: ResolvedAuthor,
+    /// User-level CLAUDE.md checked by `bootstrap_context`; `None` when the user home is unresolved.
+    user_claude_md: Option<PathBuf>,
     /// Debug mode flag.
     /// When true, raw git access tools are enabled.
     /// Can be toggled at runtime via the `debug_toggle` tool.
@@ -107,7 +109,14 @@ impl ClientState {
     async fn initialize(debug: bool) -> Result<Self> {
         let home = MmcpHome::discover()?;
         let project_config_path = find_current_project_config();
-        Self::initialize_from(home, project_config_path, debug).await
+        let user_claude_md = match crate::commands::claude::user_claude_md_path() {
+            Ok(path) => Some(path),
+            Err(err) => {
+                tracing::warn!(error = %err, "user home unresolved; the user-level CLAUDE.md is not checked");
+                None
+            }
+        };
+        Self::initialize_from(home, project_config_path, user_claude_md, debug).await
     }
 
     /// Initialize the client state from a resolved [`MmcpHome`].
@@ -117,6 +126,7 @@ impl ClientState {
     async fn initialize_from(
         home: MmcpHome,
         project_config_path: Option<PathBuf>,
+        user_claude_md: Option<PathBuf>,
         debug: bool,
     ) -> Result<Self> {
         std::fs::create_dir_all(home.root())
@@ -144,6 +154,7 @@ impl ClientState {
             sessions,
             watcher,
             author,
+            user_claude_md,
             debug: Arc::new(AtomicBool::new(debug)),
         })))
     }
@@ -1013,7 +1024,7 @@ enum InitClaudeAction {
 /// prompt. Future rmcp releases that expose `ElicitationRequest` can
 /// replace the error-then-retry contract with a synchronous prompt;
 /// the argument's shape stays the same.
-#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Deserialize, serde::Serialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(rename_all = "snake_case")]
 enum InitClaudeConflict {
@@ -4323,7 +4334,10 @@ impl McpServer {
         // `init_claude` is still the only remediation, and the note
         // context points callers at it. The subscribed-reads
         // resolver's own failure signals ride the same channel.
-        let mut notes = claude_md_notes(project_root.as_deref());
+        let mut notes = claude_md_notes(
+            project_root.as_deref(),
+            self.state.user_claude_md.as_deref(),
+        );
         notes.extend(project_config_load_notes);
         notes.extend(subscribed_notes);
 
@@ -8374,64 +8388,150 @@ fn action_wire(action: InitClaudeAction) -> &'static str {
     }
 }
 
-/// Current version of the mmcp-managed block embedded in CLAUDE.md.
-/// Bumping this value lets `init_claude` detect stale blocks and lets
-/// `bootstrap_context` emit a `claude_md_stale` diagnostic when a
-/// project carries an older fence.
-const CLAUDE_MD_BLOCK_VERSION: &str = "v1";
-
-/// Compute notes about the project's CLAUDE.md state.
+/// Compute notes about the project's and the user's CLAUDE.md.
 ///
-/// Read-only: the function inspects the file on disk but never writes
-/// anything. `bootstrap_context` emits these through the standard
-/// notes channel so callers can surface actionable `init_claude`
-/// hints alongside every other signal. An empty vector means either
-/// no project root was resolved (nothing to diagnose) or the file is
-/// already healthy.
-fn claude_md_notes(project_root: Option<&Path>) -> Vec<mmcp_proto::Note> {
-    let Some(root) = project_root else {
-        return Vec::new();
-    };
-    let claude_md = root.join(crate::commands::claude::CLAUDE_MD_FILE_NAME);
-    if !claude_md.exists() {
-        return vec![mmcp_proto::Note::warn(
-            "claude_md_missing",
-            "CLAUDE.md is missing at the project root. Running `init_claude` (action=override) bootstraps it with the mmcp pointer template so future sessions see the checkpoint protocol.",
-        )
-        .with_context(json!({
-            "suggested_tool": "init_claude",
-            "suggested_args": { "action": "override" },
-        }))];
+/// Read-only: the files are inspected, never written.
+/// `bootstrap_context` emits these through the standard notes channel.
+/// The project file, when a project root exists, reports a missing file, an unmanaged file, a partial fence or an available update.
+/// The user-level file reports a partial fence or an available update only, since mmcp does not require it.
+/// Each file yields at most one note, naming its absolute path.
+fn claude_md_notes(
+    project_root: Option<&Path>,
+    user_claude_md: Option<&Path>,
+) -> Vec<mmcp_proto::Note> {
+    let project_note = project_root.and_then(|root| {
+        project_claude_md_note(&absolute_claude_md_path(
+            &root.join(crate::commands::claude::CLAUDE_MD_FILE_NAME),
+        ))
+    });
+    let user_note =
+        user_claude_md.and_then(|path| user_claude_md_note(&absolute_claude_md_path(path)));
+    project_note.into_iter().chain(user_note).collect()
+}
+
+/// Absolute form of a CLAUDE.md path, since `init_claude` otherwise resolves a relative one against its cwd.
+fn absolute_claude_md_path(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|err| {
+        tracing::warn!(path = %path.display(), error = %err, "CLAUDE.md path not made absolute");
+        path.to_path_buf()
+    })
+}
+
+/// Note for the project's CLAUDE.md, `None` when its block is current.
+fn project_claude_md_note(path: &Path) -> Option<mmcp_proto::Note> {
+    let display = path.display();
+    if !path.exists() {
+        return Some(
+            mmcp_proto::Note::warn(
+                "claude_md_missing",
+                format!(
+                    "CLAUDE.md is missing at {display}. Present the proposed block to the user. Run init_claude (action=override) only after their approval."
+                ),
+            )
+            .with_context(claude_md_note_context(
+                path,
+                InitClaudeAction::Override,
+                None,
+            )),
+        );
     }
-    let Ok(body) = std::fs::read_to_string(&claude_md) else {
-        return Vec::new();
-    };
-    let begin_marker = format!("<!-- mmcp:begin {CLAUDE_MD_BLOCK_VERSION} -->");
-    if body.contains(&begin_marker) {
-        return Vec::new();
+    let body = read_claude_md(path)?;
+    match crate::commands::claude::scan_fence(&body) {
+        Ok(None) => Some(
+            mmcp_proto::Note::warn(
+                "claude_md_unmanaged",
+                format!(
+                    "CLAUDE.md at {display} has no mmcp-managed block. Present the proposed block to the user. Run init_claude (action=append) only after their approval; action=convert instead splits the existing rule content into typed memories."
+                ),
+            )
+            .with_context(claude_md_note_context(path, InitClaudeAction::Append, None)),
+        ),
+        scan => fenced_claude_md_note(path, scan, None),
     }
-    // Older-version fence present? Flag as stale so init_claude can upgrade.
-    if body.contains("<!-- mmcp:begin ") {
-        return vec![mmcp_proto::Note::info(
-            "claude_md_stale",
-            format!(
-                "CLAUDE.md carries an older mmcp block; current version is {CLAUDE_MD_BLOCK_VERSION}. Re-run `init_claude` (action=append) to upgrade the fenced region in place."
-            ),
-        )
-        .with_context(json!({
-            "suggested_tool": "init_claude",
-            "suggested_args": { "action": "append" },
-        }))];
+}
+
+/// Note for the user-level `~/.claude/CLAUDE.md`, `None` when it is missing, unmanaged or current.
+/// The file sits outside any repository, so `init_claude` reads it as untracked and needs a conflict answer.
+fn user_claude_md_note(path: &Path) -> Option<mmcp_proto::Note> {
+    if !path.exists() {
+        return None;
     }
-    // No fence at all: file is unmanaged.
-    vec![mmcp_proto::Note::warn(
-        "claude_md_unmanaged",
-        "CLAUDE.md has no mmcp-managed block. Run `init_claude` (action=append) to insert the session-start protocol without touching user-authored content, or (action=convert) to split existing rule content into typed memories and replace the file with a stub.",
+    let body = read_claude_md(path)?;
+    fenced_claude_md_note(
+        path,
+        crate::commands::claude::scan_fence(&body),
+        Some(InitClaudeConflict::BackupOverride),
     )
-    .with_context(json!({
+}
+
+/// Note for a CLAUDE.md carrying fence markers: an available update or a partial fence.
+/// `None` when the file carries no marker or its block is current.
+fn fenced_claude_md_note(
+    path: &Path,
+    scan: Result<
+        Option<crate::commands::claude::Fence<'_>>,
+        crate::commands::claude::PartialFenceError,
+    >,
+    on_conflict: Option<InitClaudeConflict>,
+) -> Option<mmcp_proto::Note> {
+    let display = path.display();
+    match scan {
+        Ok(None) => None,
+        Ok(Some(fence)) if fence.is_current() => None,
+        Ok(Some(fence)) => {
+            let current = fence.version;
+            let available = crate::commands::claude::BLOCK_VERSION;
+            let mut context = claude_md_note_context(path, InitClaudeAction::Append, on_conflict);
+            context["current_version"] = json!(current);
+            context["available_version"] = json!(available);
+            Some(
+                mmcp_proto::Note::warn(
+                    "claude_md_update_available",
+                    format!(
+                        "CLAUDE.md at {display} carries mmcp block {current}. Block {available} is available. Present the proposed block to the user. Run init_claude (action=append) only after their approval."
+                    ),
+                )
+                .with_context(context),
+            )
+        }
+        Err(partial) => Some(
+            mmcp_proto::Note::warn("claude_md_partial_fence", format!("{display}: {partial}."))
+                .with_context(json!({ "path": path.to_string_lossy() })),
+        ),
+    }
+}
+
+/// Context of a CLAUDE.md note proposing the managed block, `suggested_args` included.
+fn claude_md_note_context(
+    path: &Path,
+    action: InitClaudeAction,
+    on_conflict: Option<InitClaudeConflict>,
+) -> serde_json::Value {
+    let path_wire = path.to_string_lossy();
+    let mut suggested_args = json!({
+        "action": action_wire(action),
+        "path": path_wire,
+    });
+    if let Some(answer) = on_conflict {
+        suggested_args["on_conflict"] = json!(answer);
+    }
+    json!({
+        "path": path_wire,
+        "proposed_block": crate::commands::claude::render_block(),
         "suggested_tool": "init_claude",
-        "suggested_args": { "action": "append" },
-    }))]
+        "suggested_args": suggested_args,
+    })
+}
+
+/// Read a CLAUDE.md, logging and skipping a file that cannot be read.
+fn read_claude_md(path: &Path) -> Option<String> {
+    match std::fs::read_to_string(path) {
+        Ok(body) => Some(body),
+        Err(err) => {
+            tracing::warn!(path = %path.display(), error = %err, "CLAUDE.md unreadable; no note emitted for it");
+            None
+        }
+    }
 }
 
 fn frontmatter_to_json(fm: &MemoryFrontmatter) -> serde_json::Value {
@@ -8619,7 +8719,7 @@ mod tests {
             .await;
         let tmp = TempDir::new().expect("tempdir");
         let home = MmcpHome::from_root(tmp.path().join("mmcp-home"));
-        let state = ClientState::initialize_from(home, None, false)
+        let state = ClientState::initialize_from(home, None, None, false)
             .await
             .expect("initialize_from");
         (state, tmp)
@@ -11553,47 +11653,251 @@ mod tests {
         );
     }
 
+    /// Version tag of an older mmcp block, for staleness fixtures.
+    const OLDER_BLOCK_VERSION: &str = "v1";
+
+    /// A fenced block carrying the older version tag and an older body.
+    fn older_fenced_block() -> String {
+        use crate::commands::claude::{BLOCK_VERSION, begin_marker, end_marker};
+        format!(
+            "{}\n## MANDATORY: Re-read rules at every checkpoint\n{}",
+            begin_marker().replacen(BLOCK_VERSION, OLDER_BLOCK_VERSION, 1),
+            end_marker().replacen(BLOCK_VERSION, OLDER_BLOCK_VERSION, 1),
+        )
+    }
+
+    /// Absolute wire form of a note's path.
+    fn absolute_wire(path: &Path) -> String {
+        std::path::absolute(path)
+            .expect("absolute path")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn note_context(note: &mmcp_proto::Note) -> &serde_json::Value {
+        note.context.as_ref().expect("note carries a context")
+    }
+
     #[test]
     fn claude_md_notes_flags_missing_file() {
         let tmp = TempDir::new().expect("tempdir");
-        let notes = claude_md_notes(Some(tmp.path()));
+        let path = tmp.path().join("CLAUDE.md");
+        let notes = claude_md_notes(Some(tmp.path()), None);
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].code, "claude_md_missing");
         assert_eq!(notes[0].level, mmcp_proto::NoteLevel::Warn);
+        assert!(notes[0].message.contains(&path.display().to_string()));
+        let context = note_context(&notes[0]);
+        assert_eq!(context["path"], json!(absolute_wire(&path)));
+        assert_eq!(
+            context["proposed_block"],
+            json!(crate::commands::claude::render_block())
+        );
+        assert_eq!(context["suggested_tool"], json!("init_claude"));
+        assert_eq!(
+            context["suggested_args"],
+            json!({ "action": "override", "path": absolute_wire(&path) })
+        );
     }
 
     #[test]
     fn claude_md_notes_flags_unmanaged_file() {
         let tmp = TempDir::new().expect("tempdir");
-        std::fs::write(
-            tmp.path().join("CLAUDE.md"),
-            "# Legacy\n\nHand-authored without any mmcp fence.\n",
-        )
-        .expect("write claude");
-        let notes = claude_md_notes(Some(tmp.path()));
+        let path = tmp.path().join("CLAUDE.md");
+        std::fs::write(&path, "# Legacy\n\nHand-authored without any mmcp fence.\n")
+            .expect("write claude");
+        let notes = claude_md_notes(Some(tmp.path()), None);
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].code, "claude_md_unmanaged");
         assert_eq!(notes[0].level, mmcp_proto::NoteLevel::Warn);
-    }
-
-    #[test]
-    fn claude_md_notes_is_silent_when_fence_matches_current_version() {
-        let tmp = TempDir::new().expect("tempdir");
-        std::fs::write(
-            tmp.path().join("CLAUDE.md"),
-            format!("# Managed\n\n<!-- mmcp:begin {CLAUDE_MD_BLOCK_VERSION} -->\n...\n<!-- mmcp:end {CLAUDE_MD_BLOCK_VERSION} -->\n"),
-        )
-        .expect("write claude");
-        let notes = claude_md_notes(Some(tmp.path()));
-        assert!(
-            notes.is_empty(),
-            "current-version fence should produce no notes"
+        assert!(notes[0].message.contains(&path.display().to_string()));
+        let context = note_context(&notes[0]);
+        assert_eq!(context["path"], json!(absolute_wire(&path)));
+        assert_eq!(
+            context["suggested_args"],
+            json!({ "action": "append", "path": absolute_wire(&path) })
         );
     }
 
     #[test]
-    fn claude_md_notes_is_silent_without_project_root() {
-        assert!(claude_md_notes(None).is_empty());
+    fn claude_md_notes_is_silent_when_the_block_is_the_current_render() {
+        let tmp = TempDir::new().expect("tempdir");
+        std::fs::write(
+            tmp.path().join("CLAUDE.md"),
+            format!(
+                "# Managed\n\nOwn notes.\n\n{}\n",
+                crate::commands::claude::render_block()
+            ),
+        )
+        .expect("write claude");
+        let notes = claude_md_notes(Some(tmp.path()), None);
+        assert!(
+            notes.is_empty(),
+            "a current block produces no note: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn claude_md_notes_offers_the_update_for_an_older_block() {
+        use crate::commands::claude::{BLOCK_VERSION, render_block};
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("CLAUDE.md");
+        std::fs::write(&path, format!("# Old\n\n{}\n", older_fenced_block()))
+            .expect("write claude");
+
+        let notes = claude_md_notes(Some(tmp.path()), None);
+
+        assert_eq!(notes.len(), 1, "one note per file: {notes:?}");
+        let note = &notes[0];
+        assert_eq!(note.code, "claude_md_update_available");
+        assert_eq!(note.level, mmcp_proto::NoteLevel::Warn);
+        assert_eq!(
+            note.message,
+            format!(
+                "CLAUDE.md at {} carries mmcp block {OLDER_BLOCK_VERSION}. Block {BLOCK_VERSION} is available. Present the proposed block to the user. Run init_claude (action=append) only after their approval.",
+                path.display()
+            )
+        );
+        let context = note_context(note);
+        assert_eq!(context["path"], json!(absolute_wire(&path)));
+        assert_eq!(context["current_version"], json!(OLDER_BLOCK_VERSION));
+        assert_eq!(context["available_version"], json!(BLOCK_VERSION));
+        assert_eq!(context["proposed_block"], json!(render_block()));
+        assert_eq!(context["suggested_tool"], json!("init_claude"));
+        assert_eq!(
+            context["suggested_args"],
+            json!({ "action": "append", "path": absolute_wire(&path) })
+        );
+    }
+
+    #[test]
+    fn claude_md_notes_flags_a_current_version_fence_with_a_non_canonical_body() {
+        use crate::commands::claude::{BLOCK_VERSION, begin_marker, end_marker};
+        let tmp = TempDir::new().expect("tempdir");
+        std::fs::write(
+            tmp.path().join("CLAUDE.md"),
+            format!(
+                "# Managed\n\n{}\nedited by hand\n{}\n",
+                begin_marker(),
+                end_marker()
+            ),
+        )
+        .expect("write claude");
+        let notes = claude_md_notes(Some(tmp.path()), None);
+        assert_eq!(notes.len(), 1, "one note per file: {notes:?}");
+        assert_eq!(notes[0].code, "claude_md_update_available");
+        let context = note_context(&notes[0]);
+        assert_eq!(context["current_version"], json!(BLOCK_VERSION));
+        assert_eq!(context["available_version"], json!(BLOCK_VERSION));
+    }
+
+    #[test]
+    fn claude_md_notes_flags_a_partial_fence() {
+        use crate::commands::claude::begin_marker;
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("CLAUDE.md");
+        std::fs::write(&path, format!("{}\nno end marker\n", begin_marker()))
+            .expect("write claude");
+        let notes = claude_md_notes(Some(tmp.path()), None);
+        assert_eq!(notes.len(), 1, "one note per file: {notes:?}");
+        assert_eq!(notes[0].code, "claude_md_partial_fence");
+        assert_eq!(notes[0].level, mmcp_proto::NoteLevel::Warn);
+        assert!(notes[0].message.contains(&path.display().to_string()));
+        assert!(notes[0].message.contains("partial mmcp fence"));
+    }
+
+    #[test]
+    fn claude_md_notes_offers_the_update_for_a_stale_user_file_without_project_root() {
+        use crate::commands::claude::{BLOCK_VERSION, render_block};
+        let tmp = TempDir::new().expect("tempdir");
+        let user_claude_md = tmp
+            .path()
+            .join("user-home")
+            .join(".claude")
+            .join("CLAUDE.md");
+        std::fs::create_dir_all(user_claude_md.parent().expect("parent")).expect("mkdir");
+        std::fs::write(
+            &user_claude_md,
+            format!("# Global\n\n{}\n", older_fenced_block()),
+        )
+        .expect("write user claude");
+
+        let notes = claude_md_notes(None, Some(&user_claude_md));
+
+        assert_eq!(notes.len(), 1, "one note for the user file: {notes:?}");
+        let note = &notes[0];
+        assert_eq!(note.code, "claude_md_update_available");
+        assert_eq!(note.level, mmcp_proto::NoteLevel::Warn);
+        assert!(note.message.contains(&user_claude_md.display().to_string()));
+        let context = note_context(note);
+        assert_eq!(context["path"], json!(absolute_wire(&user_claude_md)));
+        assert_eq!(context["current_version"], json!(OLDER_BLOCK_VERSION));
+        assert_eq!(context["available_version"], json!(BLOCK_VERSION));
+        assert_eq!(context["proposed_block"], json!(render_block()));
+        assert_eq!(context["suggested_tool"], json!("init_claude"));
+        assert_eq!(
+            context["suggested_args"],
+            json!({
+                "action": "append",
+                "path": absolute_wire(&user_claude_md),
+                "on_conflict": "backup_override",
+            })
+        );
+    }
+
+    #[test]
+    fn claude_md_notes_is_silent_for_a_missing_unmanaged_or_current_user_file() {
+        let tmp = TempDir::new().expect("tempdir");
+        let user_claude_md = tmp.path().join("CLAUDE.md");
+        assert!(claude_md_notes(None, Some(&user_claude_md)).is_empty());
+
+        std::fs::write(&user_claude_md, "# Personal\n\nNo fence.\n").expect("write");
+        assert!(claude_md_notes(None, Some(&user_claude_md)).is_empty());
+
+        std::fs::write(
+            &user_claude_md,
+            format!(
+                "# Personal\n\n{}\n",
+                crate::commands::claude::render_block()
+            ),
+        )
+        .expect("write");
+        assert!(claude_md_notes(None, Some(&user_claude_md)).is_empty());
+    }
+
+    #[test]
+    fn claude_md_notes_checks_the_project_and_user_files_independently() {
+        let tmp = TempDir::new().expect("tempdir");
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(&project).expect("mkdir project");
+        let project_claude_md = project.join("CLAUDE.md");
+        std::fs::write(&project_claude_md, older_fenced_block()).expect("write project");
+        let user_claude_md = tmp.path().join("user-CLAUDE.md");
+        std::fs::write(&user_claude_md, older_fenced_block()).expect("write user");
+
+        let notes = claude_md_notes(Some(&project), Some(&user_claude_md));
+
+        let paths: Vec<&serde_json::Value> = notes
+            .iter()
+            .map(|note| &note_context(note)["path"])
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                &json!(absolute_wire(&project_claude_md)),
+                &json!(absolute_wire(&user_claude_md)),
+            ]
+        );
+        assert!(
+            notes
+                .iter()
+                .all(|note| note.code == "claude_md_update_available")
+        );
+    }
+
+    #[test]
+    fn claude_md_notes_is_silent_without_project_root_or_user_file() {
+        assert!(claude_md_notes(None, None).is_empty());
     }
 
     #[test]
