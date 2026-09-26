@@ -4525,9 +4525,10 @@ impl McpServer {
         let home = MmcpHome::discover()
             .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
         let author = home.resolve_author();
+        // The alternate form renders the whole context chain, cause included.
         let report = crate::commands::claude::execute(&plan, &home, &author)
             .await
-            .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
+            .map_err(|e| McpError::internal_error(Cow::Owned(format!("{e:#}")), None))?;
 
         Ok(ok_json(json!({
             "action": action_wire(args.action),
@@ -12048,6 +12049,49 @@ mod tests {
         assert!(
             payload.get("choices").is_some(),
             "choices list must be present"
+        );
+    }
+
+    #[tokio::test]
+    async fn init_claude_append_on_a_partial_fence_reports_the_cause() {
+        let (state, tmp) = test_state().await;
+        let server = McpServer::new(state, ServeMode::Full);
+        let target = tmp.path().join("CLAUDE.md");
+        std::fs::write(
+            &target,
+            format!(
+                "# Broken\n\n{}\nno end marker\n",
+                crate::commands::claude::begin_marker()
+            ),
+        )
+        .expect("write fixture");
+
+        let err = server
+            .init_claude_unguarded(InitClaudeArgs {
+                action: InitClaudeAction::Append,
+                backup: Some(false),
+                dry_run: false,
+                on_conflict: Some(InitClaudeConflict::Override),
+                path: Some(target.to_string_lossy().into_owned()),
+            })
+            .await
+            .expect_err("a partial fence must be refused");
+
+        assert!(
+            err.message.contains(&target.display().to_string()),
+            "the message names the file: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("partial mmcp fence"),
+            "the message carries the refusal cause: {}",
+            err.message
+        );
+        assert!(
+            err.message
+                .contains("a begin marker with no end marker after it"),
+            "the message names the lone begin marker: {}",
+            err.message
         );
     }
 
