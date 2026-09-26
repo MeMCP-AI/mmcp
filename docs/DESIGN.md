@@ -420,7 +420,7 @@ Tools exposed by `mmcp-client` to the AI. Every memory-addressed tool accepts an
 
 | Tool                 | Purpose                                                                 |
 | -------------------- | ----------------------------------------------------------------------- |
-| `bootstrap_context`  | Single round-trip that returns mandatory and project-scoped memories with bodies inline. Called at session start, after compaction, and at every task boundary (per `CLAUDE.md`). |
+| `bootstrap_context`  | Single round-trip that returns the session instructions and the groups in scope; memory bodies are fetched with `read_memory`. Called at session start and after a context compaction (per `CLAUDE.md`). |
 | `list_groups`        | Enumerate every group present in the local mirror with its manifest metadata (slug, display name, owner hint, protected flag, memory count). |
 | `list_memories`      | List memories in a group, with kind, mandatory flag, and resolved UUID. |
 | `list_versions`      | Walk the commit history for a memory.                                   |
