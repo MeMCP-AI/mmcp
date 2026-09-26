@@ -4369,7 +4369,7 @@ impl McpServer {
             .path
             .as_deref()
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("CLAUDE.md"));
+            .unwrap_or_else(|| PathBuf::from(crate::commands::claude::CLAUDE_MD_FILE_NAME));
         let state = crate::commands::claude::inspect(&path);
         let args = if state.is_conflict() && args.on_conflict.is_none() {
             let choice = elicit_claude_conflict_choice(&peer, state).await?;
@@ -4407,7 +4407,7 @@ impl McpServer {
             .path
             .as_deref()
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("CLAUDE.md"));
+            .unwrap_or_else(|| PathBuf::from(crate::commands::claude::CLAUDE_MD_FILE_NAME));
         let state = crate::commands::claude::inspect(&path);
 
         // Convert/append need an existing file; override may write from
@@ -8392,7 +8392,7 @@ fn claude_md_notes(project_root: Option<&Path>) -> Vec<mmcp_proto::Note> {
     let Some(root) = project_root else {
         return Vec::new();
     };
-    let claude_md = root.join("CLAUDE.md");
+    let claude_md = root.join(crate::commands::claude::CLAUDE_MD_FILE_NAME);
     if !claude_md.exists() {
         return vec![mmcp_proto::Note::warn(
             "claude_md_missing",

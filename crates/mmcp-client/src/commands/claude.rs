@@ -62,7 +62,7 @@ pub struct ClaudeArgs {
     pub force: bool,
 
     /// Path to the CLAUDE.md file to manage. Defaults to `./CLAUDE.md`.
-    #[arg(long, default_value = "CLAUDE.md")]
+    #[arg(long, default_value = CLAUDE_MD_FILE_NAME)]
     pub path: PathBuf,
 }
 
@@ -184,6 +184,9 @@ pub struct MemoryCreated {
 }
 
 // ── Constants the MCP side also reaches for ──────────────────────────
+
+/// File name of a Claude Code instruction file.
+pub const CLAUDE_MD_FILE_NAME: &str = "CLAUDE.md";
 
 /// Version tag of the mmcp-managed block, carried by both fence markers.
 pub const BLOCK_VERSION: &str = "v2";
