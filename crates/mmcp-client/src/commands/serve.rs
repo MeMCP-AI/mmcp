@@ -24,10 +24,7 @@ use mmcp_git::{GitBackend, NativeBackend, Rev};
 use rmcp::{
     ErrorData as McpError, Peer, RoleServer, ServerHandler, ServiceExt, elicit_safe,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{
-        CallToolResult, ContentBlock, Implementation, ProtocolVersion, ServerCapabilities,
-        ServerInfo,
-    },
+    model::{CallToolResult, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo},
     schemars::JsonSchema,
     service::ElicitationError,
     tool, tool_handler, tool_router,
@@ -8585,9 +8582,12 @@ fn owner_hint_to_json(owner: &mmcp_core::manifest::GroupOwnerHint) -> serde_json
     }
 }
 
+/// Wrap a JSON response payload as a successful tool result: the
+/// payload travels as `structured_content`, conforming to the output
+/// schema every tool declares, and as its compact serialisation in
+/// the text content for clients that read text only.
 fn ok_json(value: serde_json::Value) -> CallToolResult {
-    let text = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
-    CallToolResult::success(vec![ContentBlock::text(Cow::Owned(text))])
+    CallToolResult::structured(value)
 }
 
 /// `version` tool support: `vergen-gitcl` (see `build.rs`) emits this
@@ -8624,8 +8624,7 @@ fn ok_json_with_notes(
         let serialised = serde_json::to_value(&notes).unwrap_or(json!([]));
         obj.insert("notes".to_string(), serialised);
     }
-    let text = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
-    CallToolResult::success(vec![ContentBlock::text(Cow::Owned(text))])
+    ok_json(value)
 }
 
 /// Paginate an already-built list of JSON records the same way
