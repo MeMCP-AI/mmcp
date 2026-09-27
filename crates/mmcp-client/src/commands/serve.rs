@@ -245,10 +245,11 @@ struct McpServer {
     /// Per-instance, mode-filtered router: `McpServer::new` retains
     /// only the tools `mode.allows` after building it from
     /// `Self::tool_router()`. `#[tool_handler(router = self.tool_router)]`
-    /// below binds `list_tools`/`call_tool`/`get_tool` to THIS field
-    /// instead of the macro's default `Self::tool_router()`, which
-    /// would rebuild the unfiltered, full-surface router on every
-    /// call and silently defeat the mode filter.
+    /// below binds `list_tools`/`get_tool` to THIS field, and the
+    /// hand-written `call_tool` serves it too, instead of the macro's
+    /// default `Self::tool_router()`, which would rebuild the
+    /// unfiltered, full-surface router on every call and silently
+    /// defeat the mode filter.
     tool_router: ToolRouter<McpServer>,
 }
 
@@ -15684,9 +15685,11 @@ mod tests {
 
     /// Every registered tool surfaces a permissive object
     /// `output_schema` so MCP clients can validate that the
-    /// response is a JSON object.
+    /// response is a JSON object; the structured content every
+    /// result carries is checked by
+    /// `every_served_tool_result_carries_structured_content`.
     /// Per-tool typed response structs remain a candidate future
-    /// refinement rather than 46 separate structs today.
+    /// refinement rather than one struct per tool today.
     #[test]
     fn registered_tools_carry_output_schema() {
         for tool in registered_tool_attrs() {
@@ -15799,10 +15802,10 @@ mod tests {
 
     /// Spin up a real `McpServer` over an in-process duplex pipe and
     /// connect a bare `()` client through it: a genuine JSON-RPC
-    /// round trip through `#[tool_handler]`'s generated
-    /// `list_tools`/`call_tool`, not a struct-field inspection.
+    /// round trip through `#[tool_handler]`'s generated `list_tools`
+    /// and the hand-written `call_tool`, not a struct-field inspection.
     ///
-    /// This is the ONLY way to catch a `#[tool_handler]` bound to the
+    /// This is the ONLY way to catch a handler bound to the
     /// wrong router: `server.tool_router` (the mode-filtered
     /// instance field) can be perfectly correct while the live
     /// protocol surface still serves the unfiltered
