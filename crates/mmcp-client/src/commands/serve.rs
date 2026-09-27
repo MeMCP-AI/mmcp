@@ -23,10 +23,13 @@ use mmcp_core::memory::{MemoryFile, MemoryFrontmatter};
 use mmcp_git::{GitBackend, NativeBackend, Rev};
 use rmcp::{
     ErrorData as McpError, Peer, RoleServer, ServerHandler, ServiceExt, elicit_safe,
-    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{CallToolResult, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo},
+    handler::server::{router::tool::ToolRouter, tool::ToolCallContext, wrapper::Parameters},
+    model::{
+        CallToolResponse, CallToolResult, Implementation, ProtocolVersion, ServerCapabilities,
+        ServerInfo,
+    },
     schemars::JsonSchema,
-    service::ElicitationError,
+    service::{ElicitationError, RequestContext},
     tool, tool_handler, tool_router,
     transport::stdio,
 };
@@ -42,6 +45,7 @@ use crate::commands::tool_metadata_cli::{
     arg_risk_hints_for, decorate_tool_attrs, icons_for_category, meta_for_tool,
     shared_output_schema, tool_icon_category,
 };
+use crate::commands::tool_result::conform_to_output_schema;
 use crate::notes::{
     collect_known_memory_ids, dangling_history_pointer_notes, dangling_ref_notes_for,
     dangling_ref_notes_with_known, finding_to_note, findings_to_notes, id_validation_to_notes,
@@ -7876,6 +7880,23 @@ fn memory_edit_error_payload(err: &mmcp_store::MemoryEditError) -> serde_json::V
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for McpServer {
+    /// Serve `tools/call` through the instance router, then conform
+    /// the result to the output schema the tool declares.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        let tool = request.name.clone();
+        let declares_output_schema = self
+            .tool_router
+            .get(&tool)
+            .is_some_and(|attr| attr.output_schema.is_some());
+        let call = ToolCallContext::new(self, request, context);
+        let response = self.tool_router.call(call).await?;
+        conform_to_output_schema(&tool, declares_output_schema, response).map_err(McpError::from)
+    }
+
     fn get_info(&self) -> ServerInfo {
         let mut instructions = SESSION_INSTRUCTIONS.to_string();
         if !matches!(self.mode, ServeMode::Full) {
