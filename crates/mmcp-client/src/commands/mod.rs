@@ -22,5 +22,6 @@ pub mod subscription;
 pub mod sync;
 mod sync_table;
 pub mod tool_metadata_cli;
+mod tool_result;
 pub mod tools;
 pub mod tracker_cli;
