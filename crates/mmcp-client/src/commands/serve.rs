@@ -15905,6 +15905,306 @@ mod tests {
         assert_eq!(dirs[0].slug, "flat");
     }
 
+    /// Argument key no tool declares: every tool's arguments struct
+    /// refuses unknown fields, so a call carrying it is answered by
+    /// rmcp's argument-error result before any tool body runs.
+    const UNKNOWN_ARGUMENT_PROBE: &str = "__mmcp_structured_content_probe__";
+
+    /// Concatenated text blocks of a tool result, one per line.
+    fn joined_result_text(result: &CallToolResult) -> String {
+        result
+            .content
+            .iter()
+            .filter_map(|block| block.as_text().map(|text| text.text.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Describe how a tool result breaks the declared output schema
+    /// contract, or `None` when it honours it: a success result
+    /// carries an object deep-equal to its parsed text, an error
+    /// result carries an object whose `error` is its text.
+    fn structured_content_violation(result: &CallToolResult) -> Option<String> {
+        let Some(structured) = result.structured_content.as_ref() else {
+            return Some(format!(
+                "no structured content (is_error = {:?})",
+                result.is_error
+            ));
+        };
+        if !structured.is_object() {
+            return Some(format!("structured content is not an object: {structured}"));
+        }
+        if result.is_error == Some(true) {
+            let text = joined_result_text(result);
+            if structured.get("error").and_then(|v| v.as_str()) != Some(text.as_str()) {
+                return Some(format!(
+                    "error structured content {structured} does not carry the text {text:?}"
+                ));
+            }
+            return None;
+        }
+        let text = joined_result_text(result);
+        match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(parsed) if &parsed == structured => None,
+            Ok(parsed) => Some(format!(
+                "structured content {structured} differs from the parsed text {parsed}"
+            )),
+            Err(err) => Some(format!("text content is not JSON ({err}): {text:?}")),
+        }
+    }
+
+    /// A tool the router-wide test may call with no arguments: read
+    /// only, closed world, and no required argument, so the call
+    /// reaches the tool body without touching the network or
+    /// mutating the store.
+    fn callable_without_arguments(tool: &rmcp::model::Tool) -> bool {
+        let annotations = tool.annotations.as_ref();
+        let read_only = annotations.and_then(|a| a.read_only_hint) == Some(true);
+        let open_world = annotations.and_then(|a| a.open_world_hint) == Some(true);
+        let requires_arguments = tool
+            .input_schema
+            .get("required")
+            .and_then(|v| v.as_array())
+            .is_some_and(|required| !required.is_empty());
+        read_only && !open_world && !requires_arguments
+    }
+
+    /// Every route of the instance router declares an output schema,
+    /// and every result served for it through `tools/call` carries
+    /// structured content conforming to that schema: the argument
+    /// error path on every route, the success path on every route
+    /// callable without arguments.
+    #[tokio::test]
+    async fn every_served_tool_result_carries_structured_content() {
+        let (state, _tmp) = test_state().await;
+        let server = McpServer::new(state, ServeMode::Full);
+        let mut routes: Vec<rmcp::model::Tool> = server
+            .tool_router
+            .map
+            .values()
+            .map(|route| route.attr.clone())
+            .collect();
+        routes.sort_by(|a, b| a.name.cmp(&b.name));
+        assert!(!routes.is_empty(), "the instance router serves no tool");
+
+        for tool in &routes {
+            assert!(
+                tool.output_schema.is_some(),
+                "{}: route must declare an output schema",
+                tool.name,
+            );
+            assert_eq!(
+                tool.input_schema.get("additionalProperties"),
+                Some(&json!(false)),
+                "{}: the argument probe needs unknown arguments refused before the tool body runs",
+                tool.name,
+            );
+        }
+        let callable: Vec<&rmcp::model::Tool> = routes
+            .iter()
+            .filter(|tool| callable_without_arguments(tool))
+            .collect();
+        for required in ["version", "bootstrap_context"] {
+            assert!(
+                callable.iter().any(|tool| tool.name == required),
+                "{required} must be exercised on the success path",
+            );
+        }
+
+        let client = connect_in_process(server).await;
+        let mut failures = Vec::new();
+        for tool in &routes {
+            let mut args = serde_json::Map::new();
+            args.insert(UNKNOWN_ARGUMENT_PROBE.to_string(), json!(true));
+            let call =
+                rmcp::model::CallToolRequestParams::new(tool.name.clone()).with_arguments(args);
+            match client.call_tool(call).await {
+                Ok(result) if result.is_error != Some(true) => failures.push(format!(
+                    "{}: argument probe was not refused: {result:?}",
+                    tool.name
+                )),
+                Ok(result) => {
+                    if let Some(violation) = structured_content_violation(&result) {
+                        failures.push(format!("{}: argument error: {violation}", tool.name));
+                    }
+                }
+                Err(err) => failures.push(format!(
+                    "{}: argument probe answered a protocol error: {err}",
+                    tool.name
+                )),
+            }
+        }
+        // A tool refusing the empty call as invalid parameters in this
+        // bare mirror (no project group, a mandatory argument pair)
+        // answers no tool result, so it sits outside the output schema
+        // contract and is skipped; any other protocol error, the
+        // missing structured content refusal included, is a failure,
+        // and `version` and `bootstrap_context` must answer a result.
+        let mut answered = std::collections::HashSet::new();
+        for tool in &callable {
+            let call = rmcp::model::CallToolRequestParams::new(tool.name.clone())
+                .with_arguments(serde_json::Map::new());
+            let result = match client.call_tool(call).await {
+                Ok(result) => result,
+                Err(rmcp::ServiceError::McpError(error))
+                    if error.code == rmcp::model::ErrorCode::INVALID_PARAMS =>
+                {
+                    continue;
+                }
+                Err(err) => {
+                    failures.push(format!(
+                        "{}: success call answered a protocol error: {err}",
+                        tool.name
+                    ));
+                    continue;
+                }
+            };
+            answered.insert(tool.name.to_string());
+            if result.is_error == Some(true) {
+                failures.push(format!(
+                    "{}: success call returned an error result: {result:?}",
+                    tool.name
+                ));
+            } else if let Some(violation) = structured_content_violation(&result) {
+                failures.push(format!("{}: success: {violation}", tool.name));
+            }
+        }
+        for required in ["version", "bootstrap_context"] {
+            if !answered.contains(required) {
+                failures.push(format!("{required}: success call answered no result"));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} result(s) break the output schema contract:\n{}",
+            failures.len(),
+            failures.join("\n"),
+        );
+    }
+
+    /// `ok_json` carries its payload as structured content deep-equal
+    /// to the parsed text, and the text stays the compact
+    /// serialisation of the payload.
+    #[test]
+    fn ok_json_carries_structured_content_equal_to_its_text() {
+        let value = json!({"answer": 42, "nested": {"list": [true, null, "x"]}});
+        let expected_text = serde_json::to_string(&value).expect("serialise");
+        let result = ok_json(value.clone());
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(result.content.len(), 1);
+        assert_eq!(joined_result_text(&result), expected_text);
+        assert_eq!(result.structured_content.as_ref(), Some(&value));
+        assert_eq!(structured_content_violation(&result), None);
+    }
+
+    /// `ok_json_with_notes` carries the payload, notes included, as
+    /// structured content deep-equal to the parsed text.
+    #[test]
+    fn ok_json_with_notes_carries_structured_content_equal_to_its_text() {
+        let value = json!({"items": [1, 2, 3]});
+        let notes = vec![mmcp_proto::Note::warn("probe_code", "probe message")];
+        let mut expected = value.clone();
+        expected.as_object_mut().expect("object").insert(
+            "notes".to_string(),
+            serde_json::to_value(&notes).expect("notes serialise"),
+        );
+        let expected_text = serde_json::to_string(&expected).expect("serialise");
+        let result = ok_json_with_notes(value, notes);
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(result.content.len(), 1);
+        assert_eq!(joined_result_text(&result), expected_text);
+        assert_eq!(result.structured_content.as_ref(), Some(&expected));
+        assert_eq!(structured_content_violation(&result), None);
+    }
+
+    /// With no notes, `ok_json_with_notes` omits the `notes` field
+    /// from both the text and the structured content.
+    #[test]
+    fn ok_json_with_no_notes_carries_structured_content_without_notes() {
+        let value = json!({"items": []});
+        let expected_text = serde_json::to_string(&value).expect("serialise");
+        let result = ok_json_with_notes(value.clone(), Vec::new());
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(joined_result_text(&result), expected_text);
+        assert_eq!(result.structured_content.as_ref(), Some(&value));
+    }
+
+    /// `version` answered through `tools/call` carries structured
+    /// content deep-equal to its parsed text.
+    #[tokio::test]
+    async fn mcp_protocol_version_result_carries_structured_content() {
+        let (state, _tmp) = test_state().await;
+        let client = connect_in_process(McpServer::new(state, ServeMode::Full)).await;
+        let result = client
+            .call_tool(
+                rmcp::model::CallToolRequestParams::new("version")
+                    .with_arguments(serde_json::Map::new()),
+            )
+            .await
+            .expect("version must answer");
+        assert_eq!(result.is_error, Some(false));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&joined_result_text(&result)).expect("text is JSON");
+        assert_eq!(result.structured_content, Some(parsed));
+        assert_eq!(
+            result
+                .structured_content
+                .as_ref()
+                .and_then(|v| v.get("package_version"))
+                .and_then(|v| v.as_str()),
+            Some(env!("CARGO_PKG_VERSION")),
+        );
+    }
+
+    /// `bootstrap_context` answered through `tools/call` carries
+    /// structured content deep-equal to its parsed text.
+    #[tokio::test]
+    async fn mcp_protocol_bootstrap_context_result_carries_structured_content() {
+        let (state, tmp) = test_state().await;
+        let client = connect_in_process(McpServer::new(state, ServeMode::Full)).await;
+        let no_project_dir = tmp.path().join("scratch");
+        std::fs::create_dir_all(&no_project_dir).expect("scratch");
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "path".to_string(),
+            json!(no_project_dir.to_string_lossy().into_owned()),
+        );
+        let result = client
+            .call_tool(
+                rmcp::model::CallToolRequestParams::new("bootstrap_context").with_arguments(args),
+            )
+            .await
+            .expect("bootstrap_context must answer");
+        assert_eq!(result.is_error, Some(false));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&joined_result_text(&result)).expect("text is JSON");
+        assert!(parsed.get("next_action").is_some(), "{parsed}");
+        assert_eq!(result.structured_content, Some(parsed));
+    }
+
+    /// A call whose arguments fail to deserialize is answered by
+    /// rmcp's argument-error result; that result still carries a
+    /// structured object, whose `error` is the refusal text.
+    #[tokio::test]
+    async fn mcp_protocol_argument_error_result_carries_structured_error() {
+        let (state, _tmp) = test_state().await;
+        let client = connect_in_process(McpServer::new(state, ServeMode::Full)).await;
+        let mut args = serde_json::Map::new();
+        args.insert(UNKNOWN_ARGUMENT_PROBE.to_string(), json!(true));
+        let result = client
+            .call_tool(rmcp::model::CallToolRequestParams::new("version").with_arguments(args))
+            .await
+            .expect("an argument error is a tool result, not a protocol error");
+        assert_eq!(result.is_error, Some(true));
+        let text = joined_result_text(&result);
+        assert!(
+            text.contains("failed to deserialize parameters"),
+            "unexpected refusal text: {text:?}"
+        );
+        assert!(text.contains(UNKNOWN_ARGUMENT_PROBE), "{text:?}");
+        assert_eq!(result.structured_content, Some(json!({ "error": text })));
+    }
+
     /// `--mode full` keeps every registered tool.
     /// Cross-checks against `registered_tool_attrs()` so any future
     /// tool addition is exercised here without an explicit name list.
