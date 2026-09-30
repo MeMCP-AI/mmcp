@@ -105,10 +105,7 @@ struct ClientStateInner {
     /// User-level CLAUDE.md checked by `bootstrap_context`; `None` when the user home is unresolved.
     user_claude_md: Option<PathBuf>,
     /// CLAUDE.md suggestion values the process was launched with, the two launch layers of the resolution.
-    #[expect(
-        dead_code,
-        reason = "read by bootstrap_context once the decline gating lands"
-    )]
+    #[expect(dead_code, reason = "no tool reads it in this revision")]
     claude_md_launch: ClaudeMdLaunchOverride,
     /// Debug mode flag.
     /// When true, raw git access tools are enabled.
