@@ -19,9 +19,15 @@ use mmcp_store::config::{self, PROJECT_MANIFEST};
 use mmcp_store::home::{MmcpHome, ResolvedAuthor};
 
 mod fence;
+mod init_claude_action;
+mod init_claude_conflict;
+mod notes;
 mod partial_fence_error;
 
 pub use fence::{Fence, scan_fence};
+pub use init_claude_action::{InitClaudeAction, action_wire};
+pub use init_claude_conflict::InitClaudeConflict;
+pub use notes::claude_md_notes;
 pub use partial_fence_error::PartialFenceError;
 
 // Public CLI entry point
