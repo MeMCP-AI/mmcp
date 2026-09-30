@@ -3,6 +3,7 @@
 //! One lenient `claude_md` table type is reused at project level, at user level and per project in the user config.
 //! [`ClaudeMdLayers`] resolves the per-layer values into the effective suggestion.
 
+mod claude_md_launch_override;
 mod claude_md_layers;
 mod claude_md_resolution;
 mod claude_md_set_outcome;
@@ -11,6 +12,7 @@ mod claude_md_source;
 mod claude_md_suggestion;
 mod claude_md_table;
 
+pub use claude_md_launch_override::ClaudeMdLaunchOverride;
 pub use claude_md_layers::ClaudeMdLayers;
 pub use claude_md_resolution::ClaudeMdResolution;
 pub use claude_md_set_outcome::ClaudeMdSetOutcome;

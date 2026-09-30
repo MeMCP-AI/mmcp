@@ -1,6 +1,6 @@
 //! [`ClaudeMdLayers`], the per-layer values the suggestion resolves from.
 
-use super::{ClaudeMdResolution, ClaudeMdSource, ClaudeMdSuggestion};
+use super::{ClaudeMdLaunchOverride, ClaudeMdResolution, ClaudeMdSource, ClaudeMdSuggestion};
 use crate::config::{ProjectConfig, UserConfig};
 
 /// Value of every layer, `None` where a layer sets nothing.
@@ -34,6 +34,16 @@ impl ClaudeMdLayers {
             flag: None,
             environment: None,
             user: user.claude_md.suggestion().ok().flatten(),
+        }
+    }
+
+    /// These layers with the launch layers replaced by `launch`.
+    #[must_use]
+    pub fn with_launch_override(self, launch: ClaudeMdLaunchOverride) -> Self {
+        Self {
+            flag: launch.flag,
+            environment: launch.environment,
+            ..self
         }
     }
 
@@ -232,6 +242,55 @@ mod tests {
         assert_eq!(
             resolved(layers),
             (ClaudeMdSuggestion::Decline, ClaudeMdSource::User)
+        );
+    }
+
+    #[test]
+    fn launch_override_fills_the_launch_layers_and_keeps_the_persisted_ones() {
+        let persisted = ClaudeMdLayers {
+            user_project: SUGGEST,
+            project: SUGGEST,
+            user: SUGGEST,
+            ..Default::default()
+        };
+
+        let layers = persisted.with_launch_override(ClaudeMdLaunchOverride {
+            flag: DECLINE,
+            environment: DECLINE,
+        });
+
+        assert_eq!(layers.flag, DECLINE);
+        assert_eq!(layers.environment, DECLINE);
+        assert_eq!(layers.user_project, SUGGEST);
+        assert_eq!(layers.project, SUGGEST);
+        assert_eq!(layers.user, SUGGEST);
+    }
+
+    #[test]
+    fn launch_decline_declines_when_no_per_project_layer_is_set() {
+        let layers = ClaudeMdLayers::default().with_launch_override(ClaudeMdLaunchOverride {
+            flag: DECLINE,
+            environment: None,
+        });
+        assert_eq!(
+            resolved(layers),
+            (ClaudeMdSuggestion::Decline, ClaudeMdSource::Flag)
+        );
+    }
+
+    #[test]
+    fn launch_suggest_does_not_undo_a_user_project_decline() {
+        let layers = ClaudeMdLayers {
+            user_project: DECLINE,
+            ..Default::default()
+        }
+        .with_launch_override(ClaudeMdLaunchOverride {
+            flag: SUGGEST,
+            environment: SUGGEST,
+        });
+        assert_eq!(
+            resolved(layers),
+            (ClaudeMdSuggestion::Decline, ClaudeMdSource::UserProject)
         );
     }
 

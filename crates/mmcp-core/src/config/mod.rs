@@ -21,8 +21,8 @@ pub mod user;
 mod user_project_config;
 
 pub use claude_md::{
-    CLAUDE_MD_TABLE_KEY, ClaudeMdLayers, ClaudeMdResolution, ClaudeMdSetOutcome,
-    ClaudeMdSettingError, ClaudeMdSource, ClaudeMdSuggestion, ClaudeMdTable,
+    CLAUDE_MD_TABLE_KEY, ClaudeMdLaunchOverride, ClaudeMdLayers, ClaudeMdResolution,
+    ClaudeMdSetOutcome, ClaudeMdSettingError, ClaudeMdSource, ClaudeMdSuggestion, ClaudeMdTable,
     PROJECT_FILE_SUGGESTION_KEY,
 };
 pub use config_diagnostic::ConfigDiagnostic;
