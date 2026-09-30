@@ -1,11 +1,10 @@
 //! Project configuration loader shared by every mmcp consumer.
 //!
-//! `.mmcp.toml` at a project root describes the project's stable UUID, optional slug,
-//! the sync server it talks to, and the group loading preferences.
-//! This module owns the walk-up discovery (`find_project_root`), the explicit-or-discovered root
-//! resolution (`resolve_project_root`), the TOML read (`load`), and the TOML write (`save`).
-//! The typed `ProjectConfig` struct itself lives in `mmcp-core::config::project`;
-//! this module is the I/O layer.
+//! `.mmcp.toml` at a project root describes the project's stable UUID, optional slug, the sync server it talks to, and the group loading preferences.
+//! This module owns the walk-up discovery (`find_project_root`) and the root resolution (`resolve_project_root`).
+//! It also owns the TOML read (`load`) and the TOML write (`save`).
+//! The typed `ProjectConfig` struct itself lives in `mmcp-core::config::project`.
+//! This module is the I/O layer.
 
 use std::path::{Path, PathBuf};
 
