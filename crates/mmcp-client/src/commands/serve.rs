@@ -94,6 +94,8 @@ struct ClientStateInner {
     #[allow(dead_code)]
     // NOTE: held to keep the notify watcher alive for the process lifetime.
     watcher: WatcherHandle,
+    /// Home the server was started with; home-derived reads go through it, never a fresh discovery.
+    home: MmcpHome,
     /// Resolved commit author from user config cascade.
     author: ResolvedAuthor,
     /// User-level CLAUDE.md checked by `bootstrap_context`; `None` when the user home is unresolved.
@@ -155,6 +157,7 @@ impl ClientState {
             groups,
             sessions,
             watcher,
+            home,
             author,
             user_claude_md,
             debug: Arc::new(AtomicBool::new(debug)),
@@ -4842,55 +4845,7 @@ impl McpServer {
         let cwd = std::env::current_dir().map_err(|e| {
             McpError::internal_error(format!("cannot read working directory: {e}"), None)
         })?;
-
-        // Collect group state first so callers inspecting a
-        // machine-wide mirror from outside any project still see
-        // what is mirrored.
-        let entries = self.state.groups.list().await;
-        let mut groups = Vec::with_capacity(entries.len());
-        for entry in &entries {
-            let files = list_memory_files(&self.state.backend, entry).await?;
-            groups.push(json!({
-                "slug": entry.manifest.slug,
-                "uuid": entry.manifest.group_id.to_string(),
-                "memory_count": files.len(),
-            }));
-        }
-
-        // Explicit selector returns the minimal filesystem-free shape.
-        // Cwd walk keeps the full shape with project_root + sync fields.
-        if let Some(query) = args.project.as_deref() {
-            let entry = mmcp_store::memory::resolve_group(&self.state.groups, query)
-                .await
-                .map_err(|_| {
-                    McpError::invalid_params(
-                        format!("project selector '{query}' does not resolve to a mirrored group"),
-                        Some(json!({
-                            "code": "unknown_project",
-                            "query": query,
-                        })),
-                    )
-                })?;
-            return Ok(ok_json(json!({
-                "project_configured": true,
-                "project_uuid": entry.manifest.group_id.to_string(),
-                "project_slug": entry.manifest.slug,
-                "groups": groups,
-                "mode": self.mode.as_label(),
-            })));
-        }
-
-        let home = MmcpHome::discover().map_err(|e| {
-            McpError::internal_error(format!("cannot resolve mmcp home: {e}"), None)
-        })?;
-        let mut payload = compose_status(&cwd, groups, &home)?;
-        if let serde_json::Value::Object(map) = &mut payload {
-            map.insert(
-                "mode".to_string(),
-                serde_json::Value::from(self.mode.as_label()),
-            );
-        }
-        Ok(ok_json(payload))
+        self.status_for_cwd(&cwd, args).await
     }
 
     #[tool(
@@ -6190,6 +6145,61 @@ fn compose_sync_section(
 }
 
 impl McpServer {
+    /// Body of the `status` tool for a caller-supplied `cwd`, so tests feed a
+    /// deterministic project directory without mutating process state.
+    /// The user-level config is read from the served home.
+    async fn status_for_cwd(
+        &self,
+        cwd: &Path,
+        args: StatusArgs,
+    ) -> Result<CallToolResult, McpError> {
+        // Collect group state first so callers inspecting a
+        // machine-wide mirror from outside any project still see
+        // what is mirrored.
+        let entries = self.state.groups.list().await;
+        let mut groups = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let files = list_memory_files(&self.state.backend, entry).await?;
+            groups.push(json!({
+                "slug": entry.manifest.slug,
+                "uuid": entry.manifest.group_id.to_string(),
+                "memory_count": files.len(),
+            }));
+        }
+
+        // Explicit selector returns the minimal filesystem-free shape.
+        // Cwd walk keeps the full shape with project_root + sync fields.
+        if let Some(query) = args.project.as_deref() {
+            let entry = mmcp_store::memory::resolve_group(&self.state.groups, query)
+                .await
+                .map_err(|_| {
+                    McpError::invalid_params(
+                        format!("project selector '{query}' does not resolve to a mirrored group"),
+                        Some(json!({
+                            "code": "unknown_project",
+                            "query": query,
+                        })),
+                    )
+                })?;
+            return Ok(ok_json(json!({
+                "project_configured": true,
+                "project_uuid": entry.manifest.group_id.to_string(),
+                "project_slug": entry.manifest.slug,
+                "groups": groups,
+                "mode": self.mode.as_label(),
+            })));
+        }
+
+        let mut payload = compose_status(cwd, groups, &self.state.home)?;
+        if let serde_json::Value::Object(map) = &mut payload {
+            map.insert(
+                "mode".to_string(),
+                serde_json::Value::from(self.mode.as_label()),
+            );
+        }
+        Ok(ok_json(payload))
+    }
+
     fn require_debug(&self) -> Result<(), McpError> {
         if self.state.debug.load(Ordering::Relaxed) {
             Ok(())
@@ -13014,6 +13024,71 @@ mod tests {
             group.get("memory_count").and_then(|v| v.as_u64()),
             Some(1),
             "memory_count must match the number of seeded memories",
+        );
+    }
+
+    /// Project directory under `tmp` carrying a minimal `.mmcp.toml`.
+    fn write_status_project(tmp: &TempDir) -> PathBuf {
+        let project = tmp.path().join("status-project");
+        std::fs::create_dir_all(&project).expect("mkdir project");
+        write_project_config(
+            &project,
+            "project_uuid = \"018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91\"\n",
+        );
+        project
+    }
+
+    #[tokio::test]
+    async fn status_reads_the_user_config_of_the_served_home() {
+        let (state, tmp) = test_state().await;
+        std::fs::write(
+            state.home.user_config_path(),
+            "[sync]\nserver_url = \"http://served-home.example.com\"\n",
+        )
+        .expect("write the served home's config.toml");
+        let project = write_status_project(&tmp);
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let res = server
+            .status_for_cwd(&project, StatusArgs::default())
+            .await
+            .expect("status");
+        let parsed = parse_ok_json(res);
+
+        let sync = parsed.get("sync").expect("sync object");
+        assert_eq!(
+            sync.get("configured").and_then(|v| v.as_bool()),
+            Some(true),
+            "the remote declared in the served home's config must be reported: {sync}",
+        );
+        let remotes = sync
+            .get("remotes")
+            .and_then(|v| v.as_array())
+            .expect("remotes array");
+        assert_eq!(remotes.len(), 1, "only the served home's remote: {sync}");
+        assert_eq!(
+            remotes[0].get("level").and_then(|v| v.as_str()),
+            Some("user")
+        );
+    }
+
+    #[tokio::test]
+    async fn status_reports_sync_unconfigured_for_an_empty_served_home() {
+        let (state, tmp) = test_state().await;
+        let project = write_status_project(&tmp);
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let res = server
+            .status_for_cwd(&project, StatusArgs::default())
+            .await
+            .expect("status");
+        let parsed = parse_ok_json(res);
+
+        let sync = parsed.get("sync").expect("sync object");
+        assert_eq!(
+            sync.get("configured").and_then(|v| v.as_bool()),
+            Some(false),
+            "a served home without a config declares no remote: {sync}",
         );
     }
 
