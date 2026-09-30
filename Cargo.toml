@@ -51,7 +51,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # CLI
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 inquire = { version = "0.9", default-features = false, features = ["crossterm"] }
 
 # Table rendering for per-group sync outcome rows (`mmcp sync` /

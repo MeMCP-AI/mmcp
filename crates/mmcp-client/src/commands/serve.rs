@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use mmcp_core::config::is_group_adopted;
+use mmcp_core::config::{ClaudeMdLaunchOverride, is_group_adopted};
 use mmcp_core::conventions::{SlugRecursion, slug_matches_filter};
 use mmcp_core::id::GroupId;
 use mmcp_core::memory::{MemoryFile, MemoryFrontmatter};
@@ -63,7 +63,11 @@ use mmcp_store::memory::ImportError;
 use mmcp_store::sessions::SessionStore;
 
 /// Run the MCP stdio server loop until the client disconnects.
-pub async fn run(debug_mode: bool, serve_mode: ServeMode) -> Result<()> {
+pub async fn run(
+    debug_mode: bool,
+    serve_mode: ServeMode,
+    claude_md_launch: ClaudeMdLaunchOverride,
+) -> Result<()> {
     if debug_mode {
         tracing::info!(
             "mmcp stdio MCP server starting (debug tools enabled, mode={})",
@@ -75,7 +79,7 @@ pub async fn run(debug_mode: bool, serve_mode: ServeMode) -> Result<()> {
             serve_mode.as_label(),
         );
     }
-    let state = ClientState::initialize(debug_mode).await?;
+    let state = ClientState::initialize(debug_mode, claude_md_launch).await?;
     let server = McpServer::new(state, serve_mode);
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
@@ -100,6 +104,12 @@ struct ClientStateInner {
     author: ResolvedAuthor,
     /// User-level CLAUDE.md checked by `bootstrap_context`; `None` when the user home is unresolved.
     user_claude_md: Option<PathBuf>,
+    /// CLAUDE.md suggestion values the process was launched with, the two launch layers of the resolution.
+    #[expect(
+        dead_code,
+        reason = "read by bootstrap_context once the decline gating lands"
+    )]
+    claude_md_launch: ClaudeMdLaunchOverride,
     /// Debug mode flag.
     /// When true, raw git access tools are enabled.
     /// Can be toggled at runtime via the `debug_toggle` tool.
@@ -110,7 +120,7 @@ struct ClientStateInner {
 struct ClientState(Arc<ClientStateInner>);
 
 impl ClientState {
-    async fn initialize(debug: bool) -> Result<Self> {
+    async fn initialize(debug: bool, claude_md_launch: ClaudeMdLaunchOverride) -> Result<Self> {
         let home = MmcpHome::discover()?;
         let project_config_path = find_current_project_config();
         let user_claude_md = match crate::commands::claude::user_claude_md_path() {
@@ -120,7 +130,14 @@ impl ClientState {
                 None
             }
         };
-        Self::initialize_from(home, project_config_path, user_claude_md, debug).await
+        Self::initialize_from(
+            home,
+            project_config_path,
+            user_claude_md,
+            claude_md_launch,
+            debug,
+        )
+        .await
     }
 
     /// Initialize the client state from a resolved [`MmcpHome`].
@@ -131,6 +148,7 @@ impl ClientState {
         home: MmcpHome,
         project_config_path: Option<PathBuf>,
         user_claude_md: Option<PathBuf>,
+        claude_md_launch: ClaudeMdLaunchOverride,
         debug: bool,
     ) -> Result<Self> {
         std::fs::create_dir_all(home.root())
@@ -160,6 +178,7 @@ impl ClientState {
             home,
             author,
             user_claude_md,
+            claude_md_launch,
             debug: Arc::new(AtomicBool::new(debug)),
         })))
     }
@@ -8566,9 +8585,15 @@ mod tests {
             .await;
         let tmp = TempDir::new().expect("tempdir");
         let home = MmcpHome::from_root(tmp.path().join("mmcp-home"));
-        let state = ClientState::initialize_from(home, None, None, false)
-            .await
-            .expect("initialize_from");
+        let state = ClientState::initialize_from(
+            home,
+            None,
+            None,
+            ClaudeMdLaunchOverride::default(),
+            false,
+        )
+        .await
+        .expect("initialize_from");
         (state, tmp)
     }
 
