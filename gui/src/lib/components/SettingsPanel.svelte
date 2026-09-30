@@ -16,7 +16,8 @@
   import type { KindStr, LoadedProjectConfig, ProjectConfig, UserConfig } from '$lib/types';
   import type { KindDisplay, ThemeMode } from '$lib/stores/settings.svelte';
   import RemotesEditor from './RemotesEditor.svelte';
-  import { fromDraft, toDraft, type DraftRemote } from '$lib/utils/remotes_draft';
+  import { buildProjectConfig, buildUserConfig } from '$lib/utils/config_draft';
+  import { toDraft, type DraftRemote } from '$lib/utils/remotes_draft';
 
   interface Props {
     value: KindDisplay;
@@ -122,41 +123,17 @@
     draftUserRemotes = (c.sync?.remotes ?? []).map(toDraft);
   });
 
-  function emptyToNull(s: string): string | null {
-    const t = s.trim();
-    return t.length > 0 ? t : null;
-  }
-
   function commitUser() {
-    const fallback =
-      draftUserGitFallback === 'enabled'
-        ? true
-        : draftUserGitFallback === 'disabled'
-          ? false
-          : null;
-    const authorName = emptyToNull(draftUserName);
-    const authorEmail = emptyToNull(draftUserEmail);
-    const defaultGroup = emptyToNull(draftUserDefaultGroup);
-    const hasAuthor = authorName !== null || authorEmail !== null || fallback !== null;
-    const hasDefaults = defaultGroup !== null;
-    const cfg: UserConfig = {
-      // Always sent as a complete object (never dropped for
-      // emptiness): a partial reconstruction would silently lose
-      // `remotes`.
-      sync: {
-        server_url: emptyToNull(draftUserSyncServerUrl),
-        remotes: draftUserRemotes.map(fromDraft)
-      },
-      author: hasAuthor
-        ? { name: authorName, email: authorEmail, git_fallback: fallback }
-        : null,
-      defaults: hasDefaults ? { group: defaultGroup } : null,
-      // This form has no UI for limits; carry the loaded value through
-      // unchanged so a save never silently erases an operator-set
-      // `[limits]` section.
-      limits: userConfig?.limits ?? null
-    };
-    onSaveUser(cfg);
+    onSaveUser(
+      buildUserConfig(userConfig, {
+        name: draftUserName,
+        email: draftUserEmail,
+        gitFallback: draftUserGitFallback,
+        defaultGroup: draftUserDefaultGroup,
+        syncServerUrl: draftUserSyncServerUrl,
+        remotes: draftUserRemotes
+      })
+    );
   }
 
   // Project form mirrors projectConfig.config when available.
@@ -182,37 +159,23 @@
     draftProjectAutoDetect = c.subscriptions.auto_detect_languages;
   });
 
-  function parseCsv(s: string): string[] {
-    return s
-      .split(',')
-      .map((v) => v.trim())
-      .filter((v) => v.length > 0);
-  }
-
   function commitProject() {
     const current = projectConfig?.config;
     const root = projectConfig?.root;
     if (!current || !root) return;
-    const cfg: ProjectConfig = {
-      project_uuid: current.project_uuid,
-      project_slug: emptyToNull(draftProjectSlug) ?? undefined,
-      // Always sent as a complete object; see the matching comment
-      // in `commitUser`.
-      sync: {
-        server_url: emptyToNull(draftProjectSyncServerUrl),
-        remotes: draftProjectRemotes.map(fromDraft)
-      },
-      project_remote_only: draftProjectRemoteOnly,
-      subscriptions: {
-        no_default_global: draftProjectNoDefault,
-        auto_detect_languages: draftProjectAutoDetect,
-        languages: parseCsv(draftProjectLangUse),
-        groups: parseCsv(draftProjectAdditional),
-        memories: current.subscriptions.memories,
-        tags: current.subscriptions.tags
-      }
-    };
-    onSaveProject(root, cfg);
+    onSaveProject(
+      root,
+      buildProjectConfig(current, {
+        slug: draftProjectSlug,
+        syncServerUrl: draftProjectSyncServerUrl,
+        remotes: draftProjectRemotes,
+        remoteOnly: draftProjectRemoteOnly,
+        noDefaultGlobal: draftProjectNoDefault,
+        autoDetectLanguages: draftProjectAutoDetect,
+        groups: draftProjectAdditional,
+        languages: draftProjectLangUse
+      })
+    );
   }
 </script>
 
