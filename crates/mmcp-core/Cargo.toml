@@ -9,7 +9,6 @@ authors.workspace = true
 [dependencies]
 thiserror = { workspace = true }
 serde = { workspace = true }
-serde_ignored = { workspace = true }
 uuid = { workspace = true }
 jiff = { workspace = true }
 semver = { workspace = true }

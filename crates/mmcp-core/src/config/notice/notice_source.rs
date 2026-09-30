@@ -1,28 +1,28 @@
-//! [`ClaudeMdSource`], the layer a resolved suggestion comes from.
+//! [`NoticeSource`], the layer a resolved notice value comes from.
 
-/// Layer that decided the effective suggestion, in precedence order.
+/// Layer that decided the effective value, in precedence order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ClaudeMdSource {
-    /// The user's entry for this project in `~/.mmcp/config.toml`.
-    UserProject,
-    /// The project's `.mmcp.toml`.
+pub enum NoticeSource {
+    /// `.mmcp.local.toml`.
+    Local,
+    /// `.mmcp.toml`.
     Project,
     /// The launch flag of the serving process.
     Flag,
     /// The launch environment variable of the serving process.
     Environment,
-    /// The user's setting for every project in `~/.mmcp/config.toml`.
+    /// `~/.mmcp/config.toml`.
     User,
-    /// No layer sets a value: the built-in default.
+    /// No layer sets a value: the default of the key.
     Default,
 }
 
-impl ClaudeMdSource {
+impl NoticeSource {
     /// Wire spelling of this source.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::UserProject => "user_project",
+            Self::Local => "local",
             Self::Project => "project",
             Self::Flag => "flag",
             Self::Environment => "environment",

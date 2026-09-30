@@ -4,20 +4,9 @@
 //! author identity, and default group. Project-level `.mmcp.toml`
 //! overrides these when both are set.
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-use super::ignored_key_path::ignored_key_path;
-use super::{
-    CLAUDE_MD_TABLE_KEY, ClaudeMdSetOutcome, ClaudeMdSuggestion, ClaudeMdTable, ConfigDiagnostic,
-    ConfigError, SyncConfig, UserProjectConfig,
-};
-use crate::id::ProjectUuid;
-
-/// Key of the per-project table in `~/.mmcp/config.toml`.
-const PROJECTS_TABLE_KEY: &str = "projects";
+use super::{ConfigError, NoticeConfig, SyncConfig};
 
 /// User-level configuration. All fields are optional; a missing
 /// config file is equivalent to an empty struct.
@@ -41,14 +30,10 @@ pub struct UserConfig {
     /// Tunable numeric limits an operator may override per-install.
     pub limits: Option<LimitsConfig>,
 
-    /// CLAUDE.md suggestion setting for every project.
-    #[serde(skip_serializing_if = "ClaudeMdTable::is_empty")]
-    pub claude_md: ClaudeMdTable,
-
-    /// The user's own settings per project, keyed by the project UUID.
-    /// An entry that carries nothing is removed.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub projects: BTreeMap<String, UserProjectConfig>,
+    /// Notice settings for every project.
+    /// Strict inside the table: a key or value it does not know fails the load of this file, as the nested `[sync]` table does.
+    #[serde(skip_serializing_if = "NoticeConfig::is_empty")]
+    pub notice: NoticeConfig,
 }
 
 /// Author identity configuration.
@@ -123,87 +108,9 @@ impl UserConfig {
     /// carry these new semantic-validation failures; mirrors
     /// `ProjectConfig::from_toml`.
     pub fn from_toml(text: &str) -> Result<Self, ConfigError> {
-        Self::from_toml_with_diagnostics(text).map(|(cfg, _diagnostics)| cfg)
-    }
-
-    /// Parse from a TOML string and report what the loader tolerated: every ignored key, every invalid `claude_md` table, every `projects` entry not keyed by a UUID.
-    ///
-    /// # Errors
-    /// The errors of [`UserConfig::from_toml`].
-    pub fn from_toml_with_diagnostics(
-        text: &str,
-    ) -> Result<(Self, Vec<ConfigDiagnostic>), ConfigError> {
-        let deserializer = toml::de::Deserializer::parse(text).map_err(ConfigError::from)?;
-        let mut ignored_paths = Vec::new();
-        let cfg: Self = serde_ignored::deserialize(deserializer, |path| {
-            ignored_paths.push(ignored_key_path(&path));
-        })
-        .map_err(ConfigError::from)?;
+        let cfg: Self = toml::from_str(text).map_err(ConfigError::from)?;
         cfg.sync.validate()?;
-        let diagnostics = ignored_paths
-            .into_iter()
-            .map(|key_path| ConfigDiagnostic::UnknownKey { key_path })
-            .chain(cfg.tolerated_mistakes())
-            .collect();
-        Ok((cfg, diagnostics))
-    }
-
-    /// Diagnostics of the tables this config holds: invalid or unknown-keyed `claude_md` tables and misspelt `projects` keys.
-    fn tolerated_mistakes(&self) -> Vec<ConfigDiagnostic> {
-        let global = self.claude_md.diagnostics(CLAUDE_MD_TABLE_KEY);
-        let per_project = self.projects.iter().flat_map(|(key, entry)| {
-            let keyed_by_uuid = Uuid::parse_str(key).is_ok();
-            let key_diagnostic =
-                (!keyed_by_uuid).then(|| ConfigDiagnostic::ProjectKeyNotUuid { key: key.clone() });
-            let table_path = format!("{PROJECTS_TABLE_KEY}.{key}.{CLAUDE_MD_TABLE_KEY}");
-            key_diagnostic
-                .into_iter()
-                .chain(entry.claude_md.diagnostics(&table_path))
-        });
-        global.into_iter().chain(per_project).collect()
-    }
-
-    /// The user's `claude_md` table for a project, `None` when the user has no entry for it.
-    /// Keys are matched as UUIDs, so any spelling of the UUID finds its entry.
-    #[must_use]
-    pub fn project_claude_md(&self, project: ProjectUuid) -> Option<&ClaudeMdTable> {
-        self.projects
-            .iter()
-            .find(|(key, _)| Self::key_is_project(key, project))
-            .map(|(_, entry)| &entry.claude_md)
-    }
-
-    /// Set the user's CLAUDE.md suggestion for every project, or remove it with `None`.
-    pub fn set_claude_md_suggestion(
-        &mut self,
-        mode: Option<ClaudeMdSuggestion>,
-    ) -> ClaudeMdSetOutcome {
-        self.claude_md.set(mode)
-    }
-
-    /// Set the user's CLAUDE.md suggestion for one project, or remove it with `None`.
-    /// An entry left empty is removed.
-    pub fn set_project_claude_md_suggestion(
-        &mut self,
-        project: ProjectUuid,
-        mode: Option<ClaudeMdSuggestion>,
-    ) -> ClaudeMdSetOutcome {
-        let key = self
-            .projects
-            .keys()
-            .find(|key| Self::key_is_project(key, project))
-            .cloned()
-            .unwrap_or_else(|| project.to_string());
-        let entry = self.projects.entry(key.clone()).or_default();
-        let outcome = entry.claude_md.set(mode);
-        if entry.is_empty() {
-            self.projects.remove(&key);
-        }
-        outcome
-    }
-
-    fn key_is_project(key: &str, project: ProjectUuid) -> bool {
-        Uuid::parse_str(key).is_ok_and(|parsed| parsed == *project.as_uuid())
+        Ok(cfg)
     }
 
     /// Render to a TOML string.
@@ -216,6 +123,7 @@ impl UserConfig {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use crate::config::{ConfigKey, NoticeValue};
 
     #[test]
     fn empty_string_parses_to_defaults() {
@@ -286,207 +194,42 @@ max_handle_length = 32
         assert!(cfg.author.as_ref().unwrap().git_fallback.is_none());
     }
 
-    const PROJECT_UUID: &str = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91";
-
-    fn project_uuid() -> ProjectUuid {
-        ProjectUuid::from_uuid(Uuid::parse_str(PROJECT_UUID).unwrap())
-    }
-
     #[test]
-    fn user_config_without_new_keys_renders_unchanged() {
+    fn user_config_without_notice_renders_unchanged() {
         let cfg = UserConfig::from_toml("[author]\nname = \"Bob\"\n").unwrap();
-        let rendered = cfg.to_toml().unwrap();
-        assert!(!rendered.contains("claude_md"), "{rendered}");
-        assert!(!rendered.contains("projects"), "{rendered}");
+        assert!(cfg.notice.is_empty());
+        assert!(!cfg.to_toml().unwrap().contains("notice"));
     }
 
     #[test]
-    fn user_config_global_and_per_project_entries_round_trip_keyed_by_uuid() {
+    fn user_config_notice_round_trips() {
         let mut cfg = UserConfig::default();
-        cfg.set_claude_md_suggestion(Some(ClaudeMdSuggestion::Decline));
-        cfg.set_project_claude_md_suggestion(project_uuid(), Some(ClaudeMdSuggestion::Suggest));
+        cfg.notice.set(ConfigKey::NoticeMdUser, NoticeValue::Off);
 
         let rendered = cfg.to_toml().unwrap();
-        assert!(
-            rendered.contains(&format!("[projects.{PROJECT_UUID}.claude_md]")),
-            "{rendered}"
-        );
         let reparsed = UserConfig::from_toml(&rendered).unwrap();
 
+        assert!(rendered.contains("[notice.md]"), "{rendered}");
         assert_eq!(
-            reparsed.claude_md.suggestion(),
-            Ok(Some(ClaudeMdSuggestion::Decline))
+            reparsed.notice.get(ConfigKey::NoticeMdUser),
+            Some(NoticeValue::Off)
         );
-        assert_eq!(
-            reparsed
-                .project_claude_md(project_uuid())
-                .unwrap()
-                .suggestion(),
-            Ok(Some(ClaudeMdSuggestion::Suggest))
-        );
+        assert_eq!(reparsed.notice.get(ConfigKey::NoticeMdProject), None);
     }
 
     #[test]
-    fn a_project_entry_is_found_under_any_spelling_of_its_uuid() {
-        let text = format!(
-            "[projects.{}.claude_md]\nproject_file_suggestion = \"decline\"\n",
-            PROJECT_UUID.to_uppercase()
-        );
-        let cfg = UserConfig::from_toml(&text).unwrap();
+    fn user_config_rejects_an_unknown_notice_key_and_an_invalid_value() {
+        assert!(UserConfig::from_toml("[notice.md]\nusr = \"off\"\n").is_err());
+        assert!(UserConfig::from_toml("[notice.md]\nuser = \"maybe\"\n").is_err());
+    }
+
+    #[test]
+    fn user_config_keeps_ignoring_an_unknown_root_key() {
+        let cfg = UserConfig::from_toml("rogue = 1\n[notice.md]\nuser = \"off\"\n").unwrap();
         assert_eq!(
-            cfg.project_claude_md(project_uuid()).unwrap().suggestion(),
-            Ok(Some(ClaudeMdSuggestion::Decline))
+            cfg.notice.get(ConfigKey::NoticeMdUser),
+            Some(NoticeValue::Off)
         );
-    }
-
-    #[test]
-    fn setting_inherit_at_user_project_removes_the_emptied_project_entry() {
-        let mut cfg = UserConfig::default();
-        cfg.set_project_claude_md_suggestion(project_uuid(), Some(ClaudeMdSuggestion::Decline));
-        assert!(cfg.project_claude_md(project_uuid()).is_some());
-
-        let outcome = cfg.set_project_claude_md_suggestion(project_uuid(), None);
-
-        assert!(outcome.changed);
-        assert!(cfg.projects.is_empty());
-        assert!(cfg.project_claude_md(project_uuid()).is_none());
-    }
-
-    #[test]
-    fn setters_report_changed_false_when_the_value_is_already_there() {
-        let mut cfg = UserConfig::default();
-        assert!(
-            cfg.set_claude_md_suggestion(Some(ClaudeMdSuggestion::Decline))
-                .changed
-        );
-        assert!(
-            !cfg.set_claude_md_suggestion(Some(ClaudeMdSuggestion::Decline))
-                .changed
-        );
-        assert!(
-            !cfg.set_project_claude_md_suggestion(project_uuid(), None)
-                .changed
-        );
-        assert!(
-            cfg.projects.is_empty(),
-            "inherit on a missing entry adds none"
-        );
-    }
-
-    #[test]
-    fn user_config_with_an_invalid_claude_md_value_still_loads_sync_author_and_limits() {
-        let text = r#"
-[sync]
-server_url = "https://mmcp.example.com"
-
-[author]
-name = "Alice"
-
-[limits]
-max_auto_slug_length = 80
-
-[claude_md]
-project_file_suggestion = "maybe"
-"#;
-        let (cfg, diagnostics) = UserConfig::from_toml_with_diagnostics(text)
-            .expect("an invalid claude_md value never fails the user config");
-
-        assert_eq!(
-            cfg.sync.server_url.as_deref(),
-            Some("https://mmcp.example.com")
-        );
-        assert_eq!(cfg.author.as_ref().unwrap().name.as_deref(), Some("Alice"));
-        assert_eq!(cfg.limits.as_ref().unwrap().max_auto_slug_length, Some(80));
-        assert_eq!(
-            diagnostics,
-            vec![ConfigDiagnostic::ClaudeMdSettingInvalid {
-                table_path: "claude_md".to_string(),
-                error: crate::config::ClaudeMdSettingError::InvalidValue {
-                    value: "\"maybe\"".to_string()
-                },
-            }]
-        );
-    }
-
-    #[test]
-    fn user_config_unknown_key_anywhere_is_a_typed_warning_with_its_key_path() {
-        let text = "[author]\nname = \"Bob\"\nnick = \"b\"\n\n[rogue]\nx = 1\n";
-        let (_cfg, diagnostics) = UserConfig::from_toml_with_diagnostics(text).unwrap();
-        assert_eq!(
-            diagnostics,
-            vec![
-                ConfigDiagnostic::UnknownKey {
-                    key_path: "author.nick".to_string()
-                },
-                ConfigDiagnostic::UnknownKey {
-                    key_path: "rogue".to_string()
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn misspelt_claude_md_table_name_is_a_typed_warning_naming_it() {
-        let text = format!(
-            "[claude-md]\nproject_file_suggestion = \"decline\"\n\n[projects.{PROJECT_UUID}.claud_md]\nproject_file_suggestion = \"decline\"\n"
-        );
-        let (cfg, diagnostics) = UserConfig::from_toml_with_diagnostics(&text).unwrap();
-        assert_eq!(
-            diagnostics,
-            vec![
-                ConfigDiagnostic::UnknownKey {
-                    key_path: "claude-md".to_string()
-                },
-                ConfigDiagnostic::UnknownKey {
-                    key_path: format!("projects.{PROJECT_UUID}.claud_md")
-                },
-            ]
-        );
-        assert!(cfg.claude_md.is_empty());
-    }
-
-    #[test]
-    fn a_project_entry_not_keyed_by_a_uuid_is_a_typed_warning() {
-        let text = "[projects.my-project.claude_md]\nproject_file_suggestion = \"decline\"\n";
-        let (_cfg, diagnostics) = UserConfig::from_toml_with_diagnostics(text).unwrap();
-        assert_eq!(
-            diagnostics,
-            vec![ConfigDiagnostic::ProjectKeyNotUuid {
-                key: "my-project".to_string()
-            }]
-        );
-    }
-
-    #[test]
-    fn unknown_key_inside_a_claude_md_table_is_reported_with_the_table_path() {
-        let text = format!(
-            "[projects.{PROJECT_UUID}.claude_md]\nproject_file_suggestion = \"decline\"\nfuture = true\n"
-        );
-        let (_cfg, diagnostics) = UserConfig::from_toml_with_diagnostics(&text).unwrap();
-        assert_eq!(
-            diagnostics,
-            vec![ConfigDiagnostic::UnknownKey {
-                key_path: format!("projects.{PROJECT_UUID}.claude_md.future")
-            }]
-        );
-    }
-
-    #[test]
-    fn invalid_claude_md_table_raw_text_survives_an_unrelated_save() {
-        let text = format!(
-            "[author]\nname = \"Bob\"\n\n[claude_md]\nproject_file_suggestion = \"maybe\"\n\n[projects.{PROJECT_UUID}.claude_md]\nproject_file_suggestion = 7\n"
-        );
-        let mut cfg = UserConfig::from_toml(&text).unwrap();
-        cfg.author.as_mut().unwrap().name = Some("Alice".to_string());
-
-        let rendered = cfg.to_toml().unwrap();
-        let (reparsed, diagnostics) = UserConfig::from_toml_with_diagnostics(&rendered).unwrap();
-
-        assert_eq!(cfg.claude_md, reparsed.claude_md);
-        assert_eq!(cfg.projects, reparsed.projects);
-        assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
-        assert!(rendered.contains("maybe"), "{rendered}");
-        assert!(rendered.contains("= 7"), "{rendered}");
     }
 
     /// Same uniform `SyncConfig` surface as `ProjectConfig`:

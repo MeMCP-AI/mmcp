@@ -15,7 +15,6 @@ use std::path::{Path, PathBuf};
 
 use mmcp_core::config::UserConfig;
 
-use crate::config::LoadedConfig;
 use crate::error::{FileOperation, StoreError};
 
 /// Subdirectory names within the mmcp home.
@@ -95,30 +94,14 @@ impl MmcpHome {
 
     /// Load the user-level config.
     /// Returns `UserConfig::default()` if the file does not exist.
-    /// Logs every tolerated mistake as a warning; [`MmcpHome::load_user_config_with_diagnostics`] returns them instead.
     pub fn load_user_config(&self) -> Result<UserConfig, StoreError> {
-        self.load_user_config_with_diagnostics()
-            .map(LoadedConfig::into_config_logging_diagnostics)
-    }
-
-    /// Load the user-level config with the diagnostics of the load.
-    /// Returns `UserConfig::default()` with no diagnostic if the file does not exist.
-    pub fn load_user_config_with_diagnostics(
-        &self,
-    ) -> Result<LoadedConfig<UserConfig>, StoreError> {
         let path = self.user_config_path();
         if !path.exists() {
-            return Ok(LoadedConfig::located(
-                UserConfig::default(),
-                &path,
-                Vec::new(),
-            ));
+            return Ok(UserConfig::default());
         }
         let text = std::fs::read_to_string(&path)
             .map_err(|source| StoreError::io(path.clone(), FileOperation::Read, source))?;
-        let (config, diagnostics) = UserConfig::from_toml_with_diagnostics(&text)
-            .map_err(|error| crate::config::attach_path(path.clone(), error))?;
-        Ok(LoadedConfig::located(config, &path, diagnostics))
+        UserConfig::from_toml(&text).map_err(|error| crate::config::attach_path(path, error))
     }
 
     /// Persist the user-level config.
@@ -245,59 +228,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn load_user_config_with_diagnostics_attaches_the_file_path_to_each_diagnostic() {
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let home = MmcpHome::from_root(tmp.path());
-        std::fs::write(
-            home.user_config_path(),
-            "[author]\nname = \"Bob\"\nnick = \"b\"\n\n[claude_md]\nproject_file_suggestion = \"maybe\"\n",
-        )
-        .expect("write user config");
-
-        let loaded = home
-            .load_user_config_with_diagnostics()
-            .expect("tolerated mistakes never fail the load");
-
-        assert_eq!(loaded.config.author.unwrap().name.as_deref(), Some("Bob"));
-        let paths: Vec<&Path> = loaded
-            .diagnostics
-            .iter()
-            .map(|located| located.path.as_path())
-            .collect();
-        assert_eq!(
-            paths,
-            vec![home.user_config_path(), home.user_config_path()]
-        );
-        assert_eq!(loaded.diagnostics.len(), 2);
-    }
-
-    #[test]
-    fn load_user_config_returns_the_config_of_the_diagnostics_form() {
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let home = MmcpHome::from_root(tmp.path());
-        std::fs::write(
-            home.user_config_path(),
-            "[author]\nname = \"Bob\"\nnick = \"b\"\n",
-        )
-        .expect("write user config");
-
-        let config = home.load_user_config().expect("load");
-
-        assert_eq!(config.author.unwrap().name.as_deref(), Some("Bob"));
-    }
-
-    #[test]
-    fn load_user_config_with_diagnostics_of_a_missing_file_is_the_default_without_diagnostics() {
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let home = MmcpHome::from_root(tmp.path());
-
-        let loaded = home.load_user_config_with_diagnostics().expect("load");
-
-        assert!(loaded.diagnostics.is_empty());
-        assert!(loaded.config.claude_md.is_empty());
-    }
-
     /// Falsification target: `load_user_config` must surface a
     /// genuinely unreadable config path as `StoreError::Io` carrying
     /// the real path and the real `std::io::Error`, not a stringified
@@ -347,8 +277,6 @@ mod tests {
             author: None,
             defaults: None,
             limits: None,
-            claude_md: Default::default(),
-            projects: Default::default(),
         }
     }
 
