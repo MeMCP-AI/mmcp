@@ -13310,6 +13310,7 @@ mod tests {
             sync: Default::default(),
             project_remote_only: false,
             subscriptions: Default::default(),
+            claude_md: Default::default(),
         };
         mmcp_store::config::save(&project_root, &cfg).expect("seed config");
 

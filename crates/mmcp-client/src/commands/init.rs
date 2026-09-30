@@ -311,6 +311,7 @@ fn load_or_mint_config(
         sync: Default::default(),
         project_remote_only: false,
         subscriptions: Default::default(),
+        claude_md: Default::default(),
     };
     Ok((cfg, cwd.to_path_buf(), true))
 }
@@ -488,6 +489,7 @@ mod tests {
             sync: Default::default(),
             project_remote_only: false,
             subscriptions: Default::default(),
+            claude_md: Default::default(),
         };
         save(&project_root, &cfg).expect("seed config");
 
@@ -521,6 +523,7 @@ mod tests {
             sync: Default::default(),
             project_remote_only: false,
             subscriptions: Default::default(),
+            claude_md: Default::default(),
         };
         save(&project_root, &cfg).expect("seed config");
 
@@ -546,6 +549,7 @@ mod tests {
             sync: Default::default(),
             project_remote_only: false,
             subscriptions: Default::default(),
+            claude_md: Default::default(),
         };
         save(&project_root, &cfg).expect("seed config");
 

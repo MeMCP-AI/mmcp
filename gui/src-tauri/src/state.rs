@@ -422,6 +422,7 @@ mod tests {
             },
             project_remote_only: false,
             subscriptions: mmcp_core::config::SubscriptionsConfig::default(),
+            claude_md: Default::default(),
         };
         project_config::save(project_tmp.path(), &project_cfg).expect("save project config");
 

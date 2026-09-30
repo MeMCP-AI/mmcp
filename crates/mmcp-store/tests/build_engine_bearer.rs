@@ -49,6 +49,7 @@ fn project_config_with_legacy_server_url(server_uri: &str) -> ProjectConfig {
         },
         project_remote_only: false,
         subscriptions: mmcp_core::config::SubscriptionsConfig::default(),
+        claude_md: Default::default(),
     }
 }
 
@@ -189,6 +190,7 @@ async fn build_engine_resolves_a_direct_git_remotes_group_against_the_local_mirr
         },
         project_remote_only: false,
         subscriptions: mmcp_core::config::SubscriptionsConfig::default(),
+        claude_md: Default::default(),
     };
     let effective =
         resolve_effective_remotes(&UserConfig::default(), &project).expect("resolve remotes");
