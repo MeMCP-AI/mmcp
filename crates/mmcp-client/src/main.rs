@@ -19,7 +19,7 @@ mod state;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use mmcp_core::config::ClaudeMdLaunchOverride;
+use mmcp_core::config::NoticeLaunch;
 
 #[derive(Parser)]
 #[command(name = "mmcp", version, about = "mmcp memory client")]
@@ -260,7 +260,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Serve { debug, mode } => {
-            commands::serve::run(debug, mode, ClaudeMdLaunchOverride::default()).await?;
+            commands::serve::run(debug, mode, NoticeLaunch::default()).await?;
         }
         Command::Check { group } => commands::health::run_check(group).await?,
         Command::Diagnose { group } => commands::health::run_diagnose(group).await?,

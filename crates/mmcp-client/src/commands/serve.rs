@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use mmcp_core::config::{ClaudeMdLaunchOverride, is_group_adopted};
+use mmcp_core::config::{NoticeLaunch, is_group_adopted};
 use mmcp_core::conventions::{SlugRecursion, slug_matches_filter};
 use mmcp_core::id::GroupId;
 use mmcp_core::memory::{MemoryFile, MemoryFrontmatter};
@@ -66,7 +66,7 @@ use mmcp_store::sessions::SessionStore;
 pub async fn run(
     debug_mode: bool,
     serve_mode: ServeMode,
-    claude_md_launch: ClaudeMdLaunchOverride,
+    notice_launch: NoticeLaunch,
 ) -> Result<()> {
     if debug_mode {
         tracing::info!(
@@ -79,7 +79,7 @@ pub async fn run(
             serve_mode.as_label(),
         );
     }
-    let state = ClientState::initialize(debug_mode, claude_md_launch).await?;
+    let state = ClientState::initialize(debug_mode, notice_launch).await?;
     let server = McpServer::new(state, serve_mode);
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
@@ -104,9 +104,9 @@ struct ClientStateInner {
     author: ResolvedAuthor,
     /// User-level CLAUDE.md checked by `bootstrap_context`; `None` when the user home is unresolved.
     user_claude_md: Option<PathBuf>,
-    /// CLAUDE.md suggestion values the process was launched with, the two launch layers of the resolution.
+    /// Notice key values the process was launched with, the flag and variable layers of each key's resolution.
     #[expect(dead_code, reason = "no tool reads it in this revision")]
-    claude_md_launch: ClaudeMdLaunchOverride,
+    notice_launch: NoticeLaunch,
     /// Debug mode flag.
     /// When true, raw git access tools are enabled.
     /// Can be toggled at runtime via the `debug_toggle` tool.
@@ -117,7 +117,7 @@ struct ClientStateInner {
 struct ClientState(Arc<ClientStateInner>);
 
 impl ClientState {
-    async fn initialize(debug: bool, claude_md_launch: ClaudeMdLaunchOverride) -> Result<Self> {
+    async fn initialize(debug: bool, notice_launch: NoticeLaunch) -> Result<Self> {
         let home = MmcpHome::discover()?;
         let project_config_path = find_current_project_config();
         let user_claude_md = match crate::commands::claude::user_claude_md_path() {
@@ -131,7 +131,7 @@ impl ClientState {
             home,
             project_config_path,
             user_claude_md,
-            claude_md_launch,
+            notice_launch,
             debug,
         )
         .await
@@ -145,7 +145,7 @@ impl ClientState {
         home: MmcpHome,
         project_config_path: Option<PathBuf>,
         user_claude_md: Option<PathBuf>,
-        claude_md_launch: ClaudeMdLaunchOverride,
+        notice_launch: NoticeLaunch,
         debug: bool,
     ) -> Result<Self> {
         std::fs::create_dir_all(home.root())
@@ -175,7 +175,7 @@ impl ClientState {
             home,
             author,
             user_claude_md,
-            claude_md_launch,
+            notice_launch,
             debug: Arc::new(AtomicBool::new(debug)),
         })))
     }
@@ -8582,15 +8582,9 @@ mod tests {
             .await;
         let tmp = TempDir::new().expect("tempdir");
         let home = MmcpHome::from_root(tmp.path().join("mmcp-home"));
-        let state = ClientState::initialize_from(
-            home,
-            None,
-            None,
-            ClaudeMdLaunchOverride::default(),
-            false,
-        )
-        .await
-        .expect("initialize_from");
+        let state = ClientState::initialize_from(home, None, None, NoticeLaunch::default(), false)
+            .await
+            .expect("initialize_from");
         (state, tmp)
     }
 
@@ -13408,7 +13402,7 @@ mod tests {
             sync: Default::default(),
             project_remote_only: false,
             subscriptions: Default::default(),
-            claude_md: Default::default(),
+            notice: Default::default(),
         };
         mmcp_store::config::save(&project_root, &cfg).expect("seed config");
 
