@@ -278,12 +278,27 @@ export interface UserLimitsConfig {
   max_handle_length: number | null;
 }
 
+/** A `claude_md` table as the backend holds it: the raw TOML value, so a
+ * key this version does not know and an invalid table both survive a save.
+ * Mirrors `mmcp_core::config::ClaudeMdTable`; absent when the table is empty. */
+export type ClaudeMdTable = Record<string, unknown>;
+
+/** Mirrors `mmcp_core::config::UserProjectConfig`, the user's own
+ * settings for one project. */
+export interface UserProjectConfig {
+  claude_md?: ClaudeMdTable;
+}
+
 export interface UserConfig {
   /** Absent when the user declares no `[sync]` table at all. */
   sync?: SyncConfig;
   author: UserAuthorConfig | null;
   defaults: UserDefaultsConfig | null;
   limits: UserLimitsConfig | null;
+  /** The user's CLAUDE.md suggestion setting for every project. */
+  claude_md?: ClaudeMdTable;
+  /** The user's own per-project settings, keyed by the project UUID. */
+  projects?: Record<string, UserProjectConfig>;
 }
 
 export interface ResolvedAuthor {
@@ -316,6 +331,8 @@ export interface ProjectConfig {
    * user-level remotes are not inherited. */
   project_remote_only: boolean;
   subscriptions: ProjectSubscriptionsConfig;
+  /** CLAUDE.md suggestion setting shared with every contributor. */
+  claude_md?: ClaudeMdTable;
 }
 
 export interface LoadedProjectConfig {
