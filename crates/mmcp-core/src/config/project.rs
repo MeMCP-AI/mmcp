@@ -374,6 +374,17 @@ tags = ["git", "testing"]
     }
 
     #[test]
+    fn claude_md_unknown_key_survives_a_re_render() {
+        let source = format!("{MINIMAL_SOURCE}[claude_md]\nfuture = true\n");
+        let cfg = ProjectConfig::from_toml(&source).expect("parse");
+
+        let rendered = cfg.to_toml().expect("render");
+        let reparsed = ProjectConfig::from_toml(&rendered).expect("reparse");
+
+        assert_eq!(reparsed.claude_md.unknown_keys(), vec!["future"]);
+    }
+
+    #[test]
     fn invalid_project_claude_md_table_raw_text_survives_an_unrelated_save() {
         let source = format!("{MINIMAL_SOURCE}[claude_md]\nproject_file_suggestion = \"maybe\"\n");
         let mut cfg = ProjectConfig::from_toml(&source).expect("parse");
