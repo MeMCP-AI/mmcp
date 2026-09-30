@@ -2,21 +2,15 @@
 //!
 //! `.mmcp.toml` at a project root describes the project's stable UUID, optional slug, the sync server it talks to, and the group loading preferences.
 //! This module owns the walk-up discovery (`find_project_root`) and the root resolution (`resolve_project_root`).
-//! It also owns the TOML read (`load`) and the TOML write (`save`).
+//! It also owns the TOML read (`load`) and the TOML write (`save`), and the same pair for the personal `.mmcp.local.toml` (`load_local`, `save_local`).
 //! The typed `ProjectConfig` struct itself lives in `mmcp-core::config::project`.
 //! This module is the I/O layer.
 
 use std::path::{Path, PathBuf};
 
-use mmcp_core::config::{ConfigError, ProjectConfig};
+use mmcp_core::config::{ConfigError, LocalConfig, ProjectConfig};
 
 use crate::error::{FileOperation, StoreError};
-
-mod loaded_config;
-mod located_config_diagnostic;
-
-pub use loaded_config::LoadedConfig;
-pub use located_config_diagnostic::LocatedConfigDiagnostic;
 
 /// Map a `ProjectConfig`/`UserConfig` TOML round-trip failure onto
 /// the caller's own `path`. The resulting `StoreError` names the
@@ -46,6 +40,9 @@ pub(crate) fn attach_path(path: PathBuf, error: ConfigError) -> StoreError {
 /// Project-level manifest file name.
 /// Same as the group repo manifest, a single `.mmcp.toml` convention everywhere.
 pub use mmcp_core::manifest::MANIFEST_FILENAME as PROJECT_MANIFEST;
+
+/// Local configuration file name, personal to the user and never committed.
+pub use mmcp_core::config::LOCAL_CONFIG_FILENAME as LOCAL_MANIFEST;
 
 /// Locate the project root by walking up from `start` until a `.mmcp.toml` file is found.
 /// Returns `None` when no ancestor contains the manifest.
@@ -83,20 +80,49 @@ pub fn config_path_for(root: &Path) -> PathBuf {
     root.join(PROJECT_MANIFEST)
 }
 
-/// Load the `ProjectConfig` from `root/.mmcp.toml`, logging every tolerated mistake as a warning.
-/// [`load_with_diagnostics`] returns them instead.
+/// Load the `ProjectConfig` from `root/.mmcp.toml`.
 pub fn load(root: &Path) -> Result<ProjectConfig, StoreError> {
-    load_with_diagnostics(root).map(LoadedConfig::into_config_logging_diagnostics)
-}
-
-/// Load the `ProjectConfig` from `root/.mmcp.toml` with the diagnostics of the load.
-pub fn load_with_diagnostics(root: &Path) -> Result<LoadedConfig<ProjectConfig>, StoreError> {
     let path = config_path_for(root);
     let text = std::fs::read_to_string(&path)
         .map_err(|source| StoreError::io(path.clone(), FileOperation::Read, source))?;
-    let (config, diagnostics) = ProjectConfig::from_toml_with_diagnostics(&text)
+    ProjectConfig::from_toml(&text).map_err(|error| attach_path(path, error))
+}
+
+/// Path of the local configuration file of the project at `root`.
+/// `.mmcp.local.toml` at `root`, except inside a linked git worktree, where it is the same relative path under the main checkout's root, so one local setting covers every worktree of the checkout.
+///
+/// # Errors
+/// [`StoreError::Git`] when the checkout cannot be inspected.
+pub fn local_config_path(root: &Path) -> Result<PathBuf, StoreError> {
+    let base =
+        mmcp_git::checkout::main_checkout_counterpart(root)?.unwrap_or_else(|| root.to_path_buf());
+    Ok(base.join(LOCAL_MANIFEST))
+}
+
+/// Load the `LocalConfig` of the project at `root`; a missing file is an empty configuration.
+/// A `.mmcp.local.toml` without a `.mmcp.toml` beside the project root is never read: the caller resolves `root` from `.mmcp.toml` first.
+pub fn load_local(root: &Path) -> Result<LocalConfig, StoreError> {
+    let path = local_config_path(root)?;
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(LocalConfig::default());
+        }
+        Err(source) => return Err(StoreError::io(path, FileOperation::Read, source)),
+    };
+    LocalConfig::from_toml(&text).map_err(|error| attach_path(path, error))
+}
+
+/// Render `config` into the local configuration file of the project at `root`, overwriting it.
+/// Returns the path written.
+pub fn save_local(root: &Path, config: &LocalConfig) -> Result<PathBuf, StoreError> {
+    let path = local_config_path(root)?;
+    let text = config
+        .to_toml()
         .map_err(|error| attach_path(path.clone(), error))?;
-    Ok(LoadedConfig::located(config, &path, diagnostics))
+    std::fs::write(&path, text)
+        .map_err(|source| StoreError::io(path.clone(), FileOperation::Write, source))?;
+    Ok(path)
 }
 
 /// Render `config` into the project's `.mmcp.toml`.
@@ -175,38 +201,104 @@ mod tests {
     }
 
     #[test]
-    fn load_with_diagnostics_attaches_the_manifest_path_and_keeps_the_project_uuid() {
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let root = tmp.path();
-        std::fs::write(
-            config_path_for(root),
-            "project_uuid = \"018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91\"\n\n[claude_md]\nproject_file_suggestion = \"maybe\"\n",
-        )
-        .expect("write manifest");
+    fn local_path_is_the_project_root_outside_git() {
+        let project = tempfile::TempDir::new().expect("tempdir");
 
-        let loaded = load_with_diagnostics(root).expect("a claude_md mistake never fails the load");
+        let path = local_config_path(project.path()).expect("local path");
 
-        assert_eq!(
-            loaded.config.project_uuid.to_string(),
-            "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
-        );
-        assert_eq!(loaded.diagnostics.len(), 1);
-        assert_eq!(loaded.diagnostics[0].path, config_path_for(root));
+        assert_eq!(path, project.path().join(".mmcp.local.toml"));
     }
 
     #[test]
-    fn load_returns_the_config_of_the_diagnostics_form() {
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let root = tmp.path();
-        std::fs::write(
-            config_path_for(root),
-            "project_uuid = \"018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91\"\n\n[claude_md]\nfuture = true\n",
-        )
-        .expect("write manifest");
+    fn local_path_in_a_main_checkout_is_the_project_root() {
+        let fixture = mmcp_git::checkout::LinkedWorktreeFixture::new().expect("fixture");
+        let project = fixture.main.join("crates").join("inner");
+        std::fs::create_dir_all(&project).expect("create project dir");
 
-        let config = load(root).expect("load");
+        let path = local_config_path(&project).expect("local path");
 
-        assert_eq!(config.claude_md.unknown_keys(), vec!["future"]);
+        assert_eq!(path, project.join(".mmcp.local.toml"));
+    }
+
+    #[test]
+    fn local_path_in_a_linked_worktree_is_the_same_relative_path_under_the_main_checkout() {
+        let fixture = mmcp_git::checkout::LinkedWorktreeFixture::new().expect("fixture");
+        let project = fixture.linked.join("crates").join("inner");
+        std::fs::create_dir_all(&project).expect("create project dir");
+
+        let path = local_config_path(&project).expect("local path");
+
+        assert_eq!(
+            path,
+            fixture
+                .main
+                .join("crates")
+                .join("inner")
+                .join(".mmcp.local.toml")
+        );
+    }
+
+    #[test]
+    fn load_local_of_a_missing_file_is_empty() {
+        let project = tempfile::TempDir::new().expect("tempdir");
+
+        let config = load_local(project.path()).expect("load");
+
+        assert!(config.is_empty());
+    }
+
+    #[test]
+    fn save_local_then_load_local_round_trips() {
+        let project = tempfile::TempDir::new().expect("tempdir");
+        let mut config = LocalConfig::default();
+        config.notice.set(
+            mmcp_core::config::ConfigKey::NoticeMdProject,
+            mmcp_core::config::NoticeValue::Off,
+        );
+
+        let written = save_local(project.path(), &config).expect("save");
+        let reloaded = load_local(project.path()).expect("load");
+
+        assert_eq!(written, project.path().join(".mmcp.local.toml"));
+        assert_eq!(reloaded, config);
+    }
+
+    #[test]
+    fn a_local_file_written_in_a_linked_worktree_lands_in_the_main_checkout_and_loads_back() {
+        let fixture = mmcp_git::checkout::LinkedWorktreeFixture::new().expect("fixture");
+        let mut config = LocalConfig::default();
+        config.notice.set(
+            mmcp_core::config::ConfigKey::NoticeMdUser,
+            mmcp_core::config::NoticeValue::Off,
+        );
+
+        save_local(&fixture.linked, &config).expect("save");
+
+        assert!(fixture.main.join(".mmcp.local.toml").exists());
+        assert!(!fixture.linked.join(".mmcp.local.toml").exists());
+        assert_eq!(load_local(&fixture.linked).expect("load"), config);
+    }
+
+    #[test]
+    fn a_malformed_local_file_is_a_typed_parse_error_naming_the_path() {
+        let project = tempfile::TempDir::new().expect("tempdir");
+        let path = project.path().join(".mmcp.local.toml");
+        std::fs::write(&path, "[notice.md]\nprojet = \"off\"\n").expect("write");
+
+        let err = load_local(project.path()).expect_err("an unknown key must not load");
+
+        match &err {
+            StoreError::TomlParse { path: failing, .. } => assert_eq!(failing, &path),
+            other => panic!("expected StoreError::TomlParse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_local_file_without_mmcp_toml_does_not_make_a_project_root() {
+        let project = tempfile::TempDir::new().expect("tempdir");
+        std::fs::write(project.path().join(".mmcp.local.toml"), "").expect("write local file");
+
+        assert_eq!(find_project_root(project.path()), None);
     }
 
     /// A malformed `.mmcp.toml` surfaces as `StoreError::TomlParse` naming the failing path.
@@ -322,7 +414,7 @@ default = true
             },
             project_remote_only: false,
             subscriptions: mmcp_core::config::SubscriptionsConfig::default(),
-            claude_md: Default::default(),
+            notice: Default::default(),
         }
     }
 
