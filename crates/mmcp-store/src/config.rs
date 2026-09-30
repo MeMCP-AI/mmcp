@@ -12,6 +12,12 @@ use mmcp_core::config::{ConfigError, ProjectConfig};
 
 use crate::error::{FileOperation, StoreError};
 
+mod loaded_config;
+mod located_config_diagnostic;
+
+pub use loaded_config::LoadedConfig;
+pub use located_config_diagnostic::LocatedConfigDiagnostic;
+
 /// Map a `ProjectConfig`/`UserConfig` TOML round-trip failure onto
 /// the caller's own `path`. The resulting `StoreError` names the
 /// file that failed, instead of losing it behind `ConfigError`'s
@@ -77,12 +83,20 @@ pub fn config_path_for(root: &Path) -> PathBuf {
     root.join(PROJECT_MANIFEST)
 }
 
-/// Load the `ProjectConfig` from `root/.mmcp.toml`.
+/// Load the `ProjectConfig` from `root/.mmcp.toml`, logging every tolerated mistake as a warning.
+/// [`load_with_diagnostics`] returns them instead.
 pub fn load(root: &Path) -> Result<ProjectConfig, StoreError> {
+    load_with_diagnostics(root).map(LoadedConfig::into_config_logging_diagnostics)
+}
+
+/// Load the `ProjectConfig` from `root/.mmcp.toml` with the diagnostics of the load.
+pub fn load_with_diagnostics(root: &Path) -> Result<LoadedConfig<ProjectConfig>, StoreError> {
     let path = config_path_for(root);
     let text = std::fs::read_to_string(&path)
         .map_err(|source| StoreError::io(path.clone(), FileOperation::Read, source))?;
-    ProjectConfig::from_toml(&text).map_err(|error| attach_path(path, error))
+    let (config, diagnostics) = ProjectConfig::from_toml_with_diagnostics(&text)
+        .map_err(|error| attach_path(path.clone(), error))?;
+    Ok(LoadedConfig::located(config, &path, diagnostics))
 }
 
 /// Render `config` into the project's `.mmcp.toml`.
@@ -158,6 +172,41 @@ mod tests {
         let err = resolve_project_root(None, None).expect_err("nothing to resolve");
 
         assert!(matches!(err, StoreError::ProjectRootNotFound));
+    }
+
+    #[test]
+    fn load_with_diagnostics_attaches_the_manifest_path_and_keeps_the_project_uuid() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let root = tmp.path();
+        std::fs::write(
+            config_path_for(root),
+            "project_uuid = \"018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91\"\n\n[claude_md]\nproject_file_suggestion = \"maybe\"\n",
+        )
+        .expect("write manifest");
+
+        let loaded = load_with_diagnostics(root).expect("a claude_md mistake never fails the load");
+
+        assert_eq!(
+            loaded.config.project_uuid.to_string(),
+            "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
+        );
+        assert_eq!(loaded.diagnostics.len(), 1);
+        assert_eq!(loaded.diagnostics[0].path, config_path_for(root));
+    }
+
+    #[test]
+    fn load_returns_the_config_of_the_diagnostics_form() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let root = tmp.path();
+        std::fs::write(
+            config_path_for(root),
+            "project_uuid = \"018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91\"\n\n[claude_md]\nfuture = true\n",
+        )
+        .expect("write manifest");
+
+        let config = load(root).expect("load");
+
+        assert_eq!(config.claude_md.unknown_keys(), vec!["future"]);
     }
 
     /// A malformed `.mmcp.toml` surfaces as `StoreError::TomlParse` naming the failing path.
@@ -273,6 +322,7 @@ default = true
             },
             project_remote_only: false,
             subscriptions: mmcp_core::config::SubscriptionsConfig::default(),
+            claude_md: Default::default(),
         }
     }
 
