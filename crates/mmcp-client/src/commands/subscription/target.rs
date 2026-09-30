@@ -20,9 +20,8 @@ use clap::ValueEnum;
 use mmcp_core::config::ProjectConfig;
 use mmcp_core::id::GroupId;
 use mmcp_git::{NativeBackend, Rev};
-use mmcp_store::GroupIndex;
-use mmcp_store::config::find_project_root;
 use mmcp_store::memory::{list_all_memory_files, resolve_group};
+use mmcp_store::{GroupIndex, StoreError};
 use rmcp::schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -83,6 +82,8 @@ impl SubscriptionAction {
 pub enum SubscribeError {
     #[error("not in an mmcp project; no .mmcp.toml found at or above the path")]
     NotInProject,
+    #[error("project root resolution failed: {0}")]
+    ProjectRootResolution(#[source] StoreError),
     #[error("memory value must be `<group_uuid>:<slug>`; got: {0}")]
     MalformedMemoryValue(String),
     #[error("memory group uuid is not a valid UUID: {0}")]
@@ -171,21 +172,16 @@ pub async fn validate_subscription_target(
     }
 }
 
-/// Resolve the project root from an optional override or the cwd
-/// walk. Mirrors the discovery used by every other project-scoped
-/// command.
+/// Resolve the project root through the store's shared resolution,
+/// reporting a missing root as [`SubscribeError::NotInProject`].
 pub fn resolve_project_root(
     explicit: Option<&Path>,
     cwd: Option<&Path>,
 ) -> Result<PathBuf, SubscribeError> {
-    if let Some(path) = explicit {
-        if path.join(mmcp_store::config::PROJECT_MANIFEST).exists() {
-            return Ok(path.to_path_buf());
-        }
-        return Err(SubscribeError::NotInProject);
-    }
-    let cwd = cwd.ok_or(SubscribeError::NotInProject)?;
-    find_project_root(cwd).ok_or(SubscribeError::NotInProject)
+    mmcp_store::config::resolve_project_root(explicit, cwd).map_err(|error| match error {
+        StoreError::ProjectRootNotFound => SubscribeError::NotInProject,
+        other => SubscribeError::ProjectRootResolution(other),
+    })
 }
 
 /// MCP wire form shared by `subscribe` and `unsubscribe`.

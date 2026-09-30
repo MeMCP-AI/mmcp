@@ -2,8 +2,8 @@
 //!
 //! `.mmcp.toml` at a project root describes the project's stable UUID, optional slug,
 //! the sync server it talks to, and the group loading preferences.
-//! This module owns the walk-up discovery (`find_project_root`), the TOML read (`load`),
-//! and the TOML write (`save`).
+//! This module owns the walk-up discovery (`find_project_root`), the explicit-or-discovered root
+//! resolution (`resolve_project_root`), the TOML read (`load`), and the TOML write (`save`).
 //! The typed `ProjectConfig` struct itself lives in `mmcp-core::config::project`;
 //! this module is the I/O layer.
 
@@ -55,6 +55,23 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Resolve the project root from an optional explicit root or the cwd walk.
+/// An explicit root must itself carry the manifest; without one, `cwd` is walked upward.
+/// Fails with [`StoreError::ProjectRootNotFound`] when neither yields a root.
+pub fn resolve_project_root(
+    explicit: Option<&Path>,
+    cwd: Option<&Path>,
+) -> Result<PathBuf, StoreError> {
+    if let Some(path) = explicit {
+        if config_path_for(path).exists() {
+            return Ok(path.to_path_buf());
+        }
+        return Err(StoreError::ProjectRootNotFound);
+    }
+    let cwd = cwd.ok_or(StoreError::ProjectRootNotFound)?;
+    find_project_root(cwd).ok_or(StoreError::ProjectRootNotFound)
+}
+
 /// Full path to the manifest file inside a project root.
 #[must_use]
 pub fn config_path_for(root: &Path) -> PathBuf {
@@ -96,6 +113,53 @@ pub fn save(root: &Path, config: &ProjectConfig) -> Result<(), StoreError> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    /// An explicit root carrying the manifest resolves to itself, whatever the cwd.
+    #[test]
+    fn resolve_project_root_accepts_an_explicit_root_with_manifest() {
+        let project = tempfile::TempDir::new().expect("tempdir");
+        let elsewhere = tempfile::TempDir::new().expect("tempdir");
+        std::fs::write(config_path_for(project.path()), "").expect("write manifest");
+
+        let resolved = resolve_project_root(Some(project.path()), Some(elsewhere.path()))
+            .expect("explicit root with a manifest must resolve");
+
+        assert_eq!(resolved, project.path());
+    }
+
+    /// An explicit root without the manifest is refused even when the cwd sits inside a project.
+    #[test]
+    fn resolve_project_root_rejects_an_explicit_root_without_manifest() {
+        let project = tempfile::TempDir::new().expect("tempdir");
+        let bare = tempfile::TempDir::new().expect("tempdir");
+        std::fs::write(config_path_for(project.path()), "").expect("write manifest");
+
+        let err = resolve_project_root(Some(bare.path()), Some(project.path()))
+            .expect_err("explicit root without a manifest must not resolve");
+
+        assert!(matches!(err, StoreError::ProjectRootNotFound));
+    }
+
+    /// Without an explicit root, the cwd walk finds the nearest ancestor carrying the manifest.
+    #[test]
+    fn resolve_project_root_walks_up_from_cwd() {
+        let project = tempfile::TempDir::new().expect("tempdir");
+        std::fs::write(config_path_for(project.path()), "").expect("write manifest");
+        let nested = project.path().join("crates").join("inner");
+        std::fs::create_dir_all(&nested).expect("create nested dir");
+
+        let resolved = resolve_project_root(None, Some(&nested)).expect("cwd walk must resolve");
+
+        assert_eq!(resolved, project.path());
+    }
+
+    /// With neither an explicit root nor a cwd there is nothing to resolve.
+    #[test]
+    fn resolve_project_root_without_explicit_root_or_cwd_is_not_found() {
+        let err = resolve_project_root(None, None).expect_err("nothing to resolve");
+
+        assert!(matches!(err, StoreError::ProjectRootNotFound));
+    }
 
     /// A malformed `.mmcp.toml` surfaces as `StoreError::TomlParse` naming the failing path.
     #[test]

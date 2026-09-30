@@ -7382,6 +7382,9 @@ fn map_subscribe_error_to_mcp(err: SubscribeError) -> McpError {
     let message = err.to_string();
     let payload = match &err {
         SubscribeError::NotInProject => json!({ "code": "not_in_project" }),
+        SubscribeError::ProjectRootResolution(_) => {
+            json!({ "code": "project_root_resolution_failed" })
+        }
         SubscribeError::MalformedMemoryValue(value) => json!({
             "code": "malformed_memory_value",
             "value": value,

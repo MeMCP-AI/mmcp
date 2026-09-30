@@ -114,6 +114,12 @@ pub enum StoreError {
     #[error("cannot determine home directory: set MMCP_HOME, HOME, or USERPROFILE")]
     HomeDirUnresolved,
 
+    /// No project root carries a `.mmcp.toml`: the explicit root lacks
+    /// one, or no ancestor of the working directory has one, or
+    /// neither an explicit root nor a working directory was supplied.
+    #[error("not in an mmcp project; no .mmcp.toml found at or above the path")]
+    ProjectRootNotFound,
+
     /// The effective remote set (user + project `[sync]` merged)
     /// declares the same remote `name` more than once. Cross-level
     /// duplicate, or a declared remote colliding with the synthetic
