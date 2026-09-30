@@ -2,7 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{ConfigError, SyncConfig};
+use crate::config::{
+    CLAUDE_MD_TABLE_KEY, ClaudeMdSetOutcome, ClaudeMdSuggestion, ClaudeMdTable, ConfigDiagnostic,
+    ConfigError, SyncConfig,
+};
 use crate::id::ProjectUuid;
 use crate::loadset::GroupRef;
 
@@ -11,7 +14,7 @@ use crate::loadset::GroupRef;
 /// A minimal file contains only `project_uuid`; every other field
 /// defaults to an empty or disabled value so local-only projects do
 /// not need to configure anything beyond their identity.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectConfig {
     /// Stable identity for this project. Generated at
@@ -51,9 +54,35 @@ pub struct ProjectConfig {
     /// memories, and tags this project pulls into scope.
     #[serde(default)]
     pub subscriptions: SubscriptionsConfig,
+
+    /// CLAUDE.md suggestion setting, shared with every contributor.
+    /// Lenient inside the table: a mistake there disables the table only, while the root keys of this struct stay strict.
+    /// A binary that predates this table rejects the whole file.
+    #[serde(default, skip_serializing_if = "ClaudeMdTable::is_empty")]
+    pub claude_md: ClaudeMdTable,
 }
 
 impl ProjectConfig {
+    /// Parse a project configuration and report what the loader tolerated.
+    ///
+    /// # Errors
+    /// The errors of [`ProjectConfig::from_toml`].
+    pub fn from_toml_with_diagnostics(
+        source: &str,
+    ) -> Result<(Self, Vec<ConfigDiagnostic>), ConfigError> {
+        let cfg = Self::from_toml(source)?;
+        let diagnostics = cfg.claude_md.diagnostics(CLAUDE_MD_TABLE_KEY);
+        Ok((cfg, diagnostics))
+    }
+
+    /// Set the shared CLAUDE.md suggestion, or remove it with `None`.
+    pub fn set_claude_md_suggestion(
+        &mut self,
+        mode: Option<ClaudeMdSuggestion>,
+    ) -> ClaudeMdSetOutcome {
+        self.claude_md.set(mode)
+    }
+
     /// Parse a project configuration from TOML text.
     ///
     /// # Errors
@@ -257,6 +286,7 @@ tags = ["git", "testing"]
             },
             project_remote_only: false,
             subscriptions: SubscriptionsConfig::default(),
+            claude_md: ClaudeMdTable::default(),
         };
         let rendered = cfg.to_toml().expect("render");
         assert!(
@@ -278,12 +308,82 @@ tags = ["git", "testing"]
             sync: SyncConfig::default(),
             project_remote_only: false,
             subscriptions: SubscriptionsConfig::default(),
+            claude_md: ClaudeMdTable::default(),
         };
         let rendered = cfg.to_toml().expect("render");
         assert!(
             !rendered.contains("project_slug"),
             "project_slug must not appear when the value is None"
         );
+    }
+
+    const MINIMAL_SOURCE: &str = "project_uuid = \"018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91\"\n";
+
+    #[test]
+    fn project_config_without_claude_md_parses_and_renders_without_the_table() {
+        let cfg = ProjectConfig::from_toml(MINIMAL_SOURCE).expect("parse minimal config");
+        assert!(cfg.claude_md.is_empty());
+        let rendered = cfg.to_toml().expect("render");
+        assert!(
+            !rendered.contains("claude_md"),
+            "an unset table must not be rendered: {rendered}"
+        );
+    }
+
+    #[test]
+    fn project_config_claude_md_decline_round_trips() {
+        let mut cfg = ProjectConfig::from_toml(MINIMAL_SOURCE).expect("parse minimal config");
+        let outcome = cfg.set_claude_md_suggestion(Some(ClaudeMdSuggestion::Decline));
+        assert!(outcome.changed);
+
+        let rendered = cfg.to_toml().expect("render");
+        let reparsed = ProjectConfig::from_toml(&rendered).expect("reparse rendered config");
+
+        assert_eq!(cfg, reparsed);
+        assert_eq!(
+            reparsed.claude_md.suggestion(),
+            Ok(Some(ClaudeMdSuggestion::Decline))
+        );
+    }
+
+    #[test]
+    fn project_config_claude_md_typo_keeps_project_uuid_resolved() {
+        let source = format!(
+            "{MINIMAL_SOURCE}[claude_md]\nproject_file_suggestion = \"maybe\"\nproject_file_sugestion = \"x\"\n"
+        );
+        let (cfg, diagnostics) = ProjectConfig::from_toml_with_diagnostics(&source)
+            .expect("a mistake inside claude_md never fails the project config");
+        assert_eq!(
+            cfg.project_uuid.to_string(),
+            "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91"
+        );
+        assert_eq!(
+            diagnostics,
+            vec![
+                ConfigDiagnostic::ClaudeMdSettingInvalid {
+                    table_path: "claude_md".to_string(),
+                    error: crate::config::ClaudeMdSettingError::InvalidValue {
+                        value: "\"maybe\"".to_string()
+                    },
+                },
+                ConfigDiagnostic::UnknownKey {
+                    key_path: "claude_md.project_file_sugestion".to_string()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn invalid_project_claude_md_table_raw_text_survives_an_unrelated_save() {
+        let source = format!("{MINIMAL_SOURCE}[claude_md]\nproject_file_suggestion = \"maybe\"\n");
+        let mut cfg = ProjectConfig::from_toml(&source).expect("parse");
+        cfg.project_slug = Some("team-acme".to_string());
+
+        let rendered = cfg.to_toml().expect("render");
+        let reparsed = ProjectConfig::from_toml(&rendered).expect("reparse");
+
+        assert_eq!(cfg, reparsed);
+        assert!(rendered.contains("maybe"), "{rendered}");
     }
 
     #[test]
@@ -322,6 +422,7 @@ no_default = false
                 groups: vec!["team-acme/shared".to_string()],
                 ..Default::default()
             },
+            claude_md: ClaudeMdTable::default(),
         };
         assert!(is_group_adopted("team-acme/shared", &cfg));
         assert!(!is_group_adopted("team-acme/other", &cfg));
@@ -340,6 +441,7 @@ no_default = false
                 languages: vec!["rust".to_string()],
                 ..Default::default()
             },
+            claude_md: ClaudeMdTable::default(),
         };
         assert!(is_group_adopted("lang/rust", &cfg));
         assert!(!is_group_adopted("lang/python", &cfg));

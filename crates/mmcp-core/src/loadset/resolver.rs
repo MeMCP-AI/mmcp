@@ -102,6 +102,7 @@ mod tests {
             sync: sync.unwrap_or_default(),
             project_remote_only: false,
             subscriptions,
+            claude_md: Default::default(),
         }
     }
 
