@@ -50,7 +50,7 @@ function gitFallbackValue(choice: UserForm['gitFallback']): boolean | null {
 
 /** The `UserConfig` a user-form save sends to the backend.
  * Starts from the loaded config and overrides only the fields the form edits, so every other key
- * (`limits`, `claude_md`, `projects`, and any key a later version adds to the type) survives the save. */
+ * (`limits`, `notice`, and any key a later version adds to the type) survives the save. */
 export function buildUserConfig(loaded: UserConfig | null, form: UserForm): UserConfig {
   const name = emptyToNull(form.name);
   const email = emptyToNull(form.email);
@@ -72,7 +72,7 @@ export function buildUserConfig(loaded: UserConfig | null, form: UserForm): User
 }
 
 /** The `ProjectConfig` a project-form save sends to the backend.
- * Starts from the loaded config and overrides only the fields the form edits, so `claude_md`, the
+ * Starts from the loaded config and overrides only the fields the form edits, so `notice`, the
  * `memories` and `tags` subscriptions, and any key a later version adds to the type survive the save. */
 export function buildProjectConfig(loaded: ProjectConfig, form: ProjectForm): ProjectConfig {
   return {

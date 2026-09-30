@@ -43,11 +43,7 @@ function loadedUser(): UserConfig {
       max_password_length: null,
       max_handle_length: null
     },
-    claude_md: { project_file_suggestion: 'maybe', future_key: true },
-    projects: {
-      [PROJECT_UUID]: { claude_md: { project_file_suggestion: 'decline' } },
-      '019d955d-4cce-77f2-a0b3-0b79ed394612': { claude_md: { project_file_suggestion: 7 } }
-    }
+    notice: { md: { project: 'off', user: 'on' } }
   };
 }
 
@@ -63,28 +59,26 @@ function loadedProject(): ProjectConfig {
       memories: ['019d955d-4cce-77f2-a0b3-0b79ed394612:rule'],
       tags: ['git']
     },
-    claude_md: { project_file_suggestion: 'maybe', future_key: true }
+    notice: { md: { project: 'off' } }
   };
 }
 
 describe('user config builder', () => {
-  test('keeps the claude_md table and every projects entry the form does not edit', () => {
+  test('keeps the notice table the form does not edit', () => {
     const loaded = loadedUser();
 
     const built = buildUserConfig(loaded, USER_FORM);
 
-    expect(built.claude_md).toEqual(loaded.claude_md);
-    expect(built.projects).toEqual(loaded.projects);
+    expect(built.notice).toEqual({ md: { project: 'off', user: 'on' } });
   });
 
-  test('keeps a raw invalid claude_md table and a key unknown to the form', () => {
+  test('keeps a key unknown to the form', () => {
     const loaded = { ...loadedUser(), future_top_level_key: { nested: 1 } } as UserConfig;
 
     const built = buildUserConfig(loaded, USER_FORM) as UserConfig & {
       future_top_level_key?: unknown;
     };
 
-    expect(built.claude_md).toEqual({ project_file_suggestion: 'maybe', future_key: true });
     expect(built.future_top_level_key).toEqual({ nested: 1 });
   });
 
@@ -124,8 +118,7 @@ describe('user config builder', () => {
 
     expect(built.author?.name).toBe('Alice');
     expect(built.limits).toBeNull();
-    expect(built.claude_md).toBeUndefined();
-    expect(built.projects).toBeUndefined();
+    expect(built.notice).toBeUndefined();
   });
 
   test('never touches the loaded config object', () => {
@@ -139,12 +132,12 @@ describe('user config builder', () => {
 });
 
 describe('project config builder', () => {
-  test('keeps the claude_md table, raw and with its unknown key', () => {
+  test('keeps the notice table the form does not edit', () => {
     const loaded = loadedProject();
 
     const built = buildProjectConfig(loaded, PROJECT_FORM);
 
-    expect(built.claude_md).toEqual(loaded.claude_md);
+    expect(built.notice).toEqual({ md: { project: 'off' } });
   });
 
   test('keeps a key unknown to the form', () => {
