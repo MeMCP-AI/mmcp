@@ -4388,6 +4388,18 @@ impl McpServer {
         &self,
         args: InitClaudeArgs,
     ) -> Result<CallToolResult, McpError> {
+        let cwd = std::env::current_dir()
+            .map_err(|e| McpError::internal_error(Cow::Owned(format!("cwd: {e}")), None))?;
+        self.init_claude_in(&cwd, args).await
+    }
+
+    /// Body of `init_claude` for a caller-supplied `cwd`, so tests feed a deterministic project directory.
+    /// The author and the convert target come from the served home.
+    async fn init_claude_in(
+        &self,
+        cwd: &Path,
+        args: InitClaudeArgs,
+    ) -> Result<CallToolResult, McpError> {
         let path = args
             .path
             .as_deref()
@@ -4467,15 +4479,13 @@ impl McpServer {
             InitClaudeAction::Convert => crate::commands::claude::Action::Convert,
         };
 
-        let cwd = std::env::current_dir()
-            .map_err(|e| McpError::internal_error(Cow::Owned(format!("cwd: {e}")), None))?;
         let plan = crate::commands::claude::ClaudePlan {
             action,
             backup,
             dry_run: args.dry_run,
             path: path.clone(),
             state,
-            cwd,
+            cwd: cwd.to_path_buf(),
         };
 
         if plan.dry_run {
@@ -4493,11 +4503,10 @@ impl McpServer {
         }
 
         // Resolve the author and run the shared execute path.
-        let home = MmcpHome::discover()
-            .map_err(|e| McpError::internal_error(Cow::Owned(e.to_string()), None))?;
+        let home = &self.state.home;
         let author = home.resolve_author();
         // The alternate form renders the whole context chain, cause included.
-        let report = crate::commands::claude::execute(&plan, &home, &author)
+        let report = crate::commands::claude::execute(&plan, home, &author)
             .await
             .map_err(|e| McpError::internal_error(Cow::Owned(format!("{e:#}")), None))?;
 
@@ -6396,13 +6405,9 @@ impl McpServer {
         Ok((entry, resolved))
     }
 
-    /// Discover the current project and enforce that `[sync]` is
-    /// present in its `.mmcp.toml`. Thin wrapper over
-    /// [`resolve_sync_config`] that pulls the current working
-    /// directory from the process. Kept on the server so tool
-    /// methods stay short; the pure logic lives in the free
-    /// function so unit tests can drive it with a tempdir-rooted
-    /// path.
+    /// Discover the current project and enforce that `[sync]` is present in its `.mmcp.toml`.
+    /// Thin wrapper over [`McpServer::require_sync_configured_in`] that pulls the current working directory from the process.
+    /// Kept on the server so tool methods stay short.
     fn require_sync_configured(
         &self,
     ) -> Result<
@@ -6415,39 +6420,34 @@ impl McpServer {
         let cwd = std::env::current_dir().map_err(|e| {
             McpError::internal_error(format!("cannot read working directory: {e}"), None)
         })?;
-        resolve_sync_config(&cwd)
+        self.require_sync_configured_in(&cwd)
+    }
+
+    /// Same as [`McpServer::require_sync_configured`] for a caller-supplied `cwd`, so tests feed a deterministic project directory.
+    /// The user-level config is read from the served home.
+    fn require_sync_configured_in(
+        &self,
+        cwd: &Path,
+    ) -> Result<
+        (
+            mmcp_core::config::ProjectConfig,
+            mmcp_store::EffectiveRemotes,
+        ),
+        McpError,
+    > {
+        resolve_sync_config_with_home(cwd, &self.state.home)
     }
 }
 
-/// Resolve the project at `cwd`, walking parent dirs.
+/// Resolve the project at `cwd`, walking parent dirs, with the user-level config read from `home`.
 /// Returns its [`mmcp_core::config::ProjectConfig`] plus its EFFECTIVE remote set.
 /// It merges user config with project config via `mmcp_store::resolve_effective_remotes`.
 ///
-/// Factored out of [`McpServer::require_sync_configured`] so tests can feed a deterministic path.
-/// This avoids touching process-wide `current_dir`.
+/// The [`MmcpHome`] is injected so tests can point the user-level config lookup at a tempdir, off the real OS home and `MMCP_HOME`.
 /// Stable wire-contract codes: `project_not_found`, `project_config_load_failed`.
 /// Also `sync_resolution_failed` and `sync_not_configured`.
 /// `sync_resolution_failed` wraps a `resolve_effective_remotes` failure; see its own doc for causes.
 /// `sync_not_configured` means the effective set resolved but is empty.
-fn resolve_sync_config(
-    cwd: &Path,
-) -> Result<
-    (
-        mmcp_core::config::ProjectConfig,
-        mmcp_store::EffectiveRemotes,
-    ),
-    McpError,
-> {
-    let home = MmcpHome::discover()
-        .map_err(|e| McpError::internal_error(format!("cannot resolve mmcp home: {e}"), None))?;
-    resolve_sync_config_with_home(cwd, &home)
-}
-
-/// Same as [`resolve_sync_config`], with the [`MmcpHome`] injected so
-/// tests can point the user-level config lookup at a tempdir instead
-/// of the real OS home / `MMCP_HOME` (mirrors the same
-/// dependency-injection rationale as
-/// `mmcp_core::config::SyncConfig::resolve_token_with`).
 fn resolve_sync_config_with_home(
     cwd: &Path,
     home: &MmcpHome,
@@ -13090,6 +13090,82 @@ mod tests {
             Some(false),
             "a served home without a config declares no remote: {sync}",
         );
+    }
+
+    #[tokio::test]
+    async fn init_claude_convert_uses_the_group_and_author_of_the_served_home() {
+        let (state, tmp) = test_state().await;
+        let group = seed_group_with_memory(&state, "served-project", "seed", SAMPLE_MEMORY).await;
+        std::fs::write(
+            state.home.user_config_path(),
+            "[author]\nname = \"Served Author\"\nemail = \"served@example.com\"\n",
+        )
+        .expect("write the served home's config.toml");
+        let project = tmp.path().join("convert-project");
+        std::fs::create_dir_all(&project).expect("mkdir project");
+        write_project_config(
+            &project,
+            &format!("project_uuid = \"{}\"\n", group.as_uuid()),
+        );
+        let claude_md = project.join("CLAUDE.md");
+        std::fs::write(&claude_md, "## Rule one\n\nBody of the first rule.\n")
+            .expect("write CLAUDE.md");
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let res = server
+            .init_claude_in(
+                &project,
+                InitClaudeArgs {
+                    action: InitClaudeAction::Convert,
+                    backup: Some(false),
+                    dry_run: false,
+                    on_conflict: Some(InitClaudeConflict::Override),
+                    path: Some(claude_md.to_string_lossy().into_owned()),
+                },
+            )
+            .await
+            .expect("convert into the served home's project group");
+        let parsed = parse_ok_json(res);
+        let slug = parsed["memories_created"][0]["slug"]
+            .as_str()
+            .expect("a converted memory")
+            .to_string();
+
+        let history = server
+            .list_versions(Parameters(ListVersionsArgs {
+                group: group.as_uuid().to_string(),
+                slug,
+                compact: Some(true),
+                offset: None,
+                limit: None,
+            }))
+            .await
+            .expect("list_versions");
+        let versions = parse_ok_json(history);
+        assert_eq!(
+            versions["versions"][0]["author_name"].as_str(),
+            Some("Served Author"),
+            "the commit author comes from the served home's config: {versions}",
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_requirement_reads_the_user_config_of_the_served_home() {
+        let (state, tmp) = test_state().await;
+        std::fs::write(
+            state.home.user_config_path(),
+            "[sync]\nserver_url = \"http://served-home.example.com\"\n",
+        )
+        .expect("write the served home's config.toml");
+        let project = write_status_project(&tmp);
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let (_cfg, effective) = server
+            .require_sync_configured_in(&project)
+            .expect("the served home's remote satisfies the sync requirement");
+
+        assert_eq!(effective.len(), 1);
+        assert_eq!(effective.remotes()[0].level, mmcp_store::RemoteLevel::User);
     }
 
     // ── init_project tool ──────────────────────────────────────────────
