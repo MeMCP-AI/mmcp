@@ -34,7 +34,7 @@ async fn import_list_read_health_and_diagnose_run_without_any_remote() {
         sync: Default::default(),
         project_remote_only: false,
         subscriptions: SubscriptionsConfig::default(),
-        claude_md: Default::default(),
+        notice: Default::default(),
     };
     assert!(
         project_cfg.sync.is_empty(),

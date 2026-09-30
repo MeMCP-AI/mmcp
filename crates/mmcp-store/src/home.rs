@@ -277,6 +277,7 @@ mod tests {
             author: None,
             defaults: None,
             limits: None,
+            notice: Default::default(),
         }
     }
 

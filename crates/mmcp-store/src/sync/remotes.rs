@@ -427,7 +427,7 @@ mod tests {
             sync,
             project_remote_only,
             subscriptions: mmcp_core::config::SubscriptionsConfig::default(),
-            claude_md: Default::default(),
+            notice: Default::default(),
         }
     }
 

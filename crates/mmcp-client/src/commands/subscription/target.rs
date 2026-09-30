@@ -220,7 +220,7 @@ mod tests {
             sync: Default::default(),
             project_remote_only: false,
             subscriptions: SubscriptionsConfig::default(),
-            claude_md: Default::default(),
+            notice: Default::default(),
         }
     }
 

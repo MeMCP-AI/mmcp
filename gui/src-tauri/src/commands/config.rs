@@ -185,7 +185,7 @@ mod tests {
             },
             project_remote_only: false,
             subscriptions: mmcp_core::config::SubscriptionsConfig::default(),
-            claude_md: Default::default(),
+            notice: Default::default(),
         }
     }
 
@@ -198,8 +198,7 @@ mod tests {
             author: None,
             defaults: None,
             limits: None,
-            claude_md: Default::default(),
-            projects: Default::default(),
+            notice: Default::default(),
         }
     }
 
