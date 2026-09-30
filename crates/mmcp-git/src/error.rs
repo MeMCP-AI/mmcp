@@ -86,6 +86,43 @@ pub enum GitError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
+    /// Failed to resolve `path` to its real location, symlinks followed.
+    #[error("failed to resolve the real path of {path}: {source}")]
+    ResolvePath {
+        path: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// Failed to evaluate the ignore rules of a repository for `path`.
+    #[error("failed to evaluate ignore rules for {path}: {source}")]
+    IgnoreRules {
+        path: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// Failed to resolve the global excludes file of a repository: its `core.excludesFile` value could not be interpolated.
+    #[error("failed to resolve the global excludes file: {source}")]
+    GlobalExcludesFile {
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// Neither `core.excludesFile`, `XDG_CONFIG_HOME` nor a home directory names a location for the global excludes file.
+    #[error(
+        "cannot locate the global excludes file: no core.excludesFile, XDG_CONFIG_HOME or home directory"
+    )]
+    GlobalExcludesFileUnlocated,
+
+    /// Failed to read or append to the global excludes file at `path`.
+    #[error("failed to update the global excludes file {path}: {source}")]
+    GlobalExcludesWrite {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
     /// The blocking task driving a `gix` call panicked or was cancelled.
     #[error("git task join error: {0}")]
     TaskJoin(#[from] tokio::task::JoinError),

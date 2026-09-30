@@ -9,6 +9,7 @@
 //! specific backend.
 
 pub mod backend;
+pub mod checkout;
 pub mod error;
 pub mod native;
 pub mod types;

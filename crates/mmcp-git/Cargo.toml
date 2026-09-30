@@ -18,9 +18,17 @@ bytes = { workspace = true }
 moka = { workspace = true }
 tracing = { workspace = true }
 
+# Optional, pulled in only when the `testing` feature is enabled,
+# so downstream consumers can activate the fixture without paying the tempfile compile cost at release time.
+tempfile = { version = "3", optional = true }
+
 [dev-dependencies]
 tempfile = "3"
 serde_json = "1"
+
+[features]
+# Opt-in fixtures reused by consumer test suites, the same pattern as mmcp-store's `testing` feature.
+testing = ["dep:tempfile"]
 
 [lints]
 workspace = true
