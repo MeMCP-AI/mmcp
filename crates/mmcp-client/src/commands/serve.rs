@@ -94,7 +94,7 @@ struct ClientStateInner {
     #[allow(dead_code)]
     // NOTE: held to keep the notify watcher alive for the process lifetime.
     watcher: WatcherHandle,
-    /// Home the server was started with; home-derived reads go through it, never a fresh discovery.
+    /// Home the server was started with, read by the `status` tool.
     home: MmcpHome,
     /// Resolved commit author from user config cascade.
     author: ResolvedAuthor,
@@ -6145,8 +6145,8 @@ fn compose_sync_section(
 }
 
 impl McpServer {
-    /// Body of the `status` tool for a caller-supplied `cwd`, so tests feed a
-    /// deterministic project directory without mutating process state.
+    /// Body of the `status` tool for a caller-supplied `cwd`.
+    /// Tests feed a deterministic project directory through it without mutating process state.
     /// The user-level config is read from the served home.
     async fn status_for_cwd(
         &self,

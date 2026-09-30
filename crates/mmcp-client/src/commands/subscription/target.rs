@@ -172,8 +172,8 @@ pub async fn validate_subscription_target(
     }
 }
 
-/// Resolve the project root through the store's shared resolution,
-/// reporting a missing root as [`SubscribeError::NotInProject`].
+/// Resolve the project root through the store's shared resolution.
+/// A missing root is reported as [`SubscribeError::NotInProject`].
 pub fn resolve_project_root(
     explicit: Option<&Path>,
     cwd: Option<&Path>,
