@@ -384,7 +384,7 @@ tags = ["git", "testing"]
 `[notice.md]` keys `project` and `user` take `on` or `off`, default `on`, and turn off the notices proposing the mmcp block for the project CLAUDE.md and for `~/.claude/CLAUDE.md`.  
 They are read from `~/.mmcp/config.toml`, `.mmcp.toml` and `.mmcp.local.toml`.  
 Precedence runs `.mmcp.local.toml`, `.mmcp.toml`, `mmcp serve --notice-md-*`, `MMCP_NOTICE_MD_*`, `~/.mmcp/config.toml`, then the default.  
-`.mmcp.local.toml` sits at the project root, or at the main checkout's root inside a linked worktree.  
+`.mmcp.local.toml` sits at the project root, or at the same path under the main checkout inside a linked worktree.  
 mmcp adds it to the global git excludes file on its first write.  
 Older mmcp versions cannot read a `.mmcp.toml` carrying `[notice]`.
 
