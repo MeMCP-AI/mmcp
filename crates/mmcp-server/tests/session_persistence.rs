@@ -965,6 +965,17 @@ async fn session_survives_server_restart_on_a_persistent_database() {
     assert_session_survives_restart(&config_for(&tmp), "alice").await;
 }
 
+/// The store primitives that the Postgres test runs, on SQLite, where they run in every test pass.
+#[tokio::test]
+async fn store_primitives_work_on_sqlite() {
+    let tmp = TempDir::new().expect("tempdir");
+    let cfg = config_for(&tmp);
+    // Starting a server applies the migrations to the database file.
+    start_server(&cfg).await.stop().await;
+
+    assert_store_primitives_work_on(&cfg.database_target).await;
+}
+
 /// Environment variable naming the Postgres database the ignored Postgres test runs against.
 const POSTGRES_TEST_URL_ENV: &str = "POSTGRES_TEST_URL";
 
@@ -990,7 +1001,7 @@ async fn session_survives_server_restart_on_postgres() {
     assert_store_primitives_work_on(&cfg.database_target).await;
 }
 
-/// Exercises the conflict, upsert and batched-delete statements the store issues, on the database at `target`.
+/// Exercises the conflict, update and batched-delete statements the store issues, on the database at `target`.
 async fn assert_store_primitives_work_on(target: &DatabaseTarget) {
     use time::{Duration, OffsetDateTime};
     use tower_sessions::SessionStore;
@@ -1024,9 +1035,24 @@ async fn assert_store_primitives_work_on(target: &DatabaseTarget) {
     store
         .save(&first)
         .await
-        .expect("an upsert on an existing key");
+        .expect("an update on an existing key");
     let reloaded = store.load(&first.id).await.expect("load").expect("present");
     assert_eq!(reloaded.data, first.data);
+
+    let mut deleted = record_expiring_in(Duration::minutes(15));
+    store
+        .create(&mut deleted)
+        .await
+        .expect("create a record to delete");
+    store.delete(&deleted.id).await.expect("delete it");
+    store
+        .save(&deleted)
+        .await
+        .expect("a save of a deleted record is not an error");
+    assert!(
+        store.load(&deleted.id).await.expect("load").is_none(),
+        "a save never brings a deleted record back"
+    );
     assert_eq!(
         store
             .take_value(&first.id, "saved")
