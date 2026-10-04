@@ -10,8 +10,8 @@ pub fn message_with_causes(error: &dyn Error) -> String {
     let mut cause = error.source();
     while let Some(inner) = cause {
         let text = inner.to_string();
-        // An error that already prints its cause is not told twice.
-        if !message.contains(&text) {
+        // An error that closes its own message with its cause is not told twice.
+        if !message.ends_with(&text) {
             message = format!("{}: {text}", message.trim_end_matches('.'));
         }
         cause = inner.source();
@@ -79,6 +79,15 @@ mod tests {
             Some(layer("bad key", None)),
         );
         assert_eq!(message_with_causes(&error), "failed to parse TOML: bad key");
+    }
+
+    #[test]
+    fn a_short_cause_that_only_appears_inside_the_message_is_kept() {
+        let error = layer("The bad config was refused.", Some(layer("bad", None)));
+        assert_eq!(
+            message_with_causes(&error),
+            "The bad config was refused: bad"
+        );
     }
 
     #[test]
