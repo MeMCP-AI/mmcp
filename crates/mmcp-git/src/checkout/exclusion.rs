@@ -9,6 +9,8 @@ pub enum Exclusion {
     NotInRepository,
     /// The repository's ignore rules already exclude the path.
     AlreadyExcluded,
+    /// The repository tracks the path, so no ignore rule keeps it out of git.
+    Tracked,
     /// The pattern was appended to the global excludes file `file`.
     Appended {
         /// The global excludes file that received the pattern.

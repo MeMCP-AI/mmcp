@@ -1,6 +1,6 @@
 //! Whether a repository's ignore rules exclude a path.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use gix::worktree::stack::state::ignore::Source;
 
@@ -20,19 +20,31 @@ pub fn is_path_excluded(path: &Path) -> Result<Option<bool>, GitError> {
     }
 }
 
-/// [`is_path_excluded`] against an already opened `repo`.
-pub(super) fn is_excluded_in(
+/// The path of `path` relative to the work tree of `repo`, `None` when `path` is not inside it.
+pub(super) fn relative_to_workdir(
     repo: &gix::Repository,
     path: &Path,
-) -> Result<Option<bool>, GitError> {
+) -> Result<Option<PathBuf>, GitError> {
     let Some(workdir) = repo.workdir() else {
         return Ok(None);
     };
     let real_workdir = real_path(workdir)?;
     let real_target = real_path(path)?;
-    let Ok(relative) = real_target.strip_prefix(&real_workdir) else {
+    Ok(real_target
+        .strip_prefix(&real_workdir)
+        .ok()
+        .map(Path::to_path_buf))
+}
+
+/// [`is_path_excluded`] against an already opened `repo`.
+pub(super) fn is_excluded_in(
+    repo: &gix::Repository,
+    path: &Path,
+) -> Result<Option<bool>, GitError> {
+    let Some(relative) = relative_to_workdir(repo, path)? else {
         return Ok(None);
     };
+    let relative = relative.as_path();
     let ignore_error = |source: Box<dyn std::error::Error + Send + Sync>| GitError::IgnoreRules {
         path: path.display().to_string(),
         source,

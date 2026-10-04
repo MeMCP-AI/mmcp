@@ -7,10 +7,11 @@ use super::Exclusion;
 use super::global_excludes::{append_pattern, global_excludes_file_of};
 use super::open_checkout::open_containing;
 use super::path_exclusion::is_excluded_in;
+use super::path_tracking::is_tracked_in;
 use crate::GitError;
 
 /// Make sure the repository containing `path` ignores it, appending `pattern` to the user's global excludes file when it does not.
-/// Nothing is written when the repository's ignore rules already exclude `path` or when `path` is outside a repository.
+/// Nothing is written when the repository's ignore rules already exclude `path`, when `path` is outside a repository, or when the repository tracks `path`, which no ignore rule can undo.
 ///
 /// # Errors
 /// [`GitError::OpenRepo`], [`GitError::IgnoreRules`], [`GitError::GlobalExcludesFile`], [`GitError::GlobalExcludesFileUnlocated`] and [`GitError::GlobalExcludesWrite`], each naming its own step.
@@ -28,6 +29,9 @@ pub(super) fn exclude_path_in(
     pattern: &str,
     env_var: &mut dyn FnMut(&str) -> Option<OsString>,
 ) -> Result<Exclusion, GitError> {
+    if is_tracked_in(repo, path)? == Some(true) {
+        return Ok(Exclusion::Tracked);
+    }
     match is_excluded_in(repo, path)? {
         None => Ok(Exclusion::NotInRepository),
         Some(true) => Ok(Exclusion::AlreadyExcluded),
@@ -47,6 +51,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use std::path::PathBuf;
 
+    use super::super::path_tracking::track_in_index;
     use super::*;
 
     const PATTERN: &str = "**/.mmcp.local.toml";
@@ -142,6 +147,46 @@ mod tests {
 
         assert_eq!(outcome, Exclusion::AlreadyExcluded);
         assert!(!xdg.exists(), "no global excludes file is created");
+    }
+
+    #[test]
+    fn a_tracked_file_is_reported_tracked_and_nothing_is_appended() {
+        let scratch = tempfile::TempDir::new().unwrap();
+        let repo_root = scratch.path().join("repo");
+        let repo = isolated_repo(&repo_root);
+        track_in_index(&repo, ".mmcp.local.toml");
+        let xdg = scratch.path().join("xdg");
+
+        let outcome = exclude_path_in(
+            &repo,
+            &repo_root.join(".mmcp.local.toml"),
+            PATTERN,
+            &mut xdg_env(&xdg),
+        )
+        .unwrap();
+
+        assert_eq!(outcome, Exclusion::Tracked);
+        assert!(!xdg.exists(), "no global excludes file is created");
+    }
+
+    #[test]
+    fn a_tracked_file_that_an_ignore_rule_matches_is_still_reported_tracked() {
+        let scratch = tempfile::TempDir::new().unwrap();
+        let repo_root = scratch.path().join("repo");
+        let repo = isolated_repo(&repo_root);
+        std::fs::write(repo_root.join(".gitignore"), ".mmcp.local.toml\n").unwrap();
+        track_in_index(&repo, ".mmcp.local.toml");
+        let xdg = scratch.path().join("xdg");
+
+        let outcome = exclude_path_in(
+            &repo,
+            &repo_root.join(".mmcp.local.toml"),
+            PATTERN,
+            &mut xdg_env(&xdg),
+        )
+        .unwrap();
+
+        assert_eq!(outcome, Exclusion::Tracked);
     }
 
     #[test]

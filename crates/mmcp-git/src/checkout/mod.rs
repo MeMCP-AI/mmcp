@@ -13,6 +13,7 @@ mod linked_worktree_fixture;
 mod main_checkout;
 mod open_checkout;
 mod path_exclusion;
+mod path_tracking;
 
 pub use exclude_path::exclude_path_globally;
 pub use exclusion::Exclusion;
