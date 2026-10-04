@@ -44,7 +44,8 @@ async fn pragma_integer(conn: &DatabaseConnection, pragma: &str) -> i64 {
 async fn sqlite_connection_runs_in_wal_mode_with_busy_timeout() {
     let (db_path, url) = temp_sqlite_file(&format!("mmcp-db-options-{}.sqlite3", Uuid::now_v7()));
 
-    let db = connect(&url).await.expect("connect to a file database");
+    let target = url.parse().expect("a valid database URL");
+    let db = connect(&target).await.expect("connect to a file database");
 
     assert_eq!(pragma_text(db.connection(), "journal_mode").await, "wal");
     assert_eq!(

@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use uuid::Uuid;
 
 async fn fresh_database() -> DatabaseConnection {
-    let db = connect("sqlite::memory:")
+    let db = connect(&"sqlite::memory:".parse().expect("a valid database URL"))
         .await
         .expect("connect to in-memory sqlite");
     db.migrate().await.expect("run migrations");
@@ -78,7 +78,7 @@ async fn migration_creates_every_expected_index() {
 /// pre-existing row survive.
 #[tokio::test]
 async fn migration_builds_indexes_over_a_database_with_existing_data() {
-    let db = connect("sqlite::memory:")
+    let db = connect(&"sqlite::memory:".parse().expect("a valid database URL"))
         .await
         .expect("connect to in-memory sqlite");
     let conn = db.connection();

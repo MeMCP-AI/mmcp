@@ -1,51 +1,62 @@
-//! [`connect`], which opens the connection.
+//! [`connect`], which opens the connection from a typed target.
 
-use sea_orm::ConnectOptions;
-use sea_orm::sqlx::sqlite::SqliteJournalMode;
+use sea_orm::sqlx::postgres::PgPoolOptions;
+use sea_orm::sqlx::sqlite::{SqliteJournalMode, SqlitePoolOptions};
+use sea_orm::sqlx::{self, ConnectOptions};
+use sea_orm::{SqlxPostgresConnector, SqlxSqliteConnector};
 
 use super::database::Database;
-use crate::database_url_redaction::redact_database_url;
+use super::database_target::DatabaseTarget;
+use super::pool_policy::{SQLITE_POOL_SIZE, STATEMENT_LOG_LEVEL, TEST_BEFORE_ACQUIRE};
+use super::postgres_target::PostgresTarget;
+use super::sqlite_target::SqliteTarget;
 use crate::defaults::SQLITE_BUSY_TIMEOUT;
 use crate::error::DbError;
 
-/// Schemes the compiled-in SeaORM drivers serve, as SeaORM matches them.
-const SUPPORTED_URL_SCHEMES: [&str; 3] = ["postgres", "postgresql", "sqlite"];
-
-/// The two checks SeaORM makes on a URL before it connects, with errors that never quote the URL.
-fn check_database_url(database_url: &str) -> Result<(), DbError> {
-    let parsed =
-        url::Url::parse(database_url).map_err(|source| DbError::DatabaseUrlUnparsable {
-            redacted_url: redact_database_url(database_url),
-            source,
-        })?;
-    if SUPPORTED_URL_SCHEMES.contains(&parsed.scheme()) {
-        return Ok(());
-    }
-    Err(DbError::DatabaseUrlSchemeUnsupported {
-        redacted_url: redact_database_url(database_url),
-        scheme: parsed.scheme().to_owned(),
-    })
-}
-
-/// Open a database connection from a URL.
+/// Open a database connection to `target`.
 ///
-/// Accepts any URL supported by SeaORM's sqlx backend. Typical values:
-/// `postgres://user:pass@host/db`, `sqlite://./local.db`,
-/// `sqlite::memory:` for tests.
+/// The pool is built here from the target's own parse, so the URL never reaches SeaORM.
+/// SeaORM quotes a URL in its errors and in a trace span of its connect function, which this function never calls.
+/// The pool follows the policy of [`super::pool_policy`], which equals what SeaORM's connect applies by default.
 ///
 /// A SQLite connection runs in write-ahead-log journal mode, so a commit does not block readers file-wide.
 /// It waits at most [`SQLITE_BUSY_TIMEOUT`] on a locked file.
-///
-/// The URL is checked before SeaORM sees it, because SeaORM quotes the whole URL, password included, in the errors of the two checks it makes itself.
-/// A URL that fails a check yields an error holding only [`crate::redact_database_url`] of it.
-pub async fn connect(database_url: &str) -> Result<Database, DbError> {
-    check_database_url(database_url)?;
-    let mut opts = ConnectOptions::new(database_url.to_string());
-    opts.map_sqlx_sqlite_opts(|sqlite_opts| {
-        sqlite_opts
-            .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(SQLITE_BUSY_TIMEOUT)
-    });
-    let conn = sea_orm::Database::connect(opts).await?;
-    Ok(Database::new(conn))
+pub async fn connect(target: &DatabaseTarget) -> Result<Database, DbError> {
+    let connection = match target {
+        DatabaseTarget::Postgres(postgres) => connect_postgres(postgres).await?,
+        DatabaseTarget::Sqlite(sqlite) => connect_sqlite(sqlite).await?,
+    };
+    Ok(Database::new(connection))
+}
+
+async fn connect_postgres(target: &PostgresTarget) -> Result<sea_orm::DatabaseConnection, DbError> {
+    let options = target
+        .connect_options()
+        .map_err(DbError::ConnectionOptionsRejected)?
+        .log_statements(STATEMENT_LOG_LEVEL);
+    let pool = PgPoolOptions::new()
+        .test_before_acquire(TEST_BEFORE_ACQUIRE)
+        .connect_with(options)
+        .await
+        .map_err(|error| match error {
+            sqlx::Error::Configuration(_) => target.explain_configuration_error(),
+            other => DbError::ConnectionFailed(other),
+        })?;
+    Ok(SqlxPostgresConnector::from_sqlx_postgres_pool(pool))
+}
+
+async fn connect_sqlite(target: &SqliteTarget) -> Result<sea_orm::DatabaseConnection, DbError> {
+    let options = target
+        .connect_options()
+        .map_err(DbError::ConnectionOptionsRejected)?
+        .log_statements(STATEMENT_LOG_LEVEL)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(SQLITE_BUSY_TIMEOUT);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(SQLITE_POOL_SIZE)
+        .test_before_acquire(TEST_BEFORE_ACQUIRE)
+        .connect_with(options)
+        .await
+        .map_err(DbError::ConnectionFailed)?;
+    Ok(SqlxSqliteConnector::from_sqlx_sqlite_pool(pool))
 }

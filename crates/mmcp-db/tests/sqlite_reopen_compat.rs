@@ -59,6 +59,7 @@ fn temp_sqlite_url(file_name: &str) -> (std::path::PathBuf, String) {
 async fn sqlite_file_reopen_preserves_migration_bookkeeping_and_data() {
     let file_name = format!("mmcp-db-reopen-test-{}.sqlite3", Uuid::now_v7());
     let (db_path, url) = temp_sqlite_url(&file_name);
+    let target = url.parse().expect("a valid database URL");
 
     let alice_id = Uuid::now_v7();
     let group_id = Uuid::now_v7();
@@ -67,7 +68,7 @@ async fn sqlite_file_reopen_preserves_migration_bookkeeping_and_data() {
     // baseline. The connection (and its pooled sqlite file handle)
     // drops at the end of this block, closing the file before reopen.
     let baseline_versions = {
-        let db = connect(&url).await.expect("connect (first open)");
+        let db = connect(&target).await.expect("connect (first open)");
         db.migrate().await.expect("migrate (first open)");
 
         user_repo::create(
@@ -120,7 +121,7 @@ async fn sqlite_file_reopen_preserves_migration_bookkeeping_and_data() {
 
     // --- Second open, same file: migrate again. This must be a
     // strict no-op against already-applied migrations.
-    let db2 = connect(&url).await.expect("connect (second open)");
+    let db2 = connect(&target).await.expect("connect (second open)");
     db2.migrate().await.expect("migrate (second open)");
 
     let versions_after_reopen = migration_rows(db2.connection()).await;

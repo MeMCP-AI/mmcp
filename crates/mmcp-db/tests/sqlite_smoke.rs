@@ -12,7 +12,7 @@ use mmcp_db::{Database, connect};
 use uuid::Uuid;
 
 async fn fresh_database() -> Database {
-    let db = connect("sqlite::memory:")
+    let db = connect(&"sqlite::memory:".parse().expect("a valid database URL"))
         .await
         .expect("connect to in-memory sqlite");
     db.migrate().await.expect("run migrations");

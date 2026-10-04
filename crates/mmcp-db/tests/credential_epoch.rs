@@ -16,7 +16,7 @@ use uuid::Uuid;
 const CREATED_AT: i64 = 1_700_000_000_000;
 
 async fn migrated_connection() -> DatabaseConnection {
-    let db = connect("sqlite::memory:")
+    let db = connect(&"sqlite::memory:".parse().expect("a valid database URL"))
         .await
         .expect("connect to in-memory sqlite");
     db.migrate().await.expect("run migrations");

@@ -46,7 +46,8 @@ async fn sweep_keeps_a_session_extended_while_the_sweep_waits_on_its_row() {
     let url = std::env::var(POSTGRES_TEST_URL_ENV).unwrap_or_else(|_| {
         panic!("{POSTGRES_TEST_URL_ENV} must name a disposable Postgres database")
     });
-    let db = connect(&url).await.expect("connect to postgres");
+    let target = url.parse().expect("a valid database URL");
+    let db = connect(&target).await.expect("connect to postgres");
     Migrator::up(db.connection(), None)
         .await
         .expect("apply migrations");
