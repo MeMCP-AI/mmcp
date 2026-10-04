@@ -12,10 +12,8 @@ ignore = []
 # built-in strict default before this file existed.
 # BSL-1.0 (xxhash-rust) joined the list afterwards.
 # It is permissive, approved by the OSI and the FSF, and asks for no notice in a binary distribution.
-# AGPL-3.0-only (evalexpr, pulled in transitively via the acdc-parser fork) is
-# deliberately NOT allow-listed here: it is a real, unresolved
-# licensing finding, not config-absence noise, and stays surfaced
-# until the operator decides how to handle it.
+# AGPL-3.0-only is deliberately NOT allow-listed here.
+# The one crate that carries it, evalexpr, has its own exception below.
 allow = [
     "0BSD",
     "Apache-2.0",
@@ -32,6 +30,13 @@ allow = [
     "Unlicense",
     "Zlib",
 ]
+
+# evalexpr (AGPL-3.0-only) is pulled in transitively via the acdc-parser fork.
+# The operator decided to keep it, on 2026-10-04: a project's license affects neither ours nor the projects we use.
+# The exception names this one crate, so no other AGPL-3.0-only crate passes unnoticed.
+[[licenses.exceptions]]
+name = "evalexpr"
+allow = ["AGPL-3.0-only"]
 
 [sources]
 # The two deliberately-pinned git forks this workspace tracks (see
