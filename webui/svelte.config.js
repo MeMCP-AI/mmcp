@@ -14,7 +14,15 @@ const config = {
       fallback: 'index.html',
       precompress: false,
       strict: true
-    })
+    }),
+    typescript: {
+      // The browser program leaves the test files out, since they import `bun:test`.
+      // `tsconfig.test.json` checks them with the Bun types.
+      // Paths are relative to the generated `.svelte-kit/tsconfig.json`.
+      config: (config) => {
+        config.exclude.push('../src/**/*.test.ts');
+      }
+    }
   }
 };
 
