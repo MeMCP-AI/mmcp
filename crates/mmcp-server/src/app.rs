@@ -4,7 +4,7 @@ use axum::Router;
 use axum_login::AuthManagerLayerBuilder;
 use tower_http::trace::TraceLayer;
 use tower_sessions::cookie::SameSite;
-use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
+use tower_sessions::{Expiry, SessionManagerLayer};
 
 use crate::defaults::SESSION_INACTIVITY_EXPIRY;
 use crate::routes;
@@ -24,11 +24,6 @@ fn origin_uses_https(origin: &str) -> bool {
 /// Build the top-level HTTP router with every route and middleware
 /// layer attached.
 pub fn build_router(state: ServerState) -> Router {
-    // Session store: in-memory for now. A production deployment
-    // should switch to a persistent store (Redis, SQLite, etc.)
-    // to survive server restarts.
-    let session_store = MemoryStore::default();
-
     // tower-sessions defaults `same_site` to `Strict`.
     // A `Strict` cookie is withheld on the cross-site GET the OAuth redirect performs to this callback route,
     // so it never carries the CSRF state through to the callback handler.
@@ -37,7 +32,7 @@ pub fn build_router(state: ServerState) -> Router {
     // tower-sessions also defaults `secure` to `true` unconditionally;
     // see `origin_uses_https`'s doc comment for why that is tied to
     // the configured origin instead.
-    let session_layer = SessionManagerLayer::new(session_store)
+    let session_layer = SessionManagerLayer::new(state.session_store.clone())
         .with_same_site(SameSite::Lax)
         .with_secure(origin_uses_https(&state.origin))
         .with_expiry(Expiry::OnInactivity(SESSION_INACTIVITY_EXPIRY));
@@ -71,7 +66,7 @@ mod tests {
     /// Falsification for the bound this constant is meant to enforce:
     /// too short would fail a real OAuth or password login round
     /// trip, too long would let an abandoned anonymous session (see
-    /// `crate::routes::auth::oauth_authorize`) sit in the in-memory
+    /// `crate::routes::auth::oauth_authorize`) sit in the session
     /// store far longer than the flow it exists to bound.
     #[test]
     fn session_inactivity_expiry_is_a_short_minutes_scale_window() {

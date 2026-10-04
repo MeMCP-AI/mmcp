@@ -15,6 +15,7 @@ use webauthn_rs::prelude::*;
 
 use crate::config::{OAuthProviderConfig, ServerConfig};
 use crate::oauth_client::{OauthClient, build_oauth_client, build_oauth_exchange_http_client};
+use crate::session_store::DatabaseSessionStore;
 
 /// Everything a request handler needs from the server.
 #[derive(Clone)]
@@ -27,6 +28,8 @@ pub struct ServerStateInner {
     pub token_issuer: TokenIssuer,
     pub token_verifier: TokenVerifier,
     pub auth_backend: MmcpAuthBackend,
+    /// Persistent HTTP session store on the same database as [`ServerStateInner::database`].
+    pub session_store: DatabaseSessionStore,
     pub webauthn: Arc<Webauthn>,
     pub oauth_providers: HashMap<String, OAuthProviderConfig>,
     /// One `oauth2` client per entry of [`ServerStateInner::oauth_providers`].
@@ -78,6 +81,7 @@ impl ServerState {
             cfg.max_handle_length,
             cfg.allow_self_registration,
         );
+        let session_store = DatabaseSessionStore::new(database.connection().clone());
 
         // WebAuthn relying party derived from the origin.
         let origin_url = Url::parse(&cfg.origin)?;
@@ -107,6 +111,7 @@ impl ServerState {
             token_issuer,
             token_verifier,
             auth_backend,
+            session_store,
             webauthn,
             oauth_providers,
             oauth_clients,

@@ -165,7 +165,7 @@ bytes = "1"
 argon2 = "0.5"
 rusty_paseto = { version = "0.10", default-features = false, features = ["v4_local", "batteries_included"] }
 axum-login = "0.18"
-tower-sessions = "0.14"
+tower-sessions = { version = "0.14", default-features = false }
 webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
 # tower-sessions' own `Expiry` variants take this crate's `Duration`
 # directly; declared explicitly rather than relying on the transitive
