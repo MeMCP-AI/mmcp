@@ -343,11 +343,10 @@ fn warn_unusable_network_prefix(prefix_length: usize) {
     );
 }
 
-/// Parse a raw `usize`-tier environment variable value, if any, into
-/// a tier value. A blank value counts as unset (returns `None` without
-/// logging). Logs and falls through (returns `None`) when the
-/// variable is present but not a valid number, rather than silently
-/// discarding it or defaulting it to zero.
+/// Parse a raw `usize`-tier environment variable value, if any, into a tier value.
+/// A blank value counts as unset and returns `None` without logging.
+/// A value that is present but not a valid number is logged and returns `None`, so the next tier applies.
+/// It is never silently discarded or defaulted to zero.
 fn parse_usize_env(field: &str, var_name: &str, raw: Option<&str>) -> Option<usize> {
     let raw = non_blank(raw)?;
     match raw.parse::<usize>() {
