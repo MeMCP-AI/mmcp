@@ -47,6 +47,9 @@ services:
       MMCP_MIN_PASSWORD_LENGTH: ${MMCP_MIN_PASSWORD_LENGTH:-}
       MMCP_MAX_PASSWORD_LENGTH: ${MMCP_MAX_PASSWORD_LENGTH:-}
       MMCP_MAX_HANDLE_LENGTH: ${MMCP_MAX_HANDLE_LENGTH:-}
+      MMCP_AUTH_RATE_LIMIT_PER_MINUTE: ${MMCP_AUTH_RATE_LIMIT_PER_MINUTE:-}
+      MMCP_AUTH_RATE_LIMIT_BURST: ${MMCP_AUTH_RATE_LIMIT_BURST:-}
+      MMCP_TRUSTED_PROXIES: ${MMCP_TRUSTED_PROXIES:-}
     volumes:
       - mmcp-repos:/data/repos
     # Published on 127.0.0.1 by default, so the plain HTTP port is reachable from this host only.

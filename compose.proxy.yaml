@@ -4,6 +4,10 @@
 
 services:
   mmcp-server:
+    # Behind a proxy every request reaches the server from the proxy.
+    # Naming the proxy range lets the server limit each client by its own address.
+    environment:
+      MMCP_TRUSTED_PROXIES: ${MMCP_TRUSTED_PROXIES:?set MMCP_TRUSTED_PROXIES in .env to the address range of your reverse proxy network}
     networks:
       - proxy
 
