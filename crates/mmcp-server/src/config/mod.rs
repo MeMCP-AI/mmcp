@@ -2,6 +2,7 @@
 
 mod cascade;
 mod defaults;
+mod env_value;
 mod error;
 mod oauth_provider;
 mod overrides;

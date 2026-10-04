@@ -10,6 +10,7 @@ use super::cascade::{
 use super::defaults::{
     ALLOW_SELF_REGISTRATION_ENV, DEFAULT_BIND, DEFAULT_DATABASE_URL, DEFAULT_REPO_ROOT,
 };
+use super::env_value::non_blank;
 use super::error::ConfigError;
 use super::oauth_provider::OAuthProviderConfig;
 use super::overrides::ServerConfigOverrides;
@@ -179,9 +180,7 @@ impl ServerConfig {
         // `cargo run` just needs something that boots.
         let origin =
             get("MMCP_ORIGIN").unwrap_or_else(|| format!("http://localhost:{}", bind.port()));
-        let push_token = get("MMCP_PUSH_TOKEN")
-            .map(|token| token.trim().to_string())
-            .filter(|token| !token.is_empty());
+        let push_token = non_blank(get("MMCP_PUSH_TOKEN").as_deref()).map(str::to_owned);
 
         let mut oauth_providers = Vec::new();
         if let (Some(id), Some(secret)) = (
