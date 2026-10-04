@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use mmcp_core::config::{NoticeLaunch, is_group_adopted};
+use mmcp_core::config::{ConfigKey, NoticeLaunch, is_group_adopted};
 use mmcp_core::conventions::{SlugRecursion, slug_matches_filter};
 use mmcp_core::id::GroupId;
 use mmcp_core::memory::{MemoryFile, MemoryFrontmatter};
@@ -38,6 +38,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::commands::claude::{InitClaudeAction, InitClaudeConflict, action_wire, claude_md_notes};
+use crate::commands::config::NoticeSources;
 use crate::commands::serve_defaults::{SYNC_FULL_TIMEOUT, SYNC_SINGLE_OP_TIMEOUT};
 use crate::commands::subscription::{
     SubscribeError, SubscribeMcpArgs, SubscriptionAction, resolve_subscribed_reads,
@@ -105,7 +106,6 @@ struct ClientStateInner {
     /// User-level CLAUDE.md checked by `bootstrap_context`; `None` when the user home is unresolved.
     user_claude_md: Option<PathBuf>,
     /// Notice key values the process was launched with, the flag and variable layers of each key's resolution.
-    #[expect(dead_code, reason = "no tool reads it in this revision")]
     notice_launch: NoticeLaunch,
     /// Debug mode flag.
     /// When true, raw git access tools are enabled.
@@ -4316,14 +4316,27 @@ impl McpServer {
             }),
         };
 
-        // Advisory CLAUDE.md signals flow through the
-        // standard notes channel; no bespoke `diagnostics` field.
-        // `init_claude` is still the only remediation, and the note
-        // context points callers at it. The subscribed-reads
-        // resolver's own failure signals ride the same channel.
+        // Advisory CLAUDE.md signals flow through the standard notes channel.
+        // There is no bespoke `diagnostics` field.
+        // `init_claude` is still the only remediation, and the note context points callers at it.
+        // The subscribed-reads resolver's own failure signals ride the same channel.
+        // Each key gates the notices of its own file.
+        // The keys are resolved per call, so a setting changed mid-session applies at the next bootstrap.
+        let notice_sources = NoticeSources::load_tolerant(
+            &self.state.home,
+            project_root.as_deref(),
+            project_cfg.as_ref(),
+        );
+        let notice_of = |key| {
+            notice_sources
+                .resolve(key, &self.state.notice_launch)
+                .effective
+        };
         let mut notes = claude_md_notes(
             project_root.as_deref(),
             self.state.user_claude_md.as_deref(),
+            notice_of(ConfigKey::NoticeMdProject),
+            notice_of(ConfigKey::NoticeMdUser),
         );
         notes.extend(project_config_load_notes);
         notes.extend(subscribed_notes);
@@ -8529,6 +8542,7 @@ fn paginate_records(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use mmcp_core::config::{LaunchValues, NoticeValue};
     use mmcp_core::id::{GroupId, MemoryId, UserId};
     use mmcp_core::manifest::GroupManifest;
     use mmcp_git::{CommitSpec, GitBackend};
@@ -8554,6 +8568,14 @@ mod tests {
     /// Build a `ClientState` rooted inside a fresh tempdir so the
     /// test never touches the real user home.
     async fn test_state() -> (ClientState, TempDir) {
+        test_state_with(NoticeLaunch::default(), None).await
+    }
+
+    /// [`test_state`] with launch notice values and a user CLAUDE.md path.
+    async fn test_state_with(
+        notice_launch: NoticeLaunch,
+        user_claude_md: Option<PathBuf>,
+    ) -> (ClientState, TempDir) {
         let cache_home = MmcpHome::from_root(SHARED_CACHE_HOME.path().join("mmcp-home"));
         mmcp_store::cache::init_from_home(&cache_home)
             .await
@@ -8582,7 +8604,7 @@ mod tests {
             .await;
         let tmp = TempDir::new().expect("tempdir");
         let home = MmcpHome::from_root(tmp.path().join("mmcp-home"));
-        let state = ClientState::initialize_from(home, None, None, NoticeLaunch::default(), false)
+        let state = ClientState::initialize_from(home, None, user_claude_md, notice_launch, false)
             .await
             .expect("initialize_from");
         (state, tmp)
@@ -12555,6 +12577,172 @@ mod tests {
         assert_eq!(
             payload.get("query").and_then(|v| v.as_str()),
             Some("no-such-group")
+        );
+    }
+
+    /// A served home, a project with no CLAUDE.md and a stale user CLAUDE.md.
+    /// Bootstrapping it reports one project note and one user note until a key turns one off.
+    struct NoticeBootstrap {
+        _scratch: TempDir,
+        _tmp: TempDir,
+        server: McpServer,
+        project: PathBuf,
+    }
+
+    impl NoticeBootstrap {
+        async fn new(notice_launch: NoticeLaunch) -> Self {
+            use crate::commands::claude::{BLOCK_VERSION, begin_marker, end_marker};
+            let scratch = TempDir::new().expect("tempdir");
+            let user_claude_md = scratch.path().join("user-CLAUDE.md");
+            std::fs::write(
+                &user_claude_md,
+                format!(
+                    "{}\n## Stale block\n{}",
+                    begin_marker().replacen(BLOCK_VERSION, "v1", 1),
+                    end_marker().replacen(BLOCK_VERSION, "v1", 1),
+                ),
+            )
+            .expect("write user CLAUDE.md");
+            let (state, tmp) = test_state_with(notice_launch, Some(user_claude_md)).await;
+            let project = tmp.path().join("project");
+            std::fs::create_dir_all(&project).expect("mkdir project");
+            std::fs::write(
+                project.join(".mmcp.toml"),
+                "project_uuid = \"018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91\"\n",
+            )
+            .expect("write .mmcp.toml");
+            Self {
+                _scratch: scratch,
+                _tmp: tmp,
+                server: McpServer::new(state, ServeMode::Full),
+                project,
+            }
+        }
+
+        fn write_user_config(&self, body: &str) {
+            let path = self.server.state.home.user_config_path();
+            std::fs::write(path, body).expect("write user config");
+        }
+
+        fn write_local(&self, body: &str) {
+            std::fs::write(self.project.join(".mmcp.local.toml"), body).expect("write local");
+        }
+
+        fn append_project(&self, body: &str) {
+            use std::io::Write as _;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(self.project.join(".mmcp.toml"))
+                .expect("open .mmcp.toml");
+            file.write_all(body.as_bytes()).expect("append .mmcp.toml");
+        }
+
+        /// The `claude_md_*` note codes of one bootstrap of the project.
+        async fn claude_md_codes(&self) -> Vec<String> {
+            let res = self
+                .server
+                .bootstrap_context(Parameters(BootstrapContextArgs {
+                    project: None,
+                    path: Some(self.project.display().to_string()),
+                }))
+                .await
+                .expect("bootstrap_context");
+            parse_ok_json(res)
+                .get("notes")
+                .and_then(|v| v.as_array())
+                .map(|notes| {
+                    notes
+                        .iter()
+                        .filter_map(|note| note.get("code").and_then(|c| c.as_str()))
+                        .filter(|code| code.starts_with("claude_md_"))
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+    }
+
+    const BOTH_NOTES: [&str; 2] = ["claude_md_missing", "claude_md_update_available"];
+    const USER_NOTE_ONLY: [&str; 1] = ["claude_md_update_available"];
+
+    #[tokio::test]
+    async fn bootstrap_reports_both_files_notices_when_nothing_is_configured() {
+        let bootstrap = NoticeBootstrap::new(NoticeLaunch::default()).await;
+        assert_eq!(bootstrap.claude_md_codes().await, BOTH_NOTES);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_local_setting_suppresses_the_project_file_notice() {
+        let bootstrap = NoticeBootstrap::new(NoticeLaunch::default()).await;
+        bootstrap.write_local("[notice.md]\nproject = \"off\"\n");
+        assert_eq!(bootstrap.claude_md_codes().await, USER_NOTE_ONLY);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_project_setting_suppresses_the_project_file_notice() {
+        let bootstrap = NoticeBootstrap::new(NoticeLaunch::default()).await;
+        bootstrap.append_project("[notice.md]\nproject = \"off\"\n");
+        assert_eq!(bootstrap.claude_md_codes().await, USER_NOTE_ONLY);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_user_setting_suppresses_each_files_notice_by_its_own_key() {
+        let bootstrap = NoticeBootstrap::new(NoticeLaunch::default()).await;
+        bootstrap.write_user_config("[notice.md]\nproject = \"off\"\n");
+        assert_eq!(bootstrap.claude_md_codes().await, USER_NOTE_ONLY);
+
+        bootstrap.write_user_config("[notice.md]\nuser = \"off\"\n");
+        assert_eq!(bootstrap.claude_md_codes().await, ["claude_md_missing"]);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_launch_off_with_no_per_project_layer_suppresses() {
+        let launch = NoticeLaunch {
+            md_project: LaunchValues {
+                flag: Some(NoticeValue::Off),
+                environment: None,
+            },
+            ..NoticeLaunch::default()
+        };
+        let bootstrap = NoticeBootstrap::new(launch).await;
+        assert_eq!(bootstrap.claude_md_codes().await, USER_NOTE_ONLY);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_launch_on_never_overrides_a_local_off() {
+        let launch = NoticeLaunch {
+            md_project: LaunchValues {
+                flag: Some(NoticeValue::On),
+                environment: Some(NoticeValue::On),
+            },
+            ..NoticeLaunch::default()
+        };
+        let bootstrap = NoticeBootstrap::new(launch).await;
+        bootstrap.write_local("[notice.md]\nproject = \"off\"\n");
+        assert_eq!(bootstrap.claude_md_codes().await, USER_NOTE_ONLY);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_applies_a_setting_changed_mid_session_at_the_next_call() {
+        let bootstrap = NoticeBootstrap::new(NoticeLaunch::default()).await;
+        assert_eq!(bootstrap.claude_md_codes().await, BOTH_NOTES);
+
+        bootstrap.write_local("[notice.md]\nproject = \"off\"\n");
+        assert_eq!(bootstrap.claude_md_codes().await, USER_NOTE_ONLY);
+
+        bootstrap.write_local("[notice.md]\nproject = \"on\"\n");
+        assert_eq!(bootstrap.claude_md_codes().await, BOTH_NOTES);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_keeps_serving_when_the_local_or_user_file_fails_to_load() {
+        let bootstrap = NoticeBootstrap::new(NoticeLaunch::default()).await;
+        bootstrap.write_local("[notice.md]\nprojet = \"off\"\n");
+        bootstrap.write_user_config("not = [valid");
+        assert_eq!(
+            bootstrap.claude_md_codes().await,
+            BOTH_NOTES,
+            "a file that fails to load counts as unset"
         );
     }
 
