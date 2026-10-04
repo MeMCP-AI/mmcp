@@ -83,6 +83,6 @@ pub(crate) fn log_committed_credential_change(owner: &Model, change: CredentialC
         user_id = %owner.id,
         change = ?change,
         epoch = owner.credential_epoch,
-        "credential changed, the user's other sessions are signed out"
+        "credential changed, the user's other sessions sign out at their next request"
     );
 }
