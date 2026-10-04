@@ -25,6 +25,7 @@ name = "mmcp-gui-tauri"
 version = "0.1.21"
 description = "mmcp-gui: Tauri 2 backend wrapping mmcp-store for the SvelteKit desktop client."
 authors = ["Gabriel GRONDIN"]
+license = "MIT OR Apache-2.0"
 edition = "2024"
 rust-version = "1.88"
 
