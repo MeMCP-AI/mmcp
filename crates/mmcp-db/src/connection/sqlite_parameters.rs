@@ -54,6 +54,19 @@ mod tests {
         "ro", "rw", "rwc", "memory", "private", "shared", "true", "false", "1", "0",
     ];
 
+    /// The query parameters that SQLite itself interprets, a superset of what sqlx-sqlite recognizes.
+    /// They are the "core URI query parameters" of the `sqlite3_open_v2` documentation in the bundled `sqlite3.c`, plus `modeof`, which the unix VFS of the same file reads.
+    /// They are written out here and not read from the mirror.
+    const SQLITE_URI_PARAMETERS: [&str; 7] = [
+        "vfs",
+        "mode",
+        "cache",
+        "psow",
+        "nolock",
+        "immutable",
+        "modeof",
+    ];
+
     /// Values that sqlx-sqlite could widen to, and that the mirror must keep refusing while sqlx does.
     const NEAR_MISSES: [&str; 6] = ["RO", "Private", "TRUE", "yes", "2", ""];
 
@@ -64,6 +77,22 @@ mod tests {
             for value in values {
                 assert!(sqlx_accepts(key, value), "{key}={value}");
             }
+        }
+    }
+
+    /// Whether sqlx-sqlite takes `key` with some value of the probe set.
+    fn sqlx_recognizes(key: &str) -> bool {
+        DRIVER_VALUES
+            .iter()
+            .chain([&FREE_TEXT_VALUE])
+            .any(|value| sqlx_accepts(key, value))
+    }
+
+    /// A key that a later sqlx-sqlite starts to recognize shows here as a key the mirror lacks.
+    #[test]
+    fn the_mirror_holds_exactly_the_sqlite_uri_parameters_that_sqlx_sqlite_recognizes() {
+        for key in SQLITE_URI_PARAMETERS {
+            assert_eq!(sqlx_recognizes(key), ACCEPTED_KEYS.contains(&key), "{key}");
         }
     }
 
