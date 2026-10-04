@@ -26,8 +26,8 @@ use super::overrides::ServerConfigOverrides;
 /// | `MMCP_DATABASE_URL`               | `sqlite::memory:`        |
 /// | `MMCP_REPO_ROOT`                  | `./data/repos`           |
 /// | `MMCP_TOKEN_KEY_HEX`              | random 32 bytes on start |
-/// | `MMCP_OAUTH_GITHUB_CLIENT_ID`     | (absent = disabled)      |
-/// | `MMCP_OAUTH_GITHUB_CLIENT_SECRET` | (absent = disabled)      |
+/// | `MMCP_OAUTH_GITHUB_CLIENT_ID`     | (absent or blank = disabled)|
+/// | `MMCP_OAUTH_GITHUB_CLIENT_SECRET` | (absent or blank = disabled)|
 /// | `MMCP_ORIGIN`                     | `http://localhost:<port>`|
 /// | `MMCP_PUSH_TOKEN`                 | (absent = pushes disabled)|
 /// | `MMCP_MIN_PASSWORD_LENGTH`        | see `min_password_length` cascade below |
@@ -184,10 +184,13 @@ impl ServerConfig {
 
         let mut oauth_providers = Vec::new();
         if let (Some(id), Some(secret)) = (
-            get("MMCP_OAUTH_GITHUB_CLIENT_ID"),
-            get("MMCP_OAUTH_GITHUB_CLIENT_SECRET"),
+            non_blank(get("MMCP_OAUTH_GITHUB_CLIENT_ID").as_deref()),
+            non_blank(get("MMCP_OAUTH_GITHUB_CLIENT_SECRET").as_deref()),
         ) {
-            oauth_providers.push(OAuthProviderConfig::github(id, secret));
+            oauth_providers.push(OAuthProviderConfig::github(
+                id.to_owned(),
+                secret.to_owned(),
+            ));
         }
 
         let user_limits = load_user_limits();
@@ -440,6 +443,58 @@ mod tests {
         assert_eq!(gh.auth_url, "https://github.com/login/oauth/authorize");
         assert_eq!(gh.token_url, "https://github.com/login/oauth/access_token");
         assert_eq!(gh.userinfo_url, "https://api.github.com/user");
+    }
+
+    #[test]
+    fn github_oauth_stays_disabled_when_either_value_is_blank() {
+        let both_blank = from_map(&[
+            ("MMCP_OAUTH_GITHUB_CLIENT_ID", ""),
+            ("MMCP_OAUTH_GITHUB_CLIENT_SECRET", "  "),
+        ]);
+        assert!(both_blank.oauth_providers.is_empty());
+
+        let blank_secret = from_map(&[
+            ("MMCP_OAUTH_GITHUB_CLIENT_ID", "abc"),
+            ("MMCP_OAUTH_GITHUB_CLIENT_SECRET", ""),
+        ]);
+        assert!(blank_secret.oauth_providers.is_empty());
+
+        let blank_id = from_map(&[
+            ("MMCP_OAUTH_GITHUB_CLIENT_ID", ""),
+            ("MMCP_OAUTH_GITHUB_CLIENT_SECRET", "xyz"),
+        ]);
+        assert!(blank_id.oauth_providers.is_empty());
+    }
+
+    #[test]
+    fn github_oauth_credentials_are_stored_without_surrounding_whitespace() {
+        let cfg = from_map(&[
+            ("MMCP_OAUTH_GITHUB_CLIENT_ID", " abc\n"),
+            ("MMCP_OAUTH_GITHUB_CLIENT_SECRET", "xyz "),
+        ]);
+        assert_eq!(cfg.oauth_providers[0].client_id, "abc");
+        assert_eq!(cfg.oauth_providers[0].client_secret, "xyz");
+    }
+
+    #[test]
+    fn blank_length_limit_variables_fall_through_to_the_defaults_without_warning() {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let subscriber = WarnCounter(count.clone());
+        let cfg = tracing::subscriber::with_default(subscriber, || {
+            from_map(&[
+                (MIN_PASSWORD_LENGTH_ENV, ""),
+                (MAX_PASSWORD_LENGTH_ENV, ""),
+                (MAX_HANDLE_LENGTH_ENV, ""),
+            ])
+        });
+        assert_eq!(cfg.min_password_length, mmcp_auth::MIN_PASSWORD_LENGTH);
+        assert_eq!(cfg.max_password_length, mmcp_auth::MAX_PASSWORD_LENGTH);
+        assert_eq!(cfg.max_handle_length, mmcp_auth::MAX_HANDLE_LENGTH);
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "blank limit variables are the unset form and must not warn"
+        );
     }
 
     #[test]

@@ -21,6 +21,7 @@
 use super::defaults::{
     MAX_HANDLE_LENGTH_ENV, MAX_PASSWORD_LENGTH_ENV, MIN_PASSWORD_LENGTH_ENV, MIN_VALID_LENGTH_LIMIT,
 };
+use super::env_value::non_blank;
 
 /// Resolve the effective minimum password length.
 /// Highest-precedence source wins:
@@ -117,11 +118,12 @@ where
 }
 
 /// Parse a raw `usize`-tier environment variable value, if any, into
-/// a tier value. Logs and falls through (returns `None`) when the
+/// a tier value. A blank value counts as unset (returns `None` without
+/// logging). Logs and falls through (returns `None`) when the
 /// variable is present but not a valid number, rather than silently
 /// discarding it or defaulting it to zero.
 fn parse_usize_env(field: &str, var_name: &str, raw: Option<&str>) -> Option<usize> {
-    let raw = raw?;
+    let raw = non_blank(raw)?;
     match raw.parse::<usize>() {
         Ok(n) => Some(n),
         Err(err) => {
@@ -317,6 +319,32 @@ mod tests {
             1,
             "falling through the zero config tier must log exactly one warning"
         );
+    }
+
+    /// A blank value is the unset form Compose interpolation produces, never a malformed number.
+    #[test]
+    fn parse_usize_env_treats_a_blank_value_as_absent_without_warning() {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let subscriber = WarnCounter(count.clone());
+
+        let results = tracing::subscriber::with_default(subscriber, || {
+            (
+                parse_usize_env("x", "MMCP_X", Some("")),
+                parse_usize_env("x", "MMCP_X", Some("  \n")),
+            )
+        });
+
+        assert_eq!(results, (None, None));
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a blank value is not an invalid number and must not warn"
+        );
+    }
+
+    #[test]
+    fn parse_usize_env_parses_a_value_with_surrounding_whitespace() {
+        assert_eq!(parse_usize_env("x", "MMCP_X", Some(" 12\n")), Some(12));
     }
 
     #[test]
