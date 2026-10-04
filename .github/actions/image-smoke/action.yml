@@ -1,0 +1,102 @@
+name: image smoke run
+description: Runs a locally available mmcp-server image on this runner and checks it against the requirement
+# The caller checks out the repository first, because the run reads compose.yaml and Cargo.toml.
+# Every probe expects a value taken from the requirement, never from the output of another image.
+
+inputs:
+  image-name:
+    description: Name of the local image, without a tag
+    required: true
+  image-tag:
+    description: Tag of the local image
+    required: true
+  project:
+    description: Compose project name of the throwaway stack
+    default: mmcp-smoke
+  wait-timeout:
+    description: Seconds the stack gets to become healthy
+    default: "180"
+
+runs:
+  using: composite
+  steps:
+    - name: Smoke run, execute the image
+      shell: bash
+      env:
+        IMAGE_NAME: ${{ inputs.image-name }}
+        IMAGE_TAG: ${{ inputs.image-tag }}
+      run: |
+        expected="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+        if [ -z "${expected}" ]; then
+          echo "::error::smoke-version: no workspace version found in Cargo.toml"
+          exit 1
+        fi
+        if ! output="$(docker run --rm "${IMAGE_NAME}:${IMAGE_TAG}" --version)"; then
+          echo "::error::smoke-exec: the image does not run on this architecture"
+          exit 1
+        fi
+        case "${output}" in
+          *"${expected}"*) echo "${output}" ;;
+          *)
+            echo "::error::smoke-version: expected ${expected}, the image printed ${output}"
+            exit 1
+            ;;
+        esac
+
+    - name: Smoke run, start the stack
+      shell: bash
+      env:
+        IMAGE_NAME: ${{ inputs.image-name }}
+        IMAGE_TAG: ${{ inputs.image-tag }}
+        PROJECT: ${{ inputs.project }}
+        WAIT_TIMEOUT: ${{ inputs.wait-timeout }}
+      run: |
+        umask 077
+        postgres_password="$(openssl rand -hex 32)"
+        token_key="$(openssl rand -hex 32)"
+        echo "::add-mask::${postgres_password}"
+        echo "::add-mask::${token_key}"
+        {
+          echo "POSTGRES_PASSWORD=${postgres_password}"
+          echo "MMCP_TOKEN_KEY_HEX=${token_key}"
+          echo "MMCP_IMAGE=${IMAGE_NAME}"
+          echo "MMCP_IMAGE_TAG=${IMAGE_TAG}"
+          echo "MMCP_PULL_POLICY=never"
+        } > "${RUNNER_TEMP}/smoke.env"
+        if ! docker compose -p "${PROJECT}" --env-file "${RUNNER_TEMP}/smoke.env" -f compose.yaml up -d --wait --wait-timeout "${WAIT_TIMEOUT}"; then
+          echo "::error::smoke-start: the stack did not become healthy"
+          exit 1
+        fi
+
+    - name: Smoke run, fetch the web UI
+      shell: bash
+      run: |
+        result="$(curl -sS -o /dev/null -w '%{http_code} %{content_type}' http://127.0.0.1:8787/)"
+        case "${result}" in
+          "200 text/html"*) echo "${result}" ;;
+          *)
+            echo "::error::smoke-ui: GET / answered ${result}"
+            exit 1
+            ;;
+        esac
+
+    - name: Smoke run, print the logs
+      if: failure()
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.project }}
+      run: |
+        if [ -f "${RUNNER_TEMP}/smoke.env" ]; then
+          docker compose -p "${PROJECT}" --env-file "${RUNNER_TEMP}/smoke.env" -f compose.yaml logs
+        fi
+
+    - name: Smoke run, remove the stack
+      if: always()
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.project }}
+      run: |
+        if [ -f "${RUNNER_TEMP}/smoke.env" ]; then
+          docker compose -p "${PROJECT}" --env-file "${RUNNER_TEMP}/smoke.env" -f compose.yaml down -v
+          rm -f "${RUNNER_TEMP}/smoke.env"
+        fi
