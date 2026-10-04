@@ -421,6 +421,50 @@ mod tests {
         assert_eq!(cfg.repo_root, PathBuf::from("/srv/mmcp/repos"));
     }
 
+    /// Every printable form of `error`: its text, its Debug and the same for each source behind it.
+    fn error_chain_text(error: &(dyn std::error::Error + 'static)) -> String {
+        let mut texts = vec![format!("{error} | {error:?}")];
+        let mut source = error.source();
+        while let Some(cause) = source {
+            texts.push(format!("{cause} | {cause:?}"));
+            source = cause.source();
+        }
+        texts.join("\n")
+    }
+
+    #[test]
+    fn an_accepted_database_url_leaves_no_password_in_the_target_or_the_config_debug() {
+        for url in [
+            "postgres://mmcp:SENTINEL_A@postgres:5432/mmcp",
+            "postgres://db/mmcp?password=SENTINEL_B&sslmode=require",
+            "postgres://mmcp:SENTINEL_C@db/mmcp?password=SENTINEL_C",
+            "postgres:///mmcp?host=/var/run/postgresql&password=SENTINEL_D",
+        ] {
+            let cfg = from_map(&[("MMCP_DATABASE_URL", url)]);
+            let printed = format!("{} | {:?}", cfg.database_target, cfg);
+            assert!(!printed.contains("SENTINEL_"), "{url}: {printed}");
+        }
+    }
+
+    #[test]
+    fn a_refused_database_url_names_its_reason_without_echoing_the_url() {
+        for url in [
+            "postgres:/mmcp:SENTINEL_A@db/app",
+            "postgres://mmcp:/SENTINEL_B@db/app",
+            "postgres://mmcp:#SENTINEL_C@db/app",
+            "postgres://mmcp@db/app?PassWord=SENTINEL_D",
+            "postgress://mmcp:SENTINEL_E@db/app",
+            "postgres://mmcp:SENTINEL_F@[bad-host/app",
+        ] {
+            let Err(error) = from_map_result(&[("MMCP_DATABASE_URL", url)]) else {
+                panic!("{url} must be refused");
+            };
+            assert!(matches!(error, ConfigError::InvalidDatabaseUrl(_)), "{url}");
+            let printed = error_chain_text(&error);
+            assert!(!printed.contains("SENTINEL_"), "{url}: {printed}");
+        }
+    }
+
     #[test]
     fn origin_defaults_to_localhost_and_inherits_bind_port() {
         // Bind may be a loopback/wildcard IP, but the derived origin
