@@ -265,6 +265,36 @@ async fn a_credential_that_scram_refuses_is_named_at_connect_without_its_charact
     assert!(!capture.text().contains(s), "{}", capture.text());
 }
 
+/// Under `sslmode=disable` the driver never reads a certificate or a key, so a SASLprep failure is no TLS failure.
+#[tokio::test]
+async fn a_scram_failure_is_not_named_a_client_key_failure_where_tls_never_runs() {
+    let (capture, _guard) = LogCapture::install();
+    let peer = FakePeer::start(Behavior::RequestsScram).await;
+    for tls_parameters in [
+        "sslcert=/missing.pem",
+        "sslkey=/missing.pem",
+        "sslcert=/missing.pem&sslkey=/missing.pem",
+    ] {
+        let url = format!(
+            "postgres://mmcp:p%F0%9F%98%80{SENTINEL}@127.0.0.1:{}/app?sslmode=disable&{tls_parameters}",
+            peer.port()
+        );
+        let target = DatabaseTarget::from_str(&url).expect("the URL is accepted");
+
+        let error = connect_error(&target)
+            .await
+            .unwrap_or_else(|| panic!("{url}: the connect must fail"));
+
+        assert!(
+            matches!(error, DbError::PasswordRejectedBySaslprep),
+            "{url}: {error:?}"
+        );
+        assert!(!chain_text(&error).contains(SENTINEL), "{url}");
+    }
+
+    assert!(!capture.text().contains(SENTINEL), "{}", capture.text());
+}
+
 /// The pairing check of the driver runs after the SSL request is answered, so a peer that answers it reaches the mapping of `connect`.
 #[tokio::test]
 async fn a_client_certificate_without_its_key_is_named_and_the_driver_error_is_dropped() {

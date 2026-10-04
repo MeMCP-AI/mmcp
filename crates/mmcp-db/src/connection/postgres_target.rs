@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use percent_encoding::percent_decode_str;
 use sea_orm::sqlx;
-use sea_orm::sqlx::postgres::PgConnectOptions;
+use sea_orm::sqlx::postgres::{PgConnectOptions, PgSslMode};
 use secrecy::{ExposeSecret, SecretString};
 use url::Url;
 
@@ -59,31 +59,39 @@ impl PostgresTarget {
         PgConnectOptions::from_str(self.exposed_text())
     }
 
-    /// The value-free error for a configuration error that sqlx raised while connecting.
+    /// The value-free error for a configuration error that sqlx raised while connecting with `options`.
     ///
     /// The driver error is dropped, since it may quote a credential or a line of the key file.
-    /// The cause is read from the state that decides it: the client certificate and key, and the user name and password, that the URL or the environment give.
-    pub(super) fn explain_configuration_error(&self) -> DbError {
-        self.explain_configuration_error_in(&|name| std::env::var(name).ok())
+    /// The cause is read from the state that decides it.
+    /// The SSL mode and the user name are the ones sqlx connected with, from `options`.
+    /// The client certificate and key, and the password, come from the URL and the environment, since sqlx exposes no getter for them.
+    pub(super) fn explain_configuration_error(&self, options: &PgConnectOptions) -> DbError {
+        self.explain_configuration_error_in(options, &|name| std::env::var(name).ok())
     }
 
     /// [`Self::explain_configuration_error`] with the environment as a lookup, so a test sets none.
     ///
     /// SCRAM authentication applies SASLprep to the user name first and to the password later, so a failing user name decides the cause.
-    /// The TLS checks fail during the handshake, which comes before authentication, but a server that declines TLS skips them.
+    /// Under the SSL modes `disable` and `allow` sqlx never reads a certificate or a key, so no TLS cause exists.
+    /// Under the other modes the TLS checks fail during the handshake, which comes before authentication, but a server that declines TLS skips them.
     /// A TLS cause beside a SASLprep cause therefore leaves the cause unknown.
+    /// A password that a pgpass file supplies is not known here, so a failure of it is named by no variant of its own.
     fn explain_configuration_error_in(
         &self,
+        options: &PgConnectOptions,
         environment: &dyn Fn(&str) -> Option<String>,
     ) -> DbError {
         let Ok(url) = Url::parse(self.exposed_text()) else {
             return DbError::ConnectionConfigurationRejected;
         };
         let authentication_cause =
-            username_cause(&url, environment).or_else(|| password_cause(&url, environment));
-        let mut causes = [tls_cause(&url, environment), authentication_cause]
-            .into_iter()
-            .flatten();
+            username_cause(options).or_else(|| password_cause(&url, environment));
+        let mut causes = [
+            tls_cause(&url, options.get_ssl_mode(), environment),
+            authentication_cause,
+        ]
+        .into_iter()
+        .flatten();
         match (causes.next(), causes.next()) {
             (Some(only), None) => only,
             _ => DbError::ConnectionConfigurationRejected,
@@ -92,7 +100,16 @@ impl PostgresTarget {
 }
 
 /// The TLS error that the client certificate and key the URL or the environment give would raise.
-fn tls_cause(url: &Url, environment: &dyn Fn(&str) -> Option<String>) -> Option<DbError> {
+///
+/// sqlx returns the socket before it reads either file under the SSL modes `disable` and `allow`.
+fn tls_cause(
+    url: &Url,
+    ssl_mode: PgSslMode,
+    environment: &dyn Fn(&str) -> Option<String>,
+) -> Option<DbError> {
+    if matches!(ssl_mode, PgSslMode::Disable | PgSslMode::Allow) {
+        return None;
+    }
     let has_parameter = |keys: [&str; 2]| url.query_pairs().any(|(name, _)| keys.contains(&&*name));
     let has_certificate =
         has_parameter(["sslcert", "ssl-cert"]) || environment("PGSSLCERT").is_some();
@@ -104,19 +121,12 @@ fn tls_cause(url: &Url, environment: &dyn Fn(&str) -> Option<String>) -> Option<
     }
 }
 
-/// The SASLprep failure of the user name that the URL or the environment gives.
+/// The SASLprep failure of the user name that sqlx connected with, wherever it came from.
 ///
-/// SCRAM prepares the user name together with its `n=` prefix.
-fn username_cause(url: &Url, environment: &dyn Fn(&str) -> Option<String>) -> Option<DbError> {
-    let user = effective_value(
-        url,
-        Some(url.username())
-            .filter(|user| !user.is_empty())
-            .map(decoded),
-        "user",
-    )
-    .or_else(|| environment("PGUSER"));
-    user.is_some_and(|user| stringprep::saslprep(&format!("n={user}")).is_err())
+/// The URL, `PGUSER` and the operating system user name all end in the options, and SCRAM prepares the user name together with its `n=` prefix.
+fn username_cause(options: &PgConnectOptions) -> Option<DbError> {
+    stringprep::saslprep(&format!("n={}", options.get_username()))
+        .is_err()
         .then_some(DbError::UsernameRejectedBySaslprep)
 }
 
@@ -233,10 +243,41 @@ mod tests {
         PostgresTarget::parse(raw, &url).unwrap()
     }
 
+    /// The explanation of a configuration error for `raw` connected with `options`, with the environment `variables`.
+    fn explained_with(
+        raw: &str,
+        options: &PgConnectOptions,
+        variables: &[(&str, &str)],
+    ) -> DbError {
+        let map: HashMap<&str, &str> = variables.iter().copied().collect();
+        target(raw).explain_configuration_error_in(options, &|name| {
+            map.get(name).map(|value| (*value).to_owned())
+        })
+    }
+
+    /// The options that sqlx builds for `raw`, with the host's own `PGUSER`, `PGSSLMODE` and operating system user name left out.
+    ///
+    /// A user name that the URL does not give is `PGUSER` among the `variables`, else `mmcp`.
+    /// An SSL mode that the URL does not give is sqlx's default, `prefer`.
+    fn options_for(raw: &str, variables: &[(&str, &str)]) -> PgConnectOptions {
+        let url = Url::parse(raw).unwrap();
+        let gives = |keys: &[&str]| url.query_pairs().any(|(name, _)| keys.contains(&&*name));
+        let mut options = PgConnectOptions::from_str(raw).unwrap();
+        if url.username().is_empty() && !gives(&["user"]) {
+            let user = variables
+                .iter()
+                .find_map(|(name, value)| (*name == "PGUSER").then_some(*value));
+            options = options.username(user.unwrap_or("mmcp"));
+        }
+        if !gives(&["sslmode", "ssl-mode"]) {
+            options = options.ssl_mode(PgSslMode::Prefer);
+        }
+        options
+    }
+
     /// The explanation of a configuration error for `raw`, with the environment `variables`.
     fn explained(raw: &str, variables: &[(&str, &str)]) -> DbError {
-        let map: HashMap<&str, &str> = variables.iter().copied().collect();
-        target(raw).explain_configuration_error_in(&|name| map.get(name).map(|v| (*v).to_owned()))
+        explained_with(raw, &options_for(raw, variables), variables)
     }
 
     #[test]
@@ -410,6 +451,79 @@ mod tests {
             ),
             DbError::ConnectionConfigurationRejected
         ));
+    }
+
+    /// Under these modes sqlx returns the socket before it reads a certificate or a key.
+    #[test]
+    fn no_tls_cause_is_named_where_sslmode_means_tls_never_runs() {
+        for mode in ["disable", "allow"] {
+            for query in [
+                format!("sslmode={mode}&sslcert=/c.pem"),
+                format!("ssl-mode={mode}&sslkey=/k.pem"),
+                format!("sslmode={mode}&sslcert=/c.pem&sslkey=/k.pem"),
+            ] {
+                let raw = format!("postgres://u:pw@db/app?{query}");
+
+                assert!(
+                    matches!(
+                        explained(&raw, &[]),
+                        DbError::ConnectionConfigurationRejected
+                    ),
+                    "{raw}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_credential_that_scram_refuses_is_named_where_tls_never_runs() {
+        assert!(matches!(
+            explained(
+                "postgres://u@db/app?sslmode=disable&sslcert=/c.pem&sslkey=/k.pem",
+                &[("PGPASSWORD", "p\u{7}ss")]
+            ),
+            DbError::PasswordRejectedBySaslprep
+        ));
+        assert!(matches!(
+            explained(
+                "postgres://m%07x:pw@db/app?sslmode=disable&sslcert=/c.pem",
+                &[]
+            ),
+            DbError::UsernameRejectedBySaslprep
+        ));
+    }
+
+    #[test]
+    fn a_tls_cause_is_still_named_under_every_mode_that_negotiates_tls() {
+        for mode in ["prefer", "require", "verify-ca", "verify-full"] {
+            let unpaired = format!("postgres://u:pw@db/app?sslmode={mode}&sslcert=/c.pem");
+            let paired = format!("{unpaired}&sslkey=/k.pem");
+
+            assert!(
+                matches!(
+                    explained(&unpaired, &[]),
+                    DbError::ClientCertificateAndKeyNotPaired
+                ),
+                "{unpaired}"
+            );
+            assert!(
+                matches!(explained(&paired, &[]), DbError::ClientKeyRejected),
+                "{paired}"
+            );
+        }
+    }
+
+    /// The user name that sqlx connected with can come from `PGUSER` or from the operating system, which no URL text shows.
+    #[test]
+    fn a_user_name_that_scram_refuses_is_read_from_the_options_wherever_it_came_from() {
+        let raw = "postgres://db/app?sslmode=disable";
+        let options = options_for(raw, &[]).username("m\u{7}x");
+
+        let error = explained_with(raw, &options, &[]);
+
+        assert!(matches!(error, DbError::UsernameRejectedBySaslprep));
+        let printed = format!("{error} | {error:?}");
+        assert!(!printed.contains('\u{7}') && !printed.contains("\\u{7}"));
     }
 
     #[test]

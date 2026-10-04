@@ -34,12 +34,13 @@ async fn connect_postgres(target: &PostgresTarget) -> Result<sea_orm::DatabaseCo
         .connect_options()
         .map_err(DbError::ConnectionOptionsRejected)?
         .log_statements(STATEMENT_LOG_LEVEL);
+    let connected_with = options.clone();
     let pool = PgPoolOptions::new()
         .test_before_acquire(TEST_BEFORE_ACQUIRE)
         .connect_with(options)
         .await
         .map_err(|error| match error {
-            sqlx::Error::Configuration(_) => target.explain_configuration_error(),
+            sqlx::Error::Configuration(_) => target.explain_configuration_error(&connected_with),
             other => DbError::ConnectionFailed(other),
         })?;
     Ok(SqlxPostgresConnector::from_sqlx_postgres_pool(pool))
