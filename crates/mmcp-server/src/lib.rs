@@ -9,5 +9,6 @@ mod defaults;
 mod oauth_client;
 mod origin;
 pub mod routes;
+pub mod serve;
 pub mod session_store;
 pub mod state;

@@ -10,6 +10,7 @@ use clap::{Args, Parser, Subcommand};
 
 use mmcp_server::app;
 use mmcp_server::config;
+use mmcp_server::serve;
 use mmcp_server::session_store;
 use mmcp_server::state;
 
@@ -135,7 +136,7 @@ async fn run_server(overrides: config::ServerConfigOverrides) -> Result<()> {
     let listener = tokio::net::TcpListener::bind::<SocketAddr>(cfg.bind).await?;
     tracing::info!(address = %cfg.bind, "listening");
     let sweeper = session_store::spawn_expired_session_sweeper(session_store);
-    let served = axum::serve(listener, app).await;
+    let served = serve::serve_router(listener, app).await;
     sweeper.abort();
     served?;
     Ok(())

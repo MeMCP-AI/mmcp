@@ -31,7 +31,7 @@ async fn start_server_with_oauth(providers: Vec<OAuthProviderConfig>) -> (Socket
         .expect("bind");
     let addr = listener.local_addr().expect("local addr");
     tokio::spawn(async move {
-        axum::serve(listener, app.into_make_service())
+        mmcp_server::serve::serve_router(listener, app)
             .await
             .unwrap();
     });
@@ -63,7 +63,7 @@ async fn start_server_with_oauth_and_self_registration_disabled(
         .expect("bind");
     let addr = listener.local_addr().expect("local addr");
     tokio::spawn(async move {
-        axum::serve(listener, app.into_make_service())
+        mmcp_server::serve::serve_router(listener, app)
             .await
             .unwrap();
     });

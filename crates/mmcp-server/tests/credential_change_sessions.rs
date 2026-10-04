@@ -54,7 +54,7 @@ impl TestServer {
             .expect("bind");
         let addr = listener.local_addr().expect("local addr");
         let task = tokio::spawn(async move {
-            axum::serve(listener, app.into_make_service())
+            mmcp_server::serve::serve_router(listener, app)
                 .await
                 .unwrap();
         });

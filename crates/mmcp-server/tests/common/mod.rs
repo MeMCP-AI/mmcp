@@ -87,7 +87,7 @@ pub async fn start_fake_oauth_provider() -> (SocketAddr, FakeTokenExchangeProbes
         .expect("bind");
     let addr = listener.local_addr().expect("local addr");
     tokio::spawn(async move {
-        axum::serve(listener, app.into_make_service())
+        mmcp_server::serve::serve_router(listener, app)
             .await
             .unwrap();
     });
@@ -121,7 +121,7 @@ pub async fn start_server_with_config(cfg: ServerConfig) -> SocketAddr {
         .expect("bind");
     let addr = listener.local_addr().expect("local addr");
     tokio::spawn(async move {
-        axum::serve(listener, app.into_make_service())
+        mmcp_server::serve::serve_router(listener, app)
             .await
             .unwrap();
     });
