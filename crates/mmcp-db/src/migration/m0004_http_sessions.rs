@@ -1,7 +1,7 @@
 //! Add the `http_sessions` table backing the server's HTTP session store.
 //!
-//! Rows are keyed by the SHA-256 digest of the session id, never the id itself,
-//! so a read of the table or of a backup yields no usable session cookie.
+//! Rows are keyed by the SHA-256 digest of the session id, never the id itself.
+//! A read of the table or of a backup therefore yields no usable session cookie.
 //! The table is distinct from `sessions`, which tracks AI-client sessions.
 
 use sea_orm_migration::prelude::*;

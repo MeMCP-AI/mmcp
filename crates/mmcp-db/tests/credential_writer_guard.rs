@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-//! Mechanical guard: every function that writes a credential is classified, and a classified
-//! incrementing writer really calls the epoch owner.
+//! Mechanical guard: every function that writes a credential is classified.
+//! A classified incrementing writer really calls the epoch owner.
 //!
 //! A new credential writer fails this test until it is added to the table below with its class.
 //! That keeps a future credential path from silently skipping the epoch increment.

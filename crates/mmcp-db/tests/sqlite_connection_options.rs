@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! SQLite connection options `mmcp_db::connect` applies to a file database.
 //!
-//! The write-ahead log keeps a writer from blocking readers file-wide, and the busy timeout bounds
-//! how long a writer waits on a contended file.
+//! The write-ahead log keeps a writer from blocking readers file-wide.
+//! The busy timeout bounds how long a writer waits on a contended file.
 
 use mmcp_db::{SQLITE_BUSY_TIMEOUT, connect};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};

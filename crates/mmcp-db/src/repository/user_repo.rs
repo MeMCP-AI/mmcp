@@ -70,8 +70,8 @@ pub async fn require(conn: &sea_orm::DatabaseConnection, id: Uuid) -> Result<Mod
 
 /// Update the display name and password hash fields on a user row.
 ///
-/// A supplied password hash is a credential change: the epoch increments in the same transaction,
-/// and the returned model carries the epoch the commit produced.
+/// A supplied password hash is a credential change, so the epoch increments in the same transaction.
+/// The returned model carries the epoch the commit produced.
 /// A display name alone leaves the epoch unchanged.
 pub async fn update_profile(
     conn: &sea_orm::DatabaseConnection,

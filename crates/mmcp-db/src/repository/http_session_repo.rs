@@ -88,8 +88,9 @@ pub async fn delete(conn: &DatabaseConnection, session_id_sha256: &str) -> Resul
 /// Delete at most `batch_size` rows whose expiry is at or before `now`, returning the deleted count.
 ///
 /// A key subquery carries the limit, because `DELETE ... LIMIT` is not portable across SQLite and Postgres.
-/// The outer `DELETE` repeats the expiry predicate: on Postgres a row extended after the subquery ran,
-/// and waited on by this statement, is re-evaluated against that predicate and survives.
+/// The outer `DELETE` repeats the expiry predicate.
+/// On Postgres a row extended after the subquery ran, and waited on by this statement, is re-evaluated against it.
+/// That row survives.
 pub async fn delete_expired_batch(
     conn: &DatabaseConnection,
     now: i64,

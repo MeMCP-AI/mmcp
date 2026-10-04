@@ -23,8 +23,8 @@ pub enum DbError {
     #[error("credential owner {user_id} does not exist")]
     CredentialOwnerMissing { user_id: Uuid },
 
-    /// A credential write was refused because the owner's credential epoch moved
-    /// after the acting session was verified under `verified_epoch`.
+    /// A credential write was refused.
+    /// The owner's credential epoch moved after the acting session was verified under `verified_epoch`.
     #[error(
         "credential epoch of user {user_id} moved since the session verified epoch {verified_epoch}"
     )]

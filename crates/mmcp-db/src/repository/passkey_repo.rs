@@ -14,8 +14,8 @@ use crate::repository::credential_epoch::{
 ///
 /// Both writes commit together, and the returned owner carries the epoch the commit produced.
 /// A missing owner is [`DbError::CredentialOwnerMissing`] and leaves no passkey row.
-/// A caller acting for a session passes the epoch that session was verified under as `verified_epoch`;
-/// an owner that moved past it is [`DbError::CredentialEpochChanged`] and also leaves no passkey row.
+/// A caller acting for a session passes the epoch that session was verified under as `verified_epoch`.
+/// An owner that moved past it is [`DbError::CredentialEpochChanged`] and also leaves no passkey row.
 pub async fn create(
     conn: &sea_orm::DatabaseConnection,
     id: Uuid,

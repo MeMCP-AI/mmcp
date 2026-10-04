@@ -40,14 +40,16 @@ pub struct CredentialWrite<T> {
 
 /// Increment the epoch of `user_id` and return the owner row as it stands after the increment.
 ///
-/// `conn` is the caller's transaction: the increment commits or rolls back with the credential write it accompanies.
-/// The increment runs before the credential write, so concurrent credential changes of one user serialize on the user row.
+/// `conn` is the caller's transaction.
+/// The increment commits or rolls back with the credential write it accompanies.
+/// The increment runs before the credential write.
+/// Concurrent credential changes of one user therefore serialize on the user row.
 /// With `verified_epoch`, the increment applies only while the owner is still at that epoch.
-/// A caller acting for a session passes the epoch the session was verified under,
-/// so a credential change committed by another session in between refuses this write
-/// and the acting session is never re-stamped past a change that should have signed it out.
-/// A user that does not exist is [`DbError::CredentialOwnerMissing`],
-/// and a moved epoch is [`DbError::CredentialEpochChanged`].
+/// A caller acting for a session passes the epoch the session was verified under.
+/// A credential change committed by another session in between then refuses this write.
+/// The acting session is never re-stamped past a change that should have signed it out.
+/// A user that does not exist is [`DbError::CredentialOwnerMissing`].
+/// A moved epoch is [`DbError::CredentialEpochChanged`].
 pub(crate) async fn bump_credential_epoch<C: ConnectionTrait>(
     conn: &C,
     user_id: Uuid,
