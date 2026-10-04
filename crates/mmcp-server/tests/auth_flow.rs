@@ -286,3 +286,48 @@ async fn overriding_max_handle_length_smaller_than_default_rejects_a_handle_the_
          max_handle_length must be rejected by the live HTTP endpoint"
     );
 }
+
+/// The web UI is served on the API origin, so a browser login stores the session cookie.
+/// It must stay unreadable by scripts (`HttpOnly`) and withheld on cross-site requests
+/// that carry a body (`SameSite=Lax`).
+#[tokio::test]
+async fn login_session_cookie_is_http_only_and_same_site_lax() {
+    let addr = start_server().await;
+    let client = reqwest::Client::new();
+    let credentials = serde_json::json!({
+        "handle": "dave",
+        "password": "hunter22"
+    });
+    client
+        .post(format!("http://{addr}/auth/register"))
+        .json(&credentials)
+        .send()
+        .await
+        .expect("register");
+
+    let resp = client
+        .post(format!("http://{addr}/auth/login"))
+        .json(&credentials)
+        .send()
+        .await
+        .expect("login");
+    assert_eq!(resp.status(), 200);
+
+    let session_cookie = resp
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .map(|value| value.to_str().unwrap().to_ascii_lowercase())
+        .next()
+        .expect("login sets the session cookie");
+    assert!(
+        session_cookie.split("; ").any(|attr| attr == "httponly"),
+        "session cookie must be HttpOnly: {session_cookie}"
+    );
+    assert!(
+        session_cookie
+            .split("; ")
+            .any(|attr| attr == "samesite=lax"),
+        "session cookie must be SameSite=Lax: {session_cookie}"
+    );
+}
