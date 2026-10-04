@@ -4,7 +4,6 @@ mod auth_rate_limit;
 mod auth_rate_limit_overrides;
 mod cascade;
 mod cors_origins;
-mod database_url_redaction;
 mod defaults;
 mod env_value;
 mod error;

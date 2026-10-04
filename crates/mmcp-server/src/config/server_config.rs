@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use axum::http::HeaderValue;
+use mmcp_db::redact_database_url;
 
 use super::auth_rate_limit::AuthRateLimitConfig;
 use super::cascade::{
@@ -11,7 +12,6 @@ use super::cascade::{
     resolve_max_password_length, resolve_min_password_length,
 };
 use super::cors_origins::parse_cors_origins;
-use super::database_url_redaction::redact_database_url;
 use super::defaults::{
     ALLOW_SELF_REGISTRATION_ENV, DEFAULT_BIND, DEFAULT_DATABASE_URL, DEFAULT_REPO_ROOT,
     GITHUB_OAUTH_CLIENT_ID_ENV, GITHUB_OAUTH_CLIENT_SECRET_ENV,
