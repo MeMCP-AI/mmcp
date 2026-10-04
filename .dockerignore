@@ -5,14 +5,14 @@
 # Rust build artefacts (root workspace, webui, and any nested project)
 **/target/
 
-# Node toolchains. The server image runs bun in its webui stage and
-# installs from the checked-in package.json, so the root-level mask
-# matches every `node_modules/` anywhere in the tree.
+# Node toolchains.
+# The server image runs bun in its webui stage and installs from the checked-in package.json.
+# The root-level mask therefore matches every `node_modules/` anywhere in the tree.
 **/node_modules/
 
-# SvelteKit build output. The server image rebuilds the web UI inside its
-# webui stage; shipping stale `build/` or `.svelte-kit/` dirs wastes
-# context and risks overwriting a hashed bundle.
+# SvelteKit build output.
+# The server image rebuilds the web UI inside its webui stage.
+# Shipping stale `build/` or `.svelte-kit/` dirs wastes context and risks overwriting a hashed bundle.
 webui/build/
 webui/.svelte-kit/
 

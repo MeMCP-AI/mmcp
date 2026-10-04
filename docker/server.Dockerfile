@@ -1,14 +1,13 @@
 # syntax=docker/dockerfile:1.7
 
-# Build the web UI as a static SvelteKit bundle and the mmcp-server binary
-# with cargo-chef dependency caching, then copy both into a distroless
-# runtime image. The server serves the bundle on its own origin from
-# MMCP_WEBUI_DIR. The workspace is pure Rust (gix, rustls, sqlx with
-# bundled sqlite) so distroless-cc provides everything needed at runtime:
-# libc, libgcc, CA roots, tzdata.
+# Build the web UI as a static SvelteKit bundle and the mmcp-server binary with cargo-chef dependency caching.
+# Both are copied into a distroless runtime image.
+# The server serves the bundle on its own origin from MMCP_WEBUI_DIR.
+# The workspace is pure Rust (gix, rustls, sqlx with bundled sqlite).
+# distroless-cc therefore provides everything needed at runtime: libc, libgcc, CA roots, tzdata.
 
-# The bundle is architecture independent, so it builds once on the build
-# platform instead of once per target architecture under emulation.
+# The bundle is architecture independent.
+# It builds once on the build platform instead of once per target architecture under emulation.
 FROM --platform=$BUILDPLATFORM oven/bun:1 AS webui
 WORKDIR /build
 COPY webui/package.json webui/bun.lock ./
@@ -19,8 +18,8 @@ RUN bun run build
 FROM lukemathwalker/cargo-chef:latest-rust-1-bookworm AS chef
 WORKDIR /build
 
-# Only Rust inputs enter the planner and builder stages, so a web UI change
-# never invalidates the compiled dependency or crate layers.
+# Only Rust inputs enter the planner and builder stages.
+# A web UI change therefore never invalidates the compiled dependency or crate layers.
 FROM chef AS planner
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
