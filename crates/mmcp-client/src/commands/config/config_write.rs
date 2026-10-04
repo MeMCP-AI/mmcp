@@ -67,8 +67,9 @@ fn write_key(
         ConfigScope::Project => write_project(key, value, location.require_root(scope)?)?,
         ConfigScope::Local => write_local(environment, key, value, location.require_root(scope)?)?,
     };
-    let resolution =
-        NoticeSources::load(environment.home, location.root())?.resolve(key, environment.launch);
+    // The write is done: a sibling file that cannot be read leaves the effective value unknown, never the write failed.
+    let resolution = NoticeSources::load(environment.home, location.root())
+        .map(|sources| sources.resolve(key, environment.launch));
     Ok(ConfigWriteOutcome {
         key,
         scope,
@@ -181,8 +182,8 @@ mod tests {
                 .unwrap()
                 .contains("project = \"off\"")
         );
-        assert_eq!(outcome.resolution.effective, NoticeValue::Off);
-        assert_eq!(outcome.resolution.source, NoticeSource::Local);
+        assert_eq!(outcome.resolved().effective, NoticeValue::Off);
+        assert_eq!(outcome.resolved().source, NoticeSource::Local);
     }
 
     #[test]
@@ -204,7 +205,7 @@ mod tests {
         assert_eq!(reloaded.notice.get(KEY), Some(NoticeValue::Off));
         assert_eq!(reloaded.project_uuid.to_string(), PROJECT_UUID);
         assert!(!fixture.project.join(".mmcp.local.toml").exists());
-        assert_eq!(outcome.resolution.source, NoticeSource::Project);
+        assert_eq!(outcome.resolved().source, NoticeSource::Project);
     }
 
     #[test]
@@ -227,7 +228,7 @@ mod tests {
             reloaded.notice.get(ConfigKey::NoticeMdUser),
             Some(NoticeValue::Off)
         );
-        assert_eq!(outcome.resolution.source, NoticeSource::User);
+        assert_eq!(outcome.resolved().source, NoticeSource::User);
     }
 
     #[test]
@@ -281,7 +282,7 @@ mod tests {
         assert_eq!(removed.value, None);
         assert!(!repeat.changed);
         assert!(!fixture.project_toml().contains("notice"));
-        assert_eq!(removed.resolution.source, NoticeSource::Default);
+        assert_eq!(removed.resolved().source, NoticeSource::Default);
     }
 
     #[test]
@@ -308,8 +309,8 @@ mod tests {
         let outcome = unset_key(&environment, KEY, ConfigScope::Local, &fixture.located()).unwrap();
 
         assert_eq!(std::fs::read_to_string(&outcome.file).unwrap(), "");
-        assert_eq!(outcome.resolution.effective, NoticeValue::Off);
-        assert_eq!(outcome.resolution.source, NoticeSource::Project);
+        assert_eq!(outcome.resolved().effective, NoticeValue::Off);
+        assert_eq!(outcome.resolved().source, NoticeSource::Project);
     }
 
     #[test]
@@ -444,6 +445,67 @@ mod tests {
 
         assert!(matches!(error, ConfigOpError::LoadLocal(_)), "{error:?}");
         assert!(std::error::Error::source(&error).is_some());
+    }
+
+    #[test]
+    fn a_sibling_file_that_fails_to_load_leaves_the_write_reported_as_done() {
+        let fixture = ConfigFixture::new();
+        std::fs::write(
+            fixture.project.join(".mmcp.local.toml"),
+            "[notice.md]\nprojet = \"off\"\n",
+        )
+        .unwrap();
+
+        let outcome = set_key(
+            &fixture.environment(already_excluded),
+            ConfigKey::NoticeMdUser,
+            NoticeValue::Off,
+            ConfigScope::User,
+            &fixture.located(),
+        )
+        .unwrap();
+
+        assert!(outcome.changed);
+        assert_eq!(
+            fixture
+                .home
+                .load_user_config()
+                .unwrap()
+                .notice
+                .get(ConfigKey::NoticeMdUser),
+            Some(NoticeValue::Off),
+            "the user file was written"
+        );
+        assert!(
+            matches!(outcome.resolution, Err(ConfigOpError::LoadLocal(_))),
+            "the effective value is unknown, naming the file that failed: {:?}",
+            outcome.resolution
+        );
+    }
+
+    #[test]
+    fn a_malformed_local_file_does_not_fail_a_project_scope_write_either() {
+        let fixture = ConfigFixture::new();
+        std::fs::write(fixture.project.join(".mmcp.local.toml"), "not = [valid").unwrap();
+
+        let outcome = set_key(
+            &fixture.environment(already_excluded),
+            KEY,
+            NoticeValue::Off,
+            ConfigScope::Project,
+            &fixture.located(),
+        )
+        .unwrap();
+
+        assert!(outcome.changed);
+        assert_eq!(
+            load_project(&fixture.project).unwrap().notice.get(KEY),
+            Some(NoticeValue::Off)
+        );
+        assert!(matches!(
+            outcome.resolution,
+            Err(ConfigOpError::LoadLocal(_))
+        ));
     }
 
     #[test]

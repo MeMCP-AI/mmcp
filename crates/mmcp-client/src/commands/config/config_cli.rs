@@ -8,9 +8,10 @@ use clap::{Args, Subcommand};
 use mmcp_core::config::{LOCAL_CONFIG_EXCLUDE_PATTERN, NoticeLaunch, NoticeValue};
 use mmcp_store::home::MmcpHome;
 
+use super::error_chain::message_with_causes;
 use super::{
-    ConfigCommand, ConfigEnvironment, ConfigKeyArg, ConfigOutcome, ConfigScopeArg, NoticeValueArg,
-    ProjectLocation,
+    ConfigCommand, ConfigEnvironment, ConfigKeyArg, ConfigOutcome, ConfigScopeArg,
+    ConfigWriteOutcome, NoticeValueArg, ProjectLocation,
 };
 
 /// Arguments of `mmcp config`.
@@ -90,22 +91,41 @@ pub fn run(args: ConfigCliArgs) -> Result<()> {
         &working_directory,
         args,
         &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
     )
 }
 
-/// [`run`] against an explicit environment and output.
+/// [`run`] against an explicit environment and outputs.
 fn run_in(
     environment: &ConfigEnvironment<'_>,
     working_directory: &std::path::Path,
     args: ConfigCliArgs,
     output: &mut impl Write,
+    diagnostics: &mut impl Write,
 ) -> Result<()> {
     let location = ProjectLocation::find(args.path.as_deref(), working_directory)?;
     let outcome = ConfigCommand::from(args.command).execute(environment, &location)?;
     for line in output_lines(&outcome) {
         writeln!(output, "{line}").context("writing the result")?;
     }
+    for line in diagnostic_lines(&outcome) {
+        writeln!(diagnostics, "{line}").context("writing the diagnostics")?;
+    }
     Ok(())
+}
+
+/// What a write cannot tell about the key once it is done, for the diagnostics stream.
+fn diagnostic_lines(outcome: &ConfigOutcome) -> Vec<String> {
+    match outcome {
+        ConfigOutcome::Written(ConfigWriteOutcome {
+            resolution: Err(error),
+            ..
+        }) => vec![format!(
+            "The effective value is unknown: {}",
+            message_with_causes(error)
+        )],
+        ConfigOutcome::Read { .. } | ConfigOutcome::Written(_) => Vec::new(),
+    }
 }
 
 /// The output lines of one outcome.
@@ -174,6 +194,37 @@ mod tests {
             .map(|harness| harness.args)
     }
 
+    fn lines_of(stream: Vec<u8>) -> Vec<String> {
+        String::from_utf8(stream)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The lines one run writes to its output and to its diagnostics.
+    fn run_streams(
+        fixture: &ConfigFixture,
+        exclusion: fn(
+            &std::path::Path,
+        ) -> Result<mmcp_git::checkout::Exclusion, mmcp_git::GitError>,
+        arguments: &[&str],
+    ) -> (Vec<String>, Vec<String>) {
+        let mut args = parse(arguments).unwrap();
+        args.path = Some(fixture.project.clone());
+        let mut output = Vec::new();
+        let mut diagnostics = Vec::new();
+        run_in(
+            &fixture.environment(exclusion),
+            &fixture.project,
+            args,
+            &mut output,
+            &mut diagnostics,
+        )
+        .unwrap();
+        (lines_of(output), lines_of(diagnostics))
+    }
+
     fn run_lines(
         fixture: &ConfigFixture,
         exclusion: fn(
@@ -181,21 +232,7 @@ mod tests {
         ) -> Result<mmcp_git::checkout::Exclusion, mmcp_git::GitError>,
         arguments: &[&str],
     ) -> Vec<String> {
-        let mut args = parse(arguments).unwrap();
-        args.path = Some(fixture.project.clone());
-        let mut output = Vec::new();
-        run_in(
-            &fixture.environment(exclusion),
-            &fixture.project,
-            args,
-            &mut output,
-        )
-        .unwrap();
-        String::from_utf8(output)
-            .unwrap()
-            .lines()
-            .map(str::to_owned)
-            .collect()
+        run_streams(fixture, exclusion, arguments).0
     }
 
     #[test]
@@ -288,6 +325,56 @@ mod tests {
                 "effective: on (project)",
             ]
         );
+    }
+
+    #[test]
+    fn a_write_whose_effective_value_is_unknown_succeeds_and_says_so_on_the_diagnostics() {
+        let fixture = ConfigFixture::new();
+        std::fs::write(
+            fixture.project.join(".mmcp.local.toml"),
+            "[notice.md]\nprojet = \"off\"\n",
+        )
+        .unwrap();
+
+        let (output, diagnostics) = run_streams(
+            &fixture,
+            already_excluded,
+            &["set", "notice.md.user", "off", "--scope", "user"],
+        );
+
+        assert_eq!(
+            output,
+            [format!(
+                "notice.md.user = off at user in {}.",
+                fixture.home.user_config_path().display()
+            )]
+        );
+        assert!(
+            diagnostics[0].starts_with(
+                "The effective value is unknown: The local config could not be loaded: "
+            ),
+            "{}",
+            diagnostics[0]
+        );
+        assert_eq!(
+            diagnostics
+                .join("\n")
+                .matches("unknown field `projet`")
+                .count(),
+            1,
+            "the parse error is told once: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn a_write_that_resolves_writes_nothing_to_the_diagnostics() {
+        let fixture = ConfigFixture::new();
+        let (_, diagnostics) = run_streams(
+            &fixture,
+            already_excluded,
+            &["set", "notice.md.user", "off", "--scope", "user"],
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 
     #[test]

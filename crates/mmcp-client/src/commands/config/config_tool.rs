@@ -9,8 +9,11 @@ use serde_json::{Value, json};
 use super::error_chain::message_with_causes;
 use super::{
     ConfigArgsError, ConfigEnvironment, ConfigOpError, ConfigOutcome, ConfigToolArgs,
-    ProjectLocation,
+    ConfigToolReply, ProjectLocation,
 };
+
+/// Code of the note that says a write was done but its effective value could not be read back.
+const UNRESOLVED_NOTE_CODE: &str = "effective_value_unresolved";
 
 /// Run one `config` tool call and return its result object.
 ///
@@ -21,7 +24,7 @@ pub fn call_config_tool(
     environment: &ConfigEnvironment<'_>,
     working_directory: &Path,
     args: &ConfigToolArgs,
-) -> Result<Value, McpError> {
+) -> Result<ConfigToolReply, McpError> {
     let command = args.command().map_err(args_error_to_mcp)?;
     let explicit_root = args.project_path().map_err(args_error_to_mcp)?;
     let location =
@@ -29,29 +32,52 @@ pub fn call_config_tool(
     let outcome = command
         .execute(environment, &location)
         .map_err(op_error_to_mcp)?;
-    Ok(outcome_to_json(&outcome))
+    Ok(reply_of(&outcome))
 }
 
-fn outcome_to_json(outcome: &ConfigOutcome) -> Value {
+fn reply_of(outcome: &ConfigOutcome) -> ConfigToolReply {
     match outcome {
-        ConfigOutcome::Read { key, resolution } => json!({
-            "action": "get",
-            "key": key.as_str(),
-            "effective": resolution.effective.as_str(),
-            "source": resolution.source.as_str(),
-            "layers": layers_to_json(resolution.layers),
-        }),
-        ConfigOutcome::Written(written) => json!({
-            "action": if written.value.is_some() { "set" } else { "unset" },
-            "key": written.key.as_str(),
-            "scope": written.scope.as_str(),
-            "value": written.value.map(|value| value.as_str()),
-            "changed": written.changed,
-            "file": written.file.to_string_lossy(),
-            "excluded_in": written.excluded_in.as_ref().map(|file| file.to_string_lossy()),
-            "effective": written.resolution.effective.as_str(),
-            "source": written.resolution.source.as_str(),
-        }),
+        ConfigOutcome::Read { key, resolution } => ConfigToolReply {
+            result: json!({
+                "action": "get",
+                "key": key.as_str(),
+                "effective": resolution.effective.as_str(),
+                "source": resolution.source.as_str(),
+                "layers": layers_to_json(resolution.layers),
+            }),
+            notes: Vec::new(),
+        },
+        ConfigOutcome::Written(written) => {
+            let (effective, source, notes) = match &written.resolution {
+                Ok(resolution) => (
+                    Some(resolution.effective.as_str()),
+                    Some(resolution.source.as_str()),
+                    Vec::new(),
+                ),
+                Err(error) => (
+                    None,
+                    None,
+                    vec![mmcp_proto::Note::warn(
+                        UNRESOLVED_NOTE_CODE,
+                        message_with_causes(error),
+                    )],
+                ),
+            };
+            ConfigToolReply {
+                result: json!({
+                    "action": if written.value.is_some() { "set" } else { "unset" },
+                    "key": written.key.as_str(),
+                    "scope": written.scope.as_str(),
+                    "value": written.value.map(|value| value.as_str()),
+                    "changed": written.changed,
+                    "file": written.file.to_string_lossy(),
+                    "excluded_in": written.excluded_in.as_ref().map(|file| file.to_string_lossy()),
+                    "effective": effective,
+                    "source": source,
+                }),
+                notes,
+            }
+        }
     }
 }
 
@@ -96,12 +122,16 @@ mod tests {
     };
     use super::*;
 
-    fn call(fixture: &ConfigFixture, args: Value) -> Result<Value, McpError> {
+    fn call_reply(fixture: &ConfigFixture, args: Value) -> Result<ConfigToolReply, McpError> {
         call_config_tool(
             &fixture.environment(appends_to_scratch_excludes),
             &fixture.project,
             &serde_json::from_value(args).unwrap(),
         )
+    }
+
+    fn call(fixture: &ConfigFixture, args: Value) -> Result<Value, McpError> {
+        call_reply(fixture, args).map(|reply| reply.result)
     }
 
     fn code_of(error: &McpError) -> &str {
@@ -354,6 +384,54 @@ mod tests {
             error.message
         );
         assert!(!error.message.contains(".:"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_write_whose_effective_value_cannot_be_read_back_is_a_success_with_a_note() {
+        let fixture = ConfigFixture::new();
+        std::fs::write(
+            fixture.project.join(".mmcp.local.toml"),
+            "[notice.md]\nprojet = \"off\"\n",
+        )
+        .unwrap();
+
+        let reply = call_reply(
+            &fixture,
+            json!({"action": "set", "key": "notice.md.user", "value": "off", "scope": "user"}),
+        )
+        .unwrap();
+
+        assert_eq!(reply.result["changed"], true);
+        assert_eq!(reply.result["effective"], Value::Null);
+        assert_eq!(reply.result["source"], Value::Null);
+        assert_eq!(reply.notes.len(), 1, "{:?}", reply.notes);
+        assert_eq!(reply.notes[0].code, "effective_value_unresolved");
+        assert!(
+            reply.notes[0]
+                .message
+                .starts_with("The local config could not be loaded: "),
+            "{}",
+            reply.notes[0].message
+        );
+        let read_back = call(&fixture, json!({"action": "get", "key": "notice.md.user"}));
+        assert_eq!(
+            code_of(&read_back.unwrap_err()),
+            "local_config_load_failed",
+            "a get still reports the broken file, nothing was written there"
+        );
+    }
+
+    #[test]
+    fn a_write_that_resolves_carries_no_note() {
+        let fixture = ConfigFixture::new();
+
+        let reply = call_reply(
+            &fixture,
+            json!({"action": "set", "key": "notice.md.user", "value": "off", "scope": "user"}),
+        )
+        .unwrap();
+
+        assert!(reply.notes.is_empty());
     }
 
     #[test]

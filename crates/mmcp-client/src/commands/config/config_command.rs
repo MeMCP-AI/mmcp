@@ -102,7 +102,7 @@ mod tests {
             unset,
             ConfigOutcome::Written(outcome)
                 if outcome.changed && outcome.value.is_none()
-                    && outcome.resolution.source == NoticeSource::Default
+                    && outcome.resolved().source == NoticeSource::Default
         ));
     }
 }

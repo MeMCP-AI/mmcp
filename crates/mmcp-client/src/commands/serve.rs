@@ -4604,7 +4604,8 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         let cwd = current_dir_for_mcp()?;
         let environment = ConfigEnvironment::new(&self.state.home, &self.state.notice_launch);
-        call_config_tool(&environment, &cwd, &args).map(ok_json)
+        call_config_tool(&environment, &cwd, &args)
+            .map(|reply| ok_json_with_notes(reply.result, reply.notes))
     }
 
     #[tool(
