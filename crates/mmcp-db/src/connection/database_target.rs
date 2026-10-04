@@ -267,6 +267,76 @@ mod tests {
     }
 
     #[test]
+    fn a_credential_that_scram_would_refuse_is_refused_at_parse_without_a_character() {
+        for (input, expected) in [
+            (
+                "postgres://mmcp:p%07SECRET_1@db/app",
+                DatabaseUrlError::PasswordRejectedBySaslprep,
+            ),
+            (
+                "postgres://db/app?password=p%07SECRET_2",
+                DatabaseUrlError::PasswordRejectedBySaslprep,
+            ),
+            (
+                "postgres://m%07SECRET_3:pw@db/app",
+                DatabaseUrlError::UsernameRejectedBySaslprep,
+            ),
+            (
+                "postgres://db/app?user=m%07SECRET_4",
+                DatabaseUrlError::UsernameRejectedBySaslprep,
+            ),
+        ] {
+            assert_eq!(
+                input.parse::<DatabaseTarget>().unwrap_err(),
+                expected,
+                "{input}"
+            );
+            let text = printed(input, "SECRET_").unwrap_err();
+            assert!(
+                !text.contains('\u{7}') && !text.contains("\\u{7}"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_saslprep_check_follows_the_precedence_sqlx_applies() {
+        // The query overrides the userinfo, and the last occurrence of a parameter wins.
+        for accepted in [
+            "postgres://u:p%07x@db/app?password=good",
+            "postgres://m%07x:pw@db/app?user=good",
+            "postgres://u@db/app?password=p%07x&password=good",
+            "postgres://u@db/app?user=m%07x&user=good",
+        ] {
+            assert!(accepted.parse::<DatabaseTarget>().is_ok(), "{accepted}");
+        }
+        for (refused, expected) in [
+            (
+                "postgres://u:good@db/app?password=p%07x",
+                DatabaseUrlError::PasswordRejectedBySaslprep,
+            ),
+            (
+                "postgres://u@db/app?password=good&password=p%07x",
+                DatabaseUrlError::PasswordRejectedBySaslprep,
+            ),
+            (
+                "postgres://good:pw@db/app?user=m%07x",
+                DatabaseUrlError::UsernameRejectedBySaslprep,
+            ),
+            (
+                "postgres://u@db/app?user=good&user=m%07x",
+                DatabaseUrlError::UsernameRejectedBySaslprep,
+            ),
+        ] {
+            assert_eq!(
+                refused.parse::<DatabaseTarget>().unwrap_err(),
+                expected,
+                "{refused}"
+            );
+        }
+    }
+
+    #[test]
     fn unparsable_text_is_refused_with_the_parse_error_as_source() {
         for input in [
             "postgres://mmcp:SECRET_1@[bad-host/app",

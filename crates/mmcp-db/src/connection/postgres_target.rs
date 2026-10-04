@@ -43,6 +43,7 @@ impl PostgresTarget {
             return Err(DatabaseUrlError::ParameterWithoutValue);
         }
         let parameters = checked_parameters(url)?;
+        check_saslprep(url)?;
         Ok(Self {
             display: display_of(url, &parameters),
             connection_text: SecretString::from(raw),
@@ -61,26 +62,8 @@ impl PostgresTarget {
 
     /// The value-free error for a configuration error that sqlx raised while connecting.
     ///
-    /// sqlx raises only the SASLprep refusals of the user name and of the password there.
-    /// Its error quotes the rejected character, so the source is dropped and the two are told apart by the same check.
+    /// The driver error is dropped, since it may quote a credential.
     pub(super) fn explain_configuration_error(&self) -> DbError {
-        let Ok(url) = Url::parse(self.exposed_text()) else {
-            return DbError::ConnectionConfigurationRejected;
-        };
-        let password = url
-            .password()
-            .map(decoded)
-            .or_else(|| query_value(&url, "password"));
-        if password.is_some_and(|password| stringprep::saslprep(&password).is_err()) {
-            return DbError::PasswordRejectedBySaslprep;
-        }
-        let user = Some(url.username())
-            .filter(|user| !user.is_empty())
-            .map(decoded)
-            .or_else(|| query_value(&url, "user"));
-        if user.is_some_and(|user| stringprep::saslprep(&user).is_err()) {
-            return DbError::UsernameRejectedBySaslprep;
-        }
         DbError::ConnectionConfigurationRejected
     }
 }
@@ -103,13 +86,6 @@ fn decoded(component: &str) -> String {
     percent_decode_str(component)
         .decode_utf8_lossy()
         .into_owned()
-}
-
-/// The decoded value of the query parameter `key`, when `url` holds it.
-fn query_value(url: &Url, key: &str) -> Option<String> {
-    url.query_pairs()
-        .find(|(name, _)| name == key)
-        .map(|(_, value)| value.into_owned())
 }
 
 /// Checks every query parameter and returns the constants they are shown as, in order and without repeats.
@@ -143,6 +119,39 @@ fn checked_parameters(url: &Url) -> Result<Vec<&'static str>, DatabaseUrlError> 
     Ok(shown)
 }
 
+/// The value that the URL gives for the user name or the password, in sqlx's precedence.
+///
+/// sqlx reads the userinfo first, then every query parameter in order, so the last `key` parameter wins.
+fn effective_value(url: &Url, userinfo: Option<String>, key: &str) -> Option<String> {
+    url.query_pairs()
+        .filter(|(name, _)| name == key)
+        .map(|(_, value)| value.into_owned())
+        .last()
+        .or(userinfo)
+}
+
+/// Refuses a user name or a password that SCRAM authentication would refuse, so no connection raises its error.
+///
+/// SCRAM prepares the user name together with its `n=` prefix, and the password alone.
+/// A credential that the environment or a pgpass file supplies is not known here.
+fn check_saslprep(url: &Url) -> Result<(), DatabaseUrlError> {
+    let user = effective_value(
+        url,
+        Some(url.username())
+            .filter(|user| !user.is_empty())
+            .map(decoded),
+        "user",
+    );
+    if user.is_some_and(|user| stringprep::saslprep(&format!("n={user}")).is_err()) {
+        return Err(DatabaseUrlError::UsernameRejectedBySaslprep);
+    }
+    let password = effective_value(url, url.password().map(decoded), "password");
+    if password.is_some_and(|password| stringprep::saslprep(&password).is_err()) {
+        return Err(DatabaseUrlError::PasswordRejectedBySaslprep);
+    }
+    Ok(())
+}
+
 /// Refuses an SSL mode outside sqlx's closed set, whose error would quote the value.
 fn check_ssl_mode_value(key: &'static str, value: &str) -> Result<(), DatabaseUrlError> {
     let lowered = value.to_ascii_lowercase();
@@ -171,47 +180,4 @@ fn display_of(url: &Url, parameters: &[&'static str]) -> String {
         shown.push_str(&format!(" (parameters: {})", parameters.join(", ")));
     }
     shown
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-    use super::*;
-
-    fn target(raw: &str) -> PostgresTarget {
-        let url = Url::parse(raw).unwrap();
-        PostgresTarget::parse(raw, &url).unwrap()
-    }
-
-    #[test]
-    fn a_configuration_error_is_told_apart_by_the_part_saslprep_rejects() {
-        assert!(matches!(
-            target("postgres://mmcp:p%07ss@db/app").explain_configuration_error(),
-            DbError::PasswordRejectedBySaslprep
-        ));
-        assert!(matches!(
-            target("postgres://db/app?password=p%07ss").explain_configuration_error(),
-            DbError::PasswordRejectedBySaslprep
-        ));
-        assert!(matches!(
-            target("postgres://m%07mcp:pass@db/app").explain_configuration_error(),
-            DbError::UsernameRejectedBySaslprep
-        ));
-        assert!(matches!(
-            target("postgres://mmcp:pass@db/app").explain_configuration_error(),
-            DbError::ConnectionConfigurationRejected
-        ));
-    }
-
-    #[test]
-    fn the_explained_error_names_no_character_of_the_credential() {
-        let error = target("postgres://mmcp:p%07ss@db/app").explain_configuration_error();
-
-        let printed = format!("{error} | {error:?}");
-        assert!(
-            !printed.contains("p\u{7}ss") && !printed.contains("\\u{7}"),
-            "{printed}"
-        );
-        assert!(std::error::Error::source(&error).is_none());
-    }
 }
