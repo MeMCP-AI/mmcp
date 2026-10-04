@@ -5,18 +5,18 @@
 # Rust build artefacts (root workspace, webui, and any nested project)
 **/target/
 
-# Node toolchains. The webui image runs bun in a builder stage and
+# Node toolchains. The server image runs bun in its webui stage and
 # installs from the checked-in package.json, so the root-level mask
 # matches every `node_modules/` anywhere in the tree.
 **/node_modules/
 
-# SvelteKit build output — the webui image rebuilds inside its
-# builder stage; shipping stale `build/` or `.svelte-kit/` dirs wastes
+# SvelteKit build output. The server image rebuilds the web UI inside its
+# webui stage; shipping stale `build/` or `.svelte-kit/` dirs wastes
 # context and risks overwriting a hashed bundle.
 webui/build/
 webui/.svelte-kit/
 
-# Tauri desktop GUI — not part of the server/webui Docker stack.
+# Tauri desktop GUI, not part of the server Docker image.
 gui/
 
 # VCS and editor state
