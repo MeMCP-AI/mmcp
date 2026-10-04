@@ -48,7 +48,9 @@ mod tests {
     use std::collections::HashMap;
 
     use mmcp_db::entities::http_session::Entity;
-    use sea_orm::{DatabaseConnection, EntityTrait, PaginatorTrait};
+    use sea_orm::{
+        ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, PaginatorTrait, Statement,
+    };
     use time::{Duration as TimeDuration, OffsetDateTime};
     use tower_sessions::SessionStore;
     use tower_sessions::session::{Id, Record};
@@ -61,6 +63,9 @@ mod tests {
     const EXPIRED_RECORDS: usize = 5;
     /// Upper bound on the wait for the sweep, never a pause the assertions depend on.
     const SWEEP_WAIT_LIMIT: Duration = Duration::from_secs(10);
+    /// Time the sweeper runs against a missing table: several failing ticks at [`SWEEP_PERIOD`].
+    const FAILING_SWEEPS_DURATION: Duration = Duration::from_millis(100);
+    const OFFLINE_TABLE: &str = "http_sessions_offline";
 
     fn record_expiring_in(lifetime: TimeDuration) -> Record {
         Record {
@@ -103,6 +108,57 @@ mod tests {
         sweeper.abort();
 
         assert_eq!(row_count(&conn).await, 1);
+        assert!(store.load(&live.id).await.unwrap().is_some());
+    }
+
+    /// Renames the sessions table so every sweep statement fails, or restores it.
+    async fn set_sessions_table_available(conn: &DatabaseConnection, available: bool) {
+        let (from, to) = if available {
+            (OFFLINE_TABLE, "http_sessions")
+        } else {
+            ("http_sessions", OFFLINE_TABLE)
+        };
+        conn.execute_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            format!("ALTER TABLE {from} RENAME TO {to}"),
+        ))
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn expired_session_sweeper_keeps_running_after_a_failed_sweep() {
+        let conn = test_connection().await;
+        let store = DatabaseSessionStore::new(conn.clone());
+        store
+            .create(&mut record_expiring_in(TimeDuration::minutes(-1)))
+            .await
+            .unwrap();
+        let mut live = record_expiring_in(TimeDuration::minutes(15));
+        store.create(&mut live).await.unwrap();
+        set_sessions_table_available(&conn, false).await;
+
+        let sweeper = tokio::spawn(run_expired_session_sweeper(
+            store.clone(),
+            SWEEP_PERIOD,
+            SWEEP_BATCH_SIZE,
+        ));
+        tokio::time::sleep(FAILING_SWEEPS_DURATION).await;
+        assert!(
+            !sweeper.is_finished(),
+            "a failed sweep must not end the sweeper task"
+        );
+        set_sessions_table_available(&conn, true).await;
+
+        tokio::time::timeout(SWEEP_WAIT_LIMIT, async {
+            while row_count(&conn).await > 1 {
+                tokio::time::sleep(SWEEP_PERIOD).await;
+            }
+        })
+        .await
+        .expect("a later tick must sweep the expired row once the table is back");
+        sweeper.abort();
+
         assert!(store.load(&live.id).await.unwrap().is_some());
     }
 }
