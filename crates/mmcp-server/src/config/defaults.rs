@@ -49,14 +49,14 @@ pub const GITHUB_OAUTH_CLIENT_ID_ENV: &str = "MMCP_OAUTH_GITHUB_CLIENT_ID";
 /// Environment variable carrying the GitHub OAuth application client secret.
 pub const GITHUB_OAUTH_CLIENT_SECRET_ENV: &str = "MMCP_OAUTH_GITHUB_CLIENT_SECRET";
 
-/// Environment variable naming the directory of the built web UI.
-/// Second in precedence behind an explicit `--webui-dir` CLI override.
+/// Environment variable naming the directory of the built web UI, bound to
+/// `serve --webui-dir` by the argument parser; the flag beats it.
 /// Unset or blank means the server answers the API only.
 pub const WEBUI_DIR_ENV: &str = "MMCP_WEBUI_DIR";
 
 /// Environment variable listing the origins allowed to call the API from a
-/// browser on another origin, comma-separated.
-/// Second in precedence behind an explicit `--cors-allowed-origins` CLI override.
+/// browser on another origin, comma-separated, bound to
+/// `serve --cors-allowed-origins` by the argument parser; the flag beats it.
 /// Unset or blank attaches no CORS layer.
 pub const CORS_ALLOWED_ORIGINS_ENV: &str = "MMCP_CORS_ALLOWED_ORIGINS";
 

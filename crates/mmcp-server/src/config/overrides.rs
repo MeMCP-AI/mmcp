@@ -21,10 +21,11 @@ pub struct ServerConfigOverrides {
     /// `MMCP_MAX_HANDLE_LENGTH`, the user config file, and the
     /// compiled-in [`mmcp_auth::MAX_HANDLE_LENGTH`] default.
     pub max_handle_length: Option<usize>,
-    /// `--webui-dir`; highest-precedence tier, beats `MMCP_WEBUI_DIR`.
+    /// `--webui-dir` or, when the flag is absent, `MMCP_WEBUI_DIR`, as
+    /// resolved by the argument parser. A blank value counts as absent.
     pub webui_dir: Option<PathBuf>,
-    /// `--cors-allowed-origins`; highest-precedence tier, beats
-    /// `MMCP_CORS_ALLOWED_ORIGINS` even when blank, so an empty flag
-    /// disables CORS whatever the environment holds.
+    /// `--cors-allowed-origins` or, when the flag is absent,
+    /// `MMCP_CORS_ALLOWED_ORIGINS`, as resolved by the argument parser.
+    /// A blank value allows no origin.
     pub cors_allowed_origins: Option<String>,
 }
