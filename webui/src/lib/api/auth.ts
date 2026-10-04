@@ -8,3 +8,8 @@ export function login(handle: string, password: string): Promise<LoginOk> {
     body: { handle, password }
   });
 }
+
+/** Ends the server session the login created, which the session cookie alone keeps alive. */
+export function logout(): Promise<void> {
+  return request<void>('/auth/logout', { method: 'POST', auth: false });
+}

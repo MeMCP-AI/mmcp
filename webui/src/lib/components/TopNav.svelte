@@ -3,14 +3,22 @@
   import { goto } from '$app/navigation';
   import { authStore } from '$lib/stores/auth.svelte';
   import { groupsStore } from '$lib/stores/groups.svelte';
+  import { logout } from '$lib/api/auth';
   import { LogIn, LogOut, Server } from '@lucide/svelte';
 
   const authed = $derived(authStore.token !== null);
 
-  function handleLogout() {
-    authStore.clear();
-    groupsStore.reset();
-    void goto('/login');
+  async function handleLogout() {
+    // The local state is cleared even when the server cannot be reached.
+    try {
+      await logout();
+    } catch (error) {
+      console.error('logout failed', error);
+    } finally {
+      authStore.clear();
+      groupsStore.reset();
+      void goto('/login');
+    }
   }
 
   const links: { href: string; label: string }[] = [
