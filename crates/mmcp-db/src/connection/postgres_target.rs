@@ -62,10 +62,63 @@ impl PostgresTarget {
 
     /// The value-free error for a configuration error that sqlx raised while connecting.
     ///
-    /// The driver error is dropped, since it may quote a credential.
+    /// The driver error is dropped, since it may quote a credential or a line of the key file.
+    /// The cause is read from the state that decides it: the client certificate and key the URL or the environment give, and the credentials the environment gives.
     pub(super) fn explain_configuration_error(&self) -> DbError {
-        DbError::ConnectionConfigurationRejected
+        self.explain_configuration_error_in(&|name| std::env::var(name).ok())
     }
+
+    /// [`Self::explain_configuration_error`] with the environment as a lookup, so a test sets none.
+    ///
+    /// The URL's own credentials passed the SASLprep check at parse, so only the environment can still fail it.
+    /// It fails after the handshake, and the key checks fail during it, so a failing environment credential beside a client certificate or key leaves the cause unknown.
+    fn explain_configuration_error_in(
+        &self,
+        environment: &dyn Fn(&str) -> Option<String>,
+    ) -> DbError {
+        let Ok(url) = Url::parse(self.exposed_text()) else {
+            return DbError::ConnectionConfigurationRejected;
+        };
+        let has_parameter =
+            |keys: [&str; 2]| url.query_pairs().any(|(name, _)| keys.contains(&&*name));
+        let has_certificate =
+            has_parameter(["sslcert", "ssl-cert"]) || environment("PGSSLCERT").is_some();
+        let has_key = has_parameter(["sslkey", "ssl-key"]) || environment("PGSSLKEY").is_some();
+        let environment_problem = environment_credential_problem(&url, environment);
+        match (environment_problem, has_certificate || has_key) {
+            (Some(problem), false) => problem,
+            (Some(_), true) => DbError::ConnectionConfigurationRejected,
+            (None, _) => match (has_certificate, has_key) {
+                (true, false) | (false, true) => DbError::ClientCertificateAndKeyNotPaired,
+                (true, true) => DbError::ClientKeyRejected,
+                (false, false) => DbError::ConnectionConfigurationRejected,
+            },
+        }
+    }
+}
+
+/// The SASLprep failure of a credential that only the environment gives, since the URL gives none of it.
+fn environment_credential_problem(
+    url: &Url,
+    environment: &dyn Fn(&str) -> Option<String>,
+) -> Option<DbError> {
+    let gives_user =
+        !url.username().is_empty() || url.query_pairs().any(|(name, _)| name == "user");
+    let gives_password =
+        url.password().is_some() || url.query_pairs().any(|(name, _)| name == "password");
+    if !gives_user
+        && environment("PGUSER")
+            .is_some_and(|user| stringprep::saslprep(&format!("n={user}")).is_err())
+    {
+        return Some(DbError::UsernameRejectedBySaslprep);
+    }
+    if !gives_password
+        && environment("PGPASSWORD")
+            .is_some_and(|password| stringprep::saslprep(&password).is_err())
+    {
+        return Some(DbError::PasswordRejectedBySaslprep);
+    }
+    None
 }
 
 impl fmt::Display for PostgresTarget {
@@ -180,4 +233,120 @@ fn display_of(url: &Url, parameters: &[&'static str]) -> String {
         shown.push_str(&format!(" (parameters: {})", parameters.join(", ")));
     }
     shown
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use std::collections::HashMap;
+
+    use super::*;
+
+    fn target(raw: &str) -> PostgresTarget {
+        let url = Url::parse(raw).unwrap();
+        PostgresTarget::parse(raw, &url).unwrap()
+    }
+
+    /// The explanation of a configuration error for `raw`, with the environment `variables`.
+    fn explained(raw: &str, variables: &[(&str, &str)]) -> DbError {
+        let map: HashMap<&str, &str> = variables.iter().copied().collect();
+        target(raw).explain_configuration_error_in(&|name| map.get(name).map(|v| (*v).to_owned()))
+    }
+
+    #[test]
+    fn a_client_certificate_without_its_key_is_named() {
+        for raw in [
+            "postgres://db/app?sslmode=require&sslcert=/c.pem",
+            "postgres://db/app?ssl-cert=/c.pem",
+            "postgres://db/app?sslkey=/k.pem",
+            "postgres://db/app?ssl-key=/k.pem",
+        ] {
+            assert!(
+                matches!(
+                    explained(raw, &[]),
+                    DbError::ClientCertificateAndKeyNotPaired
+                ),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_environment_can_complete_the_pair() {
+        assert!(matches!(
+            explained(
+                "postgres://db/app?sslcert=/c.pem",
+                &[("PGSSLKEY", "/k.pem")]
+            ),
+            DbError::ClientKeyRejected
+        ));
+        assert!(matches!(
+            explained("postgres://db/app", &[("PGSSLCERT", "/c.pem")]),
+            DbError::ClientCertificateAndKeyNotPaired
+        ));
+    }
+
+    #[test]
+    fn a_complete_pair_that_still_fails_is_a_key_failure_without_its_source() {
+        for raw in [
+            "postgres://db/app?sslcert=/c.pem&sslkey=/k.pem",
+            "postgres://db/app?ssl-cert=/c.pem&ssl-key=/k.pem",
+        ] {
+            let error = explained(raw, &[]);
+
+            assert!(matches!(error, DbError::ClientKeyRejected), "{raw}");
+            assert!(std::error::Error::source(&error).is_none());
+        }
+    }
+
+    #[test]
+    fn an_environment_credential_that_scram_refuses_is_named_without_its_character() {
+        let password = explained("postgres://u@db/app", &[("PGPASSWORD", "p\u{7}ss")]);
+        let user = explained("postgres://:pw@db/app", &[("PGUSER", "m\u{7}mcp")]);
+
+        assert!(matches!(password, DbError::PasswordRejectedBySaslprep));
+        assert!(matches!(user, DbError::UsernameRejectedBySaslprep));
+        for error in [password, user] {
+            let printed = format!("{error} | {error:?}");
+            assert!(
+                !printed.contains('\u{7}') && !printed.contains("\\u{7}"),
+                "{printed}"
+            );
+            assert!(std::error::Error::source(&error).is_none());
+        }
+    }
+
+    #[test]
+    fn a_credential_the_url_gives_hides_the_environment_one() {
+        assert!(matches!(
+            explained("postgres://u:good@db/app", &[("PGPASSWORD", "p\u{7}ss")]),
+            DbError::ConnectionConfigurationRejected
+        ));
+        assert!(matches!(
+            explained(
+                "postgres://db/app?password=good",
+                &[("PGPASSWORD", "p\u{7}ss")]
+            ),
+            DbError::ConnectionConfigurationRejected
+        ));
+    }
+
+    #[test]
+    fn an_environment_credential_beside_a_client_key_leaves_the_cause_unknown() {
+        assert!(matches!(
+            explained(
+                "postgres://u@db/app?sslcert=/c.pem&sslkey=/k.pem",
+                &[("PGPASSWORD", "p\u{7}ss")]
+            ),
+            DbError::ConnectionConfigurationRejected
+        ));
+    }
+
+    #[test]
+    fn without_a_known_cause_the_explanation_is_the_generic_variant() {
+        assert!(matches!(
+            explained("postgres://u:pw@db/app", &[]),
+            DbError::ConnectionConfigurationRejected
+        ));
+    }
 }

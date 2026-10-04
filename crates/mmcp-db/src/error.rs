@@ -29,6 +29,18 @@ pub enum DbError {
     #[error("the database user name holds a character that SASLprep does not allow")]
     UsernameRejectedBySaslprep,
 
+    /// Only one of the client certificate and the client key is given, in the URL and in `PGSSLCERT` and `PGSSLKEY` together.
+    /// The driver needs both for a TLS handshake with client authentication.
+    #[error(
+        "the database connection has a client certificate or a client key without the other; give both, or neither, in the URL or in PGSSLCERT and PGSSLKEY"
+    )]
+    ClientCertificateAndKeyNotPaired,
+
+    /// The client key could not be read as a private key.
+    /// The driver error is dropped, because it may quote a line of the key file.
+    #[error("the database client key could not be read as a private key in PEM form")]
+    ClientKeyRejected,
+
     /// The driver rejected the connection configuration for a reason this crate does not know.
     /// The driver error is dropped, since it may quote a value.
     #[error("the database connection configuration was rejected")]
