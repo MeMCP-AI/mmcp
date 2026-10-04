@@ -11,7 +11,8 @@ use crate::routes::response::GENERIC_INTERNAL_ERROR_MESSAGE;
 pub enum AuthRateLimitRefusal {
     /// The client spent its budget.
     TooManyRequests {
-        /// The client whose budget is spent, for the server log only.
+        /// The key whose budget is spent, under the budget that refused, for the server log only.
+        /// It is an IPv4 address, or an IPv6 network with its prefix length.
         client: ClientKey,
         /// Seconds until the client may retry, rounded up and never below one.
         retry_after_seconds: u64,
@@ -70,7 +71,7 @@ mod tests {
     #[tokio::test]
     async fn too_many_requests_answers_429_with_retry_after_and_the_plain_text_body() {
         let response = AuthRateLimitRefusal::TooManyRequests {
-            client: ClientKey::from_client_address("203.0.113.9".parse().unwrap()),
+            client: ClientKey::of_client("203.0.113.9".parse().unwrap(), 64),
             retry_after_seconds: RETRY_AFTER_SECONDS,
         }
         .into_response();

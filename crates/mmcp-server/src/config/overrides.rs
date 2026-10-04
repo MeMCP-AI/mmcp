@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use super::auth_rate_limit_overrides::AuthRateLimitOverrides;
+
 /// CLI-supplied override tier for [`super::ServerConfig::from_source_with_overrides`]
 /// / [`super::ServerConfig::from_env_with_overrides`]. A parameter object
 /// (per the project's Rust API-design convention) rather than
@@ -27,12 +29,8 @@ pub struct ServerConfigOverrides {
     /// `--cors-allowed-origins`, else `MMCP_CORS_ALLOWED_ORIGINS`, as resolved by the argument parser.
     /// A blank value allows no origin.
     pub cors_allowed_origins: Option<String>,
-    /// `--auth-rate-limit-per-minute`, else `MMCP_AUTH_RATE_LIMIT_PER_MINUTE`, as resolved by the argument parser.
-    /// Kept as text, so a blank value counts as absent and a malformed one warns instead of stopping the start.
-    pub auth_rate_limit_per_minute: Option<String>,
-    /// `--auth-rate-limit-burst`, else `MMCP_AUTH_RATE_LIMIT_BURST`, as resolved by the argument parser.
-    /// Same handling as [`ServerConfigOverrides::auth_rate_limit_per_minute`].
-    pub auth_rate_limit_burst: Option<String>,
+    /// The auth rate limit settings, each its flag or else its environment variable, as resolved by the argument parser.
+    pub auth_rate_limit: AuthRateLimitOverrides,
     /// `--trusted-proxies`, else `MMCP_TRUSTED_PROXIES`, as resolved by the argument parser.
     /// A blank value trusts no proxy.
     pub trusted_proxies: Option<String>,

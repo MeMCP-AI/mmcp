@@ -20,12 +20,16 @@
 
 use std::num::NonZeroU32;
 
-use super::auth_rate_limit::non_zero_or_one;
+use super::auth_rate_limit::{AuthRateLimitConfig, default_network_quota, non_zero_or_one};
+use super::auth_rate_limit_overrides::AuthRateLimitOverrides;
 use super::defaults::{
-    DEFAULT_AUTH_RATE_LIMIT_BURST, DEFAULT_AUTH_RATE_LIMIT_PER_MINUTE, MAX_HANDLE_LENGTH_ENV,
-    MAX_PASSWORD_LENGTH_ENV, MIN_PASSWORD_LENGTH_ENV, MIN_VALID_LENGTH_LIMIT,
+    DEFAULT_AUTH_RATE_LIMIT_BURST, DEFAULT_AUTH_RATE_LIMIT_IPV6_CLIENT_PREFIX_LENGTH,
+    DEFAULT_AUTH_RATE_LIMIT_IPV6_NETWORK_PREFIX_LENGTH, DEFAULT_AUTH_RATE_LIMIT_PER_MINUTE,
+    IPV6_ADDRESS_BITS, MAX_HANDLE_LENGTH_ENV, MAX_PASSWORD_LENGTH_ENV, MIN_PASSWORD_LENGTH_ENV,
+    MIN_VALID_LENGTH_LIMIT,
 };
 use super::env_value::non_blank;
+use super::ipv6_network_tier_config::Ipv6NetworkTierConfig;
 
 /// Resolve the effective minimum password length.
 /// Highest-precedence source wins:
@@ -130,7 +134,7 @@ pub(crate) fn resolve_auth_rate_limit_per_minute(
     override_raw: Option<&str>,
     limits: Option<&mmcp_core::config::LimitsConfig>,
 ) -> NonZeroU32 {
-    resolve_auth_rate_limit(
+    resolve_rate_limit_value(
         "auth rate limit per minute",
         "--auth-rate-limit-per-minute or MMCP_AUTH_RATE_LIMIT_PER_MINUTE",
         override_raw,
@@ -145,7 +149,7 @@ pub(crate) fn resolve_auth_rate_limit_burst(
     override_raw: Option<&str>,
     limits: Option<&mmcp_core::config::LimitsConfig>,
 ) -> NonZeroU32 {
-    resolve_auth_rate_limit(
+    resolve_rate_limit_value(
         "auth rate limit burst",
         "--auth-rate-limit-burst or MMCP_AUTH_RATE_LIMIT_BURST",
         override_raw,
@@ -157,7 +161,7 @@ pub(crate) fn resolve_auth_rate_limit_burst(
 /// One auth rate limit tunable through the override, config file and default tiers.
 /// The override tier already holds the flag or the environment variable, which the argument parser reads, so no second environment read happens here.
 /// A tier that is zero, not a number, or above what the limiter counts in falls through to the next tier.
-fn resolve_auth_rate_limit(
+fn resolve_rate_limit_value(
     field: &str,
     source: &str,
     override_raw: Option<&str>,
@@ -192,6 +196,151 @@ fn within_limiter_range(field: &str, tier: &str, value: usize) -> Option<usize> 
         "{field} {tier} tier rejected: {value} is above the maximum valid {field} of {max}; falling through to the next {field} tier"
     );
     None
+}
+
+/// Resolve every setting of the auth rate limit: the client budget, its IPv6 prefix and the optional IPv6 network budget.
+pub(crate) fn resolve_auth_rate_limit(
+    overrides: &AuthRateLimitOverrides,
+    limits: Option<&mmcp_core::config::LimitsConfig>,
+) -> AuthRateLimitConfig {
+    let per_minute = resolve_auth_rate_limit_per_minute(overrides.per_minute.as_deref(), limits);
+    let burst = resolve_auth_rate_limit_burst(overrides.burst.as_deref(), limits);
+    let ipv6_client_prefix_length =
+        resolve_ipv6_client_prefix_length(overrides.ipv6_client_prefix_length.as_deref(), limits);
+    let ipv6_network_tier = resolve_ipv6_network_tier(
+        overrides,
+        limits,
+        ClientTier {
+            per_minute,
+            burst,
+            ipv6_prefix_length: ipv6_client_prefix_length,
+        },
+    );
+    AuthRateLimitConfig {
+        per_minute,
+        burst,
+        ipv6_client_prefix_length,
+        ipv6_network_tier,
+    }
+}
+
+/// The resolved client budget the IPv6 network budget is checked against.
+#[derive(Clone, Copy)]
+struct ClientTier {
+    per_minute: NonZeroU32,
+    burst: NonZeroU32,
+    ipv6_prefix_length: u8,
+}
+
+/// Resolve the leading bits of an IPv6 address that identify one client.
+/// Same cascade as [`resolve_auth_rate_limit_per_minute`].
+/// A value outside 1 to 128 falls through to the next tier with a warning.
+fn resolve_ipv6_client_prefix_length(
+    override_raw: Option<&str>,
+    limits: Option<&mmcp_core::config::LimitsConfig>,
+) -> u8 {
+    const FIELD: &str = "auth rate limit IPv6 client prefix length";
+    let override_value = parse_usize_env(
+        FIELD,
+        "--auth-rate-limit-ipv6-client-prefix-length or MMCP_AUTH_RATE_LIMIT_IPV6_CLIENT_PREFIX_LENGTH",
+        override_raw,
+    )
+    .and_then(|value| within_prefix_range(FIELD, "override", value));
+    let config_value = limits
+        .and_then(|l| l.auth_rate_limit_ipv6_client_prefix_length)
+        .and_then(|value| within_prefix_range(FIELD, "config", value));
+    let default = DEFAULT_AUTH_RATE_LIMIT_IPV6_CLIENT_PREFIX_LENGTH;
+    let resolved = resolve_usize_from_tiers(
+        FIELD,
+        override_value,
+        None,
+        config_value,
+        usize::from(default),
+        MIN_VALID_LENGTH_LIMIT,
+    );
+    u8::try_from(resolved).unwrap_or(default)
+}
+
+/// `value` when it is a prefix length of an IPv6 address, `None` with a warning when it is above 128.
+fn within_prefix_range(field: &str, tier: &str, value: usize) -> Option<usize> {
+    if value <= usize::from(IPV6_ADDRESS_BITS) {
+        return Some(value);
+    }
+    tracing::warn!(
+        "{field} {tier} tier rejected: {value} is above the maximum valid {field} of {IPV6_ADDRESS_BITS}; falling through to the next {field} tier"
+    );
+    None
+}
+
+/// Resolve the IPv6 network budget, `None` when it is switched off or its settings contradict the client budget.
+///
+/// The prefix length goes through the override, config file and default tiers, and `0` at any tier switches the budget off.
+/// A blank value counts as absent, so `0` is the explicit setting that removes the budget.
+/// A prefix outside 1 to 128, or not shorter than the IPv6 client prefix, warns and removes the budget.
+/// A quota below the client quota is kept with a warning, since the network budget then refuses before the client budget does.
+fn resolve_ipv6_network_tier(
+    overrides: &AuthRateLimitOverrides,
+    limits: Option<&mmcp_core::config::LimitsConfig>,
+    client: ClientTier,
+) -> Option<Ipv6NetworkTierConfig> {
+    const PREFIX_FIELD: &str = "auth rate limit IPv6 network prefix length";
+    let prefix_length = parse_usize_env(
+        PREFIX_FIELD,
+        "--auth-rate-limit-ipv6-network-prefix-length or MMCP_AUTH_RATE_LIMIT_IPV6_NETWORK_PREFIX_LENGTH",
+        overrides.ipv6_network_prefix_length.as_deref(),
+    )
+    .or_else(|| limits.and_then(|l| l.auth_rate_limit_ipv6_network_prefix_length))
+    .unwrap_or_else(|| usize::from(DEFAULT_AUTH_RATE_LIMIT_IPV6_NETWORK_PREFIX_LENGTH));
+    if prefix_length == 0 {
+        return None;
+    }
+    let Ok(prefix_length) = u8::try_from(prefix_length) else {
+        warn_unusable_network_prefix(prefix_length);
+        return None;
+    };
+    if prefix_length > IPV6_ADDRESS_BITS {
+        warn_unusable_network_prefix(usize::from(prefix_length));
+        return None;
+    }
+    if prefix_length >= client.ipv6_prefix_length {
+        tracing::warn!(
+            network_prefix_length = prefix_length,
+            client_prefix_length = client.ipv6_prefix_length,
+            "the IPv6 network prefix length is not shorter than the IPv6 client prefix length; the IPv6 network budget is off"
+        );
+        return None;
+    }
+    let per_minute = resolve_rate_limit_value(
+        "auth rate limit IPv6 network per minute",
+        "--auth-rate-limit-ipv6-network-per-minute or MMCP_AUTH_RATE_LIMIT_IPV6_NETWORK_PER_MINUTE",
+        overrides.ipv6_network_per_minute.as_deref(),
+        limits.and_then(|l| l.auth_rate_limit_ipv6_network_per_minute),
+        default_network_quota(client.per_minute),
+    );
+    let burst = resolve_rate_limit_value(
+        "auth rate limit IPv6 network burst",
+        "--auth-rate-limit-ipv6-network-burst or MMCP_AUTH_RATE_LIMIT_IPV6_NETWORK_BURST",
+        overrides.ipv6_network_burst.as_deref(),
+        limits.and_then(|l| l.auth_rate_limit_ipv6_network_burst),
+        default_network_quota(client.burst),
+    );
+    if per_minute < client.per_minute || burst < client.burst {
+        tracing::warn!(
+            "the IPv6 network quota is below the client quota, so the network budget refuses before the client budget does"
+        );
+    }
+    Some(Ipv6NetworkTierConfig {
+        prefix_length,
+        per_minute,
+        burst,
+    })
+}
+
+fn warn_unusable_network_prefix(prefix_length: usize) {
+    tracing::warn!(
+        prefix_length,
+        "the IPv6 network prefix length is not between 1 and 128; the IPv6 network budget is off"
+    );
 }
 
 /// Parse a raw `usize`-tier environment variable value, if any, into
@@ -459,12 +608,9 @@ mod tests {
         burst: Option<usize>,
     ) -> mmcp_core::config::LimitsConfig {
         mmcp_core::config::LimitsConfig {
-            max_auto_slug_length: None,
-            min_password_length: None,
-            max_password_length: None,
-            max_handle_length: None,
             auth_rate_limit_per_minute: per_minute,
             auth_rate_limit_burst: burst,
+            ..mmcp_core::config::LimitsConfig::default()
         }
     }
 
@@ -545,5 +691,200 @@ mod tests {
     #[test]
     fn auth_rate_limit_accepts_the_largest_value_the_limiter_counts_in() {
         assert_eq!(per_minute(Some(&u32::MAX.to_string()), None), u32::MAX);
+    }
+
+    fn overrides(
+        client_prefix: Option<&str>,
+        network_prefix: Option<&str>,
+        network_per_minute: Option<&str>,
+        network_burst: Option<&str>,
+    ) -> AuthRateLimitOverrides {
+        let owned = |value: Option<&str>| value.map(str::to_owned);
+        AuthRateLimitOverrides {
+            ipv6_client_prefix_length: owned(client_prefix),
+            ipv6_network_prefix_length: owned(network_prefix),
+            ipv6_network_per_minute: owned(network_per_minute),
+            ipv6_network_burst: owned(network_burst),
+            ..AuthRateLimitOverrides::default()
+        }
+    }
+
+    fn resolved(overrides: &AuthRateLimitOverrides) -> AuthRateLimitConfig {
+        resolve_auth_rate_limit(overrides, None)
+    }
+
+    fn warnings_of<T>(run: impl FnOnce() -> T) -> (T, usize) {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let value = tracing::subscriber::with_default(WarnCounter(count.clone()), run);
+        (value, count.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    #[test]
+    fn ipv6_settings_default_to_a_64_client_prefix_and_a_48_network_budget_at_ten_times_the_quota()
+    {
+        let config = resolved(&AuthRateLimitOverrides::default());
+        assert_eq!(config.ipv6_client_prefix_length, 64);
+        let network = config.ipv6_network_tier.unwrap();
+        assert_eq!(network.prefix_length, 48);
+        assert_eq!(network.per_minute.get(), 10 * config.per_minute.get());
+        assert_eq!(network.burst.get(), 10 * config.burst.get());
+    }
+
+    #[test]
+    fn the_default_network_quota_follows_a_configured_client_quota() {
+        let config = resolved(&AuthRateLimitOverrides {
+            per_minute: Some("6".to_string()),
+            burst: Some("3".to_string()),
+            ..AuthRateLimitOverrides::default()
+        });
+        let network = config.ipv6_network_tier.unwrap();
+        assert_eq!((network.per_minute.get(), network.burst.get()), (60, 30));
+    }
+
+    #[test]
+    fn ipv6_settings_prefer_flag_then_environment_then_config_file_then_default() {
+        // The argument parser hands the flag, else the environment value, over as one override.
+        let limits = mmcp_core::config::LimitsConfig {
+            auth_rate_limit_ipv6_client_prefix_length: Some(60),
+            auth_rate_limit_ipv6_network_prefix_length: Some(40),
+            auth_rate_limit_ipv6_network_per_minute: Some(300),
+            auth_rate_limit_ipv6_network_burst: Some(150),
+            ..mmcp_core::config::LimitsConfig::default()
+        };
+        let from_file = resolve_auth_rate_limit(&AuthRateLimitOverrides::default(), Some(&limits));
+        let network = from_file.ipv6_network_tier.unwrap();
+        assert_eq!(from_file.ipv6_client_prefix_length, 60);
+        assert_eq!(
+            (
+                network.prefix_length,
+                network.per_minute.get(),
+                network.burst.get()
+            ),
+            (40, 300, 150)
+        );
+
+        let from_override = resolve_auth_rate_limit(
+            &overrides(Some("56"), Some("32"), Some("500"), Some("250")),
+            Some(&limits),
+        );
+        let network = from_override.ipv6_network_tier.unwrap();
+        assert_eq!(from_override.ipv6_client_prefix_length, 56);
+        assert_eq!(
+            (
+                network.prefix_length,
+                network.per_minute.get(),
+                network.burst.get()
+            ),
+            (32, 500, 250)
+        );
+    }
+
+    #[test]
+    fn a_blank_ipv6_setting_is_absent_and_leaves_the_network_budget_on() {
+        let (config, warnings) =
+            warnings_of(|| resolved(&overrides(Some(""), Some("  "), Some(""), Some(""))));
+        assert_eq!(config, AuthRateLimitConfig::default());
+        assert_eq!(warnings, 0);
+    }
+
+    #[test]
+    fn a_zero_network_prefix_switches_the_network_budget_off_at_every_layer() {
+        let (config, warnings) = warnings_of(|| resolved(&overrides(None, Some("0"), None, None)));
+        assert_eq!(config.ipv6_network_tier, None);
+        assert_eq!(
+            warnings, 0,
+            "zero is the explicit setting, not a rejected value"
+        );
+
+        let limits = mmcp_core::config::LimitsConfig {
+            auth_rate_limit_ipv6_network_prefix_length: Some(0),
+            ..mmcp_core::config::LimitsConfig::default()
+        };
+        let from_file = resolve_auth_rate_limit(&AuthRateLimitOverrides::default(), Some(&limits));
+        assert_eq!(from_file.ipv6_network_tier, None);
+
+        let overridden =
+            resolve_auth_rate_limit(&overrides(None, Some("40"), None, None), Some(&limits));
+        assert_eq!(overridden.ipv6_network_tier.unwrap().prefix_length, 40);
+    }
+
+    #[test]
+    fn removing_the_network_budget_leaves_the_client_budget_settings_unchanged() {
+        let without = resolved(&overrides(None, Some("0"), None, None));
+        let with = resolved(&AuthRateLimitOverrides::default());
+        assert_eq!(
+            (
+                without.per_minute,
+                without.burst,
+                without.ipv6_client_prefix_length
+            ),
+            (with.per_minute, with.burst, with.ipv6_client_prefix_length)
+        );
+    }
+
+    #[test]
+    fn a_malformed_ipv6_value_warns_and_falls_through_the_cascade() {
+        let (config, warnings) = warnings_of(|| {
+            resolved(&overrides(
+                Some("wide"),
+                Some("big"),
+                Some("lots"),
+                Some("many"),
+            ))
+        });
+        assert_eq!(config, AuthRateLimitConfig::default());
+        assert_eq!(warnings, 4);
+    }
+
+    #[test]
+    fn a_client_prefix_outside_1_to_128_warns_and_falls_through() {
+        let (config, warnings) = warnings_of(|| {
+            [
+                resolved(&overrides(Some("0"), None, None, None)),
+                resolved(&overrides(Some("129"), None, None, None)),
+            ]
+        });
+        assert!(config.iter().all(|c| c.ipv6_client_prefix_length == 64));
+        assert_eq!(warnings, 2);
+    }
+
+    #[test]
+    fn a_network_prefix_above_128_warns_and_removes_the_network_budget() {
+        let (config, warnings) =
+            warnings_of(|| resolved(&overrides(None, Some("129"), None, None)));
+        assert_eq!(config.ipv6_network_tier, None);
+        assert_eq!(warnings, 1);
+    }
+
+    #[test]
+    fn a_network_prefix_not_shorter_than_the_client_prefix_warns_and_removes_the_network_budget() {
+        for network_prefix in ["64", "80"] {
+            let (config, warnings) =
+                warnings_of(|| resolved(&overrides(None, Some(network_prefix), None, None)));
+            assert_eq!(config.ipv6_network_tier, None, "{network_prefix}");
+            assert_eq!(warnings, 1, "{network_prefix}");
+        }
+        // A duplicate of a custom client prefix is rejected the same way.
+        let (config, warnings) =
+            warnings_of(|| resolved(&overrides(Some("56"), Some("56"), None, None)));
+        assert_eq!(config.ipv6_network_tier, None);
+        assert_eq!(warnings, 1);
+    }
+
+    #[test]
+    fn a_network_quota_below_the_client_quota_is_kept_with_a_warning() {
+        let (config, warnings) =
+            warnings_of(|| resolved(&overrides(None, None, Some("5"), Some("2"))));
+        let network = config.ipv6_network_tier.unwrap();
+        assert_eq!((network.per_minute.get(), network.burst.get()), (5, 2));
+        assert_eq!(warnings, 1);
+    }
+
+    #[test]
+    fn a_network_quota_of_zero_falls_through_with_a_warning() {
+        let (config, warnings) =
+            warnings_of(|| resolved(&overrides(None, None, Some("0"), Some("0"))));
+        assert_eq!(config, AuthRateLimitConfig::default());
+        assert_eq!(warnings, 2);
     }
 }

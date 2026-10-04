@@ -73,6 +73,45 @@ pub const AUTH_RATE_LIMIT_BURST_ENV: &str = "MMCP_AUTH_RATE_LIMIT_BURST";
 /// Unset or blank trusts no proxy, so every client is its TCP peer.
 pub const TRUSTED_PROXIES_ENV: &str = "MMCP_TRUSTED_PROXIES";
 
+/// Environment variable naming the leading bits of an IPv6 address that identify one client for the auth rate limit.
+/// The argument parser binds it to `serve --auth-rate-limit-ipv6-client-prefix-length`, and the flag beats it.
+/// Unset or blank leaves the next tier of the cascade in charge.
+pub const AUTH_RATE_LIMIT_IPV6_CLIENT_PREFIX_LENGTH_ENV: &str =
+    "MMCP_AUTH_RATE_LIMIT_IPV6_CLIENT_PREFIX_LENGTH";
+
+/// Environment variable naming the leading bits of an IPv6 address that identify one network for the second auth rate limit.
+/// The argument parser binds it to `serve --auth-rate-limit-ipv6-network-prefix-length`, and the flag beats it.
+/// Unset or blank leaves the next tier of the cascade in charge, and `0` switches the second limit off.
+pub const AUTH_RATE_LIMIT_IPV6_NETWORK_PREFIX_LENGTH_ENV: &str =
+    "MMCP_AUTH_RATE_LIMIT_IPV6_NETWORK_PREFIX_LENGTH";
+
+/// Environment variable naming the requests per minute one IPv6 network may send once its burst is spent.
+/// The argument parser binds it to `serve --auth-rate-limit-ipv6-network-per-minute`, and the flag beats it.
+/// Unset or blank leaves the next tier of the cascade in charge.
+pub const AUTH_RATE_LIMIT_IPV6_NETWORK_PER_MINUTE_ENV: &str =
+    "MMCP_AUTH_RATE_LIMIT_IPV6_NETWORK_PER_MINUTE";
+
+/// Environment variable naming the requests one IPv6 network may send at once.
+/// The argument parser binds it to `serve --auth-rate-limit-ipv6-network-burst`, and the flag beats it.
+/// Unset or blank leaves the next tier of the cascade in charge.
+pub const AUTH_RATE_LIMIT_IPV6_NETWORK_BURST_ENV: &str = "MMCP_AUTH_RATE_LIMIT_IPV6_NETWORK_BURST";
+
+/// Default leading bits of an IPv6 address that identify one client.
+/// One host or one subnet of a LAN holds a /64, so a client rotating addresses inside it keeps one budget (RFC 4291 section 2.5.4).
+pub(crate) const DEFAULT_AUTH_RATE_LIMIT_IPV6_CLIENT_PREFIX_LENGTH: u8 = 64;
+
+/// Default leading bits of an IPv6 address that identify one network for the second limit.
+/// A /48 is the largest site allocation, 65 536 client prefixes of the default length.
+pub(crate) const DEFAULT_AUTH_RATE_LIMIT_IPV6_NETWORK_PREFIX_LENGTH: u8 = 48;
+
+/// How many times the client quota the default quota of the IPv6 network budget is.
+/// The network budget exists to bound the password hashing work one network holder can force.
+/// Ten times the client quota keeps a whole network at about three hashes per second with the default quota.
+pub(crate) const IPV6_NETWORK_QUOTA_MULTIPLE: u32 = 10;
+
+/// Largest number of leading bits an IPv6 prefix holds.
+pub(crate) const IPV6_ADDRESS_BITS: u8 = 128;
+
 /// Default requests per minute one client may send to the unauthenticated auth routes once its burst is spent.
 /// One argon2 hash every three seconds at most, per client key.
 pub(crate) const DEFAULT_AUTH_RATE_LIMIT_PER_MINUTE: u32 = 20;

@@ -270,6 +270,88 @@ async fn x_forwarded_for_from_a_direct_client_does_not_renew_its_budget() {
     );
 }
 
+/// Base burst of the client budget in the IPv6 network tests, large enough that only the network budget can refuse.
+const AMPLE_CLIENT_BURST: u32 = 10;
+/// Burst of the IPv6 network budget in the network tests.
+const NETWORK_BURST: u32 = 3;
+
+/// Three client prefixes of the network `2001:db8:1::/48`, and a fourth.
+const NETWORK_MEMBERS: [&str; 4] = [
+    "2001:db8:1:1::1",
+    "2001:db8:1:2::1",
+    "2001:db8:1:3::1",
+    "2001:db8:1:4::1",
+];
+const OTHER_NETWORK_MEMBER: &str = "2001:db8:2:1::1";
+
+/// A server behind the loopback proxy whose network budget is `NETWORK_BURST` requests.
+fn network_budget_builder() -> common::TestServerConfigBuilder {
+    common::TestServerConfigBuilder::new(tempfile::tempdir().unwrap().keep())
+        .trusted_proxies(LOOPBACK_PROXY_RANGE)
+        .auth_rate_limit(PER_MINUTE, AMPLE_CLIENT_BURST)
+        .auth_rate_limit_ipv6_network(PER_MINUTE, NETWORK_BURST)
+}
+
+#[tokio::test]
+async fn rotating_slash_64s_inside_one_slash_48_hit_the_network_budget() {
+    let addr = common::start_server_with_config(network_budget_builder().build()).await;
+    let client = Client::new();
+
+    // Each request comes from a different client prefix, so no client budget is anywhere near spent.
+    for member in &NETWORK_MEMBERS[..3] {
+        assert_eq!(
+            login_from_forwarded(&client, addr, member).await.status(),
+            StatusCode::UNAUTHORIZED,
+            "{member}"
+        );
+    }
+    let refused = login_from_forwarded(&client, addr, NETWORK_MEMBERS[3]).await;
+
+    assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(retry_after_seconds(&refused) >= 1);
+    assert_eq!(
+        login_from_forwarded(&client, addr, OTHER_NETWORK_MEMBER)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED,
+        "another network has a budget of its own"
+    );
+}
+
+#[tokio::test]
+async fn ipv4_clients_behind_a_trusted_proxy_are_not_counted_by_the_network_budget() {
+    let addr = common::start_server_with_config(network_budget_builder().build()).await;
+    let client = Client::new();
+
+    for index in 0..=NETWORK_BURST {
+        assert_eq!(
+            login_from_forwarded(&client, addr, &format!("203.0.113.{index}"))
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+}
+
+#[tokio::test]
+async fn removing_the_network_budget_leaves_only_the_client_budget() {
+    let addr = common::start_server_with_config(
+        network_budget_builder()
+            .without_auth_rate_limit_ipv6_network()
+            .build(),
+    )
+    .await;
+    let client = Client::new();
+
+    for member in NETWORK_MEMBERS {
+        assert_eq!(
+            login_from_forwarded(&client, addr, member).await.status(),
+            StatusCode::UNAUTHORIZED,
+            "{member}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn server_served_without_client_addresses_fails_closed() {
     let cfg = common::TestServerConfigBuilder::new(tempfile::tempdir().unwrap().keep())

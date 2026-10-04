@@ -70,6 +70,32 @@ struct ServeArgs {
     #[arg(long, env = config::AUTH_RATE_LIMIT_BURST_ENV)]
     auth_rate_limit_burst: Option<String>,
 
+    /// Leading bits of an IPv6 address that identify one client for the sign-in and registration limit.
+    /// Every address that starts with the same bits counts as one client.
+    /// Same precedence as `--auth-rate-limit-per-minute`.
+    #[arg(long, env = config::AUTH_RATE_LIMIT_IPV6_CLIENT_PREFIX_LENGTH_ENV)]
+    auth_rate_limit_ipv6_client_prefix_length: Option<String>,
+
+    /// Leading bits of an IPv6 address that identify one network for the second sign-in and registration limit.
+    /// It counts every client of one network together, so one network cannot get around the limit by using many addresses.
+    /// Must be shorter than the client prefix length.
+    /// Set it to 0 to switch the network limit off.
+    /// Same precedence as `--auth-rate-limit-per-minute`.
+    #[arg(long, env = config::AUTH_RATE_LIMIT_IPV6_NETWORK_PREFIX_LENGTH_ENV)]
+    auth_rate_limit_ipv6_network_prefix_length: Option<String>,
+
+    /// Sign-in and registration requests one IPv6 network may send per minute once its burst is spent.
+    /// Unset means 10 times the client value.
+    /// Same precedence as `--auth-rate-limit-per-minute`.
+    #[arg(long, env = config::AUTH_RATE_LIMIT_IPV6_NETWORK_PER_MINUTE_ENV)]
+    auth_rate_limit_ipv6_network_per_minute: Option<String>,
+
+    /// Sign-in and registration requests one IPv6 network may send at once before the per-minute rate applies.
+    /// Unset means 10 times the client value.
+    /// Same precedence as `--auth-rate-limit-per-minute`.
+    #[arg(long, env = config::AUTH_RATE_LIMIT_IPV6_NETWORK_BURST_ENV)]
+    auth_rate_limit_ipv6_network_burst: Option<String>,
+
     /// Comma-separated IP addresses or CIDR ranges of the reverse proxies in front of this server.
     /// A request coming from one of them is attributed to the client address its X-Forwarded-For header gives.
     /// List only proxies that clients cannot bypass, and leave it unset when clients connect to the server directly.
@@ -86,8 +112,14 @@ impl From<ServeArgs> for config::ServerConfigOverrides {
             max_handle_length: args.max_handle_length,
             webui_dir: args.webui_dir.map(PathBuf::from),
             cors_allowed_origins: args.cors_allowed_origins,
-            auth_rate_limit_per_minute: args.auth_rate_limit_per_minute,
-            auth_rate_limit_burst: args.auth_rate_limit_burst,
+            auth_rate_limit: config::AuthRateLimitOverrides {
+                per_minute: args.auth_rate_limit_per_minute,
+                burst: args.auth_rate_limit_burst,
+                ipv6_client_prefix_length: args.auth_rate_limit_ipv6_client_prefix_length,
+                ipv6_network_prefix_length: args.auth_rate_limit_ipv6_network_prefix_length,
+                ipv6_network_per_minute: args.auth_rate_limit_ipv6_network_per_minute,
+                ipv6_network_burst: args.auth_rate_limit_ipv6_network_burst,
+            },
             trusted_proxies: args.trusted_proxies,
         }
     }
@@ -104,7 +136,8 @@ struct ServeOnlyCli {
 #[derive(Subcommand)]
 enum Command {
     /// Start the HTTP server (default when no subcommand is given).
-    Serve(ServeArgs),
+    // Boxed: the serve arguments are far larger than the other variants.
+    Serve(Box<ServeArgs>),
     /// Probe the running server's `/health` endpoint on loopback.
     ///
     /// Reads `MMCP_BIND` to find the port, connects to
@@ -129,7 +162,7 @@ fn default_serve_args() -> ServeArgs {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Some(Command::Serve(args)) => run_server(args.into()).await,
+        Some(Command::Serve(args)) => run_server((*args).into()).await,
         None => run_server(default_serve_args().into()).await,
         Some(Command::Healthcheck) => run_healthcheck().await,
         Some(Command::GenerateSecret) => {
@@ -154,8 +187,7 @@ async fn run_server(overrides: config::ServerConfigOverrides) -> Result<()> {
     let session_store = state.session_store.clone();
     let rate_limiter = state.auth_rate_limiter.clone();
     tracing::info!(
-        per_minute = cfg.auth_rate_limit.per_minute.get(),
-        burst = cfg.auth_rate_limit.burst.get(),
+        limits = %cfg.auth_rate_limit,
         trusted_proxies = %cfg.trusted_proxies,
         "auth rate limit active"
     );
@@ -247,6 +279,26 @@ mod tests {
     }
 
     #[test]
+    fn serve_ipv6_rate_limit_settings_are_bound_to_their_environment_variables() {
+        assert_eq!(
+            serve_arg_env("auth_rate_limit_ipv6_client_prefix_length").as_deref(),
+            Some(config::AUTH_RATE_LIMIT_IPV6_CLIENT_PREFIX_LENGTH_ENV)
+        );
+        assert_eq!(
+            serve_arg_env("auth_rate_limit_ipv6_network_prefix_length").as_deref(),
+            Some(config::AUTH_RATE_LIMIT_IPV6_NETWORK_PREFIX_LENGTH_ENV)
+        );
+        assert_eq!(
+            serve_arg_env("auth_rate_limit_ipv6_network_per_minute").as_deref(),
+            Some(config::AUTH_RATE_LIMIT_IPV6_NETWORK_PER_MINUTE_ENV)
+        );
+        assert_eq!(
+            serve_arg_env("auth_rate_limit_ipv6_network_burst").as_deref(),
+            Some(config::AUTH_RATE_LIMIT_IPV6_NETWORK_BURST_ENV)
+        );
+    }
+
+    #[test]
     fn serve_rate_limit_flags_reach_the_config_override_tier() {
         let cli = Cli::try_parse_from([
             BINARY_NAME,
@@ -255,6 +307,14 @@ mod tests {
             "30",
             "--auth-rate-limit-burst",
             "5",
+            "--auth-rate-limit-ipv6-client-prefix-length",
+            "56",
+            "--auth-rate-limit-ipv6-network-prefix-length",
+            "40",
+            "--auth-rate-limit-ipv6-network-per-minute",
+            "300",
+            "--auth-rate-limit-ipv6-network-burst",
+            "50",
             "--trusted-proxies",
             "10.0.0.0/8,192.0.2.1",
         ])
@@ -262,9 +322,14 @@ mod tests {
         let Some(Command::Serve(args)) = cli.command else {
             panic!("expected the serve subcommand");
         };
-        let overrides = config::ServerConfigOverrides::from(args);
-        assert_eq!(overrides.auth_rate_limit_per_minute.as_deref(), Some("30"));
-        assert_eq!(overrides.auth_rate_limit_burst.as_deref(), Some("5"));
+        let overrides = config::ServerConfigOverrides::from(*args);
+        let rate_limit = &overrides.auth_rate_limit;
+        assert_eq!(rate_limit.per_minute.as_deref(), Some("30"));
+        assert_eq!(rate_limit.burst.as_deref(), Some("5"));
+        assert_eq!(rate_limit.ipv6_client_prefix_length.as_deref(), Some("56"));
+        assert_eq!(rate_limit.ipv6_network_prefix_length.as_deref(), Some("40"));
+        assert_eq!(rate_limit.ipv6_network_per_minute.as_deref(), Some("300"));
+        assert_eq!(rate_limit.ipv6_network_burst.as_deref(), Some("50"));
         assert_eq!(
             overrides.trusted_proxies.as_deref(),
             Some("10.0.0.0/8,192.0.2.1")
@@ -280,6 +345,14 @@ mod tests {
             "",
             "--auth-rate-limit-burst",
             "",
+            "--auth-rate-limit-ipv6-client-prefix-length",
+            "",
+            "--auth-rate-limit-ipv6-network-prefix-length",
+            "",
+            "--auth-rate-limit-ipv6-network-per-minute",
+            "",
+            "--auth-rate-limit-ipv6-network-burst",
+            "",
             "--trusted-proxies",
             "",
         ])
@@ -287,9 +360,14 @@ mod tests {
         let Some(Command::Serve(args)) = cli.command else {
             panic!("expected the serve subcommand");
         };
-        let overrides = config::ServerConfigOverrides::from(args);
-        assert_eq!(overrides.auth_rate_limit_per_minute.as_deref(), Some(""));
-        assert_eq!(overrides.auth_rate_limit_burst.as_deref(), Some(""));
+        let overrides = config::ServerConfigOverrides::from(*args);
+        let rate_limit = &overrides.auth_rate_limit;
+        assert_eq!(rate_limit.per_minute.as_deref(), Some(""));
+        assert_eq!(rate_limit.burst.as_deref(), Some(""));
+        assert_eq!(rate_limit.ipv6_client_prefix_length.as_deref(), Some(""));
+        assert_eq!(rate_limit.ipv6_network_prefix_length.as_deref(), Some(""));
+        assert_eq!(rate_limit.ipv6_network_per_minute.as_deref(), Some(""));
+        assert_eq!(rate_limit.ipv6_network_burst.as_deref(), Some(""));
         assert_eq!(overrides.trusted_proxies.as_deref(), Some(""));
     }
 
@@ -313,6 +391,10 @@ mod tests {
             "cors_allowed_origins",
             "auth_rate_limit_per_minute",
             "auth_rate_limit_burst",
+            "auth_rate_limit_ipv6_client_prefix_length",
+            "auth_rate_limit_ipv6_network_prefix_length",
+            "auth_rate_limit_ipv6_network_per_minute",
+            "auth_rate_limit_ipv6_network_burst",
             "trusted_proxies",
         ] {
             let arg = command
@@ -337,7 +419,7 @@ mod tests {
         let Some(Command::Serve(args)) = cli.command else {
             panic!("expected the serve subcommand");
         };
-        let overrides = config::ServerConfigOverrides::from(args);
+        let overrides = config::ServerConfigOverrides::from(*args);
         assert_eq!(
             overrides.webui_dir,
             Some(PathBuf::from("/usr/share/mmcp/webui"))
@@ -362,7 +444,7 @@ mod tests {
         let Some(Command::Serve(args)) = cli.command else {
             panic!("expected the serve subcommand");
         };
-        let overrides = config::ServerConfigOverrides::from(args);
+        let overrides = config::ServerConfigOverrides::from(*args);
         assert_eq!(overrides.webui_dir, Some(PathBuf::new()));
         assert_eq!(overrides.cors_allowed_origins.as_deref(), Some(""));
     }

@@ -231,10 +231,32 @@ impl TestServerConfigBuilder {
     /// A test that sends many auth requests raises it, and a test of the limit lowers it.
     #[allow(dead_code)] // Live in sibling test binaries; each tests/*.rs compiles common as its own crate.
     pub fn auth_rate_limit(mut self, per_minute: u32, burst: u32) -> Self {
-        self.config.auth_rate_limit = AuthRateLimitConfig {
-            per_minute: NonZeroU32::new(per_minute).expect("a non-zero rate"),
-            burst: NonZeroU32::new(burst).expect("a non-zero burst"),
-        };
+        self.config.auth_rate_limit = AuthRateLimitConfig::with_client_quota(
+            NonZeroU32::new(per_minute).expect("a non-zero rate"),
+            NonZeroU32::new(burst).expect("a non-zero burst"),
+        );
+        self
+    }
+
+    /// Overrides the quota of the IPv6 network budget (`AuthRateLimitConfig::ipv6_network_tier`), keeping its prefix length.
+    /// Call it after [`Self::auth_rate_limit`], which resets the network budget to its default quota.
+    #[allow(dead_code)] // Live in sibling test binaries; each tests/*.rs compiles common as its own crate.
+    pub fn auth_rate_limit_ipv6_network(mut self, per_minute: u32, burst: u32) -> Self {
+        let network = self
+            .config
+            .auth_rate_limit
+            .ipv6_network_tier
+            .as_mut()
+            .expect("the network budget is on");
+        network.per_minute = NonZeroU32::new(per_minute).expect("a non-zero rate");
+        network.burst = NonZeroU32::new(burst).expect("a non-zero burst");
+        self
+    }
+
+    /// Switches the IPv6 network budget off, leaving the client budget alone.
+    #[allow(dead_code)] // Live in sibling test binaries; each tests/*.rs compiles common as its own crate.
+    pub fn without_auth_rate_limit_ipv6_network(mut self) -> Self {
+        self.config.auth_rate_limit.ipv6_network_tier = None;
         self
     }
 

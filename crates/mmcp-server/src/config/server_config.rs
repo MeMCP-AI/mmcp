@@ -7,8 +7,8 @@ use axum::http::HeaderValue;
 
 use super::auth_rate_limit::AuthRateLimitConfig;
 use super::cascade::{
-    load_user_limits, resolve_auth_rate_limit_burst, resolve_auth_rate_limit_per_minute,
-    resolve_max_handle_length, resolve_max_password_length, resolve_min_password_length,
+    load_user_limits, resolve_auth_rate_limit, resolve_max_handle_length,
+    resolve_max_password_length, resolve_min_password_length,
 };
 use super::cors_origins::parse_cors_origins;
 use super::database_url_redaction::redact_database_url;
@@ -50,10 +50,14 @@ use super::trusted_proxies::TrustedProxies;
 /// | `MMCP_CORS_ALLOWED_ORIGINS`       | `serve --cors-allowed-origins`  | (absent = no CORS layer) |
 /// | `MMCP_AUTH_RATE_LIMIT_PER_MINUTE` | `serve --auth-rate-limit-per-minute` | `20`, see the cascade below |
 /// | `MMCP_AUTH_RATE_LIMIT_BURST`      | `serve --auth-rate-limit-burst` | `10`, see the cascade below |
+/// | `MMCP_AUTH_RATE_LIMIT_IPV6_CLIENT_PREFIX_LENGTH` | `serve --auth-rate-limit-ipv6-client-prefix-length` | `64` |
+/// | `MMCP_AUTH_RATE_LIMIT_IPV6_NETWORK_PREFIX_LENGTH` | `serve --auth-rate-limit-ipv6-network-prefix-length` | `48`, `0` = no network budget |
+/// | `MMCP_AUTH_RATE_LIMIT_IPV6_NETWORK_PER_MINUTE` | `serve --auth-rate-limit-ipv6-network-per-minute` | 10 times the client value, `200` |
+/// | `MMCP_AUTH_RATE_LIMIT_IPV6_NETWORK_BURST` | `serve --auth-rate-limit-ipv6-network-burst` | 10 times the client value, `100` |
 /// | `MMCP_TRUSTED_PROXIES`            | `serve --trusted-proxies`       | (absent = clients connect directly) |
 ///
 /// They reach this type through [`ServerConfigOverrides`].
-/// The two auth rate limit values also read `~/.mmcp/config.toml` `[limits]`, below the flag and the variable and above the default.
+/// The auth rate limit values also read `~/.mmcp/config.toml` `[limits]`, below the flag and the variable and above the default.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub bind: SocketAddr,
@@ -270,16 +274,8 @@ impl ServerConfig {
         for rejected_cors_origin in &cors_allowed_origins.rejected {
             tracing::warn!("ignoring CORS origin {rejected_cors_origin}: not a valid origin");
         }
-        let auth_rate_limit = AuthRateLimitConfig {
-            per_minute: resolve_auth_rate_limit_per_minute(
-                overrides.auth_rate_limit_per_minute.as_deref(),
-                user_limits.as_ref(),
-            ),
-            burst: resolve_auth_rate_limit_burst(
-                overrides.auth_rate_limit_burst.as_deref(),
-                user_limits.as_ref(),
-            ),
-        };
+        let auth_rate_limit =
+            resolve_auth_rate_limit(&overrides.auth_rate_limit, user_limits.as_ref());
         let trusted_proxies = overrides
             .trusted_proxies
             .as_deref()
@@ -374,6 +370,7 @@ pub fn generate_secret_hex() -> Result<String, ConfigError> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use crate::config::AuthRateLimitOverrides;
     use crate::config::test_support::WarnCounter;
     use crate::config::{
         GITHUB_OAUTH_CLIENT_ID_ENV, GITHUB_OAUTH_CLIENT_SECRET_ENV, MAX_HANDLE_LENGTH_ENV,
@@ -1007,19 +1004,41 @@ mod tests {
     #[test]
     fn auth_rate_limit_overrides_are_carried_into_the_config() {
         let cfg = from_overrides(ServerConfigOverrides {
-            auth_rate_limit_per_minute: Some("45".to_string()),
-            auth_rate_limit_burst: Some("6".to_string()),
+            auth_rate_limit: AuthRateLimitOverrides {
+                per_minute: Some("45".to_string()),
+                burst: Some("6".to_string()),
+                ipv6_client_prefix_length: Some("56".to_string()),
+                ipv6_network_prefix_length: Some("40".to_string()),
+                ipv6_network_per_minute: Some("700".to_string()),
+                ipv6_network_burst: Some("90".to_string()),
+            },
             ..ServerConfigOverrides::default()
         });
         assert_eq!(cfg.auth_rate_limit.per_minute.get(), 45);
         assert_eq!(cfg.auth_rate_limit.burst.get(), 6);
+        assert_eq!(cfg.auth_rate_limit.ipv6_client_prefix_length, 56);
+        let network = cfg.auth_rate_limit.ipv6_network_tier.unwrap();
+        assert_eq!(
+            (
+                network.prefix_length,
+                network.per_minute.get(),
+                network.burst.get()
+            ),
+            (40, 700, 90)
+        );
     }
 
     #[test]
     fn blank_auth_rate_limit_overrides_leave_the_lower_tiers_in_charge() {
         let blank = from_overrides(ServerConfigOverrides {
-            auth_rate_limit_per_minute: Some(String::new()),
-            auth_rate_limit_burst: Some("  ".to_string()),
+            auth_rate_limit: AuthRateLimitOverrides {
+                per_minute: Some(String::new()),
+                burst: Some("  ".to_string()),
+                ipv6_client_prefix_length: Some(String::new()),
+                ipv6_network_prefix_length: Some(String::new()),
+                ipv6_network_per_minute: Some(String::new()),
+                ipv6_network_burst: Some(String::new()),
+            },
             ..ServerConfigOverrides::default()
         });
         let absent = from_overrides(ServerConfigOverrides::default());
