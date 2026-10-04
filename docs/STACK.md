@@ -106,7 +106,7 @@ Not Rust crates, but required by the project.
 | **PostgreSQL**     | Primary database for `mmcp-server`. Users customize via `database_url`; also supported: SQLite for single-user deployments, via SeaORM's multi-backend support. | `mmcp-server`  |
 | **SQLite**         | Default local database for `mmcp-client`'s offline cache and session state mirror.        | `mmcp-client`  |
 | **cargo-nextest**  | Fast test runner with better output than `cargo test`. Recommended but optional.          | dev            |
-| **cargo-deny**     | Dependency report on licenses, advisories and bans, configured in `deny.toml`. Run on demand for information: no workflow runs it and it gates nothing. | dev            |
+| **cargo-deny**     | Dependency checks on licenses, advisories and bans, configured in `deny.toml`. Kept clean at every delivery: the license allow list holds permissive or non-constraining licenses, with one granted exception for `evalexpr`. No CI workflow runs it. | dev            |
 | **bun**            | JS runtime + package manager + bundler driver for `webui/` and `gui/`'s SvelteKit frontend. | `webui` build, `gui` build |
 | **rustfmt**        | Formatter. Enforced in CI.                                                                 | dev, CI        |
 | **clippy**         | Linter. `-D warnings` in CI per Rust coding rules.                                         | dev, CI        |
