@@ -4,10 +4,8 @@ Desktop client for mmcp memories. Tauri 2 shell with a SvelteKit + Tailwind v4
 frontend. Talks to `mmcp-store` directly over Tauri IPC — no HTTP, no MCP
 protocol round-trip.
 
-This is a peer of `webui/` (the Leptos server-side web frontend). Both
-ultimately target the same `$lib/components/` shape so a future pass can
-extract shared UI into `packages/ui/` and consume it from both apps. Today,
-only this desktop app exists in the new stack.
+This is a peer of `webui/` (the SvelteKit single-page web frontend that mmcp-server serves).
+Both ultimately target the same `$lib/components/` shape so a future pass can extract shared UI into `packages/ui/` and consume it from both apps.
 
 ## Prerequisites
 
