@@ -1,5 +1,6 @@
 //! HTTP route groups.
 
+pub mod api_prefix;
 pub mod auth;
 pub mod bearer_auth;
 mod defaults;
@@ -11,3 +12,4 @@ mod passkey_ceremony;
 mod registration_limits;
 pub mod response;
 pub mod sync;
+pub mod webui;
