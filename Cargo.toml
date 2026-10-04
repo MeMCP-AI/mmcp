@@ -26,6 +26,8 @@ version = "0.1.142"
 edition = "2024"
 rust-version = "1.94"
 authors = ["Gabriel GRONDIN"]
+# No member can be published to crates.io: the gix crates are patched to a git fork and acdc is a git dependency.
+publish = false
 
 [workspace.dependencies]
 # Workspace member crates
