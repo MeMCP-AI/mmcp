@@ -28,7 +28,7 @@ pub struct ConfigCliArgs {
 /// The three operations of `mmcp config`.
 #[derive(Debug, Subcommand)]
 pub enum ConfigCliCommand {
-    /// Show every layer of a setting and its effective value.
+    /// Show the local, project and user layers of a setting and its effective value.
     Get {
         /// The setting.
         #[arg(value_enum)]
@@ -500,7 +500,7 @@ mod tests {
         };
         assert_eq!(
             subcommand_help(&mut command, "get"),
-            "Show every layer of a setting and its effective value"
+            "Show the local, project and user layers of a setting and its effective value"
         );
         assert_eq!(
             subcommand_help(&mut command, "set"),

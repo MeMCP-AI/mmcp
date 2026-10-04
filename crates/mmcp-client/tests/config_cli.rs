@@ -161,7 +161,7 @@ fn config_help_is_the_approved_text() {
             "Read or change an mmcp setting. Mirrors the config MCP tool",
         ))
         .stdout(predicate::str::contains(
-            "Show every layer of a setting and its effective value",
+            "Show the local, project and user layers of a setting and its effective value",
         ))
         .stdout(predicate::str::contains("Set a setting at a scope"))
         .stdout(predicate::str::contains("Remove a setting from a scope"));
