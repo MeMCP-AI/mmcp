@@ -8,7 +8,7 @@ use mmcp_db::entities::http_session::{Entity, Model};
 use mmcp_db::migration::Migrator;
 use mmcp_db::repository::http_session_repo::{
     HttpSessionInsertOutcome, delete, delete_expired_batch, find_unexpired, insert_if_absent,
-    replace_data_if_unchanged, upsert,
+    replace_data_if_unchanged, update_existing, upsert,
 };
 use sea_orm::{
     ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, PaginatorTrait, Statement,
@@ -134,6 +134,31 @@ async fn upsert_inserts_then_overwrites_data_and_expiry_under_one_key() {
     let stored = find_unexpired(&conn, "key", 0).await.unwrap().unwrap();
     assert_eq!(stored, row("key", "second", 200));
     assert_eq!(row_count(&conn).await, 1);
+}
+
+#[tokio::test]
+async fn update_existing_overwrites_a_held_key_and_inserts_nothing_for_a_missing_one() {
+    let conn = migrated_connection().await;
+    upsert(&conn, row("key", "first", 100)).await.unwrap();
+
+    assert!(
+        update_existing(&conn, row("key", "second", 200))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        find_unexpired(&conn, "key", 0).await.unwrap().unwrap(),
+        row("key", "second", 200)
+    );
+
+    delete(&conn, "key").await.unwrap();
+    assert!(
+        !update_existing(&conn, row("key", "third", 300))
+            .await
+            .unwrap(),
+        "a deleted key reports that nothing was updated"
+    );
+    assert_eq!(row_count(&conn).await, 0, "and stays without a row");
 }
 
 #[tokio::test]

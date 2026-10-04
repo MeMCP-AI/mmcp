@@ -46,6 +46,20 @@ pub async fn upsert(conn: &DatabaseConnection, row: Model) -> Result<(), DbError
     Ok(())
 }
 
+/// Overwrite `data` and `expires_at` of the row holding the key of `row`, inserting nothing.
+///
+/// Returns whether a row was updated.
+/// A key without a row stays without one, so a write of a copy read before the row was deleted cannot bring it back.
+pub async fn update_existing(conn: &DatabaseConnection, row: Model) -> Result<bool, DbError> {
+    let updated = Entity::update_many()
+        .col_expr(Column::Data, Expr::value(row.data))
+        .col_expr(Column::ExpiresAt, Expr::value(row.expires_at))
+        .filter(Column::SessionIdSha256.eq(row.session_id_sha256))
+        .exec(conn)
+        .await?;
+    Ok(updated.rows_affected == 1)
+}
+
 /// Overwrite `data` of the row under `session_id_sha256` only while it still holds `expected_data`.
 ///
 /// Returns whether the row changed.
