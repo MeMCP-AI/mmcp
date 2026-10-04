@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use gix::worktree::stack::state::ignore::Source;
 
-use super::open_checkout::{open_containing, real_path};
+use super::open_checkout::{open_containing, own_path, real_path};
 use crate::GitError;
 
 /// Whether the ignore rules of the repository containing `path` exclude it.
@@ -21,6 +21,7 @@ pub fn is_path_excluded(path: &Path) -> Result<Option<bool>, GitError> {
 }
 
 /// The path of `path` relative to the work tree of `repo`, `None` when `path` is not inside it.
+/// A symlink is named by its own path, so a link pointing outside the work tree is still inside it.
 pub(super) fn relative_to_workdir(
     repo: &gix::Repository,
     path: &Path,
@@ -29,8 +30,8 @@ pub(super) fn relative_to_workdir(
         return Ok(None);
     };
     let real_workdir = real_path(workdir)?;
-    let real_target = real_path(path)?;
-    Ok(real_target
+    let own_target = own_path(path)?;
+    Ok(own_target
         .strip_prefix(&real_workdir)
         .ok()
         .map(Path::to_path_buf))

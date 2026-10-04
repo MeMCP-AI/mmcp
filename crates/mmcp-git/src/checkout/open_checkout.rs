@@ -50,3 +50,15 @@ pub(super) fn real_path(path: &Path) -> Result<PathBuf, GitError> {
         Err(_) => resolved,
     })
 }
+
+/// `path` with the symlinks of its directories resolved and its own last component kept.
+/// Git names a symlink by its own path, whatever it points at.
+///
+/// # Errors
+/// [`GitError::ResolvePath`] when the deepest existing ancestor of its directory cannot be resolved.
+pub(super) fn own_path(path: &Path) -> Result<PathBuf, GitError> {
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => Ok(real_path(parent)?.join(name)),
+        _ => real_path(path),
+    }
+}

@@ -26,14 +26,25 @@ pub(super) fn is_tracked_in(repo: &gix::Repository, path: &Path) -> Result<Optio
 
 /// Record `relative` in the index of `repo` as a regular file.
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 pub(super) fn track_in_index(repo: &gix::Repository, relative: &str) {
+    track_entry(repo, relative, gix::index::entry::Mode::FILE);
+}
+
+/// Record `relative` in the index of `repo` as a symlink.
+#[cfg(test)]
+pub(super) fn track_symlink_in_index(repo: &gix::Repository, relative: &str) {
+    track_entry(repo, relative, gix::index::entry::Mode::SYMLINK);
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+fn track_entry(repo: &gix::Repository, relative: &str, mode: gix::index::entry::Mode) {
     let mut state = gix::index::State::new(repo.object_hash());
     state.dangerously_push_entry(
         gix::index::entry::Stat::default(),
         repo.object_hash().null(),
         gix::index::entry::Flags::empty(),
-        gix::index::entry::Mode::FILE,
+        mode,
         relative.into(),
     );
     state.sort_entries();
@@ -100,6 +111,32 @@ mod tests {
             is_tracked_in(&repo, &scratch.path().join(LOCAL_FILE)).unwrap(),
             Some(false)
         );
+    }
+
+    /// Create a symlink at `link` to `target`, `None` when the platform refuses it.
+    fn symlink(target: &Path, link: &Path) -> Option<()> {
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(target, link);
+        made.ok()
+    }
+
+    #[test]
+    fn a_tracked_symlink_is_tracked_whatever_it_points_at() {
+        let scratch = tempfile::TempDir::new().unwrap();
+        let repo_root = scratch.path().join("repo");
+        let repo = isolated_repo(&repo_root);
+        let outside = scratch.path().join("elsewhere.toml");
+        std::fs::write(&outside, "").unwrap();
+        let link = repo_root.join(LOCAL_FILE);
+        if symlink(&outside, &link).is_none() {
+            eprintln!("symlinks are not permitted here; the symlink case is not exercised");
+            return;
+        }
+        track_symlink_in_index(&repo, LOCAL_FILE);
+
+        assert_eq!(is_tracked_in(&repo, &link).unwrap(), Some(true));
     }
 
     #[test]
