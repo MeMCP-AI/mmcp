@@ -49,11 +49,16 @@ use crate::routes::defaults::WWW_AUTHENTICATE_BEARER;
 use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
 
+/// Path prefix every route of [`router`] lives under.
+pub const PREFIX: &str = "/git";
+
+/// Routes relative to [`PREFIX`]; mounted with
+/// [`crate::routes::api_prefix::mount_under_prefix`].
 pub fn router() -> Router<ServerState> {
     Router::new()
-        .route("/git/{group_id}/info/refs", get(info_refs))
-        .route("/git/{group_id}/git-upload-pack", post(upload_pack))
-        .route("/git/{group_id}/git-receive-pack", post(receive_pack))
+        .route("/{group_id}/info/refs", get(info_refs))
+        .route("/{group_id}/git-upload-pack", post(upload_pack))
+        .route("/{group_id}/git-receive-pack", post(receive_pack))
 }
 
 #[derive(Deserialize)]

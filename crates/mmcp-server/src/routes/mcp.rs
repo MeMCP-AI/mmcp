@@ -30,8 +30,13 @@ use crate::routes::bearer_auth::AuthenticatedUser;
 use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
 
+/// Path prefix every route of [`router`] lives under.
+pub const PREFIX: &str = "/mcp";
+
+/// Routes relative to [`PREFIX`]; mounted with
+/// [`crate::routes::api_prefix::mount_under_prefix`].
 pub fn router() -> Router<ServerState> {
-    Router::new().route("/mcp/tool", post(dispatch))
+    Router::new().route("/tool", post(dispatch))
 }
 
 #[derive(Deserialize)]

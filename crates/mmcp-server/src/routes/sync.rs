@@ -41,11 +41,16 @@ use crate::routes::git_http::{self, GitHttpError};
 use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
 
+/// Path prefix every route of [`router`] lives under.
+pub const PREFIX: &str = "/sync";
+
+/// Routes relative to [`PREFIX`]; mounted with
+/// [`crate::routes::api_prefix::mount_under_prefix`].
 pub fn router() -> Router<ServerState> {
     Router::new()
-        .route("/sync/manifest", get(get_manifest))
-        .route("/sync/refs/{group_id}", get(get_refs))
-        .route("/sync/push", post(post_push))
+        .route("/manifest", get(get_manifest))
+        .route("/refs/{group_id}", get(get_refs))
+        .route("/push", post(post_push))
 }
 
 /// Error response for `/sync/*` routes, mirroring the `mcp.rs`

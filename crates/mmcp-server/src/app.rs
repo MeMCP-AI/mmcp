@@ -9,6 +9,7 @@ use tower_sessions::{Expiry, SessionManagerLayer};
 use crate::defaults::SESSION_INACTIVITY_EXPIRY;
 use crate::origin::origin_uses_https;
 use crate::routes;
+use crate::routes::api_prefix::mount_under_prefix;
 use crate::state::ServerState;
 
 /// Build the top-level HTTP router with every route and middleware
@@ -29,12 +30,19 @@ pub fn build_router(state: ServerState) -> Router {
     let auth_layer =
         AuthManagerLayerBuilder::new(state.auth_backend.clone(), session_layer).build();
 
-    Router::new()
-        .merge(routes::health::router())
-        .merge(routes::mcp::router())
-        .merge(routes::auth::router())
-        .merge(routes::sync::router())
-        .merge(routes::git_http::router())
+    // Each API prefix answers its own unmatched paths with 404,
+    // so only a path outside every prefix reaches the web UI fallback.
+    let api = Router::new().merge(routes::health::router());
+    let api = mount_under_prefix(api, routes::mcp::PREFIX, routes::mcp::router());
+    let api = mount_under_prefix(api, routes::auth::PREFIX, routes::auth::router());
+    let api = mount_under_prefix(api, routes::sync::PREFIX, routes::sync::router());
+    let api = mount_under_prefix(api, routes::git_http::PREFIX, routes::git_http::router());
+    let routed = match state.webui_dir.as_deref().and_then(routes::webui::service) {
+        Some(webui) => api.fallback_service(webui),
+        None => api,
+    };
+
+    routed
         .with_state(state)
         .layer(auth_layer)
         .layer(TraceLayer::new_for_http())

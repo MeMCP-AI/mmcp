@@ -54,22 +54,24 @@ use crate::routes::registration_limits::RegistrationLimits;
 use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
 
+/// Path prefix every route of [`router`] lives under.
+pub const PREFIX: &str = "/auth";
+
+/// Routes relative to [`PREFIX`]; mounted with
+/// [`crate::routes::api_prefix::mount_under_prefix`].
 pub fn router() -> Router<ServerState> {
     Router::new()
         // Password
-        .route("/auth/register", post(register))
-        .route("/auth/login", post(login))
+        .route("/register", post(register))
+        .route("/login", post(login))
         // OAuth
-        .route("/auth/oauth/{provider}/authorize", get(oauth_authorize))
-        .route("/auth/oauth/{provider}/callback", get(oauth_callback))
+        .route("/oauth/{provider}/authorize", get(oauth_authorize))
+        .route("/oauth/{provider}/callback", get(oauth_callback))
         // Passkey
-        .route("/auth/passkey/register/start", post(passkey_register_start))
-        .route(
-            "/auth/passkey/register/finish",
-            post(passkey_register_finish),
-        )
-        .route("/auth/passkey/login/start", post(passkey_login_start))
-        .route("/auth/passkey/login/finish", post(passkey_login_finish))
+        .route("/passkey/register/start", post(passkey_register_start))
+        .route("/passkey/register/finish", post(passkey_register_finish))
+        .route("/passkey/login/start", post(passkey_login_start))
+        .route("/passkey/login/finish", post(passkey_login_finish))
         .layer(DefaultBodyLimit::max(AUTH_REQUEST_BODY_LIMIT_BYTES))
 }
 

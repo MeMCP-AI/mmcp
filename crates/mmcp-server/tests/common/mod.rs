@@ -108,6 +108,26 @@ pub fn fake_oauth_provider_config(fake_addr: SocketAddr) -> OAuthProviderConfig 
     }
 }
 
+/// Builds the real state and router from `cfg`, binds an ephemeral
+/// loopback port, spawns the server task and returns the bound address.
+#[allow(dead_code)] // Live in sibling test binaries; each tests/*.rs compiles common as its own crate.
+pub async fn start_server_with_config(cfg: ServerConfig) -> SocketAddr {
+    let state = mmcp_server::state::ServerState::initialize(&cfg)
+        .await
+        .expect("server init");
+    let app = mmcp_server::app::build_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+    addr
+}
+
 /// Builder for the `ServerConfig` used across integration test
 /// suites.
 ///
