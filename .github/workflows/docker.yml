@@ -15,6 +15,8 @@ env:
   IMAGE_NAME: mmcp-server
   CACHE_IMAGE_NAME: mmcp-server-cache
   CACHE_UNTAGGED_VERSIONS_TO_KEEP: 10
+  SMOKE_IMAGE_NAME: mmcp-server
+  SMOKE_IMAGE_TAG: smoke
 
 jobs:
   prepare:
@@ -71,11 +73,30 @@ jobs:
           file: docker/server.Dockerfile
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: ${{ github.event_name == 'pull_request' && format('{0}:{1}', env.SMOKE_IMAGE_NAME, env.SMOKE_IMAGE_TAG) || '' }}
           outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', needs.prepare.outputs.image) || '' }}
           # Each platform keeps its own build cache, so the two platforms never overwrite each other.
           # Pull requests read the cache and never write it.
           cache-from: type=registry,ref=${{ needs.prepare.outputs.cache-image }}:${{ matrix.slug }}
           cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}:{1},mode=max,ignore-error=true', needs.prepare.outputs.cache-image, matrix.slug) || '' }}
+
+      # The image under test is the one the publish job tags: the pushed digest, or the loaded build on pull requests.
+      # Any failure of the smoke run blocks publication.
+      - if: github.event_name != 'pull_request'
+        name: Pull the pushed image for the smoke run
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          docker pull "${IMAGE}@${DIGEST}"
+          docker tag "${IMAGE}@${DIGEST}" "${SMOKE_IMAGE_NAME}:${SMOKE_IMAGE_TAG}"
+
+      - name: Smoke run
+        uses: ./.github/actions/image-smoke
+        with:
+          image-name: ${{ env.SMOKE_IMAGE_NAME }}
+          image-tag: ${{ env.SMOKE_IMAGE_TAG }}
 
       - if: github.event_name != 'pull_request'
         name: Export the image digest
@@ -93,6 +114,132 @@ jobs:
           path: ${{ runner.temp }}/digests/*
           if-no-files-found: error
           retention-days: 1
+
+  # Each platform is also cross-built from the other architecture and the result runs on its own architecture.
+  # These four jobs push nothing and the publish job never waits for them.
+  # A cross build keeps its own cache refs, named after both platforms, and never writes the refs the native jobs use.
+  # Every job runs only after its own cross build, so a failure never hides the other direction.
+  cross-build-arm64-on-amd64:
+    name: cross-build linux/arm64 on linux/amd64
+    needs: prepare
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cross-build the image and export it as a tarball
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/server.Dockerfile
+          platforms: linux/arm64
+          tags: ${{ env.SMOKE_IMAGE_NAME }}:${{ env.SMOKE_IMAGE_TAG }}
+          outputs: type=docker,dest=${{ runner.temp }}/image.tar
+          # The job reads its own cache and the native cache of its build platform.
+          # Pull requests read the caches and never write them.
+          cache-from: |
+            type=registry,ref=${{ needs.prepare.outputs.cache-image }}:build-linux-amd64-target-linux-arm64
+            type=registry,ref=${{ needs.prepare.outputs.cache-image }}:linux-amd64
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}:build-linux-amd64-target-linux-arm64,mode=max,ignore-error=true', needs.prepare.outputs.cache-image) || '' }}
+
+      - name: Upload the cross-built image
+        uses: actions/upload-artifact@v4
+        with:
+          name: cross-image-build-linux-amd64-target-linux-arm64
+          path: ${{ runner.temp }}/image.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  cross-run-arm64:
+    name: cross-run linux/arm64 image built on linux/amd64
+    needs: cross-build-arm64-on-amd64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the cross-built image
+        uses: actions/download-artifact@v4
+        with:
+          name: cross-image-build-linux-amd64-target-linux-arm64
+          path: ${{ runner.temp }}/cross
+
+      - name: Load the cross-built image
+        run: docker load --input "${RUNNER_TEMP}/cross/image.tar"
+
+      - name: Smoke run
+        uses: ./.github/actions/image-smoke
+        with:
+          image-name: ${{ env.SMOKE_IMAGE_NAME }}
+          image-tag: ${{ env.SMOKE_IMAGE_TAG }}
+
+  cross-build-amd64-on-arm64:
+    name: cross-build linux/amd64 on linux/arm64
+    needs: prepare
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cross-build the image and export it as a tarball
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/server.Dockerfile
+          platforms: linux/amd64
+          tags: ${{ env.SMOKE_IMAGE_NAME }}:${{ env.SMOKE_IMAGE_TAG }}
+          outputs: type=docker,dest=${{ runner.temp }}/image.tar
+          # The job reads its own cache and the native cache of its build platform.
+          # Pull requests read the caches and never write them.
+          cache-from: |
+            type=registry,ref=${{ needs.prepare.outputs.cache-image }}:build-linux-arm64-target-linux-amd64
+            type=registry,ref=${{ needs.prepare.outputs.cache-image }}:linux-arm64
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}:build-linux-arm64-target-linux-amd64,mode=max,ignore-error=true', needs.prepare.outputs.cache-image) || '' }}
+
+      - name: Upload the cross-built image
+        uses: actions/upload-artifact@v4
+        with:
+          name: cross-image-build-linux-arm64-target-linux-amd64
+          path: ${{ runner.temp }}/image.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  cross-run-amd64:
+    name: cross-run linux/amd64 image built on linux/arm64
+    needs: cross-build-amd64-on-arm64
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the cross-built image
+        uses: actions/download-artifact@v4
+        with:
+          name: cross-image-build-linux-arm64-target-linux-amd64
+          path: ${{ runner.temp }}/cross
+
+      - name: Load the cross-built image
+        run: docker load --input "${RUNNER_TEMP}/cross/image.tar"
+
+      - name: Smoke run
+        uses: ./.github/actions/image-smoke
+        with:
+          image-name: ${{ env.SMOKE_IMAGE_NAME }}
+          image-tag: ${{ env.SMOKE_IMAGE_TAG }}
 
   merge:
     name: publish multi-platform image
