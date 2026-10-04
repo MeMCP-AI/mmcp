@@ -5,6 +5,7 @@
 //! free of SeaORM boilerplate.
 
 pub mod group_repo;
+pub mod http_session_repo;
 pub mod memory_repo;
 pub mod oauth_repo;
 pub mod org_repo;

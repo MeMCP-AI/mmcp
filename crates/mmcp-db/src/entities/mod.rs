@@ -6,6 +6,7 @@
 //! and Postgres are first-class backends without a chrono dependency.
 
 pub mod group;
+pub mod http_session;
 pub mod membership;
 pub mod memory;
 pub mod memory_read;
