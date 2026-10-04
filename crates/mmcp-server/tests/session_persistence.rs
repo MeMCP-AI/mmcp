@@ -226,7 +226,7 @@ fn the_auth_hash_check_rejects_raw_password_hash_bytes() {
     .to_string();
     assert!(
         !session_data.contains(password_hash),
-        "the earlier text check passes on this data, which is why it was vacuous"
+        "the text check alone passes on this data"
     );
 
     assert_stored_auth_hash_is_the_digest(&session_data, password_hash, 0);
