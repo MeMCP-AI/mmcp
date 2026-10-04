@@ -7,6 +7,7 @@ use governor::clock::Clock;
 use governor::middleware::NoOpMiddleware;
 use governor::state::keyed::DefaultKeyedStateStore;
 use governor::{Quota, RateLimiter};
+use thiserror::Error;
 
 use super::client_key::ClientKey;
 use super::tier_retention::TierRetention;
@@ -21,7 +22,8 @@ type KeyedLimiter<C> = RateLimiter<
 >;
 
 /// Why a tier refused a request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("client {client} spent its budget; one more request is admitted in {wait:?}")]
 pub(super) struct TierRefusal {
     /// The key whose budget is spent, under the refusing tier.
     pub(super) client: ClientKey,
@@ -66,5 +68,23 @@ impl<C: Clock> RateLimitTier<C> {
             scope: self.scope,
             retained_keys: self.limiter.len(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    #[test]
+    fn a_tier_refusal_reads_as_an_error_naming_client_and_wait() {
+        let client = ClientKey::of_client("203.0.113.9".parse().unwrap(), 64);
+        let refusal = TierRefusal {
+            client,
+            wait: Duration::from_secs(3),
+        };
+        let text = refusal.to_string();
+        assert!(text.contains(&client.to_string()), "{text}");
+        assert!(text.contains("3s"), "{text}");
     }
 }

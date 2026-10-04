@@ -2,14 +2,20 @@
 
 use axum::http::{StatusCode, header::RETRY_AFTER};
 use axum::response::{IntoResponse, Response};
+use thiserror::Error;
 
 use super::client_key::ClientKey;
 use crate::routes::response::GENERIC_INTERNAL_ERROR_MESSAGE;
 
 /// A request the limiter did not let through.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The error text is for the server log and names the client, which the response never does.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum AuthRateLimitRefusal {
     /// The client spent its budget.
+    #[error(
+        "client {client} spent its request budget; it may retry after {retry_after_seconds} seconds"
+    )]
     TooManyRequests {
         /// The key whose budget is spent, under the budget that refused, for the server log only.
         /// It is an IPv4 address, or an IPv6 network with its prefix length.
@@ -19,6 +25,7 @@ pub enum AuthRateLimitRefusal {
     },
     /// The request carries no peer address, so no client can be identified.
     /// That is a wiring defect: the server was not served through [`crate::serve::serve_router`].
+    #[error("the request carries no peer address, so no client can be identified")]
     PeerAddressMissing,
 }
 
@@ -84,6 +91,22 @@ mod tests {
         assert_eq!(
             body_text(response).await,
             "too many requests; retry after 7 seconds"
+        );
+    }
+
+    #[test]
+    fn the_error_text_names_the_client_and_the_response_does_not() {
+        let client = ClientKey::of_client("203.0.113.9".parse().unwrap(), 64);
+        let refusal = AuthRateLimitRefusal::TooManyRequests {
+            client,
+            retry_after_seconds: RETRY_AFTER_SECONDS,
+        };
+        let text = refusal.to_string();
+        assert!(text.contains(&client.to_string()), "{text}");
+        assert!(text.contains("7 seconds"), "{text}");
+        assert_eq!(
+            AuthRateLimitRefusal::PeerAddressMissing.to_string(),
+            "the request carries no peer address, so no client can be identified"
         );
     }
 
