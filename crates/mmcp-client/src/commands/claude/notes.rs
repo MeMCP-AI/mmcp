@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use mmcp_core::config::{ConfigKey, NoticeValue};
+use mmcp_core::config::{ConfigKey, ConfigScope, NoticeValue};
 use serde_json::json;
 
 use super::{InitClaudeAction, InitClaudeConflict, action_wire};
@@ -63,8 +63,9 @@ fn gate_notice(note: mmcp_proto::Note, value: NoticeValue) -> Option<mmcp_proto:
 fn offer_to_turn_off_when_suggesting(mut note: mmcp_proto::Note) -> mmcp_proto::Note {
     if note.code != CODE_PARTIAL_FENCE {
         note.message = format!(
-            "{} You may also offer to turn this notice off with config (action=set, key={}, value={}).",
+            "{} You may also offer to turn this notice off with config (action=set, scope={}, key={}, value={}).",
             note.message,
+            ConfigScope::Local.as_str(),
             ConfigKey::NoticeMdProject.as_str(),
             NoticeValue::Off.as_str(),
         );
@@ -205,7 +206,7 @@ mod tests {
     use super::*;
 
     /// The approved sentence closing every project-file suggestion, verbatim.
-    const OFFER_SENTENCE: &str = "You may also offer to turn this notice off with config (action=set, key=notice.md.project, value=off).";
+    const OFFER_SENTENCE: &str = "You may also offer to turn this notice off with config (action=set, scope=local, key=notice.md.project, value=off).";
 
     /// Version tag of an older mmcp block, for staleness fixtures.
     const OLDER_BLOCK_VERSION: &str = "v1";
