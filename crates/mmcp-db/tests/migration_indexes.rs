@@ -86,18 +86,14 @@ async fn migration_builds_indexes_over_a_database_with_existing_data() {
         .await
         .expect("apply m0001+m0002 only");
 
+    // Raw SQL over the schema m0002 left: the current entity also writes columns later migrations add.
     let user_id = Uuid::now_v7();
-    mmcp_db::repository::user_repo::create(
-        conn,
-        mmcp_db::repository::user_repo::NewUser {
-            id: user_id,
-            handle: "pre-existing".into(),
-            display_name: None,
-            password_hash: None,
-            email: None,
-            created_at: 1,
-        },
-    )
+    conn.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Sqlite,
+        "INSERT INTO users (id, handle, display_name, password_hash, email, created_at) \
+         VALUES (?, ?, NULL, NULL, NULL, ?)",
+        [user_id.into(), "pre-existing".into(), 1i64.into()],
+    ))
     .await
     .expect("insert row before m0003 runs");
 
@@ -118,6 +114,10 @@ async fn migration_builds_indexes_over_a_database_with_existing_data() {
         .expect("query user")
         .expect("pre-existing row survives m0003");
     assert_eq!(row.handle, "pre-existing");
+    assert_eq!(
+        row.credential_epoch, 0,
+        "a user from the earlier schema starts at the initial credential epoch"
+    );
 }
 
 #[tokio::test]
