@@ -19,6 +19,7 @@ mod config_tool;
 mod config_tool_args;
 mod config_write;
 mod config_write_outcome;
+mod error_chain;
 mod notice_launch_args;
 mod notice_sources;
 mod notice_value_arg;

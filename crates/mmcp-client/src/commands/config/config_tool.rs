@@ -1,12 +1,12 @@
 //! The `config` MCP tool: argument validation, execution and the wire form of the result and the errors.
 
-use std::error::Error;
 use std::path::Path;
 
 use mmcp_core::config::NoticeLayers;
 use rmcp::ErrorData as McpError;
 use serde_json::{Value, json};
 
+use super::error_chain::message_with_causes;
 use super::{
     ConfigArgsError, ConfigEnvironment, ConfigOpError, ConfigOutcome, ConfigToolArgs,
     ProjectLocation,
@@ -83,18 +83,6 @@ fn op_error_to_mcp(error: ConfigOpError) -> McpError {
         ),
         _ => McpError::internal_error(message, Some(json!({ "code": code }))),
     }
-}
-
-/// The message of `error` followed by the message of each cause, joined by a colon.
-fn message_with_causes(error: &dyn Error) -> String {
-    let mut message = error.to_string();
-    let mut cause = error.source();
-    while let Some(inner) = cause {
-        message.push_str(": ");
-        message.push_str(&inner.to_string());
-        cause = inner.source();
-    }
-    message
 }
 
 #[cfg(test)]
@@ -355,15 +343,16 @@ mod tests {
         assert!(
             error
                 .message
-                .starts_with("The project config could not be loaded.: "),
-            "the cause follows the message: {}",
+                .starts_with("The project config could not be loaded: "),
+            "the cause follows the sentence without its period: {}",
             error.message
         );
         assert!(
-            error.message.len() > "The project config could not be loaded.: ".len(),
+            error.message.len() > "The project config could not be loaded: ".len(),
             "{}",
             error.message
         );
+        assert!(!error.message.contains(".:"), "{}", error.message);
     }
 
     #[test]
