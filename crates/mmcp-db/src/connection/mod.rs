@@ -6,6 +6,8 @@ mod database;
 mod database_target;
 mod database_url_error;
 #[cfg(test)]
+mod fake_peer;
+#[cfg(test)]
 mod log_capture;
 mod parameter_set;
 mod pool_policy;

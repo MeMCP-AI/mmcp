@@ -5,20 +5,32 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::error::Error;
+use std::path::PathBuf;
+use std::process;
 use std::str::FromStr;
 use std::time::Duration;
 
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use sea_orm::sqlx::postgres::PgConnectOptions;
 
 use super::connect::connect;
 use super::database_target::DatabaseTarget;
+use super::database_url_error::DatabaseUrlError;
+use super::fake_peer::{Behavior, FakePeer};
 use super::log_capture::LogCapture;
+use super::parameter_set::ParameterSet;
 use super::postgres_parameters::{ACCEPTED_KEYS, OPTIONS_FAMILY_PREFIX, SSL_MODE_KEYS};
+use super::sqlite_parameters::{CACHE_VALUES, MODE_VALUES};
+use crate::error::DbError;
 
 const SENTINEL: &str = "SENTINEL_PASSWORD";
 
-/// Longest wait for a connect to a port nobody listens on; the options are parsed on the first poll.
-const CONNECT_WAIT: Duration = Duration::from_millis(300);
+/// Longest wait for a connect to a fake peer, which ends it with an error at once.
+/// Only a hang makes a test wait this long, and the wait then fails the test.
+const CONNECT_WAIT: Duration = Duration::from_secs(20);
+
+/// Longest wait for a connect that a test does not expect to end, to a host that does not answer.
+const UNANSWERED_CONNECT_WAIT: Duration = Duration::from_millis(300);
 
 /// Every printable form of `error` and of each source behind it.
 fn chain_text(error: &(dyn Error + 'static)) -> String {
@@ -31,19 +43,107 @@ fn chain_text(error: &(dyn Error + 'static)) -> String {
     texts.join("\n")
 }
 
-/// Postgres URLs that are accepted, each holding the sentinel where a secret can be, aimed at a closed port.
-fn accepted_postgres_urls() -> Vec<String> {
+/// A file in the temporary directory, removed when it drops.
+struct TempFile(PathBuf);
+
+impl TempFile {
+    fn write(name: &str, content: &str) -> Self {
+        let path = std::env::temp_dir().join(format!("mmcp-db-secrecy-{}-{name}", process::id()));
+        std::fs::write(&path, content).unwrap();
+        Self(path)
+    }
+
+    /// The path as the value of a URL parameter.
+    fn as_parameter_value(&self) -> String {
+        utf8_percent_encode(&self.0.to_string_lossy(), NON_ALPHANUMERIC).to_string()
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Postgres URLs that are accepted, each holding the sentinel where a secret can be, aimed at `port` of the loopback address.
+fn accepted_postgres_urls(port: u16) -> Vec<String> {
+    let s = SENTINEL;
+    let host = format!("127.0.0.1:{port}");
+    vec![
+        format!("postgres://mmcp:{s}@{host}/app"),
+        format!("postgresql://mmcp:{s}@{host}/app"),
+        format!("postgres://mmcp:{s}%40x@{host}/app"),
+        format!("postgres://{host}/app?password={s}&sslmode=disable"),
+        format!("postgres://mmcp:{s}@{host}/app?password={s}"),
+        format!("postgres://mmcp@{host}/app?options=-c%20x%3D{s}"),
+        format!("postgres://mmcp@{host}/app?options[y]={s}"),
+        format!("postgres://mmcp@{host}/app?sslkey={s}&user={s}"),
+        format!("postgres://{host}/app?pass%77ord={s}"),
+    ]
+}
+
+/// SQLite URLs refused at parse, each holding the sentinel where a secret can be, with the refusal that each draws.
+fn refused_sqlite_urls() -> Vec<(String, DatabaseUrlError)> {
     let s = SENTINEL;
     vec![
-        format!("postgres://mmcp:{s}@127.0.0.1:1/app"),
-        format!("postgresql://mmcp:{s}@127.0.0.1:1/app"),
-        format!("postgres://mmcp:{s}%40x@127.0.0.1:1/app"),
-        format!("postgres://127.0.0.1:1/app?password={s}&sslmode=disable"),
-        format!("postgres://mmcp:{s}@127.0.0.1:1/app?password={s}"),
-        format!("postgres://mmcp@127.0.0.1:1/app?options=-c%20x%3D{s}"),
-        format!("postgres://mmcp@127.0.0.1:1/app?options[y]={s}"),
-        format!("postgres://mmcp@127.0.0.1:1/app?sslkey={s}&user={s}"),
-        format!("postgres://127.0.0.1:1/app?pass%77ord={s}"),
+        (
+            format!("sqlite://u:{s}@data/x.db"),
+            DatabaseUrlError::SqliteAtSignInFileName,
+        ),
+        (
+            format!("sqlite:u:{s}@x.db"),
+            DatabaseUrlError::SqliteAtSignInFileName,
+        ),
+        (
+            format!("sqlite://alice%40{s}@archive/data.db"),
+            DatabaseUrlError::SqliteAtSignInFileName,
+        ),
+        (
+            format!("sqlite://u:#{s}/db"),
+            DatabaseUrlError::SqliteFragmentPresent,
+        ),
+        (
+            format!("sqlite:x.db#{s}"),
+            DatabaseUrlError::SqliteFragmentPresent,
+        ),
+        (
+            format!("sqlite:x.db?{s}=1"),
+            DatabaseUrlError::UnrecognizedParameter {
+                set: ParameterSet::Sqlite,
+                position: 1,
+                count: 1,
+            },
+        ),
+        (
+            format!("sqlite:x.db?{s}"),
+            DatabaseUrlError::UnrecognizedParameter {
+                set: ParameterSet::Sqlite,
+                position: 1,
+                count: 1,
+            },
+        ),
+        (
+            format!("sqlite:x.db?mode=rwc&password={s}"),
+            DatabaseUrlError::UnrecognizedParameter {
+                set: ParameterSet::Sqlite,
+                position: 2,
+                count: 2,
+            },
+        ),
+        (
+            format!("sqlite:x.db?cache={s}"),
+            DatabaseUrlError::InvalidParameterValue {
+                key: "cache",
+                accepted: &CACHE_VALUES,
+            },
+        ),
+        (
+            format!("sqlite:x.db?mode={s}"),
+            DatabaseUrlError::InvalidParameterValue {
+                key: "mode",
+                accepted: &MODE_VALUES,
+            },
+        ),
     ]
 }
 
@@ -77,20 +177,87 @@ fn refused_urls() -> Vec<String> {
 #[tokio::test]
 async fn an_accepted_postgres_url_leaves_no_password_in_the_trace_logs_or_the_error() {
     let (capture, _guard) = LogCapture::install();
+    let peer = FakePeer::start(Behavior::Closes).await;
 
-    for url in accepted_postgres_urls() {
+    for url in accepted_postgres_urls(peer.port()) {
         let target = DatabaseTarget::from_str(&url).expect("the URL is accepted");
         assert!(
             !format!("{target} | {target:?}").contains(SENTINEL),
             "{url}"
         );
-        if let Ok(Err(error)) = tokio::time::timeout(CONNECT_WAIT, connect(&target)).await {
-            assert!(!chain_text(&error).contains(SENTINEL), "{url}");
-        }
+        let error = connect_error(&target)
+            .await
+            .unwrap_or_else(|| panic!("{url}: the connect to a closing peer must fail"));
+        assert!(
+            matches!(error, DbError::ConnectionFailed(_)),
+            "{url}: the failure must come from the connection: {error}"
+        );
+        assert!(
+            error.source().is_some(),
+            "{url}: the chain searched holds the driver error"
+        );
+        assert!(!chain_text(&error).contains(SENTINEL), "{url}");
     }
 
     let logged = capture.text();
     assert!(!logged.contains(SENTINEL), "{logged}");
+}
+
+/// The error that a connect to `target` ends with, within [`CONNECT_WAIT`].
+/// A connect that still runs after the wait is a hang, and fails the test.
+async fn connect_error(target: &DatabaseTarget) -> Option<DbError> {
+    let outcome = tokio::time::timeout(CONNECT_WAIT, connect(target))
+        .await
+        .expect("the connect ends within the wait");
+    outcome.err()
+}
+
+/// The pairing check of the driver runs after the SSL request is answered, so a peer that answers it reaches the mapping of `connect`.
+#[tokio::test]
+async fn a_client_certificate_without_its_key_is_named_and_the_driver_error_is_dropped() {
+    let (capture, _guard) = LogCapture::install();
+    let peer = FakePeer::start(Behavior::AnswersSslRequestThenCloses).await;
+    let certificate = TempFile::write("pairing-cert.pem", "not a certificate");
+    let url = format!(
+        "postgres://mmcp:{SENTINEL}@127.0.0.1:{}/app?sslmode=require&sslcert={}",
+        peer.port(),
+        certificate.as_parameter_value()
+    );
+    let target = DatabaseTarget::from_str(&url).expect("the URL is accepted");
+
+    let error = connect_error(&target).await.expect("the connect fails");
+
+    assert!(
+        matches!(error, DbError::ClientCertificateAndKeyNotPaired),
+        "{error:?}"
+    );
+    assert!(!chain_text(&error).contains(SENTINEL));
+    assert!(!capture.text().contains(SENTINEL));
+}
+
+/// The key file holds the sentinel, so a driver error that quotes a line of it would show.
+#[tokio::test]
+async fn an_unreadable_client_key_is_named_and_the_driver_error_is_dropped() {
+    let (capture, _guard) = LogCapture::install();
+    let peer = FakePeer::start(Behavior::AnswersSslRequestThenCloses).await;
+    let certificate = TempFile::write("key-cert.pem", "not a certificate");
+    let key = TempFile::write(
+        "key.pem",
+        &format!("-----BEGIN PRIVATE KEY-----\n{SENTINEL}\n-----END PRIVATE KEY-----\n"),
+    );
+    let url = format!(
+        "postgres://mmcp:{SENTINEL}@127.0.0.1:{}/app?sslmode=require&sslcert={}&sslkey={}",
+        peer.port(),
+        certificate.as_parameter_value(),
+        key.as_parameter_value()
+    );
+    let target = DatabaseTarget::from_str(&url).expect("the URL is accepted");
+
+    let error = connect_error(&target).await.expect("the connect fails");
+
+    assert!(matches!(error, DbError::ClientKeyRejected), "{error:?}");
+    assert!(!chain_text(&error).contains(SENTINEL));
+    assert!(!capture.text().contains(SENTINEL));
 }
 
 #[tokio::test]
@@ -103,7 +270,7 @@ async fn a_refused_url_leaves_no_password_in_the_trace_logs_or_the_error() {
             Err(error) => assert!(!chain_text(&error).contains(SENTINEL), "{url}"),
             Ok(target) => {
                 // A URL that should have been refused is connected, to see what the dependencies would log.
-                let _ = tokio::time::timeout(CONNECT_WAIT, connect(&target)).await;
+                let _ = tokio::time::timeout(UNANSWERED_CONNECT_WAIT, connect(&target)).await;
                 wrongly_accepted.push(url);
             }
         }
@@ -123,6 +290,20 @@ async fn a_sqlite_url_connects_and_shows_in_the_trace_logs_only_what_it_says() {
     database.migrate().await.expect("migrations run");
 
     assert!(!capture.text().contains(SENTINEL));
+}
+
+#[tokio::test]
+async fn a_refused_sqlite_url_leaves_no_sentinel_in_the_error_or_the_trace_logs() {
+    let (capture, _guard) = LogCapture::install();
+
+    for (url, expected) in refused_sqlite_urls() {
+        let error = DatabaseTarget::from_str(&url).expect_err(&url);
+
+        assert_eq!(error, expected, "{url}");
+        assert!(!chain_text(&error).contains(SENTINEL), "{url}");
+    }
+
+    assert!(!capture.text().contains(SENTINEL), "{}", capture.text());
 }
 
 /// The harness must see a secret where a dependency puts one, or a clean capture proves nothing.
