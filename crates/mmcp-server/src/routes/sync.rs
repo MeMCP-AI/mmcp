@@ -31,7 +31,6 @@ use mmcp_proto::ProtoError;
 use mmcp_sync::{
     ManifestResponse, PushRequest, PushResponse, RefEntry, RefsResponse, RemoteGroup, run_bounded,
 };
-use sea_orm::EntityTrait;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -155,8 +154,7 @@ async fn get_manifest(
     _caller: AuthenticatedUser,
 ) -> Result<Json<ManifestResponse>, SyncErrorResponse> {
     let conn = state.database.connection();
-    let rows = mmcp_db::entities::group::Entity::find()
-        .all(conn)
+    let rows = group_repo::list_all(conn)
         .await
         .map_err(into_generic_response)?;
 
