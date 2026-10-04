@@ -51,9 +51,10 @@ pub enum DbError {
     #[error("record not found")]
     NotFound,
 
-    /// Migration failure.
+    /// Migration failure, with the SeaORM error as its source.
+    /// Built by [`DbError::migration`], which keeps a driver configuration error out of it.
     #[error("migration error: {0}")]
-    Migration(String),
+    Migration(#[source] sea_orm::DbErr),
 
     /// A credential was written for a user that does not exist.
     /// The write is rolled back with its epoch increment.
@@ -86,6 +87,16 @@ impl From<sea_orm::DbErr> for DbError {
             Self::ConnectionConfigurationRejected
         } else {
             Self::Orm(error)
+        }
+    }
+}
+
+impl DbError {
+    /// The error of a migration run, which crosses the same boundary as every repository error.
+    pub(crate) fn migration(error: sea_orm::DbErr) -> Self {
+        match Self::from(error) {
+            Self::Orm(error) => Self::Migration(error),
+            other => other,
         }
     }
 }
@@ -131,6 +142,17 @@ mod tests {
             assert!(error.source().is_none());
             assert!(!format!("{error} | {error:?}").contains(SENTINEL));
         }
+    }
+
+    #[test]
+    fn a_migration_error_keeps_its_source_unless_it_is_a_configuration_error() {
+        let kept = DbError::migration(DbErr::Custom(SENTINEL.to_owned()));
+        let dropped = DbError::migration(DbErr::Conn(sqlx_error(Configuration(SENTINEL.into()))));
+
+        assert!(matches!(kept, DbError::Migration(_)));
+        assert!(kept.source().is_some());
+        assert!(matches!(dropped, DbError::ConnectionConfigurationRejected));
+        assert!(!format!("{dropped} | {dropped:?}").contains(SENTINEL));
     }
 
     #[test]

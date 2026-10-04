@@ -34,7 +34,7 @@ impl Database {
     pub async fn migrate(&self) -> Result<(), DbError> {
         Migrator::up(&self.conn, None)
             .await
-            .map_err(|e: sea_orm::DbErr| DbError::Migration(e.to_string()))
+            .map_err(DbError::migration)
     }
 
     /// Drop every mmcp-managed table. Used by tests and by the
@@ -42,6 +42,6 @@ impl Database {
     pub async fn reset(&self) -> Result<(), DbError> {
         Migrator::down(&self.conn, None)
             .await
-            .map_err(|e: sea_orm::DbErr| DbError::Migration(e.to_string()))
+            .map_err(DbError::migration)
     }
 }

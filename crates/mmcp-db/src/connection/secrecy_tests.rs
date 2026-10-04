@@ -304,6 +304,37 @@ async fn a_later_pool_connection_that_scram_refuses_leaves_no_character_in_any_e
     assert!(!capture.text().contains(SENTINEL), "{}", capture.text());
 }
 
+/// A migration run opens its own connection, and its error crosses the same boundary as a repository error.
+#[tokio::test]
+async fn a_migration_on_a_later_pool_connection_that_scram_refuses_leaves_no_character() {
+    let (capture, _guard) = LogCapture::install();
+    let peer = FakePeer::start(Behavior::TrustsFirstThenRequestsScram).await;
+    let url = format!(
+        "postgres://mmcp:p%F0%9F%98%80{SENTINEL}@127.0.0.1:{}/app?sslmode=disable",
+        peer.port()
+    );
+    let target = DatabaseTarget::from_str(&url).expect("the URL is accepted");
+    let database = connect(&target)
+        .await
+        .expect("the first connection needs no password");
+
+    let outcome = tokio::time::timeout(CONNECT_WAIT, database.migrate())
+        .await
+        .expect("the migration ends within the wait");
+
+    let error = outcome.expect_err("the second connection meets SCRAM");
+    assert!(
+        matches!(error, DbError::ConnectionConfigurationRejected),
+        "{error:?}"
+    );
+    let printed = chain_text(&error);
+    assert!(
+        !printed.contains(SENTINEL) && !printed.contains('\u{1F600}'),
+        "{printed}"
+    );
+    assert!(!capture.text().contains(SENTINEL), "{}", capture.text());
+}
+
 /// Under `sslmode=disable` the driver never reads a certificate or a key, so a SASLprep failure is no TLS failure.
 #[tokio::test]
 async fn a_scram_failure_is_not_named_a_client_key_failure_where_tls_never_runs() {
