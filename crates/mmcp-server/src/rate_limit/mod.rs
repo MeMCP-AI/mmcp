@@ -1,4 +1,4 @@
-//! Per-client rate limit of the unauthenticated auth routes.
+//! Per-client rate limit of the registration and sign-in routes.
 
 mod auth_rate_limit_middleware;
 mod auth_rate_limit_refusal;

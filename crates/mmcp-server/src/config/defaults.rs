@@ -112,11 +112,11 @@ pub(crate) const IPV6_NETWORK_QUOTA_MULTIPLE: u32 = 10;
 /// Largest number of leading bits an IPv6 prefix holds.
 pub(crate) const IPV6_ADDRESS_BITS: u8 = 128;
 
-/// Default requests per minute one client may send to the unauthenticated auth routes once its burst is spent.
+/// Default requests per minute one client may send to the registration and sign-in routes once its burst is spent.
 /// One argon2 hash every three seconds at most, per client key.
 pub(crate) const DEFAULT_AUTH_RATE_LIMIT_PER_MINUTE: u32 = 20;
 
-/// Default requests one client may send to the unauthenticated auth routes at once.
+/// Default requests one client may send to the registration and sign-in routes at once.
 /// Covers a real sign-in with a few retries and an OAuth round trip.
 pub(crate) const DEFAULT_AUTH_RATE_LIMIT_BURST: u32 = 10;
 

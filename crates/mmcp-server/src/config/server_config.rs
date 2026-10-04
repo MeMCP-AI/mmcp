@@ -118,7 +118,7 @@ pub struct ServerConfig {
     /// It is the default when `--cors-allowed-origins` and `MMCP_CORS_ALLOWED_ORIGINS` are absent or blank.
     /// Entries that are not an exact `http` or `https` origin are dropped.
     pub cors_allowed_origins: Vec<HeaderValue>,
-    /// Per-client budget of the unauthenticated auth routes, resolved through the override/config-file/default cascade.
+    /// Per-client budget of the registration and sign-in routes, resolved through the override/config-file/default cascade.
     pub auth_rate_limit: AuthRateLimitConfig,
     /// Reverse proxies whose `X-Forwarded-For` header the server believes.
     /// Empty by default, which attributes every request to its TCP peer.

@@ -1,4 +1,4 @@
-//! [`AuthRateLimiter`], the per-client budgets of the unauthenticated auth routes.
+//! [`AuthRateLimiter`], the per-client budgets of the registration and sign-in routes.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,7 +28,7 @@ fn retry_after_seconds(wait: Duration) -> u64 {
     rounded_up.max(MIN_RETRY_AFTER_SECONDS)
 }
 
-/// The request budgets of the unauthenticated auth routes, shared by every route it guards.
+/// The request budgets of the registration and sign-in routes, shared by every route it guards.
 ///
 /// The first budget is one per client, an IPv4 address or an IPv6 network of the configured prefix length.
 /// An optional second budget counts the IPv6 clients of one larger network together, with a quota of its own.

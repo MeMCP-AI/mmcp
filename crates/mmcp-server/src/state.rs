@@ -68,7 +68,7 @@ pub struct ServerStateInner {
     pub webui_dir: Option<PathBuf>,
     /// Origins allowed to call the API cross-origin; see [`crate::config::ServerConfig::cors_allowed_origins`].
     pub cors_allowed_origins: Vec<HeaderValue>,
-    /// Per-client budget of the unauthenticated auth routes; see [`crate::config::ServerConfig::auth_rate_limit`].
+    /// Per-client budget of the registration and sign-in routes; see [`crate::config::ServerConfig::auth_rate_limit`].
     /// It is built once, so every route it guards and the sweep share one budget per client.
     pub auth_rate_limiter: Arc<AuthRateLimiter>,
 

@@ -1,4 +1,4 @@
-//! [`AuthRateLimitConfig`], the per-client budgets of the unauthenticated auth routes.
+//! [`AuthRateLimitConfig`], the per-client budgets of the registration and sign-in routes.
 
 use std::fmt;
 use std::num::NonZeroU32;
@@ -10,7 +10,7 @@ use super::defaults::{
 };
 use super::ipv6_network_tier_config::Ipv6NetworkTierConfig;
 
-/// How fast one client may call the unauthenticated auth routes.
+/// How fast one client may call the registration and sign-in routes.
 ///
 /// One budget per client is shared across those routes.
 /// It refills at [`AuthRateLimitConfig::per_minute`] requests per minute up to [`AuthRateLimitConfig::burst`] requests.
