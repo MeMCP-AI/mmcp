@@ -94,6 +94,14 @@ pub enum GitError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
+    /// Failed to read the index of the repository containing `path`.
+    #[error("failed to read the index of the repository containing {path}: {source}")]
+    ReadIndex {
+        path: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
     /// Failed to evaluate the ignore rules of a repository for `path`.
     #[error("failed to evaluate ignore rules for {path}: {source}")]
     IgnoreRules {

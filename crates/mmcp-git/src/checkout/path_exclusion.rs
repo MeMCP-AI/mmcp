@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use gix::worktree::stack::state::ignore::Source;
 
-use super::open_checkout::{open_containing, own_path, real_path};
+use super::open_checkout::{open_containing, own_path, read_index, real_path};
 use crate::GitError;
 
 /// Whether the ignore rules of the repository containing `path` exclude it.
@@ -50,9 +50,7 @@ pub(super) fn is_excluded_in(
         path: path.display().to_string(),
         source,
     };
-    let index = repo
-        .index_or_empty()
-        .map_err(|error| ignore_error(Box::new(error)))?;
+    let index = read_index(repo, path)?;
     let mut stack = repo
         .excludes(&index, None, Source::WorktreeThenIdMappingIfNotSkipped)
         .map_err(|error| ignore_error(Box::new(error)))?;
@@ -65,6 +63,7 @@ pub(super) fn is_excluded_in(
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::super::open_checkout::unreadable_index;
     use super::*;
 
     const LOCAL_FILE: &str = ".mmcp.local.toml";
@@ -84,6 +83,17 @@ mod tests {
             is_excluded_in(&repo, &scratch.path().join(LOCAL_FILE)).unwrap(),
             Some(false)
         );
+    }
+
+    #[test]
+    fn an_unreadable_index_is_a_read_index_error_and_not_an_ignore_rules_error() {
+        let scratch = tempfile::TempDir::new().unwrap();
+        let repo = isolated_repo(scratch.path());
+        std::fs::write(repo.index_path(), unreadable_index()).unwrap();
+
+        let error = is_excluded_in(&repo, &scratch.path().join(LOCAL_FILE)).unwrap_err();
+
+        assert!(matches!(error, GitError::ReadIndex { .. }), "{error:?}");
     }
 
     #[test]

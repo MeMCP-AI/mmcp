@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use super::open_checkout::read_index;
 use super::path_exclusion::relative_to_workdir;
 use crate::GitError;
 
@@ -9,17 +10,12 @@ use crate::GitError;
 /// `None` when `path` is not inside the work tree of `repo`.
 ///
 /// # Errors
-/// [`GitError::IgnoreRules`] when the index cannot be read.
+/// [`GitError::ReadIndex`] when the index cannot be read.
 pub(super) fn is_tracked_in(repo: &gix::Repository, path: &Path) -> Result<Option<bool>, GitError> {
     let Some(relative) = relative_to_workdir(repo, path)? else {
         return Ok(None);
     };
-    let index = repo
-        .index_or_empty()
-        .map_err(|error| GitError::IgnoreRules {
-            path: path.display().to_string(),
-            source: Box::new(error),
-        })?;
+    let index = read_index(repo, path)?;
     let unix_relative = gix::path::to_unix_separators_on_windows(gix::path::into_bstr(relative));
     Ok(Some(index.entry_by_path(&unix_relative).is_some()))
 }
@@ -55,6 +51,7 @@ fn track_entry(repo: &gix::Repository, relative: &str, mode: gix::index::entry::
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::super::open_checkout::unreadable_index;
     use super::*;
 
     const LOCAL_FILE: &str = ".mmcp.local.toml";
@@ -137,6 +134,17 @@ mod tests {
         track_symlink_in_index(&repo, LOCAL_FILE);
 
         assert_eq!(is_tracked_in(&repo, &link).unwrap(), Some(true));
+    }
+
+    #[test]
+    fn an_unreadable_index_is_a_read_index_error_and_not_an_ignore_rules_error() {
+        let scratch = tempfile::TempDir::new().unwrap();
+        let repo = isolated_repo(scratch.path());
+        std::fs::write(repo.index_path(), unreadable_index()).unwrap();
+
+        let error = is_tracked_in(&repo, &scratch.path().join(LOCAL_FILE)).unwrap_err();
+
+        assert!(matches!(error, GitError::ReadIndex { .. }), "{error:?}");
     }
 
     #[test]

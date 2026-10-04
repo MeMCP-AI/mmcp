@@ -62,3 +62,29 @@ pub(super) fn own_path(path: &Path) -> Result<PathBuf, GitError> {
         _ => real_path(path),
     }
 }
+
+/// Bytes of an index file that carry the signature but an unsupported version, for the tests of the read failure.
+#[cfg(test)]
+pub(super) fn unreadable_index() -> Vec<u8> {
+    const SIGNATURE: &[u8] = b"DIRC";
+    const UNSUPPORTED_VERSION: [u8; 4] = [0, 0, 0, 99];
+    const BODY_BYTES: usize = 64;
+    let mut bytes = SIGNATURE.to_vec();
+    bytes.extend_from_slice(&UNSUPPORTED_VERSION);
+    bytes.resize(bytes.len() + BODY_BYTES, 0);
+    bytes
+}
+
+/// The index of `repo`, empty when it has none yet.
+///
+/// # Errors
+/// [`GitError::ReadIndex`] when the index file exists and cannot be read.
+pub(super) fn read_index(
+    repo: &gix::Repository,
+    path: &Path,
+) -> Result<gix::worktree::Index, GitError> {
+    repo.index_or_empty().map_err(|error| GitError::ReadIndex {
+        path: path.display().to_string(),
+        source: Box::new(error),
+    })
+}
