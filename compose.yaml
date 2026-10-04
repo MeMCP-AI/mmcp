@@ -35,6 +35,8 @@ services:
       MMCP_BIND: 0.0.0.0:8787
       MMCP_DATABASE_URL: postgres://${POSTGRES_USER:-mmcp}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-mmcp}
       MMCP_REPO_ROOT: /data/repos
+      # The key signs bearer tokens and pending OAuth sign-ins, so changing it invalidates them.
+      # Browser sessions live in the database and do not depend on the key.
       MMCP_TOKEN_KEY_HEX: "${MMCP_TOKEN_KEY_HEX:?set MMCP_TOKEN_KEY_HEX in .env, for example with: docker run --rm ghcr.io/memcp-ai/mmcp-server:nightly generate-secret}"
       MMCP_ORIGIN: ${MMCP_ORIGIN:-http://localhost:${MMCP_PORT:-8787}}
       MMCP_CORS_ALLOWED_ORIGINS: ${MMCP_CORS_ALLOWED_ORIGINS:-}
