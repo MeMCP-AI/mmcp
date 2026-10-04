@@ -329,7 +329,7 @@ async fn oauth_callback_with_mismatched_state_is_rejected_before_token_exchange(
         .build()
         .expect("build client");
 
-    // Establish a session (and its stored state) via authorize, then send a
+    // Establish a flow cookie (and its sealed state) via authorize, then send a
     // callback carrying a state that does not match it.
     client
         .get(format!("http://{addr}/auth/oauth/github/authorize"))
@@ -390,10 +390,10 @@ async fn oauth_callback_with_missing_state_is_rejected_before_token_exchange() {
     );
 }
 
-// ── OAuth session cookie (SameSite=Lax survives the provider's cross-site redirect) ──
+// ── OAuth flow cookie (SameSite=Lax survives the provider's cross-site redirect) ──
 
 #[tokio::test]
-async fn oauth_authorize_sets_a_samesite_lax_cookie() {
+async fn oauth_authorize_sets_a_samesite_lax_flow_cookie() {
     let (addr, _tmp) = start_server_with_oauth(vec![github_provider()]).await;
     // Disable auto-follow: a followed redirect would inspect
     // github.com's own response cookies instead of the Set-Cookie
@@ -417,8 +417,8 @@ async fn oauth_authorize_sets_a_samesite_lax_cookie() {
     assert!(
         set_cookie_headers
             .iter()
-            .any(|c| c.contains("samesite=lax")),
-        "authorize must set the session cookie with SameSite=Lax so it survives the OAuth \
+            .any(|c| c.starts_with("mmcp_oauth_flow_github=") && c.contains("samesite=lax")),
+        "authorize must set the flow cookie with SameSite=Lax so it survives the OAuth \
          provider's cross-site top-level redirect back to the callback, got: \
          {set_cookie_headers:?}"
     );
@@ -427,8 +427,8 @@ async fn oauth_authorize_sets_a_samesite_lax_cookie() {
 // ── OAuth state rejection causes take independent code paths ───────
 
 #[tokio::test]
-async fn oauth_callback_with_no_stored_state_is_rejected() {
-    // No prior `authorize` call: the session carries no stored state
+async fn oauth_callback_without_a_flow_cookie_is_rejected() {
+    // No prior `authorize` call: the request carries no flow cookie
     // at all, distinct from a callback query that omits `state`
     // entirely
     // (`oauth_callback_with_missing_state_is_rejected_before_token_exchange`).
@@ -454,7 +454,7 @@ async fn oauth_callback_with_no_stored_state_is_rejected() {
     assert_eq!(
         resp.status(),
         400,
-        "a callback state with nothing stored server-side must be rejected before any \
+        "a callback without a flow cookie must be rejected before any \
          token-exchange call fires"
     );
 }
@@ -476,8 +476,8 @@ async fn oauth_callback_state_length_mismatch_is_rejected_before_equality_compar
         .build()
         .expect("build client");
 
-    // Establish a real stored state via authorize, so this exercises
-    // the length check specifically rather than the "nothing stored"
+    // Establish a real flow cookie via authorize, so this exercises
+    // the length check specifically rather than the "no flow cookie"
     // branch.
     client
         .get(format!("http://{addr}/auth/oauth/github/authorize"))
@@ -603,8 +603,8 @@ async fn oauth_state_is_single_use_a_replayed_valid_callback_is_rejected_the_sec
     assert_eq!(
         second.status(),
         400,
-        "replaying the same state a second time must be rejected: the session key was \
-         already removed by the first callback"
+        "replaying the same state a second time must be rejected: the flow cookie was \
+         already cleared by the first callback"
     );
 }
 

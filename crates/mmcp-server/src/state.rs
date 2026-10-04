@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
-use mmcp_auth::{MmcpAuthBackend, TokenIssuer, TokenVerifier};
+use mmcp_auth::{MmcpAuthBackend, OauthFlowTokenCodec, TokenIssuer, TokenVerifier};
 use mmcp_core::lock_registry::{KeyedLockRegistry, PrunePolicy};
 use mmcp_db::{Database, connect};
 use mmcp_git::NativeBackend;
@@ -27,6 +27,8 @@ pub struct ServerStateInner {
     pub repo_root: PathBuf,
     pub token_issuer: TokenIssuer,
     pub token_verifier: TokenVerifier,
+    /// Seals and opens the cookie token carrying a pending OAuth flow, under the same key as the bearer tokens.
+    pub oauth_flow_tokens: OauthFlowTokenCodec,
     pub auth_backend: MmcpAuthBackend,
     /// Persistent HTTP session store on the same database as [`ServerStateInner::database`].
     pub session_store: DatabaseSessionStore,
@@ -76,6 +78,7 @@ impl ServerState {
         let git = NativeBackend::new(&cfg.repo_root)?;
         let token_issuer = TokenIssuer::from_key(&cfg.token_key);
         let token_verifier = TokenVerifier::from_key(&cfg.token_key);
+        let oauth_flow_tokens = OauthFlowTokenCodec::from_key(&cfg.token_key);
         let auth_backend = MmcpAuthBackend::new(
             database.connection().clone(),
             cfg.max_handle_length,
@@ -110,6 +113,7 @@ impl ServerState {
             repo_root: cfg.repo_root.clone(),
             token_issuer,
             token_verifier,
+            oauth_flow_tokens,
             auth_backend,
             session_store,
             webauthn,

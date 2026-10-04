@@ -22,12 +22,15 @@ use std::sync::Arc;
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
-    http::StatusCode,
-    response::{IntoResponse, Redirect, Response},
+    http::{HeaderMap, StatusCode, header::SET_COOKIE},
+    response::{AppendHeaders, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use jiff::Timestamp;
-use mmcp_auth::{AuthSession, Credentials, hash_password, validate_password_policy};
+use mmcp_auth::{
+    AuthSession, Credentials, OauthFlowClaims, OauthFlowOpenError, OauthFlowTokenCodec,
+    hash_password, validate_password_policy,
+};
 use mmcp_db::repository::{passkey_repo, user_repo};
 use oauth2::{
     AuthorizationCode, CsrfToken, PkceCodeChallenge, PkceCodeVerifier, Scope, TokenResponse,
@@ -39,11 +42,13 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 use webauthn_rs::prelude::*;
 
+use crate::origin::origin_uses_https;
 use crate::routes::defaults::{
     AUTH_REQUEST_BODY_LIMIT_BYTES, BEARER_TOKEN_LIFETIME_SECS, MAX_DISPLAY_NAME_LENGTH,
-    MAX_EMAIL_LENGTH, OAUTH_PKCE_VERIFIER_SESSION_KEY_PREFIX, OAUTH_STATE_SESSION_KEY_PREFIX,
-    OAUTH_STATE_TOKEN_BYTES, OAUTH_STATE_TOKEN_LENGTH, PASSKEY_CEREMONY_TTL,
+    MAX_EMAIL_LENGTH, OAUTH_FLOW_LIFETIME, OAUTH_STATE_TOKEN_BYTES, OAUTH_STATE_TOKEN_LENGTH,
+    PASSKEY_CEREMONY_TTL,
 };
+use crate::routes::oauth_flow_cookie;
 use crate::routes::registration_limits::RegistrationLimits;
 use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
@@ -252,38 +257,27 @@ async fn login(
 // Authorize-URL construction, CSRF `state` minting, PKCE, and the
 // authorization-code token exchange are all delegated to the `oauth2`
 // crate (see [`crate::oauth_client`] for the per-provider client it
-// builds). What stays hand-rolled here: the session storage of the
+// builds). What stays hand-rolled here: the cookie transport of the
 // CSRF state and PKCE verifier, `OAuthStateRejection`'s per-cause
 // taxonomy and logging, the provider registry lookup, and the
 // GitHub-specific userinfo fetch (`oauth2` has no generic userinfo
 // step).
 
-/// Builds the per-provider session key from [`OAUTH_STATE_SESSION_KEY_PREFIX`].
-/// Concurrent flows against different providers get distinct keys,
-/// so they cannot clobber each other's pending state.
-fn oauth_state_session_key(provider: &str) -> String {
-    format!("{OAUTH_STATE_SESSION_KEY_PREFIX}{provider}")
-}
-
-/// Builds the per-provider session key from [`OAUTH_PKCE_VERIFIER_SESSION_KEY_PREFIX`],
-/// mirroring [`oauth_state_session_key`] under its own namespace.
-fn oauth_pkce_verifier_session_key(provider: &str) -> String {
-    format!("{OAUTH_PKCE_VERIFIER_SESSION_KEY_PREFIX}{provider}")
-}
-
 #[derive(Deserialize)]
 struct OAuthCallbackQuery {
     code: String,
     /// CSRF token minted by [`oauth_authorize`] and echoed back by the provider.
-    /// [`oauth_callback`] compares it against the value stored in the caller's session before any token exchange.
+    /// [`oauth_callback`] compares it against the value sealed in the caller's OAuth flow cookie before any token exchange.
     state: Option<String>,
 }
 
+/// Start an OAuth authorization.
+///
+/// The CSRF state and PKCE verifier travel in a sealed, expiring cookie, so the request writes no server-side record.
 async fn oauth_authorize(
-    auth_session: AuthSession,
     State(state): State<ServerState>,
     Path(provider): Path<String>,
-) -> Result<Redirect, AuthHttpError> {
+) -> Result<Response, AuthHttpError> {
     let oauth_client = state
         .oauth_clients
         .get(&provider)
@@ -297,25 +291,28 @@ async fn oauth_authorize(
         .set_pkce_challenge(pkce_challenge)
         .url();
 
-    auth_session
-        .session
-        .insert(&oauth_state_session_key(&provider), csrf_state.secret())
-        .await
+    let flow_token = state
+        .oauth_flow_tokens
+        .seal(&OauthFlowClaims {
+            provider: provider.clone(),
+            csrf_state: csrf_state.secret().clone(),
+            pkce_verifier: pkce_verifier.secret().clone(),
+            expires_at: Timestamp::now().as_second() + OAUTH_FLOW_LIFETIME.whole_seconds(),
+        })
         .map_err(into_generic_response)?;
-    auth_session
-        .session
-        .insert(
-            &oauth_pkce_verifier_session_key(&provider),
-            pkce_verifier.secret(),
-        )
-        .await
-        .map_err(into_generic_response)?;
+    let set_cookie =
+        oauth_flow_cookie::set_header(&provider, &flow_token, origin_uses_https(&state.origin))
+            .map_err(into_generic_response)?;
 
-    Ok(Redirect::temporary(authorize_url.as_str()))
+    Ok((
+        AppendHeaders([(SET_COOKIE, set_cookie)]),
+        Redirect::temporary(authorize_url.as_str()),
+    )
+        .into_response())
 }
 
-/// Why an OAuth callback failed to validate against the state the
-/// matching [`oauth_authorize`] call stored in the session.
+/// Why an OAuth callback failed to validate against the flow the
+/// matching [`oauth_authorize`] call sealed into the flow cookie.
 ///
 /// Every variant maps to the same uniform external
 /// [`AuthHttpError::InvalidOAuthState`] 400 response; [`oauth_callback`]
@@ -325,11 +322,20 @@ enum OAuthStateRejection {
     /// The callback query carried no `state` parameter at all.
     #[error("no state parameter present in the callback query")]
     MissingFromQuery,
-    /// The query carried a `state`, but the session had none stored
-    /// (expired, already consumed, or the session cookie was
-    /// withheld).
-    #[error("no stored csrf state found in the session")]
-    NoStoredState,
+    /// The callback carried no flow cookie for the provider (expired,
+    /// already consumed, never issued, or withheld by the browser).
+    #[error("no oauth flow cookie found in the callback request")]
+    MissingFlowCookie,
+    /// The flow cookie is malformed, tampered with, or sealed for
+    /// another purpose or under another key.
+    #[error("the oauth flow cookie could not be opened")]
+    UnreadableFlowCookie,
+    /// The flow cookie opened but its own expiry has passed.
+    #[error("the oauth flow cookie has expired")]
+    ExpiredFlowCookie,
+    /// The flow cookie opened but was issued for another provider.
+    #[error("the oauth flow cookie was issued for another provider")]
+    FlowCookieProviderMismatch,
     /// The received `state` is not exactly [`OAUTH_STATE_TOKEN_LENGTH`]
     /// characters, rejected before the equality comparison below.
     #[error("state length {received_len} does not match the expected {expected_len}")]
@@ -338,31 +344,42 @@ enum OAuthStateRejection {
         expected_len: usize,
     },
     /// The received `state` has the right length but does not equal
-    /// the value stored at authorize time.
+    /// the value sealed at authorize time.
     #[error("state does not match the value issued at authorize time")]
     ValueMismatch,
-    /// The `state` matched, but no PKCE code verifier was found
-    /// stored in the session under this provider's key: the
-    /// authorize step that mints and stores it never ran for this
-    /// session (a forged callback skipping straight to the callback
-    /// endpoint, or the session losing the entry), so the exchange
-    /// has no `code_verifier` to present and must not proceed.
-    #[error("no stored pkce verifier found in the session")]
-    MissingPkceVerifier,
 }
 
-/// Validate an OAuth callback's `state` against the session's stored
-/// value.
+/// Open the flow cookie token of an OAuth callback for `provider`.
+///
+/// The opened claims carry both the CSRF state and the PKCE verifier.
+/// Pure like [`validate_oauth_state`], so each refusal cause is
+/// independently unit testable.
+fn open_oauth_flow(
+    codec: &OauthFlowTokenCodec,
+    token: Option<&str>,
+    provider: &str,
+    now_secs: i64,
+) -> Result<OauthFlowClaims, OAuthStateRejection> {
+    let token = token.ok_or(OAuthStateRejection::MissingFlowCookie)?;
+    codec
+        .open(token, provider, now_secs)
+        .map_err(|error| match error {
+            OauthFlowOpenError::Unreadable { .. } => OAuthStateRejection::UnreadableFlowCookie,
+            OauthFlowOpenError::Expired { .. } => OAuthStateRejection::ExpiredFlowCookie,
+            OauthFlowOpenError::ProviderMismatch { .. } => {
+                OAuthStateRejection::FlowCookieProviderMismatch
+            }
+        })
+}
+
+/// Validate an OAuth callback's `state` against the value sealed in
+/// the flow cookie.
 ///
 /// Pure and side-effect-free, unlike [`oauth_callback`] itself, so
 /// each rejection cause is independently unit testable without a
 /// running server.
-fn validate_oauth_state(
-    received: Option<&str>,
-    expected: Option<&str>,
-) -> Result<(), OAuthStateRejection> {
+fn validate_oauth_state(received: Option<&str>, expected: &str) -> Result<(), OAuthStateRejection> {
     let received = received.ok_or(OAuthStateRejection::MissingFromQuery)?;
-    let expected = expected.ok_or(OAuthStateRejection::NoStoredState)?;
     if received.len() != OAUTH_STATE_TOKEN_LENGTH {
         return Err(OAuthStateRejection::LengthMismatch {
             received_len: received.len(),
@@ -380,19 +397,29 @@ fn validate_oauth_state(
     Ok(())
 }
 
-/// Confirm a PKCE code verifier was stored in the session for this
-/// callback, returning it ready for
-/// [`oauth2::CodeTokenRequest::set_pkce_verifier`].
+/// Log why an OAuth callback was rejected and return the uniform external response.
 ///
-/// Pure and side-effect-free like [`validate_oauth_state`], for the
-/// same reason: independently unit-testable without a running
-/// server, and kept as its own function (rather than folded into
-/// `validate_oauth_state`) so that function's existing state-only
-/// test coverage stays untouched by the PKCE addition.
-fn require_pkce_verifier(expected: Option<&str>) -> Result<PkceCodeVerifier, OAuthStateRejection> {
-    expected
-        .map(|verifier| PkceCodeVerifier::new(verifier.to_string()))
-        .ok_or(OAuthStateRejection::MissingPkceVerifier)
+/// Every cause collapses to the same 400 body (`AuthHttpError::InvalidOAuthState`),
+/// per `global-coding-rules-errors`'s security-mandated-uniform-response exception.
+/// Each still gets its own log line, so a deployment failure like
+/// "the flow cookie never round-trips" is diagnosable from logs alone.
+fn reject_oauth_callback(provider: &str, rejection: &OAuthStateRejection) -> AuthHttpError {
+    match rejection {
+        // The caller-controlled query is simply missing the
+        // parameter; not evidence of a server-side problem.
+        OAuthStateRejection::MissingFromQuery => {
+            tracing::debug!(provider = %provider, error = %rejection, "oauth callback rejected");
+        }
+        OAuthStateRejection::MissingFlowCookie
+        | OAuthStateRejection::UnreadableFlowCookie
+        | OAuthStateRejection::ExpiredFlowCookie
+        | OAuthStateRejection::FlowCookieProviderMismatch
+        | OAuthStateRejection::LengthMismatch { .. }
+        | OAuthStateRejection::ValueMismatch => {
+            tracing::warn!(provider = %provider, error = %rejection, "oauth callback rejected");
+        }
+    }
+    AuthHttpError::InvalidOAuthState
 }
 
 /// GitHub user info response (partial).
@@ -403,12 +430,19 @@ struct GitHubUser {
     email: Option<String>,
 }
 
+/// Complete an OAuth authorization.
+///
+/// The flow cookie is usable for at most one callback:
+/// the response clears it whatever the outcome.
 async fn oauth_callback(
     mut auth_session: AuthSession,
     State(state): State<ServerState>,
+    headers: HeaderMap,
     Path(provider): Path<String>,
     Query(query): Query<OAuthCallbackQuery>,
 ) -> Result<Response, AuthHttpError> {
+    // An unknown provider answers 404 before any cookie handling,
+    // so the server never names a cookie after an arbitrary path segment.
     let cfg = state
         .oauth_providers
         .get(&provider)
@@ -418,117 +452,95 @@ async fn oauth_callback(
         .get(&provider)
         .ok_or(AuthHttpError::NotFound("unknown OAuth provider"))?;
 
-    // Consume the stored state and PKCE verifier before comparing.
-    // Both are usable for at most one callback, regardless of
-    // whether the checks below pass.
-    let expected_state: Option<String> = auth_session
-        .session
-        .remove(&oauth_state_session_key(&provider))
-        .await
-        .map_err(into_generic_response)?;
-    let expected_verifier: Option<String> = auth_session
-        .session
-        .remove(&oauth_pkce_verifier_session_key(&provider))
-        .await
-        .map_err(into_generic_response)?;
+    let secure_origin = origin_uses_https(&state.origin);
+    let flow_token = oauth_flow_cookie::read_token(&headers, &provider, secure_origin);
+    let clear_flow_cookie =
+        oauth_flow_cookie::clear_header(&provider, secure_origin).map_err(into_generic_response)?;
 
-    // Every cause collapses to the same uniform 400 body
-    // (`AuthHttpError::InvalidOAuthState`), per `global-coding-rules-errors`'s
-    // security-mandated-uniform-response exception, but each still
-    // gets its own log line so a deployment failure like "the session
-    // cookie never round-trips" is diagnosable from logs alone
-    // instead of surfacing only as a blanket rejection.
-    if let Err(rejection) = validate_oauth_state(query.state.as_deref(), expected_state.as_deref())
-    {
-        match &rejection {
-            // The caller-controlled query is simply missing the
-            // parameter; not evidence of a server-side problem.
-            OAuthStateRejection::MissingFromQuery => {
-                tracing::debug!(provider = %provider, error = %rejection, "oauth callback rejected");
+    let outcome: Result<Response, AuthHttpError> = async {
+        let flow = open_oauth_flow(
+            &state.oauth_flow_tokens,
+            flow_token.as_deref(),
+            &provider,
+            Timestamp::now().as_second(),
+        )
+        .map_err(|rejection| reject_oauth_callback(&provider, &rejection))?;
+        validate_oauth_state(query.state.as_deref(), &flow.csrf_state)
+            .map_err(|rejection| reject_oauth_callback(&provider, &rejection))?;
+        let pkce_verifier = PkceCodeVerifier::new(flow.pkce_verifier);
+
+        // Exchange the authorization code for an access token. The
+        // redirect URL was already set on `oauth_client` at
+        // `ServerState::initialize` time, so `oauth2` attaches it to this
+        // request automatically; see `crate::oauth_client::build_oauth_client`.
+        let token = oauth_client
+            .exchange_code(AuthorizationCode::new(query.code))
+            .set_pkce_verifier(pkce_verifier)
+            .request_async(&state.oauth_exchange_http_client)
+            .await
+            .map_err(into_generic_response)?;
+        let access_token = token.access_token().secret().clone();
+
+        // Fetch user info from the provider. `oauth2` has no generic
+        // userinfo step, so this stays a hand-rolled REST call specific
+        // to GitHub, on this crate's own (workspace) `reqwest` client
+        // rather than the dedicated exchange client above.
+        let userinfo_resp = reqwest::Client::new()
+            .get(&cfg.userinfo_url)
+            .header("Authorization", format!("Bearer {access_token}"))
+            .header("User-Agent", "mmcp-server")
+            .send()
+            .await
+            .map_err(into_generic_response)?;
+        let gh_user: GitHubUser = userinfo_resp.json().await.map_err(into_generic_response)?;
+
+        let user = match auth_session
+            .authenticate(Credentials::OAuth {
+                provider: provider.clone(),
+                provider_user_id: gh_user.id.to_string(),
+                email: gh_user.email.or(Some(format!("{}@github", gh_user.login))),
+                access_token: Some(access_token),
+                refresh_token: None,
+            })
+            .await
+        {
+            Ok(Some(user)) => user,
+            Ok(None) => return Err(AuthHttpError::Unauthorized("oauth authentication failed")),
+            // The OAuth JIT-provisioning gate rejects a first-time login
+            // for this provider identity while self-registration is
+            // disabled; distinct from every other backend failure so it
+            // maps to its own 403, not the generic 500
+            // `into_generic_response` produces below.
+            Err(axum_login::Error::Backend(mmcp_auth::AuthError::SelfRegistrationDisabled)) => {
+                tracing::warn!(
+                    provider = %provider,
+                    "oauth callback rejected: self-registration disabled, no linked account exists"
+                );
+                return Err(AuthHttpError::OAuthSelfRegistrationDisabled);
             }
-            OAuthStateRejection::NoStoredState
-            | OAuthStateRejection::LengthMismatch { .. }
-            | OAuthStateRejection::ValueMismatch
-            | OAuthStateRejection::MissingPkceVerifier => {
-                tracing::warn!(provider = %provider, error = %rejection, "oauth callback rejected");
-            }
-        }
-        return Err(AuthHttpError::InvalidOAuthState);
+            Err(other) => return Err(into_generic_response(other)),
+        };
+
+        auth_session
+            .login(&user)
+            .await
+            .map_err(into_generic_response)?;
+
+        Ok((
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "user_id": user.id,
+                "handle": user.handle,
+                "message": "OAuth login successful"
+            })),
+        )
+            .into_response())
     }
-    let pkce_verifier = match require_pkce_verifier(expected_verifier.as_deref()) {
-        Ok(verifier) => verifier,
-        Err(rejection) => {
-            tracing::warn!(provider = %provider, error = %rejection, "oauth callback rejected");
-            return Err(AuthHttpError::InvalidOAuthState);
-        }
-    };
+    .await;
 
-    // Exchange the authorization code for an access token. The
-    // redirect URL was already set on `oauth_client` at
-    // `ServerState::initialize` time, so `oauth2` attaches it to this
-    // request automatically; see `crate::oauth_client::build_oauth_client`.
-    let token = oauth_client
-        .exchange_code(AuthorizationCode::new(query.code))
-        .set_pkce_verifier(pkce_verifier)
-        .request_async(&state.oauth_exchange_http_client)
-        .await
-        .map_err(into_generic_response)?;
-    let access_token = token.access_token().secret().clone();
-
-    // Fetch user info from the provider. `oauth2` has no generic
-    // userinfo step, so this stays a hand-rolled REST call specific
-    // to GitHub, on this crate's own (workspace) `reqwest` client
-    // rather than the dedicated exchange client above.
-    let userinfo_resp = reqwest::Client::new()
-        .get(&cfg.userinfo_url)
-        .header("Authorization", format!("Bearer {access_token}"))
-        .header("User-Agent", "mmcp-server")
-        .send()
-        .await
-        .map_err(into_generic_response)?;
-    let gh_user: GitHubUser = userinfo_resp.json().await.map_err(into_generic_response)?;
-
-    let user = match auth_session
-        .authenticate(Credentials::OAuth {
-            provider: provider.clone(),
-            provider_user_id: gh_user.id.to_string(),
-            email: gh_user.email.or(Some(format!("{}@github", gh_user.login))),
-            access_token: Some(access_token),
-            refresh_token: None,
-        })
-        .await
-    {
-        Ok(Some(user)) => user,
-        Ok(None) => return Err(AuthHttpError::Unauthorized("oauth authentication failed")),
-        // The OAuth JIT-provisioning gate rejects a first-time login
-        // for this provider identity while self-registration is
-        // disabled; distinct from every other backend failure so it
-        // maps to its own 403, not the generic 500
-        // `into_generic_response` produces below.
-        Err(axum_login::Error::Backend(mmcp_auth::AuthError::SelfRegistrationDisabled)) => {
-            tracing::warn!(
-                provider = %provider,
-                "oauth callback rejected: self-registration disabled, no linked account exists"
-            );
-            return Err(AuthHttpError::OAuthSelfRegistrationDisabled);
-        }
-        Err(other) => return Err(into_generic_response(other)),
-    };
-
-    auth_session
-        .login(&user)
-        .await
-        .map_err(into_generic_response)?;
-
-    Ok((
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "user_id": user.id,
-            "handle": user.handle,
-            "message": "OAuth login successful"
-        })),
-    )
-        .into_response())
+    let mut response = outcome.unwrap_or_else(IntoResponse::into_response);
+    response.headers_mut().append(SET_COOKIE, clear_flow_cookie);
+    Ok(response)
 }
 
 // ── Passkey ─────────────────────────────────────────────────────
@@ -980,17 +992,8 @@ mod tests {
     #[test]
     fn validate_oauth_state_rejects_a_missing_query_parameter() {
         assert_eq!(
-            validate_oauth_state(None, Some("expected")),
+            validate_oauth_state(None, "expected"),
             Err(OAuthStateRejection::MissingFromQuery)
-        );
-    }
-
-    #[test]
-    fn validate_oauth_state_rejects_when_nothing_was_stored() {
-        let received = "a".repeat(OAUTH_STATE_TOKEN_LENGTH);
-        assert_eq!(
-            validate_oauth_state(Some(&received), None),
-            Err(OAuthStateRejection::NoStoredState)
         );
     }
 
@@ -1004,7 +1007,7 @@ mod tests {
         // double duty.
         let expected = "b".repeat(OAUTH_STATE_TOKEN_LENGTH);
         assert_eq!(
-            validate_oauth_state(Some(&received), Some(&expected)),
+            validate_oauth_state(Some(&received), &expected),
             Err(OAuthStateRejection::LengthMismatch {
                 received_len: OAUTH_STATE_TOKEN_LENGTH - 1,
                 expected_len: OAUTH_STATE_TOKEN_LENGTH,
@@ -1017,7 +1020,7 @@ mod tests {
         let received = "a".repeat(OAUTH_STATE_TOKEN_LENGTH);
         let expected = "b".repeat(OAUTH_STATE_TOKEN_LENGTH);
         assert_eq!(
-            validate_oauth_state(Some(&received), Some(&expected)),
+            validate_oauth_state(Some(&received), &expected),
             Err(OAuthStateRejection::ValueMismatch)
         );
     }
@@ -1025,29 +1028,71 @@ mod tests {
     #[test]
     fn validate_oauth_state_accepts_a_matching_value() {
         let value = "a".repeat(OAUTH_STATE_TOKEN_LENGTH);
-        assert_eq!(validate_oauth_state(Some(&value), Some(&value)), Ok(()));
+        assert_eq!(validate_oauth_state(Some(&value), &value), Ok(()));
     }
 
-    // ── require_pkce_verifier: presence gates the token exchange ───
+    // ── open_oauth_flow: each flow cookie refusal is its own path ───
+
+    const FLOW_NOW_SECS: i64 = 1_000;
+    const FLOW_LIFETIME_SECS: i64 = 600;
+
+    fn flow_codec() -> OauthFlowTokenCodec {
+        OauthFlowTokenCodec::from_key(&[3u8; mmcp_auth::token::V4_LOCAL_KEY_BYTES])
+    }
+
+    fn sealed_flow(provider: &str, expires_at: i64) -> String {
+        flow_codec()
+            .seal(&OauthFlowClaims {
+                provider: provider.to_owned(),
+                csrf_state: "csrf".to_owned(),
+                pkce_verifier: "verifier".to_owned(),
+                expires_at,
+            })
+            .unwrap()
+    }
 
     #[test]
-    fn require_pkce_verifier_rejects_a_missing_verifier() {
-        // `PkceCodeVerifier` (the `Ok` side) does not implement
-        // `PartialEq` (oauth2 deliberately omits it for its secret
-        // types outside the `timing-resistant-secret-traits`
-        // feature), so the rejection cause is compared directly
-        // instead of the whole `Result`.
+    fn open_oauth_flow_rejects_a_missing_cookie() {
         assert_eq!(
-            require_pkce_verifier(None).unwrap_err(),
-            OAuthStateRejection::MissingPkceVerifier
+            open_oauth_flow(&flow_codec(), None, "github", FLOW_NOW_SECS).unwrap_err(),
+            OAuthStateRejection::MissingFlowCookie
         );
     }
 
     #[test]
-    fn require_pkce_verifier_accepts_a_stored_verifier() {
-        let verifier =
-            require_pkce_verifier(Some("stored-verifier")).expect("a stored verifier must pass");
-        assert_eq!(verifier.secret(), "stored-verifier");
+    fn open_oauth_flow_rejects_an_unreadable_cookie() {
+        assert_eq!(
+            open_oauth_flow(&flow_codec(), Some("not-a-token"), "github", FLOW_NOW_SECS)
+                .unwrap_err(),
+            OAuthStateRejection::UnreadableFlowCookie
+        );
+    }
+
+    #[test]
+    fn open_oauth_flow_rejects_an_expired_cookie() {
+        let token = sealed_flow("github", FLOW_NOW_SECS - 1);
+        assert_eq!(
+            open_oauth_flow(&flow_codec(), Some(&token), "github", FLOW_NOW_SECS).unwrap_err(),
+            OAuthStateRejection::ExpiredFlowCookie
+        );
+    }
+
+    #[test]
+    fn open_oauth_flow_rejects_a_cookie_issued_for_another_provider() {
+        let token = sealed_flow("google", FLOW_NOW_SECS + FLOW_LIFETIME_SECS);
+        assert_eq!(
+            open_oauth_flow(&flow_codec(), Some(&token), "github", FLOW_NOW_SECS).unwrap_err(),
+            OAuthStateRejection::FlowCookieProviderMismatch
+        );
+    }
+
+    #[test]
+    fn open_oauth_flow_returns_the_sealed_state_and_verifier() {
+        let token = sealed_flow("github", FLOW_NOW_SECS + FLOW_LIFETIME_SECS);
+        let flow = open_oauth_flow(&flow_codec(), Some(&token), "github", FLOW_NOW_SECS)
+            .expect("a fresh cookie for the right provider must open");
+        assert_eq!(flow.csrf_state, "csrf");
+        assert_eq!(flow.pkce_verifier, "verifier");
     }
 
     fn valid_request() -> RegisterRequest {

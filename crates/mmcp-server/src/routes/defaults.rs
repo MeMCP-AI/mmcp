@@ -25,17 +25,18 @@ pub(crate) const OAUTH_STATE_TOKEN_BYTES: usize = 32;
 /// The callback handler rejects a mismatched length before comparing values.
 pub(crate) const OAUTH_STATE_TOKEN_LENGTH: usize = (OAUTH_STATE_TOKEN_BYTES * 4).div_ceil(3);
 
-/// Per-provider session key prefix for the OAuth CSRF `state` token
-/// [`crate::routes::auth`]'s authorize and callback handlers exchange
-/// through the session store.
-pub(crate) const OAUTH_STATE_SESSION_KEY_PREFIX: &str = "oauth_csrf_state:";
+/// Name prefix of the per-provider cookie carrying a pending OAuth flow token,
+/// which [`crate::routes::auth`]'s authorize handler sets and its callback handler consumes.
+/// One cookie per provider, so concurrent flows against two providers never clobber each other.
+pub(crate) const OAUTH_FLOW_COOKIE_NAME_PREFIX: &str = "mmcp_oauth_flow_";
 
-/// Per-provider session key prefix for the OAuth PKCE code verifier
-/// [`crate::routes::auth`]'s authorize and callback handlers exchange
-/// through the session store, mirroring
-/// [`OAUTH_STATE_SESSION_KEY_PREFIX`] but under its own namespace so
-/// the two values never collide.
-pub(crate) const OAUTH_PKCE_VERIFIER_SESSION_KEY_PREFIX: &str = "oauth_pkce_verifier:";
+/// Cookie name prefix that makes a browser accept the cookie only when it is `Secure`, has path `/` and no `Domain`.
+pub(crate) const HOST_COOKIE_NAME_PREFIX: &str = "__Host-";
+
+/// Lifetime of a pending OAuth flow, from authorize to callback.
+/// Shares the rationale of [`crate::defaults::SESSION_INACTIVITY_EXPIRY`].
+/// Long enough for a slow provider login, short enough to bound an abandoned flow.
+pub(crate) const OAUTH_FLOW_LIFETIME: time::Duration = crate::defaults::SESSION_INACTIVITY_EXPIRY;
 
 /// Challenge header value advertised on every bearer-auth rejection,
 /// matching the scheme `crate::routes::bearer_auth`'s extractor
