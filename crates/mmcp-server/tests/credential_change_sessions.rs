@@ -1,8 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! A credential change signs the account's other sessions out, and logins never sign each other out.
 //!
-//! The passkey ceremony needs an authenticator, so the credential changes here go through the repository writers
-//! the routes call, against the database the running server reads.
+//! The passkey ceremony needs an authenticator.
+//! The credential changes here therefore go through the repository writers the routes call.
+//! They run against the database the running server reads.
 
 use std::net::SocketAddr;
 

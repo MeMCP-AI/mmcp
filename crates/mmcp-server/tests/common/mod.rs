@@ -94,8 +94,8 @@ pub async fn start_fake_oauth_provider() -> (SocketAddr, FakeTokenExchangeProbes
     (addr, probes)
 }
 
-/// The GitHub-slugged provider config pointing every endpoint at the
-/// fake provider [`start_fake_oauth_provider`] serves at `fake_addr`.
+/// The GitHub-slugged provider config pointing every endpoint at the fake provider.
+/// [`start_fake_oauth_provider`] serves that provider at `fake_addr`.
 #[allow(dead_code)] // Live in sibling test binaries; each tests/*.rs compiles common as its own crate.
 pub fn fake_oauth_provider_config(fake_addr: SocketAddr) -> OAuthProviderConfig {
     OAuthProviderConfig {
@@ -134,9 +134,8 @@ impl TestServerConfigBuilder {
     }
 
     /// Overrides the database URL (`ServerConfig::database_url`).
-    /// [`minimal_server_config`] defaults to an in-memory SQLite database,
-    /// which loses every row when the state drops; a persistence test
-    /// points two successive states at one file database here.
+    /// [`minimal_server_config`] defaults to an in-memory SQLite database, which loses every row when the state drops.
+    /// A persistence test points two successive states at one file database here.
     #[allow(dead_code)] // Live in sibling test binaries; each tests/*.rs compiles common as its own crate.
     pub fn database_url(mut self, database_url: impl Into<String>) -> Self {
         self.config.database_url = database_url.into();

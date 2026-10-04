@@ -329,8 +329,8 @@ async fn oauth_callback_with_mismatched_state_is_rejected_before_token_exchange(
         .build()
         .expect("build client");
 
-    // Establish a flow cookie (and its sealed state) via authorize, then send a
-    // callback carrying a state that does not match it.
+    // Establish a flow cookie (and its sealed state) via authorize.
+    // Then send a callback carrying a state that does not match it.
     client
         .get(format!("http://{addr}/auth/oauth/github/authorize"))
         .send()
@@ -428,10 +428,9 @@ async fn oauth_authorize_sets_a_samesite_lax_flow_cookie() {
 
 #[tokio::test]
 async fn oauth_callback_without_a_flow_cookie_is_rejected() {
-    // No prior `authorize` call: the request carries no flow cookie
-    // at all, distinct from a callback query that omits `state`
-    // entirely
-    // (`oauth_callback_with_missing_state_is_rejected_before_token_exchange`).
+    // No prior `authorize` call, so the request carries no flow cookie at all.
+    // That is distinct from a callback query that omits `state` entirely.
+    // See `oauth_callback_with_missing_state_is_rejected_before_token_exchange` for that case.
     let unreachable_provider = OAuthProviderConfig {
         slug: "github".to_string(),
         client_id: "client-abc".to_string(),
@@ -476,9 +475,8 @@ async fn oauth_callback_state_length_mismatch_is_rejected_before_equality_compar
         .build()
         .expect("build client");
 
-    // Establish a real flow cookie via authorize, so this exercises
-    // the length check specifically rather than the "no flow cookie"
-    // branch.
+    // Establish a real flow cookie via authorize.
+    // This exercises the length check specifically rather than the "no flow cookie" branch.
     client
         .get(format!("http://{addr}/auth/oauth/github/authorize"))
         .send()

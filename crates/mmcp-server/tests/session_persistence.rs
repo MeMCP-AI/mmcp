@@ -185,8 +185,8 @@ async fn session_rows_hold_neither_the_cookie_id_nor_the_password_hash() {
 
 /// The session data holds the digest of the credential state as its auth hash, never the password hash.
 ///
-/// `axum-login` stores the auth hash as a JSON array of byte values, so a raw password hash is not found as text:
-/// the check compares the stored bytes.
+/// `axum-login` stores the auth hash as a JSON array of byte values, so a raw password hash is not found as text.
+/// The check therefore compares the stored bytes.
 fn assert_stored_auth_hash_is_the_digest(
     session_data: &str,
     password_hash: &str,
@@ -386,8 +386,8 @@ async fn oauth_flow_cookie_is_httponly_lax_and_cleared_at_callback() {
 #[tokio::test]
 async fn oauth_callback_with_expired_or_tampered_flow_cookie_is_rejected_before_token_exchange() {
     let tmp = TempDir::new().expect("tempdir");
-    // Nothing listens on the provider's token endpoint: a live exchange would
-    // fail as a 500, so a 400 proves the exchange was never attempted.
+    // Nothing listens on the provider's token endpoint, so a live exchange would fail as a 500.
+    // A 400 therefore proves the exchange was never attempted.
     let unreachable_provider = OAuthProviderConfig {
         slug: "github".to_string(),
         client_id: "client-abc".to_string(),
@@ -455,8 +455,8 @@ async fn oauth_callback_succeeds_across_restart_with_a_fixed_token_key() {
     second.stop().await;
 }
 
-/// Passkey login cannot complete without an authenticator in the test graph;
-/// it shares the layer configuration these two logins exercise.
+/// Passkey login cannot complete without an authenticator in the test graph.
+/// It shares the layer configuration these two logins exercise.
 #[tokio::test]
 async fn session_cookie_max_age_after_login_is_the_inactivity_window() {
     let tmp = TempDir::new().expect("tempdir");
