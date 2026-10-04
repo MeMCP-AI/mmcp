@@ -6,34 +6,12 @@ use std::net::SocketAddr;
 mod common;
 
 async fn start_server() -> SocketAddr {
-    start_server_with_config(
+    common::start_server_with_config(
         common::TestServerConfigBuilder::new(tempfile::tempdir().unwrap().keep())
             .token_key([42u8; 32])
             .build(),
     )
     .await
-}
-
-/// Shared bootstrap behind [`start_server`] and every test that needs
-/// a non-default `ServerConfig` (e.g. the `max_handle_length`
-/// cascade falsification test below): builds the state and router
-/// from a caller-supplied config, binds an ephemeral loopback port,
-/// and spawns the server task.
-async fn start_server_with_config(cfg: mmcp_server::config::ServerConfig) -> SocketAddr {
-    let state = mmcp_server::state::ServerState::initialize(&cfg)
-        .await
-        .expect("server init");
-    let app = mmcp_server::app::build_router(state);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
-    let addr = listener.local_addr().expect("local addr");
-    tokio::spawn(async move {
-        axum::serve(listener, app.into_make_service())
-            .await
-            .unwrap();
-    });
-    addr
 }
 
 #[tokio::test]
@@ -231,7 +209,7 @@ async fn register_with_over_length_handle_returns_400() {
 /// so the closed default must hold here unconditionally.
 #[tokio::test]
 async fn register_with_self_registration_disabled_returns_403() {
-    let addr = start_server_with_config(
+    let addr = common::start_server_with_config(
         common::TestServerConfigBuilder::new(tempfile::tempdir().unwrap().keep())
             .token_key([44u8; 32])
             .allow_self_registration(false)
@@ -263,7 +241,7 @@ async fn overriding_max_handle_length_smaller_than_default_rejects_a_handle_the_
          override, not the default, can be responsible for a rejection"
     );
 
-    let addr = start_server_with_config(
+    let addr = common::start_server_with_config(
         common::TestServerConfigBuilder::new(tempfile::tempdir().unwrap().keep())
             .token_key([43u8; 32])
             .max_handle_length(NARROWED_MAX_HANDLE_LENGTH)
@@ -288,8 +266,8 @@ async fn overriding_max_handle_length_smaller_than_default_rejects_a_handle_the_
 }
 
 /// The web UI is served on the API origin, so a browser login stores the session cookie.
-/// It must stay unreadable by scripts (`HttpOnly`) and withheld on cross-site requests
-/// that carry a body (`SameSite=Lax`).
+/// It must stay unreadable by scripts (`HttpOnly`).
+/// It must stay withheld on cross-site requests that carry a body (`SameSite=Lax`).
 #[tokio::test]
 async fn login_session_cookie_is_http_only_and_same_site_lax() {
     let addr = start_server().await;
