@@ -4,8 +4,8 @@ use url::Url;
 
 /// `raw` without the password of its userinfo.
 ///
-/// An unparsable `raw` yields only the text before its first `:` (the scheme),
-/// since nothing more can be shown without risking the password.
+/// An unparsable `raw` yields only the text before its first `:`, the scheme.
+/// Nothing more can be shown without risking the password.
 pub(super) fn redact_database_url(raw: &str) -> String {
     match Url::parse(raw) {
         Ok(mut url) => {

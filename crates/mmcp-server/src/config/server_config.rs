@@ -40,9 +40,9 @@ use super::overrides::ServerConfigOverrides;
 /// | `MMCP_MAX_HANDLE_LENGTH`          | see `max_handle_length` cascade below |
 /// | `MMCP_ALLOW_SELF_REGISTRATION`    | `false` (self-registration disabled) |
 ///
-/// `MMCP_WEBUI_DIR` and `MMCP_CORS_ALLOWED_ORIGINS` are collected by the
-/// argument parser (`serve --webui-dir`, `serve --cors-allowed-origins`)
-/// and reach this type through [`ServerConfigOverrides`].
+/// `MMCP_WEBUI_DIR` and `MMCP_CORS_ALLOWED_ORIGINS` are collected by the argument parser.
+/// It binds them to `serve --webui-dir` and `serve --cors-allowed-origins`.
+/// They reach this type through [`ServerConfigOverrides`].
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub bind: SocketAddr,
@@ -94,15 +94,13 @@ pub struct ServerConfig {
     /// `MMCP_ALLOW_SELF_REGISTRATION=true`; production must never
     /// rely on an implicit default here.
     pub allow_self_registration: bool,
-    /// Directory of the built web UI, served on every path the API does
-    /// not own. `None` (the default when `--webui-dir` and `MMCP_WEBUI_DIR`
-    /// are absent or blank) serves the API only.
+    /// Directory of the built web UI, served on every path the API does not own.
+    /// `None` serves the API only, the default when `--webui-dir` and `MMCP_WEBUI_DIR` are absent or blank.
     /// Every file in the directory is publicly readable.
     pub webui_dir: Option<PathBuf>,
-    /// Origins allowed to call the API from a browser on another origin,
-    /// as `Origin` header values. Empty (the default when
-    /// `--cors-allowed-origins` and `MMCP_CORS_ALLOWED_ORIGINS` are absent
-    /// or blank) attaches no CORS layer.
+    /// Origins allowed to call the API from a browser on another origin, as `Origin` header values.
+    /// Empty attaches no CORS layer.
+    /// It is the default when `--cors-allowed-origins` and `MMCP_CORS_ALLOWED_ORIGINS` are absent or blank.
     /// Entries that are not an exact `http` or `https` origin are dropped.
     pub cors_allowed_origins: Vec<HeaderValue>,
 }

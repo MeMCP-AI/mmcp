@@ -19,10 +19,11 @@ use crate::routes::defaults::{
 
 /// Service answering every request the API does not own with the web UI in `webui_dir`.
 ///
-/// `GET` and `HEAD` serve the file at the request path, or the index document
-/// when none exists, so client-side routes survive a reload; other methods answer 405.
-/// Every file under `webui_dir` is public, and a path that would leave the directory
-/// is never resolved.
+/// `GET` and `HEAD` serve the file at the request path, or the index document when none exists.
+/// Client-side routes therefore survive a reload.
+/// Other methods answer 405.
+/// Every file under `webui_dir` is public.
+/// A path that would leave the directory is never resolved.
 ///
 /// `None` when `webui_dir` holds no index document, leaving the API alone.
 pub fn service(webui_dir: &Path) -> Option<Router> {

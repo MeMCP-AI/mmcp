@@ -14,9 +14,8 @@ pub(super) struct ParsedCorsOrigins {
 
 /// Parse a comma-separated list of exact origins (`scheme://host[:port]`).
 ///
-/// An entry is trimmed and compared in the form a browser sends in the
-/// `Origin` header, so a default port or a trailing `/` is accepted and
-/// normalized away.
+/// An entry is trimmed and normalized to the form a browser sends in the `Origin` header.
+/// A default port or a trailing `/` is accepted and normalized away.
 /// Empty entries (a trailing comma, a blank list) are skipped, not rejected.
 pub(super) fn parse_cors_origins(raw: &str) -> ParsedCorsOrigins {
     let mut parsed = ParsedCorsOrigins::default();

@@ -32,8 +32,8 @@ pub fn build_router(state: ServerState) -> Router {
     let auth_layer =
         AuthManagerLayerBuilder::new(state.auth_backend.clone(), session_layer).build();
 
-    // Each API prefix answers its own unmatched paths with 404,
-    // so only a path outside every prefix reaches the web UI fallback.
+    // Each API prefix answers its own unmatched paths with 404.
+    // Only a path outside every prefix reaches the web UI fallback.
     let api = Router::new().merge(routes::health::router());
     let api = mount_under_prefix(api, routes::mcp::PREFIX, routes::mcp::router());
     let api = mount_under_prefix(api, routes::auth::PREFIX, routes::auth::router());
@@ -55,11 +55,11 @@ pub fn build_router(state: ServerState) -> Router {
     }
 }
 
-/// CORS layer admitting exactly `allowed_origins`; `None` for an empty list,
-/// which leaves the server answering same-origin requests only.
+/// CORS layer admitting exactly `allowed_origins`.
+/// `None` for an empty list, which leaves the server answering same-origin requests only.
 ///
-/// A cross-origin web UI authenticates with the bearer token, so credentials
-/// (the session cookie) are never allowed.
+/// A cross-origin web UI authenticates with the bearer token.
+/// Credentials (the session cookie) are therefore never allowed.
 fn cors_layer(allowed_origins: &[HeaderValue]) -> Option<CorsLayer> {
     if allowed_origins.is_empty() {
         return None;

@@ -89,8 +89,8 @@ enum Command {
     GenerateSecret,
 }
 
-/// `serve` arguments for a caller that passes no subcommand: parsed from an
-/// empty `serve` invocation, so clap still resolves their environment variables.
+/// `serve` arguments for a caller that passes no subcommand.
+/// They are parsed from an empty `serve` invocation, so clap still resolves their environment variables.
 fn default_serve_args() -> ServeArgs {
     ServeOnlyCli::parse_from([BINARY_NAME]).serve
 }

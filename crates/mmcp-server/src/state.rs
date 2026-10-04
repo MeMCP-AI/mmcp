@@ -63,11 +63,9 @@ pub struct ServerStateInner {
     /// requests; see
     /// [`crate::config::ServerConfig::allow_self_registration`].
     pub allow_self_registration: bool,
-    /// Directory of the built web UI; see
-    /// [`crate::config::ServerConfig::webui_dir`].
+    /// Directory of the built web UI; see [`crate::config::ServerConfig::webui_dir`].
     pub webui_dir: Option<PathBuf>,
-    /// Origins allowed to call the API cross-origin; see
-    /// [`crate::config::ServerConfig::cors_allowed_origins`].
+    /// Origins allowed to call the API cross-origin; see [`crate::config::ServerConfig::cors_allowed_origins`].
     pub cors_allowed_origins: Vec<HeaderValue>,
 
     /// Per-group async mutex set used to serialize writes (git

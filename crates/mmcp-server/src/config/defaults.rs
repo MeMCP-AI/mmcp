@@ -42,21 +42,19 @@ pub const MAX_HANDLE_LENGTH_ENV: &str = "MMCP_MAX_HANDLE_LENGTH";
 pub const ALLOW_SELF_REGISTRATION_ENV: &str = "MMCP_ALLOW_SELF_REGISTRATION";
 
 /// Environment variable carrying the GitHub OAuth application client id.
-/// The GitHub provider is enabled only when this and
-/// [`GITHUB_OAUTH_CLIENT_SECRET_ENV`] are both non-blank.
+/// The GitHub provider is enabled only when this and [`GITHUB_OAUTH_CLIENT_SECRET_ENV`] are both non-blank.
 pub const GITHUB_OAUTH_CLIENT_ID_ENV: &str = "MMCP_OAUTH_GITHUB_CLIENT_ID";
 
 /// Environment variable carrying the GitHub OAuth application client secret.
 pub const GITHUB_OAUTH_CLIENT_SECRET_ENV: &str = "MMCP_OAUTH_GITHUB_CLIENT_SECRET";
 
-/// Environment variable naming the directory of the built web UI, bound to
-/// `serve --webui-dir` by the argument parser; the flag beats it.
+/// Environment variable naming the directory of the built web UI.
+/// The argument parser binds it to `serve --webui-dir`, and the flag beats it.
 /// Unset or blank means the server answers the API only.
 pub const WEBUI_DIR_ENV: &str = "MMCP_WEBUI_DIR";
 
-/// Environment variable listing the origins allowed to call the API from a
-/// browser on another origin, comma-separated, bound to
-/// `serve --cors-allowed-origins` by the argument parser; the flag beats it.
+/// Environment variable listing, comma-separated, the origins allowed to call the API from a browser.
+/// The argument parser binds it to `serve --cors-allowed-origins`, and the flag beats it.
 /// Unset or blank attaches no CORS layer.
 pub const CORS_ALLOWED_ORIGINS_ENV: &str = "MMCP_CORS_ALLOWED_ORIGINS";
 

@@ -108,8 +108,8 @@ pub fn fake_oauth_provider_config(fake_addr: SocketAddr) -> OAuthProviderConfig 
     }
 }
 
-/// Builds the real state and router from `cfg`, binds an ephemeral
-/// loopback port, spawns the server task and returns the bound address.
+/// Builds the real state and router from `cfg` and binds an ephemeral loopback port.
+/// Spawns the server task and returns the bound address.
 #[allow(dead_code)] // Live in sibling test binaries; each tests/*.rs compiles common as its own crate.
 pub async fn start_server_with_config(cfg: ServerConfig) -> SocketAddr {
     let state = mmcp_server::state::ServerState::initialize(&cfg)
@@ -205,19 +205,17 @@ impl TestServerConfigBuilder {
         self
     }
 
-    /// Overrides the directory of the built web UI
-    /// (`ServerConfig::webui_dir`). [`minimal_server_config`] defaults
-    /// this to `None` (API only).
+    /// Overrides the directory of the built web UI (`ServerConfig::webui_dir`).
+    /// [`minimal_server_config`] defaults this to `None` (API only).
     #[allow(dead_code)] // Live in sibling test binaries; each tests/*.rs compiles common as its own crate.
     pub fn webui_dir(mut self, webui_dir: impl Into<PathBuf>) -> Self {
         self.config.webui_dir = Some(webui_dir.into());
         self
     }
 
-    /// Overrides the origins allowed to call the API cross-origin
-    /// (`ServerConfig::cors_allowed_origins`). [`minimal_server_config`]
-    /// defaults this to empty (no CORS layer); each entry must be a
-    /// valid `Origin` header value.
+    /// Overrides the origins allowed to call the API cross-origin (`ServerConfig::cors_allowed_origins`).
+    /// [`minimal_server_config`] defaults this to empty (no CORS layer).
+    /// Each entry must be a valid `Origin` header value.
     #[allow(dead_code)] // Live in sibling test binaries; each tests/*.rs compiles common as its own crate.
     pub fn cors_allowed_origins(mut self, origins: &[&str]) -> Self {
         self.config.cors_allowed_origins = origins

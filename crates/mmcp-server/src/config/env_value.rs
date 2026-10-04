@@ -2,8 +2,8 @@
 
 /// Trimmed `raw`, `None` when it is unset or only whitespace.
 ///
-/// A blank value is the conventional unset form: Compose interpolation of an
-/// unset `${VAR:-}` and a copy-pasted `.env` line both produce one.
+/// A blank value is the conventional unset form.
+/// Compose interpolation of an unset `${VAR:-}` and a copy-pasted `.env` line both produce one.
 pub(super) fn non_blank(raw: Option<&str>) -> Option<&str> {
     raw.map(str::trim).filter(|value| !value.is_empty())
 }
