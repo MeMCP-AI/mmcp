@@ -25,7 +25,10 @@ pub enum DatabaseUrlError {
     UnsupportedScheme { scheme: String },
 
     /// A Postgres URL without `//` after its scheme puts the rest of the text into the database name.
-    #[error("a postgres URL has no `//` after its scheme; write `postgres://`")]
+    /// A bare `postgres://` prefix would turn the database name into a host, so the remedy keeps the database in the path.
+    #[error(
+        "a postgres URL has no `//` after its scheme; write `postgres://HOST/DB`, or `postgres:///DB?host=SOCKET_DIRECTORY` to keep the database name and use a socket directory or the default host"
+    )]
     PostgresWithoutAuthority,
 
     /// A Postgres URL carries no fragment, so a `#` can only be misplaced password text.

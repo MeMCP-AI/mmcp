@@ -250,6 +250,28 @@ mod tests {
     }
 
     #[test]
+    fn the_remedy_for_a_missing_authority_keeps_the_database_name() {
+        let error = "postgres:app?host=/var/run/postgresql"
+            .parse::<DatabaseTarget>()
+            .unwrap_err();
+
+        assert_eq!(error, DatabaseUrlError::PostgresWithoutAuthority);
+        let text = error.to_string();
+        assert!(text.contains("postgres:///DB?host="), "{text}");
+        // The remedy the text gives is accepted, and the bare prefix it warns about turns the database into a host.
+        let remedy = "postgres:///app?host=/var/run/postgresql".parse::<DatabaseTarget>();
+        assert_eq!(
+            remedy.unwrap().to_string(),
+            "postgres:///app (parameters: host)"
+        );
+        let bare = "postgres://app?host=/var/run/postgresql".parse::<DatabaseTarget>();
+        assert_eq!(
+            bare.unwrap().to_string(),
+            "postgres://app (parameters: host)"
+        );
+    }
+
+    #[test]
     fn a_dot_segment_cannot_erase_the_at_sign_of_misplaced_password_text() {
         for input in [
             "postgres://u:123/SECRET_1/tail@db/../app",
