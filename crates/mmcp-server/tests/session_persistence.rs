@@ -1016,6 +1016,22 @@ async fn assert_store_primitives_work_on(database_url: &str) {
         .expect("an upsert on an existing key");
     let reloaded = store.load(&first.id).await.expect("load").expect("present");
     assert_eq!(reloaded.data, first.data);
+    assert_eq!(
+        store
+            .take_value(&first.id, "saved")
+            .await
+            .expect("take_value runs on this backend"),
+        Some(serde_json::json!(true)),
+        "the compare and swap removal returns the stored value"
+    );
+    assert_eq!(
+        store
+            .take_value(&first.id, "saved")
+            .await
+            .expect("a second take"),
+        None,
+        "a value is taken once"
+    );
 
     let mut expired_ids = Vec::new();
     for _ in 0..EXPIRED_RECORDS {
