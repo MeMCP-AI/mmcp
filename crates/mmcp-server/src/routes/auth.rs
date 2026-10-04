@@ -16,6 +16,7 @@
 //!   `POST /auth/passkey/login/finish` for authentication.
 //!
 //! All flows issue an `axum-login` session cookie on success.
+//! `POST /auth/logout` ends that session.
 //!
 //! The six routes a caller reaches without a session share one per-client request budget, see [`crate::rate_limit`].
 //! A refused request answers 429 before any handler work.
@@ -68,7 +69,7 @@ pub const PREFIX: &str = "/auth";
 /// [`crate::routes::api_prefix::mount_under_prefix`].
 ///
 /// The six routes a caller reaches without a session share one per-client budget kept by `rate_limiter`.
-/// The two routes that require a session are not limited.
+/// The three routes that act on the caller's own session are not limited.
 pub fn router(rate_limiter: Arc<AuthRateLimiter>) -> Router<ServerState> {
     let unauthenticated = Router::new()
         // Password
@@ -82,6 +83,8 @@ pub fn router(rate_limiter: Arc<AuthRateLimiter>) -> Router<ServerState> {
         .route("/passkey/login/finish", post(passkey_login_finish))
         .route_layer(from_fn_with_state(rate_limiter, enforce_auth_rate_limit));
     let session_required = Router::new()
+        // Session
+        .route("/logout", post(logout))
         // Passkey
         .route("/passkey/register/start", post(passkey_register_start))
         .route("/passkey/register/finish", post(passkey_register_finish));
@@ -267,6 +270,14 @@ async fn login(
         user_id: user.id,
         expires_at: claims.exp,
     }))
+}
+
+/// Ends the caller's session and deletes its stored record.
+/// A request without a session answers the same 204, so a repeated logout is harmless.
+/// A bearer token is stateless and is not revoked by this route.
+async fn logout(mut auth_session: AuthSession) -> Result<StatusCode, AuthHttpError> {
+    auth_session.logout().await.map_err(into_generic_response)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ── OAuth ───────────────────────────────────────────────────────
