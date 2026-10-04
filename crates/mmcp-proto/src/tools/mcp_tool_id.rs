@@ -69,6 +69,7 @@ pub enum McpToolId {
     RenameIssue,
     Subscribe,
     Unsubscribe,
+    Config,
     CreateGroup,
     AddFeature,
     AddIssue,

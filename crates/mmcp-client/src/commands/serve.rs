@@ -38,7 +38,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::commands::claude::{InitClaudeAction, InitClaudeConflict, action_wire, claude_md_notes};
-use crate::commands::config::NoticeSources;
+use crate::commands::config::{ConfigEnvironment, ConfigToolArgs, NoticeSources, call_config_tool};
 use crate::commands::serve_defaults::{SYNC_FULL_TIMEOUT, SYNC_SINGLE_OP_TIMEOUT};
 use crate::commands::subscription::{
     SubscribeError, SubscribeMcpArgs, SubscriptionAction, resolve_subscribed_reads,
@@ -4586,6 +4586,25 @@ impl McpServer {
     ) -> Result<CallToolResult, McpError> {
         self.apply_subscription_mcp(args, SubscriptionAction::Unsubscribe)
             .await
+    }
+
+    #[tool(
+        description = "Read or change an mmcp setting. `get` reports every layer and the effective value, and `set` or `unset` writes one scope. Precedence runs local, project, serve flag, environment variable, user, then default.",
+        annotations(
+            title = "Read or change a setting",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
+    async fn config(
+        &self,
+        Parameters(args): Parameters<ConfigToolArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = current_dir_for_mcp()?;
+        let environment = ConfigEnvironment::new(&self.state.home, &self.state.notice_launch);
+        call_config_tool(&environment, &cwd, &args).map(ok_json)
     }
 
     #[tool(
@@ -12746,6 +12765,92 @@ mod tests {
         );
     }
 
+    impl NoticeBootstrap {
+        /// One `config` tool call against the served home, with the project as its root.
+        async fn config(&self, arguments: serde_json::Value) -> serde_json::Value {
+            let mut arguments = arguments;
+            arguments["path"] = json!(self.project.display().to_string());
+            let args: ConfigToolArgs = serde_json::from_value(arguments).expect("config args");
+            let result = self
+                .server
+                .config(Parameters(args))
+                .await
+                .expect("config call");
+            parse_ok_json(result)
+        }
+    }
+
+    #[tokio::test]
+    async fn config_tool_changes_what_the_next_bootstrap_reports() {
+        let bootstrap = NoticeBootstrap::new(NoticeLaunch::default()).await;
+        assert_eq!(bootstrap.claude_md_codes().await, BOTH_NOTES);
+
+        let set = bootstrap
+            .config(json!({
+                "action": "set", "key": "notice.md.project", "value": "off", "scope": "project"
+            }))
+            .await;
+        assert_eq!(set["changed"], true);
+        assert_eq!(bootstrap.claude_md_codes().await, USER_NOTE_ONLY);
+
+        let user = bootstrap
+            .config(json!({
+                "action": "set", "key": "notice.md.user", "value": "off", "scope": "user"
+            }))
+            .await;
+        assert_eq!(user["changed"], true);
+        assert_eq!(bootstrap.claude_md_codes().await, [] as [&str; 0]);
+
+        bootstrap
+            .config(json!({"action": "unset", "key": "notice.md.project", "scope": "project"}))
+            .await;
+        assert_eq!(bootstrap.claude_md_codes().await, ["claude_md_missing"]);
+    }
+
+    #[tokio::test]
+    async fn config_tool_get_reports_the_serving_process_launch_layers() {
+        let launch = NoticeLaunch {
+            md_project: LaunchValues {
+                flag: Some(NoticeValue::Off),
+                environment: None,
+            },
+            ..NoticeLaunch::default()
+        };
+        let bootstrap = NoticeBootstrap::new(launch).await;
+
+        let get = bootstrap
+            .config(json!({"action": "get", "key": "notice.md.project"}))
+            .await;
+
+        assert_eq!(get["effective"], "off");
+        assert_eq!(get["source"], "flag");
+        assert_eq!(get["layers"]["flag"], "off");
+    }
+
+    #[tokio::test]
+    async fn config_tool_refuses_a_set_without_a_value_with_a_structured_code() {
+        let bootstrap = NoticeBootstrap::new(NoticeLaunch::default()).await;
+        let args: ConfigToolArgs = serde_json::from_value(json!({
+            "action": "set", "key": "notice.md.project", "scope": "project"
+        }))
+        .unwrap();
+
+        let error = bootstrap
+            .server
+            .config(Parameters(args))
+            .await
+            .expect_err("a set needs a value");
+
+        assert_eq!(
+            error
+                .data
+                .as_ref()
+                .and_then(|data| data.get("code"))
+                .and_then(|code| code.as_str()),
+            Some("value_required")
+        );
+    }
+
     #[tokio::test]
     async fn subscribe_tag_round_trips_through_config() {
         // subscribe(kind=tag, value=rust) writes the entry into
@@ -15423,6 +15528,64 @@ mod tests {
         );
     }
 
+    /// Every text the `config` tool sends to a client: its description, its title and each schema description.
+    /// Nothing else may travel with the schema, because the tool is paid for in every session.
+    #[test]
+    fn config_tool_sends_only_its_approved_texts() {
+        fn descriptions(schema: &serde_json::Value, found: &mut Vec<String>) {
+            match schema {
+                serde_json::Value::Object(map) => {
+                    for (key, value) in map {
+                        match (key.as_str(), value) {
+                            ("description", serde_json::Value::String(text)) => {
+                                found.push(text.clone());
+                            }
+                            _ => descriptions(value, found),
+                        }
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        descriptions(item, found);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let tool = McpServer::config_tool_attr();
+        assert_eq!(
+            tool.description.as_deref(),
+            Some(
+                "Read or change an mmcp setting. `get` reports every layer and the effective value, and `set` or `unset` writes one scope. Precedence runs local, project, serve flag, environment variable, user, then default."
+            )
+        );
+        assert_eq!(
+            tool.annotations
+                .as_ref()
+                .and_then(|annotations| annotations.title.as_deref()),
+            Some("Read or change a setting")
+        );
+        let mut found = Vec::new();
+        descriptions(
+            &serde_json::Value::Object((*tool.input_schema).clone()),
+            &mut found,
+        );
+        found.sort();
+        let mut expected = vec![
+            "Notices proposing the mmcp block for the project CLAUDE.md.",
+            "Notices proposing the mmcp block for ~/.claude/CLAUDE.md.",
+            "~/.mmcp/config.toml.",
+            ".mmcp.toml, shared, unreadable by older mmcp.",
+            ".mmcp.local.toml, personal, kept out of git.",
+            "For set only.",
+            "For set and unset only.",
+            "Project root, defaulting to the one found from the server's working directory.",
+        ];
+        expected.sort_unstable();
+        assert_eq!(found, expected);
+    }
+
     /// Every `#[tool(...)]` site must carry `ToolAnnotations` with the exact hint bits committed for its tool.
     /// A new tool that lands without `annotations(...)` makes the helper see `annotations = None` and fail loudly.
     /// This catches the omission before review.
@@ -15532,6 +15695,7 @@ mod tests {
         check_bits(McpServer::move_memory_tool_attr(), iden);
         check_bits(McpServer::subscribe_tool_attr(), iden);
         check_bits(McpServer::unsubscribe_tool_attr(), iden);
+        check_bits(McpServer::config_tool_attr(), iden);
 
         // Non-destructive + non-idempotent (create_group, add_feature).
         let cre = (Some(false), Some(false), Some(false), Some(false));

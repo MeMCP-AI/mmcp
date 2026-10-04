@@ -3,11 +3,6 @@
 pub mod archive_filter;
 pub mod bootstrap;
 pub mod claude;
-#[expect(
-    dead_code,
-    unused_imports,
-    reason = "get, set and unset have no caller until the config tool and CLI land"
-)]
 pub mod config;
 pub mod debug;
 pub mod export;

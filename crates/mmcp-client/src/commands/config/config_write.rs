@@ -9,21 +9,21 @@ use mmcp_store::config::{
     save_local,
 };
 
-use super::{ConfigEnvironment, ConfigOpError, ConfigWriteOutcome, NoticeSources};
+use super::{ConfigEnvironment, ConfigOpError, ConfigWriteOutcome, NoticeSources, ProjectLocation};
 
 /// Set `key` to `value` at `scope`.
 /// Idempotent: a value already stored writes nothing and reports `changed = false`.
 ///
 /// # Errors
-/// [`ConfigOpError::ProjectRootRequired`] for the `project` and `local` scopes without a project root, otherwise the load, save or exclusion failure of the scope's file.
+/// [`ConfigOpError::ProjectRootRequired`] for the `project` and `local` scopes without a project, otherwise the load, save or exclusion failure of the scope's file.
 pub fn set_key(
     environment: &ConfigEnvironment<'_>,
     key: ConfigKey,
     value: NoticeValue,
     scope: ConfigScope,
-    project_root: Option<&Path>,
+    location: &ProjectLocation,
 ) -> Result<ConfigWriteOutcome, ConfigOpError> {
-    write_key(environment, key, Some(value), scope, project_root)
+    write_key(environment, key, Some(value), scope, location)
 }
 
 /// Remove `key` at `scope`, so the next layer decides.
@@ -35,9 +35,9 @@ pub fn unset_key(
     environment: &ConfigEnvironment<'_>,
     key: ConfigKey,
     scope: ConfigScope,
-    project_root: Option<&Path>,
+    location: &ProjectLocation,
 ) -> Result<ConfigWriteOutcome, ConfigOpError> {
-    write_key(environment, key, None, scope, project_root)
+    write_key(environment, key, None, scope, location)
 }
 
 /// Apply `value` (`None` removes the key) to `table`, `true` when it changed.
@@ -46,11 +46,6 @@ fn apply(table: &mut NoticeConfig, key: ConfigKey, value: Option<NoticeValue>) -
         Some(value) => table.set(key, value),
         None => table.unset(key),
     }
-}
-
-/// The project root a project-file scope needs.
-fn require_root(scope: ConfigScope, project_root: Option<&Path>) -> Result<&Path, ConfigOpError> {
-    project_root.ok_or(ConfigOpError::ProjectRootRequired { scope })
 }
 
 /// The file a write landed in, and the global excludes file it appended to, if any.
@@ -65,17 +60,15 @@ fn write_key(
     key: ConfigKey,
     value: Option<NoticeValue>,
     scope: ConfigScope,
-    project_root: Option<&Path>,
+    location: &ProjectLocation,
 ) -> Result<ConfigWriteOutcome, ConfigOpError> {
     let written = match scope {
         ConfigScope::User => write_user(environment, key, value)?,
-        ConfigScope::Project => write_project(key, value, require_root(scope, project_root)?)?,
-        ConfigScope::Local => {
-            write_local(environment, key, value, require_root(scope, project_root)?)?
-        }
+        ConfigScope::Project => write_project(key, value, location.require_root(scope)?)?,
+        ConfigScope::Local => write_local(environment, key, value, location.require_root(scope)?)?,
     };
     let resolution =
-        NoticeSources::load(environment.home, project_root)?.resolve(key, environment.launch);
+        NoticeSources::load(environment.home, location.root())?.resolve(key, environment.launch);
     Ok(ConfigWriteOutcome {
         key,
         scope,
@@ -176,7 +169,7 @@ mod tests {
             KEY,
             NoticeValue::Off,
             ConfigScope::Local,
-            Some(&fixture.project),
+            &fixture.located(),
         )
         .unwrap();
 
@@ -201,7 +194,7 @@ mod tests {
             KEY,
             NoticeValue::Off,
             ConfigScope::Project,
-            Some(&fixture.project),
+            &fixture.located(),
         )
         .unwrap();
 
@@ -223,7 +216,7 @@ mod tests {
             ConfigKey::NoticeMdUser,
             NoticeValue::Off,
             ConfigScope::User,
-            None,
+            &fixture.unlocated(),
         )
         .unwrap();
 
@@ -246,7 +239,7 @@ mod tests {
             KEY,
             NoticeValue::Off,
             ConfigScope::Local,
-            Some(&fixture.project),
+            &fixture.located(),
         )
         .unwrap();
 
@@ -255,7 +248,7 @@ mod tests {
             KEY,
             NoticeValue::Off,
             ConfigScope::Local,
-            Some(&fixture.project),
+            &fixture.located(),
         )
         .unwrap();
 
@@ -275,24 +268,14 @@ mod tests {
             KEY,
             NoticeValue::Off,
             ConfigScope::Project,
-            Some(&fixture.project),
+            &fixture.located(),
         )
         .unwrap();
 
-        let removed = unset_key(
-            &environment,
-            KEY,
-            ConfigScope::Project,
-            Some(&fixture.project),
-        )
-        .unwrap();
-        let repeat = unset_key(
-            &environment,
-            KEY,
-            ConfigScope::Project,
-            Some(&fixture.project),
-        )
-        .unwrap();
+        let removed =
+            unset_key(&environment, KEY, ConfigScope::Project, &fixture.located()).unwrap();
+        let repeat =
+            unset_key(&environment, KEY, ConfigScope::Project, &fixture.located()).unwrap();
 
         assert!(removed.changed);
         assert_eq!(removed.value, None);
@@ -310,7 +293,7 @@ mod tests {
             KEY,
             NoticeValue::Off,
             ConfigScope::Project,
-            Some(&fixture.project),
+            &fixture.located(),
         )
         .unwrap();
         set_key(
@@ -318,17 +301,11 @@ mod tests {
             KEY,
             NoticeValue::On,
             ConfigScope::Local,
-            Some(&fixture.project),
+            &fixture.located(),
         )
         .unwrap();
 
-        let outcome = unset_key(
-            &environment,
-            KEY,
-            ConfigScope::Local,
-            Some(&fixture.project),
-        )
-        .unwrap();
+        let outcome = unset_key(&environment, KEY, ConfigScope::Local, &fixture.located()).unwrap();
 
         assert_eq!(std::fs::read_to_string(&outcome.file).unwrap(), "");
         assert_eq!(outcome.resolution.effective, NoticeValue::Off);
@@ -344,11 +321,12 @@ mod tests {
                 KEY,
                 NoticeValue::Off,
                 scope,
-                None,
+                &fixture.unlocated(),
             )
             .unwrap_err();
             assert!(
-                matches!(error, ConfigOpError::ProjectRootRequired { scope: required } if required == scope),
+                matches!(&error, ConfigOpError::ProjectRootRequired { scope: required, searched_from }
+                    if *required == scope && *searched_from == fixture.unsearched()),
                 "{error:?}"
             );
         }
@@ -362,7 +340,7 @@ mod tests {
             &fixture.environment(already_excluded),
             KEY,
             ConfigScope::Local,
-            None,
+            &fixture.unlocated(),
         )
         .unwrap_err();
         assert!(matches!(error, ConfigOpError::ProjectRootRequired { .. }));
@@ -377,7 +355,7 @@ mod tests {
             KEY,
             NoticeValue::Off,
             ConfigScope::Local,
-            Some(&fixture.project),
+            &fixture.located(),
         )
         .unwrap();
 
@@ -397,7 +375,7 @@ mod tests {
                 KEY,
                 NoticeValue::Off,
                 ConfigScope::Local,
-                Some(&fixture.project),
+                &fixture.located(),
             )
             .unwrap();
 
@@ -415,7 +393,7 @@ mod tests {
             KEY,
             NoticeValue::Off,
             ConfigScope::Local,
-            Some(&fixture.project),
+            &fixture.located(),
         )
         .unwrap_err();
 
@@ -433,10 +411,17 @@ mod tests {
             KEY,
             NoticeValue::Off,
             ConfigScope::Project,
-            Some(&fixture.project),
+            &fixture.located(),
         )
         .unwrap();
-        set_key(&environment, KEY, NoticeValue::Off, ConfigScope::User, None).unwrap();
+        set_key(
+            &environment,
+            KEY,
+            NoticeValue::Off,
+            ConfigScope::User,
+            &fixture.unlocated(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -453,12 +438,12 @@ mod tests {
             KEY,
             NoticeValue::Off,
             ConfigScope::Local,
-            Some(&fixture.project),
+            &fixture.located(),
         )
         .unwrap_err();
 
         assert!(matches!(error, ConfigOpError::LoadLocal(_)), "{error:?}");
-        assert!(error.source_error().is_some());
+        assert!(std::error::Error::source(&error).is_some());
     }
 
     #[test]
@@ -470,7 +455,7 @@ mod tests {
             ConfigKey::NoticeMdUser,
             NoticeValue::Off,
             ConfigScope::Project,
-            Some(&fixture.project),
+            &fixture.located(),
         )
         .unwrap();
 
@@ -479,7 +464,7 @@ mod tests {
             KEY,
             NoticeValue::Off,
             ConfigScope::Project,
-            Some(&fixture.project),
+            &fixture.located(),
         )
         .unwrap();
 

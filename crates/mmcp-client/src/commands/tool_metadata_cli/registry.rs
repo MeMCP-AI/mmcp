@@ -183,7 +183,10 @@ fn tool_metadata(id: McpToolId) -> ToolMetadata {
                 .meta_keys(&[META_PROTECTED_GROUP_GATED])
                 .build()
         }
-        McpToolId::InitClaude | McpToolId::InitProject | McpToolId::CreateGroup => {
+        McpToolId::InitClaude
+        | McpToolId::InitProject
+        | McpToolId::CreateGroup
+        | McpToolId::Config => {
             ToolMetadataBuilder::new(ToolIconCategory::Mutate).build()
         }
         McpToolId::Subscribe | McpToolId::Unsubscribe => {

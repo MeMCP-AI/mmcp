@@ -10,7 +10,7 @@ use mmcp_git::checkout::Exclusion;
 use mmcp_store::home::MmcpHome;
 use tempfile::TempDir;
 
-use super::ConfigEnvironment;
+use super::{ConfigEnvironment, ProjectLocation};
 
 /// Project UUID written to the scratch `.mmcp.toml`.
 pub(super) const PROJECT_UUID: &str = "018f7c3e-4d2a-7b1f-9e5c-6a8d2f0b4c91";
@@ -55,6 +55,21 @@ impl ConfigFixture {
             launch: &self.launch,
             exclude_local,
         }
+    }
+
+    /// The scratch project as a found project.
+    pub(super) fn located(&self) -> ProjectLocation {
+        ProjectLocation::at(self.project.clone())
+    }
+
+    /// A search that found no project, from [`ConfigFixture::unsearched`].
+    pub(super) fn unlocated(&self) -> ProjectLocation {
+        ProjectLocation::none(self.unsearched())
+    }
+
+    /// The directory the unlocated search came from.
+    pub(super) fn unsearched(&self) -> PathBuf {
+        self._tmp.path().join("no-project")
     }
 
     pub(super) fn project_toml(&self) -> String {

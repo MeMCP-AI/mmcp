@@ -1,22 +1,20 @@
 //! Reading a configuration key.
 
-use std::path::Path;
-
 use mmcp_core::config::{ConfigKey, NoticeResolution};
 
-use super::{ConfigEnvironment, ConfigOpError, NoticeSources};
+use super::{ConfigEnvironment, ConfigOpError, NoticeSources, ProjectLocation};
 
 /// The value of `key` in every layer, the effective value and its source.
-/// Without a project root, the local and project layers read as unset.
+/// Without a project, the local and project layers read as unset.
 ///
 /// # Errors
 /// [`ConfigOpError::LoadUser`], [`ConfigOpError::LoadProject`] or [`ConfigOpError::LoadLocal`] when a file cannot be read.
 pub fn get_key(
     environment: &ConfigEnvironment<'_>,
     key: ConfigKey,
-    project_root: Option<&Path>,
+    location: &ProjectLocation,
 ) -> Result<NoticeResolution, ConfigOpError> {
-    Ok(NoticeSources::load(environment.home, project_root)?.resolve(key, environment.launch))
+    Ok(NoticeSources::load(environment.home, location.root())?.resolve(key, environment.launch))
 }
 
 #[cfg(test)]
@@ -46,10 +44,10 @@ mod tests {
             (ConfigScope::Project, NoticeValue::Off),
             (ConfigScope::User, NoticeValue::Off),
         ] {
-            set_key(&environment, KEY, value, scope, Some(&fixture.project)).unwrap();
+            set_key(&environment, KEY, value, scope, &fixture.located()).unwrap();
         }
 
-        let resolution = get_key(&environment, KEY, Some(&fixture.project)).unwrap();
+        let resolution = get_key(&environment, KEY, &fixture.located()).unwrap();
 
         assert_eq!(resolution.effective, NoticeValue::On);
         assert_eq!(resolution.source, NoticeSource::Local);
@@ -64,9 +62,17 @@ mod tests {
     fn config_get_without_a_project_reports_local_and_project_unset() {
         let fixture = ConfigFixture::new();
         let environment = fixture.environment(already_excluded);
-        set_key(&environment, KEY, NoticeValue::Off, ConfigScope::User, None).unwrap();
+        let nowhere = fixture.unlocated();
+        set_key(
+            &environment,
+            KEY,
+            NoticeValue::Off,
+            ConfigScope::User,
+            &nowhere,
+        )
+        .unwrap();
 
-        let resolution = get_key(&environment, KEY, None).unwrap();
+        let resolution = get_key(&environment, KEY, &nowhere).unwrap();
 
         assert_eq!(resolution.layers.local, None);
         assert_eq!(resolution.layers.project, None);
@@ -81,7 +87,7 @@ mod tests {
         let resolution = get_key(
             &fixture.environment(already_excluded),
             KEY,
-            Some(&fixture.project),
+            &fixture.located(),
         )
         .unwrap();
 
@@ -93,9 +99,17 @@ mod tests {
     fn config_get_resolves_each_key_independently() {
         let fixture = ConfigFixture::new();
         let environment = fixture.environment(already_excluded);
-        set_key(&environment, KEY, NoticeValue::Off, ConfigScope::User, None).unwrap();
+        let nowhere = fixture.unlocated();
+        set_key(
+            &environment,
+            KEY,
+            NoticeValue::Off,
+            ConfigScope::User,
+            &nowhere,
+        )
+        .unwrap();
 
-        let other = get_key(&environment, ConfigKey::NoticeMdUser, None).unwrap();
+        let other = get_key(&environment, ConfigKey::NoticeMdUser, &nowhere).unwrap();
 
         assert_eq!(other.effective, NoticeValue::On);
         assert_eq!(other.source, NoticeSource::Default);
@@ -109,7 +123,7 @@ mod tests {
         let error = get_key(
             &fixture.environment(already_excluded),
             KEY,
-            Some(&fixture.project),
+            &fixture.located(),
         )
         .unwrap_err();
 
