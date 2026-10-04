@@ -9,6 +9,21 @@ fn mmcp() -> Command {
     Command::cargo_bin("mmcp").expect("mmcp binary")
 }
 
+/// `mmcp` run in `dir`, with every home it could reach pointed inside `dir`.
+/// A local write may append to the user's global git excludes file, so neither the real home nor the real git configuration may be reachable.
+fn mmcp_in(dir: &std::path::Path) -> Command {
+    let mut command = mmcp();
+    command
+        .current_dir(dir)
+        .env("MMCP_HOME", dir.join("mmcp-home"))
+        .env("HOME", dir.join("home"))
+        .env("USERPROFILE", dir.join("home"))
+        .env("XDG_CONFIG_HOME", dir.join("xdg"))
+        .env("GIT_CONFIG_GLOBAL", dir.join("global-gitconfig"))
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+    command
+}
+
 /// A scratch home and a project initialized in it, outside any git repository.
 struct Project {
     tmp: TempDir,
@@ -27,11 +42,7 @@ impl Project {
     }
 
     fn mmcp(&self) -> Command {
-        let mut command = mmcp();
-        command
-            .current_dir(self.tmp.path())
-            .env("MMCP_HOME", self.tmp.path().join("mmcp-home"));
-        command
+        mmcp_in(self.tmp.path())
     }
 }
 
@@ -116,9 +127,7 @@ fn unset_removes_the_key_and_a_second_unset_says_it_was_not_set() {
 #[test]
 fn a_project_scope_outside_a_project_names_the_directory_and_the_scope() {
     let tmp = TempDir::new().unwrap();
-    mmcp()
-        .current_dir(tmp.path())
-        .env("MMCP_HOME", tmp.path().join("mmcp-home"))
+    mmcp_in(tmp.path())
         .args([
             "config",
             "set",
