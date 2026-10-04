@@ -1,10 +1,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Integration test: no database password reaches stdout or stderr of the server binary, on any startup path.
 
+use std::net::TcpListener;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const SENTINEL: &str = "SENTINEL_STARTUP_PASSWORD";
+
+/// What the database layer says when the connection could not be established.
+const CONNECTION_FAILURE_TEXT: &str = "the database connection could not be established";
 
 /// A fixed signing key, 64 hexadecimal characters.
 const TOKEN_KEY_HEX: &str = "1111111111111111111111111111111111111111111111111111111111111111";
@@ -95,19 +99,44 @@ fn a_refused_database_url_ends_the_start_without_printing_the_password() {
     }
 }
 
+/// The port of a loopback listener that closes every connection it takes, on a thread that lives as long as the test process.
+///
+/// A connect to it fails with an error from the driver at once, so the server prints that error before it ends.
+fn closing_listener_port() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            drop(stream);
+        }
+    });
+    port
+}
+
 #[test]
-fn an_accepted_postgres_url_that_cannot_connect_prints_no_password() {
+fn an_accepted_postgres_url_whose_connection_fails_prints_the_failure_without_the_password() {
+    let port = closing_listener_port();
     let accepted = [
-        format!("postgres://mmcp:{SENTINEL}@127.0.0.1:1/app"),
-        format!("postgres://127.0.0.1:1/app?password={SENTINEL}&sslmode=disable"),
+        format!("postgres://mmcp:{SENTINEL}@127.0.0.1:{port}/app"),
+        format!("postgres://127.0.0.1:{port}/app?password={SENTINEL}&sslmode=disable"),
     ];
     for url in &accepted {
         for filter in FILTERS {
-            let run = run_server(url, filter, RUN_WINDOW);
+            let run = run_server(url, filter, REFUSAL_WAIT);
 
             assert!(
                 run.printed.contains("mmcp-server starting"),
                 "{url} must reach the startup line: {}",
+                run.printed
+            );
+            assert!(
+                run.ended_by_itself_with_failure,
+                "{url} must end the start with the connection error: {}",
+                run.printed
+            );
+            assert!(
+                run.printed.contains(CONNECTION_FAILURE_TEXT),
+                "{url} must print the connection error, or the error chain was not searched: {}",
                 run.printed
             );
             assert!(
