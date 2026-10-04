@@ -69,6 +69,8 @@ pub async fn delete(conn: &DatabaseConnection, session_id_sha256: &str) -> Resul
 /// Delete at most `batch_size` rows whose expiry is at or before `now`, returning the deleted count.
 ///
 /// A key subquery carries the limit, because `DELETE ... LIMIT` is not portable across SQLite and Postgres.
+/// The outer `DELETE` repeats the expiry predicate: on Postgres a row extended after the subquery ran,
+/// and waited on by this statement, is re-evaluated against that predicate and survives.
 pub async fn delete_expired_batch(
     conn: &DatabaseConnection,
     now: i64,
@@ -82,6 +84,7 @@ pub async fn delete_expired_batch(
         .to_owned();
     let deleted = Entity::delete_many()
         .filter(Column::SessionIdSha256.in_subquery(expired_keys))
+        .filter(Column::ExpiresAt.lte(now))
         .exec(conn)
         .await?;
     Ok(deleted.rows_affected)
