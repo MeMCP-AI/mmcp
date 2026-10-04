@@ -13,10 +13,10 @@ const CONNECTION_FAILURE_TEXT: &str = "the database connection could not be esta
 /// A fixed signing key, 64 hexadecimal characters.
 const TOKEN_KEY_HEX: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 
-/// Longest wait for a refused configuration to end the process.
+/// Longest wait for a start that fails to end the process: a refused configuration, or a database connection that fails.
 const REFUSAL_WAIT: Duration = Duration::from_secs(20);
 
-/// How long a server that cannot reach its database runs before it is stopped.
+/// How long a server that starts and listens runs before it is stopped.
 const RUN_WINDOW: Duration = Duration::from_millis(2500);
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
