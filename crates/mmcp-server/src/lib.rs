@@ -8,4 +8,5 @@ pub mod config;
 mod defaults;
 mod oauth_client;
 pub mod routes;
+pub mod session_store;
 pub mod state;
