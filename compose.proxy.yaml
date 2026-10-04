@@ -1,0 +1,9 @@
+services:
+  mmcp-server:
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    external: true
+    name: ${MMCP_PROXY_NETWORK:?}

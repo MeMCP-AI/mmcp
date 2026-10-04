@@ -1,0 +1,62 @@
+name: mmcp
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mmcp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: ${POSTGRES_DB:-mmcp}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mmcp} -d ${POSTGRES_DB:-mmcp}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mmcp-server:
+    image: ${MMCP_IMAGE:-ghcr.io/memcp-ai/mmcp-server}:${MMCP_IMAGE_TAG:-nightly}
+    pull_policy: ${MMCP_PULL_POLICY:-missing}
+    restart: unless-stopped
+    environment:
+      MMCP_BIND: 0.0.0.0:8787
+      MMCP_DATABASE_URL: postgres://${POSTGRES_USER:-mmcp}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-mmcp}
+      MMCP_REPO_ROOT: /data/repos
+      MMCP_TOKEN_KEY_HEX: ${MMCP_TOKEN_KEY_HEX:?}
+      MMCP_ORIGIN: ${MMCP_ORIGIN:-http://localhost:${MMCP_PORT:-8787}}
+      MMCP_CORS_ALLOWED_ORIGINS: ${MMCP_CORS_ALLOWED_ORIGINS:-}
+      MMCP_ALLOW_SELF_REGISTRATION: ${MMCP_ALLOW_SELF_REGISTRATION:-false}
+      MMCP_PUSH_TOKEN: ${MMCP_PUSH_TOKEN:-}
+      MMCP_OAUTH_GITHUB_CLIENT_ID: ${MMCP_OAUTH_GITHUB_CLIENT_ID:-}
+      MMCP_OAUTH_GITHUB_CLIENT_SECRET: ${MMCP_OAUTH_GITHUB_CLIENT_SECRET:-}
+      MMCP_MIN_PASSWORD_LENGTH: ${MMCP_MIN_PASSWORD_LENGTH:-}
+      MMCP_MAX_PASSWORD_LENGTH: ${MMCP_MAX_PASSWORD_LENGTH:-}
+      MMCP_MAX_HANDLE_LENGTH: ${MMCP_MAX_HANDLE_LENGTH:-}
+    volumes:
+      - mmcp-repos:/data/repos
+    ports:
+      - "${MMCP_PUBLISH_ADDRESS:-127.0.0.1}:${MMCP_PORT:-8787}:8787"
+    networks:
+      - backend
+      - default
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/mmcp-server", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+networks:
+  backend:
+    internal: true
+
+volumes:
+  postgres-data:
+  mmcp-repos:

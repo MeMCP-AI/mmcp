@@ -1,0 +1,7 @@
+services:
+  mmcp-server:
+    image: mmcp-server:local
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: docker/server.Dockerfile
