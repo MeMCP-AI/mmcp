@@ -33,6 +33,10 @@ interface RequestOptions {
   body?: unknown;
   /** Set `false` to bypass auto-attached bearer (e.g. /auth/login). */
   auth?: boolean;
+  /** Aborts the request, for a call that must not wait on a stalled server. */
+  signal?: AbortSignal;
+  /** Lets the request outlive the page, for a call sent while the page closes. */
+  keepalive?: boolean;
 }
 
 /// Core HTTP wrapper. Attaches the bearer token stored in
@@ -40,7 +44,7 @@ interface RequestOptions {
 /// non-2xx responses into `ApiError` so call sites can `try/catch`
 /// once and format.
 export async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, auth = true } = opts;
+  const { method = 'GET', body, auth = true, signal, keepalive } = opts;
   const headers: Record<string, string> = { accept: 'application/json' };
   if (body !== undefined) headers['content-type'] = 'application/json';
   if (auth && authStore.token) headers['authorization'] = `Bearer ${authStore.token}`;
@@ -48,7 +52,9 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
   const resp = await fetch(`${serverBaseUrl()}${path}`, {
     method,
     headers,
-    body: body === undefined ? undefined : JSON.stringify(body)
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
+    keepalive
   });
 
   if (!resp.ok) {
