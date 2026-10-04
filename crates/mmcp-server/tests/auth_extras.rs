@@ -6,14 +6,8 @@
 //! each test targets the server-local error surface, without a real WebAuthn client or a live OAuth provider.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
-use axum::{
-    Json, Router,
-    body::Bytes,
-    routing::{get, post},
-};
 use mmcp_server::config::OAuthProviderConfig;
 use mmcp_server::state::ServerState;
 use serde_json::json;
@@ -161,77 +155,6 @@ fn extract_state_param(location: &str) -> String {
         .to_string()
 }
 
-/// Form fields [`start_fake_oauth_provider`]'s `/token` route observed on
-/// the exchange request, so callers can assert on the actual wire request
-/// `oauth2` sent rather than only on whether the exchange succeeded.
-#[derive(Clone, Default)]
-struct FakeTokenExchangeProbes {
-    /// Set once a non-empty `code_verifier` form field is seen (PKCE).
-    code_verifier_received: Arc<AtomicBool>,
-    /// Set once a non-empty `client_id` form field is seen: proves the
-    /// client authenticates via `AuthType::RequestBody` (client_id in
-    /// the form body), not the header-based `AuthType::BasicAuth`
-    /// `oauth2` defaults to once a client secret is set.
-    client_id_in_body_received: Arc<AtomicBool>,
-}
-
-/// Spins up a minimal fake OAuth provider (token exchange + userinfo) on an
-/// ephemeral loopback port, so the callback happy path can be proven end to
-/// end without a live GitHub dependency. Returns the provider's address
-/// alongside the [`FakeTokenExchangeProbes`] its `/token` route fills in.
-async fn start_fake_oauth_provider() -> (SocketAddr, FakeTokenExchangeProbes) {
-    let probes = FakeTokenExchangeProbes::default();
-    let token_route_probes = probes.clone();
-    let app = Router::new()
-        .route(
-            "/token",
-            post(move |body: Bytes| {
-                let probes = token_route_probes.clone();
-                async move {
-                    // A hand-rolled check, not a URL-decoding library, is
-                    // enough here: PKCE code verifiers and OAuth client ids
-                    // are both restricted to characters
-                    // `application/x-www-form-urlencoded` never
-                    // percent-encodes, so a raw substring search on
-                    // `key=value` pairs sees each value exactly as sent.
-                    let form_body = String::from_utf8_lossy(&body);
-                    let field_present = |field: &str| {
-                        form_body
-                            .split('&')
-                            .any(|pair| pair.strip_prefix(field).is_some_and(|v| !v.is_empty()))
-                    };
-                    probes
-                        .code_verifier_received
-                        .store(field_present("code_verifier="), Ordering::SeqCst);
-                    probes
-                        .client_id_in_body_received
-                        .store(field_present("client_id="), Ordering::SeqCst);
-                    // `token_type` is mandatory for `oauth2`'s
-                    // `StandardTokenResponse` deserialization (RFC 6749
-                    // section 5.1); omitting it 500s the exchange instead
-                    // of the intended 200/400 the tests below assert on.
-                    Json(json!({ "access_token": "fake-access-token", "token_type": "bearer" }))
-                }
-            }),
-        )
-        .route(
-            "/userinfo",
-            get(|| async {
-                Json(json!({ "id": 42, "login": "octocat", "email": "octocat@example.com" }))
-            }),
-        );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
-    let addr = listener.local_addr().expect("local addr");
-    tokio::spawn(async move {
-        axum::serve(listener, app.into_make_service())
-            .await
-            .unwrap();
-    });
-    (addr, probes)
-}
-
 #[tokio::test]
 async fn oauth_authorize_redirect_includes_a_nonempty_state_parameter() {
     let (addr, _tmp) = start_server_with_oauth(vec![github_provider()]).await;
@@ -261,7 +184,7 @@ async fn oauth_authorize_redirect_includes_a_nonempty_state_parameter() {
 
 #[tokio::test]
 async fn oauth_callback_with_matching_state_completes_the_login() {
-    let (fake_addr, probes) = start_fake_oauth_provider().await;
+    let (fake_addr, probes) = common::start_fake_oauth_provider().await;
     let provider = OAuthProviderConfig {
         slug: "github".to_string(),
         client_id: "client-abc".to_string(),
@@ -334,7 +257,7 @@ async fn oauth_callback_with_matching_state_completes_the_login() {
 /// JIT-provisioning path, so it is not duplicated here.
 #[tokio::test]
 async fn oauth_callback_first_time_login_is_rejected_when_self_registration_is_disabled() {
-    let (fake_addr, _probes) = start_fake_oauth_provider().await;
+    let (fake_addr, _probes) = common::start_fake_oauth_provider().await;
     let provider = OAuthProviderConfig {
         slug: "github".to_string(),
         client_id: "client-abc".to_string(),
@@ -627,7 +550,7 @@ async fn oauth_callback_with_same_length_but_wrong_value_state_is_rejected() {
 
 #[tokio::test]
 async fn oauth_state_is_single_use_a_replayed_valid_callback_is_rejected_the_second_time() {
-    let (fake_addr, _probes) = start_fake_oauth_provider().await;
+    let (fake_addr, _probes) = common::start_fake_oauth_provider().await;
     let provider = OAuthProviderConfig {
         slug: "github".to_string(),
         client_id: "client-abc".to_string(),
