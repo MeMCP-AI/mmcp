@@ -26,6 +26,17 @@ pub enum ConfigArgsError {
     /// A get with a scope.
     #[error("get takes no scope.")]
     ScopeNotAllowed,
+
+    /// A path that is the empty string.
+    #[error("path is empty.")]
+    PathEmpty,
+
+    /// A path longer than the tool accepts.
+    #[error("path is longer than {maximum} characters.")]
+    PathTooLong {
+        /// The longest path accepted, in characters.
+        maximum: usize,
+    },
 }
 
 impl ConfigArgsError {
@@ -37,6 +48,8 @@ impl ConfigArgsError {
             Self::ValueNotAllowed { .. } => "value_not_allowed",
             Self::ScopeRequired { .. } => "scope_required",
             Self::ScopeNotAllowed => "scope_not_allowed",
+            Self::PathEmpty => "path_empty",
+            Self::PathTooLong { .. } => "path_too_long",
         }
     }
 }

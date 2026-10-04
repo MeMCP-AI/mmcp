@@ -1,11 +1,17 @@
 //! [`ConfigToolArgs`], the wire form of the `config` tool.
 
+use std::path::Path;
+
 use rmcp::schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::{
     ConfigAction, ConfigArgsError, ConfigCommand, ConfigKeyArg, ConfigScopeArg, NoticeValueArg,
 };
+
+/// Longest `path` the tool accepts, in characters.
+/// The longest path Linux accepts, the strictest limit of the platforms mmcp runs on.
+pub const MAX_PATH_CHARS: usize = 4096;
 
 // Arguments of the `config` tool.
 // A plain comment: a type-level doc comment would be sent to every client as schema text.
@@ -27,10 +33,30 @@ pub struct ConfigToolArgs {
 
     /// Project root, defaulting to the one found from the server's working directory.
     #[serde(default)]
+    #[schemars(length(min = 1, max = MAX_PATH_CHARS))]
     pub path: Option<String>,
 }
 
 impl ConfigToolArgs {
+    /// The explicit project root, `None` when the call leaves the search to the working directory.
+    ///
+    /// # Errors
+    /// [`ConfigArgsError::PathEmpty`] or [`ConfigArgsError::PathTooLong`], before the path reaches the file system.
+    pub fn project_path(&self) -> Result<Option<&Path>, ConfigArgsError> {
+        let Some(path) = self.path.as_deref() else {
+            return Ok(None);
+        };
+        if path.is_empty() {
+            return Err(ConfigArgsError::PathEmpty);
+        }
+        if path.chars().count() > MAX_PATH_CHARS {
+            return Err(ConfigArgsError::PathTooLong {
+                maximum: MAX_PATH_CHARS,
+            });
+        }
+        Ok(Some(Path::new(path)))
+    }
+
     /// The operation these arguments ask for.
     ///
     /// # Errors
@@ -162,6 +188,54 @@ mod tests {
     fn a_get_with_a_scope_is_refused() {
         let parsed = args(json!({"action": "get", "key": "notice.md.project", "scope": "user"}));
         assert_eq!(parsed.command(), Err(ConfigArgsError::ScopeNotAllowed));
+    }
+
+    #[test]
+    fn a_missing_path_leaves_the_search_to_the_working_directory() {
+        let parsed = args(json!({"action": "get", "key": "notice.md.user"}));
+        assert_eq!(parsed.project_path(), Ok(None));
+    }
+
+    #[test]
+    fn a_path_within_the_bound_is_the_explicit_root() {
+        let longest = "p".repeat(MAX_PATH_CHARS);
+        for path in ["/work/project", longest.as_str()] {
+            let parsed = args(json!({"action": "get", "key": "notice.md.user", "path": path}));
+            assert_eq!(parsed.project_path(), Ok(Some(Path::new(path))));
+        }
+    }
+
+    #[test]
+    fn an_empty_path_is_refused_instead_of_resolving_against_the_working_directory() {
+        let parsed = args(json!({"action": "get", "key": "notice.md.user", "path": ""}));
+        assert_eq!(parsed.project_path(), Err(ConfigArgsError::PathEmpty));
+    }
+
+    #[test]
+    fn a_path_one_character_over_the_bound_is_refused() {
+        let too_long = "p".repeat(MAX_PATH_CHARS + 1);
+        let parsed = args(json!({"action": "get", "key": "notice.md.user", "path": too_long}));
+        assert_eq!(
+            parsed.project_path(),
+            Err(ConfigArgsError::PathTooLong {
+                maximum: MAX_PATH_CHARS
+            })
+        );
+    }
+
+    #[test]
+    fn the_schema_announces_the_bounds_of_the_path() {
+        let schema = serde_json::to_value(rmcp::schemars::schema_for!(ConfigToolArgs)).unwrap();
+        let path = &schema["properties"]["path"];
+        assert_eq!(path["minLength"], 1);
+        assert_eq!(path["maxLength"], MAX_PATH_CHARS);
+    }
+
+    #[test]
+    fn the_bound_is_counted_in_characters_not_bytes() {
+        let wide = "é".repeat(MAX_PATH_CHARS);
+        let parsed = args(json!({"action": "get", "key": "notice.md.user", "path": wide}));
+        assert!(parsed.project_path().is_ok());
     }
 
     #[test]

@@ -23,8 +23,9 @@ pub fn call_config_tool(
     args: &ConfigToolArgs,
 ) -> Result<Value, McpError> {
     let command = args.command().map_err(args_error_to_mcp)?;
-    let location = ProjectLocation::find(args.path.as_deref().map(Path::new), working_directory)
-        .map_err(op_error_to_mcp)?;
+    let explicit_root = args.project_path().map_err(args_error_to_mcp)?;
+    let location =
+        ProjectLocation::find(explicit_root, working_directory).map_err(op_error_to_mcp)?;
     let outcome = command
         .execute(environment, &location)
         .map_err(op_error_to_mcp)?;
@@ -353,6 +354,33 @@ mod tests {
             error.message
         );
         assert!(!error.message.contains(".:"), "{}", error.message);
+    }
+
+    #[test]
+    fn an_empty_or_over_long_path_is_refused_before_it_reaches_the_file_system() {
+        let fixture = ConfigFixture::new();
+        let too_long = "p".repeat(super::super::config_tool_args::MAX_PATH_CHARS + 1);
+        let cases = [
+            (json!(""), "path_empty", "path is empty.".to_owned()),
+            (
+                json!(too_long),
+                "path_too_long",
+                format!(
+                    "path is longer than {} characters.",
+                    super::super::config_tool_args::MAX_PATH_CHARS
+                ),
+            ),
+        ];
+        for (path, code, message) in cases {
+            let error = call(
+                &fixture,
+                json!({"action": "get", "key": "notice.md.user", "path": path}),
+            )
+            .unwrap_err();
+            assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+            assert_eq!(code_of(&error), code);
+            assert_eq!(error.message, message);
+        }
     }
 
     #[test]
