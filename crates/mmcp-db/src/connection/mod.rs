@@ -5,9 +5,13 @@ mod connect;
 mod database;
 mod database_target;
 mod database_url_error;
+#[cfg(test)]
+mod log_capture;
 mod pool_policy;
 mod postgres_parameters;
 mod postgres_target;
+#[cfg(test)]
+mod secrecy_tests;
 mod sqlite_target;
 
 pub use connect::connect;
