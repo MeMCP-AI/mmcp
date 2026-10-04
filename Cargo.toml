@@ -195,7 +195,7 @@ sha2 = "0.11"
 # HTTP framework
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "macros", "query"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "fs"] }
-# URL parsing: redacts the database URL password for the startup log and validates CORS origins.
+# URL parsing: the typed database target and the validation of CORS origins.
 url = "2"
 # Per-client rate limit of the unauthenticated auth routes, GCRA over a concurrent keyed store.
 # Only `std` and `dashmap`: the default features pull a random jitter source and a second clock.
