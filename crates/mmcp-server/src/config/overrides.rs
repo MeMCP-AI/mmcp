@@ -1,5 +1,7 @@
 //! [`ServerConfigOverrides`], the CLI-supplied override tier for [`super::ServerConfig`].
 
+use std::path::PathBuf;
+
 /// CLI-supplied override tier for [`super::ServerConfig::from_source_with_overrides`]
 /// / [`super::ServerConfig::from_env_with_overrides`]. A parameter object
 /// (per the project's Rust API-design convention) rather than
@@ -19,4 +21,6 @@ pub struct ServerConfigOverrides {
     /// `MMCP_MAX_HANDLE_LENGTH`, the user config file, and the
     /// compiled-in [`mmcp_auth::MAX_HANDLE_LENGTH`] default.
     pub max_handle_length: Option<usize>,
+    /// `--webui-dir`; highest-precedence tier, beats `MMCP_WEBUI_DIR`.
+    pub webui_dir: Option<PathBuf>,
 }

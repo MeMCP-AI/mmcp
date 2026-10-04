@@ -1,6 +1,7 @@
 //! mmcp server binary entry point.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -42,6 +43,9 @@ enum Command {
         /// Same precedence as `--min-password-length`.
         #[arg(long)]
         max_handle_length: Option<usize>,
+
+        #[arg(long)]
+        webui_dir: Option<PathBuf>,
     },
     /// Probe the running server's `/health` endpoint on loopback.
     ///
@@ -63,6 +67,7 @@ fn default_serve_command() -> Command {
         min_password_length: None,
         max_password_length: None,
         max_handle_length: None,
+        webui_dir: None,
     }
 }
 
@@ -74,11 +79,13 @@ async fn main() -> Result<()> {
             min_password_length,
             max_password_length,
             max_handle_length,
+            webui_dir,
         } => {
             run_server(config::ServerConfigOverrides {
                 min_password_length,
                 max_password_length,
                 max_handle_length,
+                webui_dir,
             })
             .await
         }

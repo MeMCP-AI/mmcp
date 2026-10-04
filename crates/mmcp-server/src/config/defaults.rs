@@ -41,5 +41,10 @@ pub const MAX_HANDLE_LENGTH_ENV: &str = "MMCP_MAX_HANDLE_LENGTH";
 /// why the default is closed.
 pub const ALLOW_SELF_REGISTRATION_ENV: &str = "MMCP_ALLOW_SELF_REGISTRATION";
 
+/// Environment variable naming the directory of the built web UI.
+/// Second in precedence behind an explicit `--webui-dir` CLI override.
+/// Unset or blank means the server answers the API only.
+pub const WEBUI_DIR_ENV: &str = "MMCP_WEBUI_DIR";
+
 /// Floor for the password-length tunables: a zero-byte bound is never legitimate.
 pub(crate) const MIN_VALID_LENGTH_LIMIT: usize = 1;

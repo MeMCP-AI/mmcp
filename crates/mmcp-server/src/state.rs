@@ -62,6 +62,9 @@ pub struct ServerStateInner {
     /// requests; see
     /// [`crate::config::ServerConfig::allow_self_registration`].
     pub allow_self_registration: bool,
+    /// Directory of the built web UI; see
+    /// [`crate::config::ServerConfig::webui_dir`].
+    pub webui_dir: Option<PathBuf>,
 
     /// Per-group async mutex set used to serialize writes (git
     /// `receive-pack`) against the same bare repository. Reads
@@ -134,6 +137,7 @@ impl ServerState {
             max_password_length: cfg.max_password_length,
             max_handle_length: cfg.max_handle_length,
             allow_self_registration: cfg.allow_self_registration,
+            webui_dir: cfg.webui_dir.clone(),
             repo_locks: KeyedLockRegistry::new(PrunePolicy::Always, || AsyncMutex::new(())),
         })))
     }

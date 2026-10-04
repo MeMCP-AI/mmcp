@@ -185,6 +185,15 @@ impl TestServerConfigBuilder {
         self
     }
 
+    /// Overrides the directory of the built web UI
+    /// (`ServerConfig::webui_dir`). [`minimal_server_config`] defaults
+    /// this to `None` (API only).
+    #[allow(dead_code)] // Live in sibling test binaries; each tests/*.rs compiles common as its own crate.
+    pub fn webui_dir(mut self, webui_dir: impl Into<PathBuf>) -> Self {
+        self.config.webui_dir = Some(webui_dir.into());
+        self
+    }
+
     /// Finishes the builder, returning the built `ServerConfig`.
     pub fn build(self) -> ServerConfig {
         self.config

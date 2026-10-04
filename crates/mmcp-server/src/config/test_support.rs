@@ -49,6 +49,7 @@ pub fn minimal_server_config(repo_root: PathBuf) -> ServerConfig {
         max_password_length: mmcp_auth::MAX_PASSWORD_LENGTH,
         max_handle_length: mmcp_auth::MAX_HANDLE_LENGTH,
         allow_self_registration: true,
+        webui_dir: None,
     }
 }
 

@@ -10,6 +10,7 @@ use super::cascade::{
 use super::database_url_redaction::redact_database_url;
 use super::defaults::{
     ALLOW_SELF_REGISTRATION_ENV, DEFAULT_BIND, DEFAULT_DATABASE_URL, DEFAULT_REPO_ROOT,
+    WEBUI_DIR_ENV,
 };
 use super::env_value::non_blank;
 use super::error::ConfigError;
@@ -35,6 +36,7 @@ use super::overrides::ServerConfigOverrides;
 /// | `MMCP_MAX_PASSWORD_LENGTH`        | see `max_password_length` cascade below |
 /// | `MMCP_MAX_HANDLE_LENGTH`          | see `max_handle_length` cascade below |
 /// | `MMCP_ALLOW_SELF_REGISTRATION`    | `false` (self-registration disabled) |
+/// | `MMCP_WEBUI_DIR`                  | (absent or blank = API only) |
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub bind: SocketAddr,
@@ -86,6 +88,11 @@ pub struct ServerConfig {
     /// `MMCP_ALLOW_SELF_REGISTRATION=true`; production must never
     /// rely on an implicit default here.
     pub allow_self_registration: bool,
+    /// Directory of the built web UI, served on every path the API does
+    /// not own. `None` (the default when `MMCP_WEBUI_DIR` is unset or
+    /// blank and no `--webui-dir` is given) serves the API only.
+    /// Every file in the directory is publicly readable.
+    pub webui_dir: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -214,6 +221,9 @@ impl ServerConfig {
         let max_handle_length =
             resolve_max_handle_length(&get, overrides.max_handle_length, user_limits.as_ref());
         let allow_self_registration = parse_bool_env(get(ALLOW_SELF_REGISTRATION_ENV).as_deref());
+        let webui_dir = overrides
+            .webui_dir
+            .or_else(|| non_blank(get(WEBUI_DIR_ENV).as_deref()).map(PathBuf::from));
 
         Ok(Self {
             bind,
@@ -227,6 +237,7 @@ impl ServerConfig {
             max_password_length,
             max_handle_length,
             allow_self_registration,
+            webui_dir,
         })
     }
 }
@@ -300,7 +311,9 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::config::test_support::WarnCounter;
-    use crate::config::{MAX_HANDLE_LENGTH_ENV, MAX_PASSWORD_LENGTH_ENV, MIN_PASSWORD_LENGTH_ENV};
+    use crate::config::{
+        MAX_HANDLE_LENGTH_ENV, MAX_PASSWORD_LENGTH_ENV, MIN_PASSWORD_LENGTH_ENV, WEBUI_DIR_ENV,
+    };
     use std::collections::HashMap;
 
     /// Build a config from a `HashMap` so tests never touch
@@ -634,6 +647,7 @@ mod tests {
                 min_password_length: Some(16),
                 max_password_length: Some(64),
                 max_handle_length: Some(32),
+                ..ServerConfigOverrides::default()
             },
         )
         .expect("the OS CSPRNG is available in the test environment");
@@ -650,6 +664,7 @@ mod tests {
                 min_password_length: Some(0),
                 max_password_length: None,
                 max_handle_length: None,
+                ..ServerConfigOverrides::default()
             },
         )
         .expect("the OS CSPRNG is available in the test environment");
@@ -664,6 +679,7 @@ mod tests {
                 min_password_length: Some(50),
                 max_password_length: Some(10),
                 max_handle_length: None,
+                ..ServerConfigOverrides::default()
             },
         );
         match result {
@@ -719,6 +735,7 @@ mod tests {
                 min_password_length: None,
                 max_password_length: None,
                 max_handle_length: Some(8),
+                ..ServerConfigOverrides::default()
             },
         )
         .expect("the OS CSPRNG is available in the test environment");
@@ -755,6 +772,7 @@ mod tests {
                 min_password_length: None,
                 max_password_length: None,
                 max_handle_length: Some(0),
+                ..ServerConfigOverrides::default()
             },
         )
         .expect("the OS CSPRNG is available in the test environment");
@@ -791,6 +809,7 @@ mod tests {
                 max_password_length: None,
                 // Below MIN_VIABLE_MAX_HANDLE_LENGTH (4) but nonzero.
                 max_handle_length: Some(2),
+                ..ServerConfigOverrides::default()
             },
         )
         .expect("the OS CSPRNG is available in the test environment");
@@ -824,6 +843,7 @@ mod tests {
                 min_password_length: None,
                 max_password_length: None,
                 max_handle_length: Some(mmcp_auth::MIN_VIABLE_MAX_HANDLE_LENGTH),
+                ..ServerConfigOverrides::default()
             },
         )
         .expect("the OS CSPRNG is available in the test environment");
@@ -833,6 +853,32 @@ mod tests {
             "a value exactly at the viable floor leaves just enough suffix room and must be \
              accepted, not rejected"
         );
+    }
+
+    #[test]
+    fn webui_dir_is_absent_when_unset_or_blank() {
+        assert!(from_map(&[]).webui_dir.is_none());
+        assert!(from_map(&[(WEBUI_DIR_ENV, "")]).webui_dir.is_none());
+        assert!(from_map(&[(WEBUI_DIR_ENV, "  \n")]).webui_dir.is_none());
+    }
+
+    #[test]
+    fn webui_dir_env_is_honored_without_surrounding_whitespace() {
+        let cfg = from_map(&[(WEBUI_DIR_ENV, " /usr/share/mmcp/webui\n")]);
+        assert_eq!(cfg.webui_dir, Some(PathBuf::from("/usr/share/mmcp/webui")));
+    }
+
+    #[test]
+    fn webui_dir_override_beats_env() {
+        let cfg = ServerConfig::from_source_with_overrides(
+            |key| (key == WEBUI_DIR_ENV).then(|| "/from/env".to_string()),
+            ServerConfigOverrides {
+                webui_dir: Some(PathBuf::from("/from/flag")),
+                ..ServerConfigOverrides::default()
+            },
+        )
+        .expect("the OS CSPRNG is available in the test environment");
+        assert_eq!(cfg.webui_dir, Some(PathBuf::from("/from/flag")));
     }
 
     // allow_self_registration: defaults closed.
