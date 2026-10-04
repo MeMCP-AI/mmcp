@@ -94,6 +94,11 @@ pub(super) fn outside_a_repository(_path: &Path) -> Result<Exclusion, GitError> 
     Ok(Exclusion::NotInRepository)
 }
 
+/// Reports the file as tracked by the repository.
+pub(super) fn already_tracked(_path: &Path) -> Result<Exclusion, GitError> {
+    Ok(Exclusion::Tracked)
+}
+
 /// Fails the way an unwritable global excludes file does.
 pub(super) fn fails_to_exclude(path: &Path) -> Result<Exclusion, GitError> {
     Err(GitError::GlobalExcludesWrite {

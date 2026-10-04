@@ -55,6 +55,15 @@ pub enum ConfigOpError {
     /// The local file could not be kept out of git, so it was not written.
     #[error("The local config could not be kept out of git, so it was not written.")]
     ExcludeLocal(#[source] GitError),
+
+    /// The local file is tracked by git, which no ignore rule can undo, so it was not written.
+    #[error(
+        "The local config is tracked by git, so it cannot be kept out of git and was not written."
+    )]
+    LocalTracked {
+        /// The tracked local file.
+        file: PathBuf,
+    },
 }
 
 impl ConfigOpError {
@@ -71,6 +80,7 @@ impl ConfigOpError {
             Self::SaveProject(_) => "project_config_save_failed",
             Self::SaveLocal(_) => "local_config_save_failed",
             Self::ExcludeLocal(_) => "local_config_exclude_failed",
+            Self::LocalTracked { .. } => "local_config_tracked",
         }
     }
 }
@@ -100,6 +110,9 @@ mod tests {
             ConfigOpError::SaveProject(store()),
             ConfigOpError::SaveLocal(store()),
             ConfigOpError::ExcludeLocal(fails_to_exclude(Path::new("local")).unwrap_err()),
+            ConfigOpError::LocalTracked {
+                file: PathBuf::from("local"),
+            },
         ]
     }
 
@@ -135,7 +148,10 @@ mod tests {
     #[test]
     fn the_wrapped_failure_stays_a_walkable_source() {
         for error in every_variant() {
-            let has_source = !matches!(error, ConfigOpError::ProjectRootRequired { .. });
+            let has_source = !matches!(
+                error,
+                ConfigOpError::ProjectRootRequired { .. } | ConfigOpError::LocalTracked { .. }
+            );
             assert_eq!(error.source().is_some(), has_source, "{error:?}");
         }
     }

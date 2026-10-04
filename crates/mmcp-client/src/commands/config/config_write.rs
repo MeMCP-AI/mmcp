@@ -132,10 +132,10 @@ fn write_local(
     let mut excluded_in = None;
     if changed {
         // Excluded before the first byte is written, so the file is never left committable.
-        if let Exclusion::Appended { file } =
-            (environment.exclude_local)(&file).map_err(ConfigOpError::ExcludeLocal)?
-        {
-            excluded_in = Some(file);
+        match (environment.exclude_local)(&file).map_err(ConfigOpError::ExcludeLocal)? {
+            Exclusion::Appended { file: excludes } => excluded_in = Some(excludes),
+            Exclusion::Tracked => return Err(ConfigOpError::LocalTracked { file }),
+            Exclusion::NotInRepository | Exclusion::AlreadyExcluded => {}
         }
         save_local(root, &config).map_err(ConfigOpError::SaveLocal)?;
     }
@@ -152,7 +152,7 @@ mod tests {
     use mmcp_core::config::NoticeSource;
 
     use super::super::config_fixture::{
-        ConfigFixture, PROJECT_UUID, SCRATCH_EXCLUDES_FILE, already_excluded,
+        ConfigFixture, PROJECT_UUID, SCRATCH_EXCLUDES_FILE, already_excluded, already_tracked,
         appends_to_scratch_excludes, fails_to_exclude, outside_a_repository,
     };
     use super::*;
@@ -444,6 +444,42 @@ mod tests {
 
         assert!(matches!(error, ConfigOpError::LoadLocal(_)), "{error:?}");
         assert!(std::error::Error::source(&error).is_some());
+    }
+
+    #[test]
+    fn a_tracked_local_file_is_refused_before_anything_is_written() {
+        let fixture = ConfigFixture::new();
+
+        let error = set_key(
+            &fixture.environment(already_tracked),
+            KEY,
+            NoticeValue::Off,
+            ConfigScope::Local,
+            &fixture.located(),
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(&error, ConfigOpError::LocalTracked { file }
+                if *file == fixture.project.join(".mmcp.local.toml")),
+            "{error:?}"
+        );
+        assert!(!fixture.project.join(".mmcp.local.toml").exists());
+    }
+
+    #[test]
+    fn a_tracked_local_file_does_not_block_a_write_that_changes_nothing() {
+        let fixture = ConfigFixture::new();
+
+        let outcome = unset_key(
+            &fixture.environment(already_tracked),
+            KEY,
+            ConfigScope::Local,
+            &fixture.located(),
+        )
+        .unwrap();
+
+        assert!(!outcome.changed);
     }
 
     #[test]

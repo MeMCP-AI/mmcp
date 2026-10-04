@@ -356,6 +356,25 @@ mod tests {
     }
 
     #[test]
+    fn a_tracked_local_file_is_an_internal_error_with_its_code_and_nothing_is_written() {
+        let fixture = ConfigFixture::new();
+        let tracked = fixture.environment(super::super::config_fixture::already_tracked);
+
+        let error = call_config_tool(
+            &tracked,
+            &fixture.project,
+            &serde_json::from_value(json!({
+                "action": "set", "key": "notice.md.project", "value": "off", "scope": "local"
+            }))
+            .unwrap(),
+        )
+        .unwrap_err();
+
+        assert_eq!(code_of(&error), "local_config_tracked");
+        assert!(!fixture.project.join(".mmcp.local.toml").exists());
+    }
+
+    #[test]
     fn a_failing_exclusion_is_an_internal_error_and_writes_nothing() {
         let fixture = ConfigFixture::new();
         let failing = fixture.environment(fails_to_exclude);
