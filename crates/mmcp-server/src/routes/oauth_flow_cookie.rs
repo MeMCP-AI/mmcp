@@ -13,6 +13,17 @@ use crate::routes::defaults::{
     HOST_COOKIE_NAME_PREFIX, OAUTH_FLOW_COOKIE_NAME_PREFIX, OAUTH_FLOW_LIFETIME,
 };
 
+/// Whether `slug` can be appended to the flow cookie name unchanged.
+///
+/// The name must stay a cookie token: ASCII letters, digits, `-` and `_` always are, and a configured slug
+/// holding a separator such as `;`, `=` or a space would corrupt the `Set-Cookie` line and the `Cookie` parse.
+pub(crate) fn provider_slug_is_cookie_safe(slug: &str) -> bool {
+    !slug.is_empty()
+        && slug
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 fn cookie_name(provider: &str, secure_origin: bool) -> String {
     let host_prefix = if secure_origin {
         HOST_COOKIE_NAME_PREFIX
@@ -91,6 +102,21 @@ mod tests {
 
     fn header_text(value: HeaderValue) -> String {
         value.to_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn provider_slug_is_cookie_safe_accepts_tokens_and_refuses_separators() {
+        for safe in ["github", "git-hub", "git_hub2", "A1"] {
+            assert!(provider_slug_is_cookie_safe(safe), "{safe}");
+        }
+        for unsafe_slug in [
+            "", "git hub", "git;hub", "git=hub", "git,hub", "git\"hub", "gité",
+        ] {
+            assert!(
+                !provider_slug_is_cookie_safe(unsafe_slug),
+                "{unsafe_slug:?}"
+            );
+        }
     }
 
     #[test]

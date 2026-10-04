@@ -15,6 +15,7 @@ use webauthn_rs::prelude::*;
 
 use crate::config::{OAuthProviderConfig, ServerConfig};
 use crate::oauth_client::{OauthClient, build_oauth_client, build_oauth_exchange_http_client};
+use crate::routes::oauth_flow_cookie::provider_slug_is_cookie_safe;
 use crate::session_store::DatabaseSessionStore;
 
 /// Everything a request handler needs from the server.
@@ -96,6 +97,13 @@ impl ServerState {
                 .build()?,
         );
 
+        for provider in &cfg.oauth_providers {
+            anyhow::ensure!(
+                provider_slug_is_cookie_safe(&provider.slug),
+                "OAuth provider slug {:?} cannot name the flow cookie: use ASCII letters, digits, '-' and '_'",
+                provider.slug
+            );
+        }
         let oauth_providers: HashMap<String, OAuthProviderConfig> = cfg
             .oauth_providers
             .iter()

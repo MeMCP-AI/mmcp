@@ -22,6 +22,26 @@ async fn bootstrap_state() -> (ServerState, TempDir) {
 }
 
 #[tokio::test]
+async fn initialize_refuses_an_oauth_provider_slug_that_cannot_name_a_cookie() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut provider = mmcp_server::config::OAuthProviderConfig::github("client-abc", "secret-xyz");
+    provider.slug = "git;hub".to_owned();
+    let cfg = common::TestServerConfigBuilder::new(tmp.path().to_path_buf())
+        .oauth_providers(vec![provider])
+        .build();
+
+    let error = ServerState::initialize(&cfg)
+        .await
+        .err()
+        .expect("a slug holding a cookie separator must stop the server from starting");
+
+    assert!(
+        error.to_string().contains("git;hub"),
+        "the error names the slug: {error}"
+    );
+}
+
+#[tokio::test]
 async fn repo_write_lock_returns_the_same_handle_for_the_same_group_id() {
     let (state, _tmp) = bootstrap_state().await;
     let group = Uuid::now_v7();
