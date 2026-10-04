@@ -285,6 +285,16 @@ fn random_key() -> Result<[u8; mmcp_auth::token::V4_LOCAL_KEY_BYTES], ConfigErro
     Ok(out)
 }
 
+/// A fresh OS-random secret as [`TOKEN_KEY_HEX_CHARS`] lowercase hex characters.
+///
+/// The text `MMCP_TOKEN_KEY_HEX` accepts, and safe inside a database URL.
+///
+/// # Errors
+/// [`ConfigError::RandomKeyUnavailable`] when the OS CSPRNG cannot be read.
+pub fn generate_secret_hex() -> Result<String, ConfigError> {
+    Ok(hex::encode(random_key()?))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -426,6 +436,29 @@ mod tests {
         assert_eq!(a.len(), 32);
         assert_ne!(a, [0u8; 32]);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn generated_secret_is_lowercase_hex_of_the_token_key_length() {
+        let secret =
+            generate_secret_hex().expect("OS CSPRNG must be available in the test environment");
+        assert_eq!(secret.len(), TOKEN_KEY_HEX_CHARS);
+        assert!(
+            secret
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
+    }
+
+    #[test]
+    fn generated_secret_is_accepted_as_the_token_key_and_differs_per_call() {
+        let first =
+            generate_secret_hex().expect("OS CSPRNG must be available in the test environment");
+        let second =
+            generate_secret_hex().expect("OS CSPRNG must be available in the test environment");
+        assert_ne!(first, second);
+        let cfg = from_map(&[("MMCP_TOKEN_KEY_HEX", first.as_str())]);
+        assert_eq!(hex::encode(cfg.token_key), first);
     }
 
     #[test]

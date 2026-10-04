@@ -15,4 +15,4 @@ pub use defaults::{MAX_HANDLE_LENGTH_ENV, MAX_PASSWORD_LENGTH_ENV, MIN_PASSWORD_
 pub use error::ConfigError;
 pub use oauth_provider::OAuthProviderConfig;
 pub use overrides::ServerConfigOverrides;
-pub use server_config::ServerConfig;
+pub use server_config::{ServerConfig, generate_secret_hex};

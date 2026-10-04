@@ -52,6 +52,7 @@ enum Command {
     /// that need an in-image tool to hit the health route without
     /// shipping curl or wget in the runtime layer.
     Healthcheck,
+    GenerateSecret,
 }
 
 /// Default `Command::Serve` used when the caller passes no
@@ -82,6 +83,10 @@ async fn main() -> Result<()> {
             .await
         }
         Command::Healthcheck => run_healthcheck().await,
+        Command::GenerateSecret => {
+            println!("{}", config::generate_secret_hex()?);
+            Ok(())
+        }
     }
 }
 
