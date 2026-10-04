@@ -250,6 +250,45 @@ mod tests {
     }
 
     #[test]
+    fn only_a_closed_options_member_belongs_to_the_options_family() {
+        for input in [
+            "postgres://h/db?options[y]=v",
+            "postgres://h/db?options[]=v",
+            "postgres://h/db?options[a]b]=v",
+        ] {
+            assert!(input.parse::<DatabaseTarget>().is_ok(), "{input}");
+        }
+        for input in [
+            "postgres://h/db?options[y=SECRET_O1",
+            "postgres://h/db?options[y=SECRET_O2&sslmode=disable",
+            "postgres://h/db?options[y]z=SECRET_O3",
+            "postgres://h/db?options[=SECRET_O4",
+        ] {
+            let error = input.parse::<DatabaseTarget>().unwrap_err();
+
+            assert!(
+                matches!(
+                    error,
+                    DatabaseUrlError::UnrecognizedParameter { .. }
+                        | DatabaseUrlError::ParameterWithoutValue
+                ),
+                "{input}: {error}"
+            );
+            assert!(!chain_text(&error).contains("SECRET_O"), "{input}");
+        }
+        assert_eq!(
+            "postgres://h/db?options[y=v"
+                .parse::<DatabaseTarget>()
+                .err(),
+            Some(DatabaseUrlError::UnrecognizedParameter {
+                set: ParameterSet::Postgres,
+                position: 1,
+                count: 1,
+            })
+        );
+    }
+
+    #[test]
     fn the_remedy_for_a_missing_authority_keeps_the_database_name() {
         let error = "postgres:app?host=/var/run/postgresql"
             .parse::<DatabaseTarget>()

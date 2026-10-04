@@ -25,8 +25,12 @@ pub(super) const ACCEPTED_KEYS: [&str; 18] = [
     "options",
 ];
 
-/// A query key starting with this prefix is a startup option of the `options[NAME]` family.
+/// A query key starting with this prefix and ending with [`OPTIONS_FAMILY_SUFFIX`] is a startup option of the `options[NAME]` family.
 pub(super) const OPTIONS_FAMILY_PREFIX: &str = "options[";
+
+/// The end of a member of the `options[NAME]` family.
+/// sqlx reads a key that starts with the prefix but lacks it, drops the pair silently, and never warns.
+pub(super) const OPTIONS_FAMILY_SUFFIX: char = ']';
 
 /// How the `options[NAME]` family is shown, since its members are operator text.
 pub(super) const OPTIONS_FAMILY_DISPLAY: &str = "options[NAME]";
@@ -53,7 +57,7 @@ pub(super) fn accepted_keys_text() -> String {
 
 /// The constant that a recognized `key` is shown as, or `None` when sqlx does not recognize it.
 pub(super) fn accepted_constant(key: &str) -> Option<&'static str> {
-    if key.starts_with(OPTIONS_FAMILY_PREFIX) {
+    if key.starts_with(OPTIONS_FAMILY_PREFIX) && key.ends_with(OPTIONS_FAMILY_SUFFIX) {
         return Some(OPTIONS_FAMILY_DISPLAY);
     }
     ACCEPTED_KEYS
