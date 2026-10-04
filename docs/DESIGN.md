@@ -225,7 +225,8 @@ mmcp uses `session_id` directly as its session key. No machine id, no user id ha
 
 Client-side, per-session state lives in flat TOML files at **`~/.mmcp/sessions/<session_id>.toml`**, one file per Claude Code session. Each file holds the session id, the owning user (when authenticated), the project UUID, the turn counter, the transcript path and its last-seen signature, the post-compaction flag, creation and last-seen timestamps, and every per-memory read the session has recorded so far. Writes are atomic via temp-file-rename so the hook process and the serve process can share a file without tearing each other's edits. There is no database on the client.
 
-Server-side session tracking for multi-session views and shared dashboards will live in the Postgres database once those features are needed; today there is no server-side session table.
+Server-side session tracking for multi-session views and shared dashboards will build on the `sessions` table of the server database; no server route reads or writes it yet.
+The server's own HTTP login sessions are a separate concern: it stores them in the `http_sessions` table, keyed by a SHA-256 digest of the session id, so they survive a restart.
 
 ### 6.2 Per-turn granularity via hook
 

@@ -23,9 +23,6 @@ services:
       context: .
       dockerfile: docker/server.Dockerfile
     restart: unless-stopped
-    # NOTE: tower-sessions is currently backed by MemoryStore (see
-    # crates/mmcp-server/src/app.rs), so sessions do not survive a
-    # container restart. Swap to a persistent store before production.
     environment:
       MMCP_BIND: 0.0.0.0:8787
       MMCP_DATABASE_URL: postgres://${POSTGRES_USER:-mmcp}:${POSTGRES_PASSWORD:-mmcp}@postgres:5432/${POSTGRES_DB:-mmcp}

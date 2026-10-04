@@ -41,7 +41,8 @@ pub enum DatabaseSessionStoreError {
 }
 
 impl From<DatabaseSessionStoreError> for session_store::Error {
-    /// The trait's error type carries a string, so only the top-level text crosses; the source chain is logged by the store.
+    /// The trait's error type carries a string, so only the top-level text crosses.
+    /// The store logs the source chain.
     fn from(error: DatabaseSessionStoreError) -> Self {
         let text = error.to_string();
         match error {

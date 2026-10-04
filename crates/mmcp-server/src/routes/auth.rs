@@ -265,7 +265,8 @@ async fn login(
 struct OAuthCallbackQuery {
     code: String,
     /// CSRF token minted by [`oauth_authorize`] and echoed back by the provider.
-    /// [`oauth_callback`] compares it against the value sealed in the caller's OAuth flow cookie before any token exchange.
+    /// [`oauth_callback`] compares it against the value sealed in the caller's flow cookie.
+    /// The comparison runs before any token exchange.
     state: Option<String>,
 }
 

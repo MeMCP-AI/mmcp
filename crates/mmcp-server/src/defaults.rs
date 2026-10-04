@@ -4,17 +4,15 @@
 /// (see [`crate::app::build_router`]) expires.
 ///
 /// Applies to every session the single shared store issues: the
-/// anonymous CSRF-state session `oauth_authorize` mints, and every
+/// anonymous ceremony session `passkey_login_start` mints, and every
 /// authenticated `axum-login` session alike, since one
 /// `SessionManagerLayer` covers the whole router.
 /// [`tower_sessions::Expiry::OnInactivity`] resets on each session
 /// write, so an actively used session keeps renewing itself.
 /// Only a session nobody touches again, most concretely an abandoned
-/// OAuth round trip, actually expires.
-/// Minutes-scale: long enough that a slow real OAuth or password
-/// login round trip never lapses, short enough that an anonymous
-/// caller cannot accumulate session records in the in-memory store
-/// indefinitely.
+/// passkey login, actually expires.
+/// Minutes-scale: long enough that a slow password, OAuth or passkey login round trip never lapses.
+/// Short enough that abandoned anonymous records stay few until the expired-session sweep deletes them.
 pub(crate) const SESSION_INACTIVITY_EXPIRY: time::Duration = time::Duration::minutes(15);
 
 /// Period of the expired-session sweep (see [`crate::session_store::spawn_expired_session_sweeper`]).

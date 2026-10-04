@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 
 /// Row in the `http_sessions` table.
 ///
-/// The key is the SHA-256 digest of the session id, never the id: the id is a bearer secret the database must not hold.
+/// The key is the SHA-256 digest of the session id, never the id.
+/// The id is a bearer secret the database must not hold.
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
 #[sea_orm(table_name = "http_sessions")]
 pub struct Model {

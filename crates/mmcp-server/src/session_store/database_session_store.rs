@@ -1,7 +1,9 @@
 //! `tower_sessions` session store over the `http_sessions` table.
 //!
-//! Rows are keyed by the SHA-256 digest of the session id, so a read of the table or of a backup yields no usable cookie.
-//! `load` rebuilds the record id from its argument, because the row holds no id and the following `save` writes under the same key.
+//! Rows are keyed by the SHA-256 digest of the session id.
+//! A read of the table or of a backup therefore yields no usable cookie.
+//! `load` rebuilds the record id from its argument, because the row holds no id.
+//! The following `save` then writes under the same key.
 
 use async_trait::async_trait;
 use mmcp_db::entities::http_session::Model;

@@ -47,9 +47,9 @@ mod tests {
     use super::*;
 
     /// Falsification for the bound this constant is meant to enforce:
-    /// too short would fail a real OAuth or password login round
+    /// too short would fail a real OAuth, passkey or password login round
     /// trip, too long would let an abandoned anonymous session (see
-    /// `crate::routes::auth::oauth_authorize`) sit in the session
+    /// `crate::routes::auth::passkey_login_start`) sit in the session
     /// store far longer than the flow it exists to bound.
     #[test]
     fn session_inactivity_expiry_is_a_short_minutes_scale_window() {
