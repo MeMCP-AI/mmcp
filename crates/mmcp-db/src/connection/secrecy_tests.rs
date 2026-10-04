@@ -221,29 +221,25 @@ async fn a_credential_that_scram_refuses_is_named_at_connect_without_its_charact
     let (capture, _guard) = LogCapture::install();
     let peer = FakePeer::start(Behavior::RequestsScram).await;
     let s = SENTINEL;
-    for (userinfo, query, expected) in [
+    for (userinfo, expected) in [
         (
             format!("mmcp:p%F0%9F%98%80{s}"),
-            "",
             DbError::PasswordRejectedBySaslprep,
         ),
         (
             format!("mmcp:abc%D7%A9%D7%9C%D7%95%D7%9D123{s}"),
-            "",
             DbError::PasswordRejectedBySaslprep,
         ),
-        (
-            format!("mmcp:p%07{s}"),
-            "?sslmode=disable",
-            DbError::PasswordRejectedBySaslprep,
-        ),
+        (format!("mmcp:p%07{s}"), DbError::PasswordRejectedBySaslprep),
         (
             format!("%D7%A9%D7%9C%D7%95%D7%9D:{s}"),
-            "",
             DbError::UsernameRejectedBySaslprep,
         ),
     ] {
-        let url = format!("postgres://{userinfo}@127.0.0.1:{}/app{query}", peer.port());
+        let url = format!(
+            "postgres://{userinfo}@127.0.0.1:{}/app?sslmode=disable",
+            peer.port()
+        );
         let target = DatabaseTarget::from_str(&url).expect("the URL is accepted");
 
         let error = connect_error(&target)
