@@ -47,7 +47,9 @@ use crate::routes::defaults::{
     PASSKEY_AUTHENTICATION_SESSION_KEY, PASSKEY_REGISTRATION_SESSION_KEY,
 };
 use crate::routes::oauth_flow_cookie;
-use crate::routes::passkey_ceremony::{CeremonyRefusal, PendingCeremony, accept_pending_ceremony};
+use crate::routes::passkey_ceremony::{
+    CeremonyRefusal, PendingCeremony, accept_pending_ceremony, take_pending_ceremony,
+};
 use crate::routes::registration_limits::RegistrationLimits;
 use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
@@ -647,12 +649,14 @@ async fn passkey_register_finish(
         .clone()
         .ok_or(AuthHttpError::Unauthorized("authentication required"))?;
 
-    // Removing the ceremony from the session makes it usable once, whatever the checks below decide.
-    let pending: Option<PendingCeremony<PasskeyRegistration>> = auth_session
-        .session
-        .remove(PASSKEY_REGISTRATION_SESSION_KEY)
-        .await
-        .map_err(into_generic_response)?;
+    // The ceremony leaves the session store before any check, so one ceremony finishes at most once.
+    let pending: Option<PendingCeremony<PasskeyRegistration>> = take_pending_ceremony(
+        &state.session_store,
+        &auth_session.session,
+        PASSKEY_REGISTRATION_SESSION_KEY,
+    )
+    .await
+    .map_err(into_generic_response)?;
     let registration =
         accept_pending_ceremony(pending, session_user.id, Timestamp::now().as_millisecond())
             .map_err(|refusal| {
@@ -817,12 +821,14 @@ async fn passkey_login_finish(
         return Err(AuthHttpError::Unauthorized("invalid credentials"));
     };
 
-    // Removing the ceremony from the session makes it usable once, whatever the checks below decide.
-    let pending: Option<PendingCeremony<PasskeyAuthentication>> = auth_session
-        .session
-        .remove(PASSKEY_AUTHENTICATION_SESSION_KEY)
-        .await
-        .map_err(into_generic_response)?;
+    // The ceremony leaves the session store before any check, so one ceremony finishes at most once.
+    let pending: Option<PendingCeremony<PasskeyAuthentication>> = take_pending_ceremony(
+        &state.session_store,
+        &auth_session.session,
+        PASSKEY_AUTHENTICATION_SESSION_KEY,
+    )
+    .await
+    .map_err(into_generic_response)?;
     let authentication =
         match accept_pending_ceremony(pending, user.id, Timestamp::now().as_millisecond()) {
             Ok(authentication) => authentication,

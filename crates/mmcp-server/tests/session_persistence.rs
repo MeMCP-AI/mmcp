@@ -641,6 +641,160 @@ async fn passkey_registration_ceremony_is_refused_for_a_different_session_user()
     server.stop().await;
 }
 
+async fn registration_finish_body(client: &reqwest::Client, addr: SocketAddr) -> String {
+    client
+        .post(format!("http://{addr}/auth/passkey/register/finish"))
+        .json(&unsigned_registration_finish_body())
+        .send()
+        .await
+        .expect("passkey register finish")
+        .text()
+        .await
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn passkey_registration_ceremony_is_consumed_when_the_finish_fails() {
+    let tmp = TempDir::new().expect("tempdir");
+    let cfg = config_for(&tmp);
+    let server = start_server(&cfg).await;
+    let client = cookie_client();
+    register_and_login(&client, server.addr, "alice").await;
+    assert_eq!(
+        passkey_register_start_status(&client, server.addr).await,
+        200
+    );
+
+    let first = registration_finish_body(&client, server.addr).await;
+    let second = registration_finish_body(&client, server.addr).await;
+
+    assert_ne!(
+        first, NO_PENDING_REGISTRATION_BODY,
+        "the first finish reaches webauthn verification and fails there"
+    );
+    assert_eq!(
+        second, NO_PENDING_REGISTRATION_BODY,
+        "a failed finish must still consume the ceremony"
+    );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn concurrent_passkey_registration_finishes_on_one_cookie_reach_verification_once() {
+    const FINISHES: usize = 8;
+    let tmp = TempDir::new().expect("tempdir");
+    let cfg = config_for(&tmp);
+    let server = start_server(&cfg).await;
+    let client = cookie_client();
+    register_and_login(&client, server.addr, "alice").await;
+    assert_eq!(
+        passkey_register_start_status(&client, server.addr).await,
+        200
+    );
+
+    let finishes: Vec<_> = (0..FINISHES)
+        .map(|_| {
+            let client = client.clone();
+            let addr = server.addr;
+            tokio::spawn(async move { registration_finish_body(&client, addr).await })
+        })
+        .collect();
+    let mut reached_verification = 0;
+    for finish in finishes {
+        if finish.await.expect("finish task") != NO_PENDING_REGISTRATION_BODY {
+            reached_verification += 1;
+        }
+    }
+
+    assert_eq!(
+        reached_verification, 1,
+        "one ceremony may be verified once, however many finishes race on its cookie"
+    );
+    server.stop().await;
+}
+
+/// Body of a login finish whose response is well-formed JSON but carries no real assertion.
+fn unsigned_login_finish_body(handle: &str) -> serde_json::Value {
+    json!({
+        "handle": handle,
+        "response": {
+            "id": "AAAA",
+            "rawId": "AAAA",
+            "type": "public-key",
+            "response": {
+                "authenticatorData": "AAAA",
+                "clientDataJSON": "AAAA",
+                "signature": "AAAA"
+            }
+        }
+    })
+}
+
+async fn passkey_login_finish_status(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    handle: &str,
+) -> reqwest::StatusCode {
+    client
+        .post(format!("http://{addr}/auth/passkey/login/finish"))
+        .json(&unsigned_login_finish_body(handle))
+        .send()
+        .await
+        .expect("passkey login finish")
+        .status()
+}
+
+#[tokio::test]
+async fn passkey_login_ceremony_is_consumed_when_the_finish_fails() {
+    let tmp = TempDir::new().expect("tempdir");
+    let cfg = config_for(&tmp);
+    let server = start_server(&cfg).await;
+    register_user_with_passkey(&cfg, server.addr, "alice").await;
+    let client = cookie_client();
+    passkey_login_start(&client, server.addr, "alice").await;
+    assert!(
+        http_session_rows(&cfg.database_url)
+            .await
+            .iter()
+            .any(|row| row.data.contains(PASSKEY_AUTHENTICATION_SESSION_KEY)),
+        "the login start stores its ceremony"
+    );
+
+    assert_eq!(
+        passkey_login_finish_status(&client, server.addr, "alice").await,
+        401,
+        "an assertion no authenticator signed is refused"
+    );
+
+    assert!(
+        http_session_rows(&cfg.database_url)
+            .await
+            .iter()
+            .all(|row| !row.data.contains(PASSKEY_AUTHENTICATION_SESSION_KEY)),
+        "a failed finish must consume the ceremony"
+    );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn anonymous_passkey_login_finish_writes_no_session_row() {
+    let tmp = TempDir::new().expect("tempdir");
+    let cfg = config_for(&tmp);
+    let server = start_server(&cfg).await;
+    register_user_with_passkey(&cfg, server.addr, "alice").await;
+
+    assert_eq!(
+        passkey_login_finish_status(&reqwest::Client::new(), server.addr, "alice").await,
+        401
+    );
+
+    assert!(
+        http_session_rows(&cfg.database_url).await.is_empty(),
+        "a finish without a session must not create one"
+    );
+    server.stop().await;
+}
+
 #[tokio::test]
 async fn concurrent_passkey_login_starts_for_one_handle_keep_both_ceremonies() {
     let tmp = TempDir::new().expect("tempdir");
