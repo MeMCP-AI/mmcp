@@ -39,25 +39,33 @@ pub fn with_notice_flags(serve: Command) -> Command {
 #[must_use]
 pub fn notice_launch_from(serve: &ArgMatches) -> NoticeLaunch {
     let values = |key: ConfigKey| {
-        let value = serve
-            .get_one::<NoticeValueArg>(key.launch_flag())
-            .copied()
-            .map(NoticeValue::from);
-        match serve.value_source(key.launch_flag()) {
-            Some(ValueSource::CommandLine) => LaunchValues {
-                flag: value,
-                environment: None,
-            },
-            Some(ValueSource::EnvVariable) => LaunchValues {
-                flag: None,
-                environment: value,
-            },
-            _ => LaunchValues::default(),
-        }
+        launch_values(
+            serve.value_source(key.launch_flag()),
+            serve
+                .get_one::<NoticeValueArg>(key.launch_flag())
+                .copied()
+                .map(NoticeValue::from),
+        )
     };
     NoticeLaunch {
         md_project: values(ConfigKey::NoticeMdProject),
         md_user: values(ConfigKey::NoticeMdUser),
+    }
+}
+
+/// The layer a parsed value belongs to: the command line is the flag layer, the environment the environment layer.
+/// A default or an absent value belongs to neither.
+fn launch_values(source: Option<ValueSource>, value: Option<NoticeValue>) -> LaunchValues {
+    match source {
+        Some(ValueSource::CommandLine) => LaunchValues {
+            flag: value,
+            environment: None,
+        },
+        Some(ValueSource::EnvVariable) => LaunchValues {
+            flag: None,
+            environment: value,
+        },
+        _ => LaunchValues::default(),
     }
 }
 
@@ -95,6 +103,37 @@ mod tests {
         let launched = launch(&["--notice-md-user", "on", "--notice-md-project", "off"]);
         assert_eq!(launched.md_project.flag, Some(NoticeValue::Off));
         assert_eq!(launched.md_user.flag, Some(NoticeValue::On));
+    }
+
+    #[test]
+    fn a_value_read_from_the_environment_is_the_environment_layer_never_the_flag_layer() {
+        assert_eq!(
+            launch_values(Some(ValueSource::EnvVariable), Some(NoticeValue::On)),
+            LaunchValues {
+                flag: None,
+                environment: Some(NoticeValue::On)
+            }
+        );
+    }
+
+    #[test]
+    fn a_value_read_from_the_command_line_is_the_flag_layer_never_the_environment_layer() {
+        assert_eq!(
+            launch_values(Some(ValueSource::CommandLine), Some(NoticeValue::Off)),
+            LaunchValues {
+                flag: Some(NoticeValue::Off),
+                environment: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_default_or_an_absent_value_belongs_to_no_launch_layer() {
+        assert_eq!(
+            launch_values(Some(ValueSource::DefaultValue), Some(NoticeValue::On)),
+            LaunchValues::default()
+        );
+        assert_eq!(launch_values(None, None), LaunchValues::default());
     }
 
     #[test]
