@@ -23,6 +23,13 @@ pub enum DbError {
     #[error("credential owner {user_id} does not exist")]
     CredentialOwnerMissing { user_id: Uuid },
 
+    /// A credential write was refused because the owner's credential epoch moved
+    /// after the acting session was verified under `verified_epoch`.
+    #[error(
+        "credential epoch of user {user_id} moved since the session verified epoch {verified_epoch}"
+    )]
+    CredentialEpochChanged { user_id: Uuid, verified_epoch: i64 },
+
     /// A session's turn counter is already at `i32::MAX` and cannot be
     /// incremented without wrapping. Surfaced as data rather than
     /// silently saturating or wrapping, so a caller sees the counter

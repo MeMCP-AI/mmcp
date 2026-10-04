@@ -7,13 +7,15 @@ use crate::entities::passkey_credential::{ActiveModel, Column, Entity, Model};
 use crate::entities::user;
 use crate::error::DbError;
 use crate::repository::credential_epoch::{
-    CredentialChange, CredentialWrite, bump_credential_epoch,
+    CredentialChange, CredentialWrite, bump_credential_epoch, log_committed_credential_change,
 };
 
 /// Insert a new passkey credential and increment its owner's credential epoch.
 ///
 /// Both writes commit together, and the returned owner carries the epoch the commit produced.
 /// A missing owner is [`DbError::CredentialOwnerMissing`] and leaves no passkey row.
+/// A caller acting for a session passes the epoch that session was verified under as `verified_epoch`;
+/// an owner that moved past it is [`DbError::CredentialEpochChanged`] and also leaves no passkey row.
 pub async fn create(
     conn: &sea_orm::DatabaseConnection,
     id: Uuid,
@@ -21,9 +23,10 @@ pub async fn create(
     name: String,
     credential_json: String,
     created_at: i64,
+    verified_epoch: Option<i64>,
 ) -> Result<CredentialWrite<Model>, DbError> {
     let txn = conn.begin().await?;
-    let owner = bump_credential_epoch(&txn, user_id, CredentialChange::PasskeyAdded).await?;
+    let owner = bump_credential_epoch(&txn, user_id, verified_epoch).await?;
     let active = ActiveModel {
         id: Set(id),
         user_id: Set(user_id),
@@ -34,6 +37,7 @@ pub async fn create(
     };
     let credential = active.insert(&txn).await?;
     txn.commit().await?;
+    log_committed_credential_change(&owner, CredentialChange::PasskeyAdded);
     Ok(CredentialWrite { credential, owner })
 }
 
@@ -85,7 +89,7 @@ pub async fn delete(
     };
     // The increment comes first so concurrent changes of one user serialize on the user row.
     // A delete that removes no row rolls the increment back by dropping the transaction.
-    let owner = bump_credential_epoch(&txn, row.user_id, CredentialChange::PasskeyRemoved).await?;
+    let owner = bump_credential_epoch(&txn, row.user_id, None).await?;
     let deleted = Entity::delete_many()
         .filter(Column::Id.eq(id))
         .exec(&txn)
@@ -94,5 +98,6 @@ pub async fn delete(
         return Ok(None);
     }
     txn.commit().await?;
+    log_committed_credential_change(&owner, CredentialChange::PasskeyRemoved);
     Ok(Some(owner))
 }

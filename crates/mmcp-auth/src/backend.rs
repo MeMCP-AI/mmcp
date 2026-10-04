@@ -47,6 +47,9 @@ pub struct MmcpUser {
     pub handle: String,
     pub display_name: Option<String>,
     pub email: Option<String>,
+    /// Credential epoch of the row this user was built from.
+    /// A write acting for a session passes it as the epoch the session was verified under.
+    pub credential_epoch: i64,
     /// Stored as bytes so `session_auth_hash` can return a slice.
     auth_hash: Vec<u8>,
 }
@@ -63,6 +66,7 @@ impl MmcpUser {
             handle: model.handle,
             display_name: model.display_name,
             email: model.email,
+            credential_epoch: model.credential_epoch,
             auth_hash,
         }
     }
@@ -399,6 +403,11 @@ mod tests {
             "the user carries the digest of its own epoch and password hash"
         );
         assert_eq!(hash_of(Some(PHC_STRING), 2), hash_of(Some(PHC_STRING), 2));
+        assert_eq!(
+            MmcpUser::from_db(user_model(None, 5)).credential_epoch,
+            5,
+            "the user carries the epoch its hash was built from"
+        );
         assert_ne!(
             hash_of(Some(PHC_STRING), 2),
             hash_of(Some(CHANGED_PHC_STRING), 2),

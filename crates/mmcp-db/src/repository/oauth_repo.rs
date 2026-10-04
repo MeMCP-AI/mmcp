@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::entities::oauth_account::{ActiveModel, Column, Entity, Model};
 use crate::error::DbError;
 use crate::repository::credential_epoch::{
-    CredentialChange, CredentialWrite, bump_credential_epoch,
+    CredentialChange, CredentialWrite, bump_credential_epoch, log_committed_credential_change,
 };
 
 /// Parameters for linking a new OAuth account.
@@ -33,9 +33,10 @@ pub async fn create(
     new: NewOauthAccount,
 ) -> Result<CredentialWrite<Model>, DbError> {
     let txn = conn.begin().await?;
-    let owner = bump_credential_epoch(&txn, new.user_id, CredentialChange::OauthLinkAdded).await?;
+    let owner = bump_credential_epoch(&txn, new.user_id, None).await?;
     let credential = insert(&txn, new).await?;
     txn.commit().await?;
+    log_committed_credential_change(&owner, CredentialChange::OauthLinkAdded);
     Ok(CredentialWrite { credential, owner })
 }
 

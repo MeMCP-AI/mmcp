@@ -50,9 +50,17 @@ async fn stored_epoch(conn: &DatabaseConnection, user_id: Uuid) -> i64 {
 
 async fn add_passkey(conn: &DatabaseConnection, user_id: Uuid) -> Uuid {
     let id = Uuid::now_v7();
-    passkey_repo::create(conn, id, user_id, "key".into(), "{}".into(), CREATED_AT)
-        .await
-        .expect("create passkey");
+    passkey_repo::create(
+        conn,
+        id,
+        user_id,
+        "key".into(),
+        "{}".into(),
+        CREATED_AT,
+        None,
+    )
+    .await
+    .expect("create passkey");
     id
 }
 
@@ -242,6 +250,7 @@ async fn passkey_create_for_a_missing_user_leaves_no_passkey_row() {
         "key".into(),
         "{}".into(),
         CREATED_AT,
+        None,
     )
     .await;
 
@@ -258,6 +267,71 @@ async fn passkey_create_for_a_missing_user_leaves_no_passkey_row() {
 }
 
 #[tokio::test]
+async fn passkey_create_with_a_stale_verified_epoch_is_refused_and_leaves_no_row() {
+    let conn = migrated_connection().await;
+    let user_id = user_with_epoch_zero(&conn, "alice").await;
+    let verified_epoch = stored_epoch(&conn, user_id).await;
+    // Another session of the same user changes a credential after this session was verified.
+    oauth_repo::create(&conn, oauth_link(user_id, "gh-1"))
+        .await
+        .expect("link oauth account");
+    let moved_epoch = stored_epoch(&conn, user_id).await;
+    let passkey_id = Uuid::now_v7();
+
+    let outcome = passkey_repo::create(
+        &conn,
+        passkey_id,
+        user_id,
+        "key".into(),
+        "{}".into(),
+        CREATED_AT,
+        Some(verified_epoch),
+    )
+    .await;
+
+    assert!(
+        matches!(
+            outcome,
+            Err(DbError::CredentialEpochChanged { user_id: refused, verified_epoch: stale })
+                if refused == user_id && stale == verified_epoch
+        ),
+        "found {outcome:?}"
+    );
+    assert!(
+        passkey_repo::find_by_id(&conn, passkey_id)
+            .await
+            .expect("query passkey")
+            .is_none()
+    );
+    assert_eq!(
+        stored_epoch(&conn, user_id).await,
+        moved_epoch,
+        "a refused write must not move the epoch"
+    );
+}
+
+#[tokio::test]
+async fn passkey_create_with_the_current_verified_epoch_succeeds() {
+    let conn = migrated_connection().await;
+    let user_id = user_with_epoch_zero(&conn, "alice").await;
+    let verified_epoch = stored_epoch(&conn, user_id).await;
+
+    let write = passkey_repo::create(
+        &conn,
+        Uuid::now_v7(),
+        user_id,
+        "key".into(),
+        "{}".into(),
+        CREATED_AT,
+        Some(verified_epoch),
+    )
+    .await
+    .expect("the session is still current");
+
+    assert_eq!(write.owner.credential_epoch, verified_epoch + 1);
+}
+
+#[tokio::test]
 async fn credential_writers_return_the_epoch_they_committed() {
     let conn = migrated_connection().await;
     let user_id = user_with_epoch_zero(&conn, "alice").await;
@@ -270,6 +344,7 @@ async fn credential_writers_return_the_epoch_they_committed() {
         "key".into(),
         "{}".into(),
         CREATED_AT,
+        None,
     )
     .await
     .expect("create passkey");

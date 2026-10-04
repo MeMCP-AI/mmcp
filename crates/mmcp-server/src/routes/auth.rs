@@ -29,6 +29,7 @@ use mmcp_auth::{
     AuthSession, Credentials, MmcpUser, OauthFlowClaims, OauthFlowOpenError, OauthFlowTokenCodec,
     hash_password, validate_password_policy,
 };
+use mmcp_db::DbError;
 use mmcp_db::repository::{passkey_repo, user_repo};
 use oauth2::{
     AuthorizationCode, CsrfToken, PkceCodeChallenge, PkceCodeVerifier, Scope, TokenResponse,
@@ -634,6 +635,8 @@ struct PasskeyRegFinishRequest {
 ///
 /// Adding a passkey is a credential change, which signs the account's other sessions out.
 /// The acting session is re-stamped with the credential state the write committed, so it stays signed in.
+/// The write is refused when another session changed a credential after this one was verified,
+/// so this session is never re-stamped past a change that should have signed it out.
 async fn passkey_register_finish(
     mut auth_session: AuthSession,
     State(state): State<ServerState>,
@@ -671,9 +674,21 @@ async fn passkey_register_finish(
         req.credential_name,
         cred_json,
         now,
+        Some(session_user.credential_epoch),
     )
     .await
-    .map_err(into_generic_response)?;
+    .map_err(|error| match error {
+        // Another session changed a credential after this one was verified: this session is signed out.
+        DbError::CredentialEpochChanged { .. } => {
+            tracing::warn!(
+                user_id = %session_user.id,
+                error = %error,
+                "passkey registration refused, the session predates a credential change"
+            );
+            AuthHttpError::Unauthorized("authentication required")
+        }
+        other => into_generic_response(other),
+    })?;
 
     // The passkey stays stored when the re-stamp fails: the acting session then signs out at its next request.
     restamp_session_after_credential_change(&mut auth_session, written.owner)

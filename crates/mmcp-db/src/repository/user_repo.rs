@@ -10,6 +10,7 @@ use crate::entities::user::{ActiveModel, Column, Entity, Model};
 use crate::error::DbError;
 use crate::repository::credential_epoch::{
     CredentialChange, INITIAL_CREDENTIAL_EPOCH, bump_credential_epoch,
+    log_committed_credential_change,
 };
 use crate::repository::oauth_repo::{self, NewOauthAccount};
 
@@ -84,12 +85,13 @@ pub async fn update_profile(
         return Ok(active.update(conn).await?);
     };
     let txn = conn.begin().await?;
-    let bumped = bump_credential_epoch(&txn, id, CredentialChange::PasswordSet).await?;
+    let bumped = bump_credential_epoch(&txn, id, None).await?;
     let mut active: ActiveModel = bumped.into();
     active.display_name = Set(display_name);
     active.password_hash = Set(Some(hash));
     let updated = active.update(&txn).await?;
     txn.commit().await?;
+    log_committed_credential_change(&updated, CredentialChange::PasswordSet);
     Ok(updated)
 }
 

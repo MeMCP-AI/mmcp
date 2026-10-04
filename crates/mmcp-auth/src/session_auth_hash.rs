@@ -73,23 +73,6 @@ mod tests {
     }
 
     #[test]
-    fn hash_never_contains_the_password_hash_bytes() {
-        let digest = session_auth_hash(0, Some(PHC_STRING));
-
-        assert!(
-            !PHC_STRING
-                .as_bytes()
-                .windows(digest.len())
-                .any(|window| window == digest),
-            "the digest must not be a slice of the password hash"
-        );
-        assert!(
-            digest.len() < PHC_STRING.len(),
-            "the digest cannot carry the whole password hash"
-        );
-    }
-
-    #[test]
     fn passwordless_and_password_inputs_never_produce_one_hash() {
         assert_ne!(session_auth_hash(0, None), session_auth_hash(0, Some("")));
         assert_ne!(

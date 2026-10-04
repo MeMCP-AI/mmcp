@@ -662,6 +662,7 @@ async fn passkey_credential_create_find_update_and_delete_round_trip() {
         "laptop".into(),
         r#"{"counter":0}"#.into(),
         10,
+        None,
     )
     .await
     .expect("insert passkey");

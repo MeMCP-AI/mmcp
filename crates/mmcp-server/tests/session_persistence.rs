@@ -533,6 +533,7 @@ async fn register_user_with_passkey(
         "fixture".to_owned(),
         enrolled_passkey_json().to_string(),
         0,
+        None,
     )
     .await
     .expect("enroll the fixture passkey");

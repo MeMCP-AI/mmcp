@@ -104,6 +104,10 @@ fn bumps(text: &str) -> bool {
     text.contains("bump_credential_epoch(")
 }
 
+fn reports(text: &str) -> bool {
+    text.contains("log_committed_credential_change(")
+}
+
 #[test]
 fn every_credential_writer_is_classified_and_honours_its_class() {
     for (file_name, classified) in CLASSIFIED_WRITERS {
@@ -117,10 +121,16 @@ fn every_credential_writer_is_classified_and_honours_its_class() {
                     !writes(&text),
                     "{file_name}::{name} writes but is not classified in the guard table"
                 ),
-                Some(Class::Bumps) => assert!(
-                    bumps(&text),
-                    "{file_name}::{name} changes a credential but never calls bump_credential_epoch"
-                ),
+                Some(Class::Bumps) => {
+                    assert!(
+                        bumps(&text),
+                        "{file_name}::{name} changes a credential but never calls bump_credential_epoch"
+                    );
+                    assert!(
+                        reports(&text),
+                        "{file_name}::{name} changes a credential but never reports the committed change"
+                    );
+                }
                 Some(Class::Initial | Class::NonCredential) => assert!(
                     !bumps(&text),
                     "{file_name}::{name} is classified {class:?} but calls bump_credential_epoch"

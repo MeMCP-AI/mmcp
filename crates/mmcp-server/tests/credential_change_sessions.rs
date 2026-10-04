@@ -181,6 +181,7 @@ async fn add_passkey(server: &TestServer, user_id: Uuid) -> Uuid {
         "key".to_owned(),
         "{}".to_owned(),
         0,
+        None,
     )
     .await
     .expect("add a passkey");
