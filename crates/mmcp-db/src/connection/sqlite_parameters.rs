@@ -32,3 +32,64 @@ pub(super) fn canonical_by_case(key: &str) -> Option<&'static str> {
         .find(|accepted| accepted.eq_ignore_ascii_case(key))
         .copied()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use sea_orm::sqlx::sqlite::SqliteConnectOptions;
+
+    use super::*;
+
+    /// Whether sqlx-sqlite takes `key=value` as the query of a URL.
+    fn sqlx_accepts(key: &str, value: &str) -> bool {
+        SqliteConnectOptions::from_str(&format!("sqlite:x.db?{key}={value}")).is_ok()
+    }
+
+    /// A value of a key that takes free text.
+    const FREE_TEXT_VALUE: &str = "any";
+
+    /// The values that sqlx-sqlite 0.9.0 documents for `mode`, `cache` and `immutable`, written out here and not read from the mirror.
+    const DRIVER_VALUES: [&str; 10] = [
+        "ro", "rw", "rwc", "memory", "private", "shared", "true", "false", "1", "0",
+    ];
+
+    /// Values that sqlx-sqlite could widen to, and that the mirror must keep refusing while sqlx does.
+    const NEAR_MISSES: [&str; 6] = ["RO", "Private", "TRUE", "yes", "2", ""];
+
+    #[test]
+    fn sqlx_sqlite_accepts_every_mirrored_key_with_every_mirrored_value() {
+        for key in ACCEPTED_KEYS {
+            let values = closed_values(key).unwrap_or(&[FREE_TEXT_VALUE]);
+            for value in values {
+                assert!(sqlx_accepts(key, value), "{key}={value}");
+            }
+        }
+    }
+
+    #[test]
+    fn sqlx_sqlite_refuses_a_key_the_mirror_does_not_hold() {
+        for key in ["password", "token", "Mode", "cached", "mode "] {
+            assert!(!ACCEPTED_KEYS.contains(&key), "{key}");
+            assert!(!sqlx_accepts(key, "x"), "{key}");
+        }
+    }
+
+    /// The closed value sets equal the ones sqlx-sqlite takes, as far as a probe of its documented values and the near misses shows.
+    #[test]
+    fn the_closed_value_sets_agree_with_sqlx_sqlite_on_every_probe() {
+        let probes: Vec<&str> = DRIVER_VALUES.into_iter().chain(NEAR_MISSES).collect();
+        for key in ACCEPTED_KEYS {
+            let Some(values) = closed_values(key) else {
+                continue;
+            };
+            for probe in &probes {
+                assert_eq!(
+                    sqlx_accepts(key, probe),
+                    values.contains(probe),
+                    "{key}={probe}"
+                );
+            }
+        }
+    }
+}
