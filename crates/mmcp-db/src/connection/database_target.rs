@@ -250,6 +250,23 @@ mod tests {
     }
 
     #[test]
+    fn a_dot_segment_cannot_erase_the_at_sign_of_misplaced_password_text() {
+        for input in [
+            "postgres://u:123/SECRET_1/tail@db/../app",
+            "postgres://u:123/SECRET_2/tail@db/%2e%2e/app",
+            "postgres://u:123/SECRET_3/tail@db/%2E%2E/app",
+            "postgres://u:123/SECRET_4/tail@db/./app",
+        ] {
+            assert_eq!(
+                input.parse::<DatabaseTarget>().unwrap_err(),
+                DatabaseUrlError::AtSignOutsideUserinfo,
+                "{input}"
+            );
+            printed(input, "SECRET_").unwrap_err();
+        }
+    }
+
+    #[test]
     fn unparsable_text_is_refused_with_the_parse_error_as_source() {
         for input in [
             "postgres://mmcp:SECRET_1@[bad-host/app",

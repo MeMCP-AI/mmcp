@@ -36,7 +36,7 @@ impl PostgresTarget {
         if url.fragment().is_some() {
             return Err(DatabaseUrlError::FragmentPresent);
         }
-        if has_at_sign_outside_userinfo(url) {
+        if has_at_sign_outside_userinfo(raw) {
             return Err(DatabaseUrlError::AtSignOutsideUserinfo);
         }
         if url.query().is_some_and(has_valueless_entry) {
