@@ -77,6 +77,63 @@ async fn logout_ends_the_session_that_login_created() {
     );
 }
 
+/// The `name=value` pair of the session cookie that a login of the test account set.
+async fn login_cookie_pair(addr: SocketAddr) -> String {
+    let client = Client::new();
+    let register = client
+        .post(format!("http://{addr}/auth/register"))
+        .json(&serde_json::json!({ "handle": HANDLE, "password": PASSWORD }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(register.status(), StatusCode::CREATED);
+    let login = client
+        .post(format!("http://{addr}/auth/login"))
+        .json(&serde_json::json!({ "handle": HANDLE, "password": PASSWORD }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+    let set_cookie = login
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .expect("login sets the session cookie")
+        .to_str()
+        .unwrap();
+    set_cookie.split(';').next().unwrap().to_owned()
+}
+
+async fn status_with_cookie(addr: SocketAddr, path: &str, cookie_pair: &str) -> StatusCode {
+    Client::new()
+        .post(format!("http://{addr}{path}"))
+        .header(reqwest::header::COOKIE, cookie_pair)
+        .send()
+        .await
+        .unwrap()
+        .status()
+}
+
+#[tokio::test]
+async fn the_original_cookie_is_dead_after_logout() {
+    let addr = start_server().await;
+    let cookie_pair = login_cookie_pair(addr).await;
+    assert_eq!(
+        status_with_cookie(addr, "/auth/passkey/register/start", &cookie_pair).await,
+        StatusCode::OK
+    );
+
+    assert_eq!(
+        status_with_cookie(addr, "/auth/logout", &cookie_pair).await,
+        StatusCode::NO_CONTENT
+    );
+
+    assert_eq!(
+        status_with_cookie(addr, "/auth/passkey/register/start", &cookie_pair).await,
+        StatusCode::UNAUTHORIZED,
+        "a cookie captured before the logout authorizes nothing after it"
+    );
+}
+
 #[tokio::test]
 async fn logout_is_idempotent_and_needs_no_session() {
     let addr = start_server().await;
