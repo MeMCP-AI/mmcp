@@ -29,6 +29,30 @@ pub enum DbError {
         scheme: String,
     },
 
+    /// The driver rejected the connection options that a database target spells.
+    /// The parse errors left after the target's own checks carry no value of the URL.
+    #[error("the database connection options were rejected")]
+    ConnectionOptionsRejected(#[source] sea_orm::sqlx::Error),
+
+    /// The connection to the database could not be established.
+    #[error("the database connection could not be established")]
+    ConnectionFailed(#[source] sea_orm::sqlx::Error),
+
+    /// The password is not valid under SASLprep, which SCRAM authentication needs.
+    /// The driver error that names the character is dropped.
+    #[error("the database password holds a character that SASLprep does not allow")]
+    PasswordRejectedBySaslprep,
+
+    /// The user name is not valid under SASLprep, which SCRAM authentication needs.
+    /// The driver error that names the character is dropped.
+    #[error("the database user name holds a character that SASLprep does not allow")]
+    UsernameRejectedBySaslprep,
+
+    /// The driver rejected the connection configuration for a reason this crate does not know.
+    /// The driver error is dropped, since it may quote a value.
+    #[error("the database connection configuration was rejected")]
+    ConnectionConfigurationRejected,
+
     /// A row was expected but none was found.
     #[error("record not found")]
     NotFound,
