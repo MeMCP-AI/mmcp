@@ -1,6 +1,7 @@
 //! Server configuration loaded from environment variables.
 
 mod cascade;
+mod cors_origins;
 mod database_url_redaction;
 mod defaults;
 mod env_value;
@@ -12,7 +13,8 @@ mod server_config;
 pub mod test_support;
 
 pub use defaults::{
-    MAX_HANDLE_LENGTH_ENV, MAX_PASSWORD_LENGTH_ENV, MIN_PASSWORD_LENGTH_ENV, WEBUI_DIR_ENV,
+    CORS_ALLOWED_ORIGINS_ENV, MAX_HANDLE_LENGTH_ENV, MAX_PASSWORD_LENGTH_ENV,
+    MIN_PASSWORD_LENGTH_ENV, WEBUI_DIR_ENV,
 };
 pub use error::ConfigError;
 pub use oauth_provider::OAuthProviderConfig;

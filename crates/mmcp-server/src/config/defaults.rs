@@ -46,5 +46,11 @@ pub const ALLOW_SELF_REGISTRATION_ENV: &str = "MMCP_ALLOW_SELF_REGISTRATION";
 /// Unset or blank means the server answers the API only.
 pub const WEBUI_DIR_ENV: &str = "MMCP_WEBUI_DIR";
 
+/// Environment variable listing the origins allowed to call the API from a
+/// browser on another origin, comma-separated.
+/// Second in precedence behind an explicit `--cors-allowed-origins` CLI override.
+/// Unset or blank attaches no CORS layer.
+pub const CORS_ALLOWED_ORIGINS_ENV: &str = "MMCP_CORS_ALLOWED_ORIGINS";
+
 /// Floor for the password-length tunables: a zero-byte bound is never legitimate.
 pub(crate) const MIN_VALID_LENGTH_LIMIT: usize = 1;

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
+use axum::http::HeaderValue;
 use mmcp_auth::{MmcpAuthBackend, OauthFlowTokenCodec, TokenIssuer, TokenVerifier};
 use mmcp_core::lock_registry::{KeyedLockRegistry, PrunePolicy};
 use mmcp_db::{Database, connect};
@@ -65,6 +66,9 @@ pub struct ServerStateInner {
     /// Directory of the built web UI; see
     /// [`crate::config::ServerConfig::webui_dir`].
     pub webui_dir: Option<PathBuf>,
+    /// Origins allowed to call the API cross-origin; see
+    /// [`crate::config::ServerConfig::cors_allowed_origins`].
+    pub cors_allowed_origins: Vec<HeaderValue>,
 
     /// Per-group async mutex set used to serialize writes (git
     /// `receive-pack`) against the same bare repository. Reads
@@ -138,6 +142,7 @@ impl ServerState {
             max_handle_length: cfg.max_handle_length,
             allow_self_registration: cfg.allow_self_registration,
             webui_dir: cfg.webui_dir.clone(),
+            cors_allowed_origins: cfg.cors_allowed_origins.clone(),
             repo_locks: KeyedLockRegistry::new(PrunePolicy::Always, || AsyncMutex::new(())),
         })))
     }

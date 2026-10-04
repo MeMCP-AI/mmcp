@@ -23,4 +23,8 @@ pub struct ServerConfigOverrides {
     pub max_handle_length: Option<usize>,
     /// `--webui-dir`; highest-precedence tier, beats `MMCP_WEBUI_DIR`.
     pub webui_dir: Option<PathBuf>,
+    /// `--cors-allowed-origins`; highest-precedence tier, beats
+    /// `MMCP_CORS_ALLOWED_ORIGINS` even when blank, so an empty flag
+    /// disables CORS whatever the environment holds.
+    pub cors_allowed_origins: Option<String>,
 }

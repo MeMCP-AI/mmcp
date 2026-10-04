@@ -194,6 +194,19 @@ impl TestServerConfigBuilder {
         self
     }
 
+    /// Overrides the origins allowed to call the API cross-origin
+    /// (`ServerConfig::cors_allowed_origins`). [`minimal_server_config`]
+    /// defaults this to empty (no CORS layer); each entry must be a
+    /// valid `Origin` header value.
+    #[allow(dead_code)] // Live in sibling test binaries; each tests/*.rs compiles common as its own crate.
+    pub fn cors_allowed_origins(mut self, origins: &[&str]) -> Self {
+        self.config.cors_allowed_origins = origins
+            .iter()
+            .map(|origin| origin.parse().expect("valid origin header value"))
+            .collect();
+        self
+    }
+
     /// Finishes the builder, returning the built `ServerConfig`.
     pub fn build(self) -> ServerConfig {
         self.config

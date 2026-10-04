@@ -3,14 +3,17 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use axum::http::HeaderValue;
+
 use super::cascade::{
     load_user_limits, resolve_max_handle_length, resolve_max_password_length,
     resolve_min_password_length,
 };
+use super::cors_origins::parse_cors_origins;
 use super::database_url_redaction::redact_database_url;
 use super::defaults::{
-    ALLOW_SELF_REGISTRATION_ENV, DEFAULT_BIND, DEFAULT_DATABASE_URL, DEFAULT_REPO_ROOT,
-    WEBUI_DIR_ENV,
+    ALLOW_SELF_REGISTRATION_ENV, CORS_ALLOWED_ORIGINS_ENV, DEFAULT_BIND, DEFAULT_DATABASE_URL,
+    DEFAULT_REPO_ROOT, WEBUI_DIR_ENV,
 };
 use super::env_value::non_blank;
 use super::error::ConfigError;
@@ -37,6 +40,7 @@ use super::overrides::ServerConfigOverrides;
 /// | `MMCP_MAX_HANDLE_LENGTH`          | see `max_handle_length` cascade below |
 /// | `MMCP_ALLOW_SELF_REGISTRATION`    | `false` (self-registration disabled) |
 /// | `MMCP_WEBUI_DIR`                  | (absent or blank = API only) |
+/// | `MMCP_CORS_ALLOWED_ORIGINS`       | (absent or blank = no CORS layer) |
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub bind: SocketAddr,
@@ -93,6 +97,12 @@ pub struct ServerConfig {
     /// blank and no `--webui-dir` is given) serves the API only.
     /// Every file in the directory is publicly readable.
     pub webui_dir: Option<PathBuf>,
+    /// Origins allowed to call the API from a browser on another origin,
+    /// as `Origin` header values. Empty (the default when
+    /// `MMCP_CORS_ALLOWED_ORIGINS` is unset or blank and no
+    /// `--cors-allowed-origins` is given) attaches no CORS layer.
+    /// Entries that are not an exact `http` or `https` origin are dropped.
+    pub cors_allowed_origins: Vec<HeaderValue>,
 }
 
 impl ServerConfig {
@@ -224,6 +234,14 @@ impl ServerConfig {
         let webui_dir = overrides
             .webui_dir
             .or_else(|| non_blank(get(WEBUI_DIR_ENV).as_deref()).map(PathBuf::from));
+        let cors_allowed_origins = overrides
+            .cors_allowed_origins
+            .or_else(|| get(CORS_ALLOWED_ORIGINS_ENV))
+            .map(|raw| parse_cors_origins(&raw))
+            .unwrap_or_default();
+        for rejected_cors_origin in &cors_allowed_origins.rejected {
+            tracing::warn!(rejected_cors_origin = %rejected_cors_origin);
+        }
 
         Ok(Self {
             bind,
@@ -238,6 +256,7 @@ impl ServerConfig {
             max_handle_length,
             allow_self_registration,
             webui_dir,
+            cors_allowed_origins: cors_allowed_origins.accepted,
         })
     }
 }
@@ -312,7 +331,8 @@ mod tests {
     use super::*;
     use crate::config::test_support::WarnCounter;
     use crate::config::{
-        MAX_HANDLE_LENGTH_ENV, MAX_PASSWORD_LENGTH_ENV, MIN_PASSWORD_LENGTH_ENV, WEBUI_DIR_ENV,
+        CORS_ALLOWED_ORIGINS_ENV, MAX_HANDLE_LENGTH_ENV, MAX_PASSWORD_LENGTH_ENV,
+        MIN_PASSWORD_LENGTH_ENV, WEBUI_DIR_ENV,
     };
     use std::collections::HashMap;
 
@@ -879,6 +899,74 @@ mod tests {
         )
         .expect("the OS CSPRNG is available in the test environment");
         assert_eq!(cfg.webui_dir, Some(PathBuf::from("/from/flag")));
+    }
+
+    fn cors_origin_strings(cfg: &ServerConfig) -> Vec<&str> {
+        cfg.cors_allowed_origins
+            .iter()
+            .map(|origin| origin.to_str().expect("origins are ASCII"))
+            .collect()
+    }
+
+    #[test]
+    fn cors_allowed_origins_are_empty_when_unset_or_blank() {
+        assert!(from_map(&[]).cors_allowed_origins.is_empty());
+        assert!(
+            from_map(&[(CORS_ALLOWED_ORIGINS_ENV, "  ")])
+                .cors_allowed_origins
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn cors_allowed_origins_env_is_parsed_into_exact_origins() {
+        let cfg = from_map(&[(
+            CORS_ALLOWED_ORIGINS_ENV,
+            "http://127.0.0.1:3000, https://mmcp.example.com/",
+        )]);
+        assert_eq!(
+            cors_origin_strings(&cfg),
+            ["http://127.0.0.1:3000", "https://mmcp.example.com"]
+        );
+    }
+
+    #[test]
+    fn cors_allowed_origins_override_beats_env_even_when_blank() {
+        let from_env =
+            |key: &str| (key == CORS_ALLOWED_ORIGINS_ENV).then(|| "http://env.example".to_string());
+        let flag = ServerConfig::from_source_with_overrides(
+            from_env,
+            ServerConfigOverrides {
+                cors_allowed_origins: Some("http://flag.example".to_string()),
+                ..ServerConfigOverrides::default()
+            },
+        )
+        .expect("the OS CSPRNG is available in the test environment");
+        assert_eq!(cors_origin_strings(&flag), ["http://flag.example"]);
+
+        let blank_flag = ServerConfig::from_source_with_overrides(
+            from_env,
+            ServerConfigOverrides {
+                cors_allowed_origins: Some(String::new()),
+                ..ServerConfigOverrides::default()
+            },
+        )
+        .expect("the OS CSPRNG is available in the test environment");
+        assert!(blank_flag.cors_allowed_origins.is_empty());
+    }
+
+    #[test]
+    fn each_rejected_cors_origin_warns_once_and_is_not_allowed() {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let subscriber = WarnCounter(count.clone());
+        let cfg = tracing::subscriber::with_default(subscriber, || {
+            from_map(&[(
+                CORS_ALLOWED_ORIGINS_ENV,
+                "http://ok.example,*,ftp://bad.example",
+            )])
+        });
+        assert_eq!(cors_origin_strings(&cfg), ["http://ok.example"]);
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     // allow_self_registration: defaults closed.

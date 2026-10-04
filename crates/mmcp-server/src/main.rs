@@ -46,6 +46,9 @@ enum Command {
 
         #[arg(long)]
         webui_dir: Option<PathBuf>,
+
+        #[arg(long)]
+        cors_allowed_origins: Option<String>,
     },
     /// Probe the running server's `/health` endpoint on loopback.
     ///
@@ -68,6 +71,7 @@ fn default_serve_command() -> Command {
         max_password_length: None,
         max_handle_length: None,
         webui_dir: None,
+        cors_allowed_origins: None,
     }
 }
 
@@ -80,12 +84,14 @@ async fn main() -> Result<()> {
             max_password_length,
             max_handle_length,
             webui_dir,
+            cors_allowed_origins,
         } => {
             run_server(config::ServerConfigOverrides {
                 min_password_length,
                 max_password_length,
                 max_handle_length,
                 webui_dir,
+                cors_allowed_origins,
             })
             .await
         }
