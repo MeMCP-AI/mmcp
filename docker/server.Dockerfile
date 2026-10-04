@@ -91,6 +91,7 @@ RUN xx-cargo build --release --locked -p mmcp-server \
 RUN mkdir -p /staging/data/repos
 
 FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
+LABEL org.opencontainers.image.licenses="MIT OR Apache-2.0"
 COPY --from=builder /out/mmcp-server /usr/local/bin/mmcp-server
 COPY --from=builder --chown=nonroot:nonroot /staging/data /data
 COPY --from=webui /build/build /usr/share/mmcp/webui
