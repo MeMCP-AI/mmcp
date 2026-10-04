@@ -3,8 +3,10 @@
 # Build the web UI as a static SvelteKit bundle and the mmcp-server binary with cargo-chef dependency caching.
 # Both are copied into a distroless runtime image.
 # The server serves the bundle on its own origin from MMCP_WEBUI_DIR.
-# The workspace is pure Rust (gix, rustls, sqlx with bundled sqlite).
-# distroless-cc therefore provides everything needed at runtime: libc, libgcc, CA roots, tzdata.
+# The binary links the system OpenSSL through webauthn-rs.
+# distroless-cc provides it at runtime with glibc, libgcc, CA roots and tzdata.
+# Each platform compiles natively: CI builds linux/amd64 and linux/arm64 on runners of that architecture.
+# A local build for a foreign platform runs under emulation and is slow.
 
 # The bundle is architecture independent.
 # It builds once on the build platform instead of once per target architecture under emulation.
@@ -27,8 +29,8 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
 COPY --from=planner /build/recipe.json recipe.json
-# Cook the dependency graph for mmcp-server only. This layer is cached
-# until Cargo.toml / Cargo.lock change.
+# Compile the dependency graph of mmcp-server only.
+# This layer is reused until Cargo.toml or Cargo.lock change.
 RUN cargo chef cook --release --recipe-path recipe.json -p mmcp-server
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
