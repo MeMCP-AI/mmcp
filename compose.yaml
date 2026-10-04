@@ -33,6 +33,8 @@ services:
     restart: unless-stopped
     environment:
       MMCP_BIND: 0.0.0.0:8787
+      # The password enters this URL as written.
+      # Keep `/`, `?`, `#` and `%` out of POSTGRES_PASSWORD, since the server refuses the first three and reads a `%` pair as an encoded character.
       MMCP_DATABASE_URL: postgres://${POSTGRES_USER:-mmcp}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-mmcp}
       MMCP_REPO_ROOT: /data/repos
       # The key signs bearer tokens and pending OAuth sign-ins, so changing it invalidates them.
