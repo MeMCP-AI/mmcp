@@ -10,6 +10,25 @@ pub enum DbError {
     #[error("database error: {0}")]
     Orm(#[from] sea_orm::DbErr),
 
+    /// The database URL cannot be parsed.
+    /// `redacted_url` is [`crate::redact_database_url`] of it, never the raw text.
+    #[error("the database URL, shown redacted as `{redacted_url}`, cannot be parsed")]
+    DatabaseUrlUnparsable {
+        redacted_url: String,
+        #[source]
+        source: url::ParseError,
+    },
+
+    /// The database URL names a scheme that no compiled-in driver serves.
+    /// `redacted_url` is [`crate::redact_database_url`] of it, never the raw text.
+    #[error(
+        "the database URL `{redacted_url}` names the scheme `{scheme}`, which no driver serves"
+    )]
+    DatabaseUrlSchemeUnsupported {
+        redacted_url: String,
+        scheme: String,
+    },
+
     /// A row was expected but none was found.
     #[error("record not found")]
     NotFound,
