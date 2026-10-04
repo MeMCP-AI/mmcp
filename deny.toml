@@ -9,8 +9,10 @@ ignore = []
 [licenses]
 # Every SPDX license actually present in the resolved dependency
 # graph, confirmed via `cargo deny check licenses` against the
-# built-in strict default before this file existed. AGPL-3.0-only
-# (evalexpr, pulled in transitively via the acdc-parser fork) is
+# built-in strict default before this file existed.
+# BSL-1.0 (xxhash-rust) joined the list afterwards.
+# It is permissive, approved by the OSI and the FSF, and asks for no notice in a binary distribution.
+# AGPL-3.0-only (evalexpr, pulled in transitively via the acdc-parser fork) is
 # deliberately NOT allow-listed here: it is a real, unresolved
 # licensing finding, not config-absence noise, and stays surfaced
 # until the operator decides how to handle it.
@@ -19,6 +21,7 @@ allow = [
     "Apache-2.0",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "BSL-1.0",
     "CC0-1.0",
     "CDLA-Permissive-2.0",
     "ISC",
