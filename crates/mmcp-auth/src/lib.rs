@@ -23,5 +23,6 @@ pub use password::{
     verify_password,
 };
 pub use token::{
-    OauthFlowClaims, OauthFlowTokenCodec, OauthFlowTokenError, TokenIssuer, TokenVerifier,
+    OauthFlowClaims, OauthFlowOpenError, OauthFlowSealError, OauthFlowTokenCodec, TokenIssuer,
+    TokenVerifier,
 };

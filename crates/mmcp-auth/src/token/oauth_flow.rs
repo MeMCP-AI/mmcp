@@ -8,7 +8,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::defaults::OAUTH_FLOW_TOKEN_IMPLICIT_ASSERTION;
-use crate::token::error::OauthFlowTokenError;
+use crate::token::error::{OauthFlowOpenError, OauthFlowSealError};
 use crate::token::paseto_local::{self, LocalKey, V4_LOCAL_KEY_BYTES};
 
 /// Claims of one pending OAuth authorization.
@@ -52,9 +52,9 @@ impl OauthFlowTokenCodec {
     }
 
     /// Seal `claims` into a token.
-    pub fn seal(&self, claims: &OauthFlowClaims) -> Result<String, OauthFlowTokenError> {
+    pub fn seal(&self, claims: &OauthFlowClaims) -> Result<String, OauthFlowSealError> {
         paseto_local::seal(&self.key, claims, Some(OAUTH_FLOW_TOKEN_IMPLICIT_ASSERTION))
-            .map_err(|source| OauthFlowTokenError::Seal { source })
+            .map_err(|source| OauthFlowSealError { source })
     }
 
     /// Open `token` and return its claims.
@@ -66,18 +66,18 @@ impl OauthFlowTokenCodec {
         token: &str,
         expected_provider: &str,
         now_secs: i64,
-    ) -> Result<OauthFlowClaims, OauthFlowTokenError> {
+    ) -> Result<OauthFlowClaims, OauthFlowOpenError> {
         let claims: OauthFlowClaims =
             paseto_local::open(&self.key, token, Some(OAUTH_FLOW_TOKEN_IMPLICIT_ASSERTION))
-                .map_err(|source| OauthFlowTokenError::Open { source })?;
+                .map_err(|source| OauthFlowOpenError::Unreadable { source })?;
         if claims.expires_at <= now_secs {
-            return Err(OauthFlowTokenError::Expired {
+            return Err(OauthFlowOpenError::Expired {
                 expires_at: claims.expires_at,
                 now: now_secs,
             });
         }
         if claims.provider != expected_provider {
-            return Err(OauthFlowTokenError::ProviderMismatch {
+            return Err(OauthFlowOpenError::ProviderMismatch {
                 token_provider: claims.provider,
                 callback_provider: expected_provider.to_owned(),
             });
@@ -121,7 +121,7 @@ mod tests {
 
         assert!(matches!(
             codec.open(&token, "github", claims.expires_at),
-            Err(OauthFlowTokenError::Expired { .. })
+            Err(OauthFlowOpenError::Expired { .. })
         ));
 
         let mut tampered = token.clone().into_bytes();
@@ -130,12 +130,12 @@ mod tests {
         let tampered = String::from_utf8(tampered).unwrap();
         assert!(matches!(
             codec.open(&tampered, "github", NOW_SECS),
-            Err(OauthFlowTokenError::Open { .. })
+            Err(OauthFlowOpenError::Unreadable { .. })
         ));
 
         assert!(matches!(
             codec.open(&token, "google", NOW_SECS),
-            Err(OauthFlowTokenError::ProviderMismatch { .. })
+            Err(OauthFlowOpenError::ProviderMismatch { .. })
         ));
     }
 
@@ -166,7 +166,7 @@ mod tests {
         assert!(
             matches!(
                 codec.open(&bearer_token, "github", NOW_SECS),
-                Err(OauthFlowTokenError::Open {
+                Err(OauthFlowOpenError::Unreadable {
                     source: AuthError::Token(_)
                 })
             ),
@@ -183,7 +183,7 @@ mod tests {
         other_key[0] ^= 0xFF;
         assert!(matches!(
             OauthFlowTokenCodec::from_key(&other_key).open(&token, "github", NOW_SECS),
-            Err(OauthFlowTokenError::Open { .. })
+            Err(OauthFlowOpenError::Unreadable { .. })
         ));
     }
 

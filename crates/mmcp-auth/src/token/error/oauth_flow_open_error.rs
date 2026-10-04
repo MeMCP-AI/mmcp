@@ -1,24 +1,17 @@
-//! Error type of the OAuth flow token codec.
+//! Error type of opening an OAuth flow token.
 
 use thiserror::Error;
 
 use crate::error::AuthError;
 
-/// Failures sealing or opening an OAuth flow token.
+/// Why an OAuth flow token was refused at the callback.
 ///
 /// Neither the CSRF state nor the PKCE verifier appears in any variant.
 #[derive(Debug, Error)]
-pub enum OauthFlowTokenError {
-    /// The claims could not be sealed into a token.
-    #[error("failed to seal the OAuth flow token")]
-    Seal {
-        #[source]
-        source: AuthError,
-    },
-
+pub enum OauthFlowOpenError {
     /// The token is malformed, tampered with, sealed under another key, or sealed for another purpose.
     #[error("failed to open the OAuth flow token")]
-    Open {
+    Unreadable {
         #[source]
         source: AuthError,
     },
