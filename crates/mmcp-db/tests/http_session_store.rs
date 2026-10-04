@@ -69,9 +69,10 @@ async fn migration_creates_http_sessions_table_and_expiry_index() {
 async fn http_session_migration_down_drops_only_its_own_objects() {
     let conn = migrated_connection().await;
 
-    Migrator::down(&conn, Some(1))
+    // The credential epoch migration (m0005) is newer, so two steps reach m0004.
+    Migrator::down(&conn, Some(2))
         .await
-        .expect("step the last migration down");
+        .expect("step the two last migrations down");
 
     let tables = schema_object_names(&conn, "table").await;
     assert!(!tables.contains("http_sessions"), "found {tables:?}");

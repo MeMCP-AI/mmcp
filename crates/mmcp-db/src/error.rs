@@ -1,6 +1,7 @@
 //! Database error type.
 
 use thiserror::Error;
+use uuid::Uuid;
 
 /// Failures returned by the database layer.
 #[derive(Debug, Error)]
@@ -16,6 +17,11 @@ pub enum DbError {
     /// Migration failure.
     #[error("migration error: {0}")]
     Migration(String),
+
+    /// A credential was written for a user that does not exist.
+    /// The write is rolled back with its epoch increment.
+    #[error("credential owner {user_id} does not exist")]
+    CredentialOwnerMissing { user_id: Uuid },
 
     /// A session's turn counter is already at `i32::MAX` and cannot be
     /// incremented without wrapping. Surfaced as data rather than

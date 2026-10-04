@@ -1,10 +1,17 @@
 //! User table repository.
 
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, Set, TransactionTrait,
+};
 use uuid::Uuid;
 
+use crate::entities::oauth_account;
 use crate::entities::user::{ActiveModel, Column, Entity, Model};
 use crate::error::DbError;
+use crate::repository::credential_epoch::{
+    CredentialChange, INITIAL_CREDENTIAL_EPOCH, bump_credential_epoch,
+};
+use crate::repository::oauth_repo::{self, NewOauthAccount};
 
 /// Parameters for creating a new user row.
 #[derive(Debug, Clone)]
@@ -19,6 +26,11 @@ pub struct NewUser {
 
 /// Insert a fresh user row. Returns the inserted model.
 pub async fn create(conn: &sea_orm::DatabaseConnection, new: NewUser) -> Result<Model, DbError> {
+    insert(conn, new).await
+}
+
+/// Insert the user row at the initial credential epoch on `conn`.
+async fn insert<C: ConnectionTrait>(conn: &C, new: NewUser) -> Result<Model, DbError> {
     let active = ActiveModel {
         id: Set(new.id),
         handle: Set(new.handle),
@@ -26,6 +38,7 @@ pub async fn create(conn: &sea_orm::DatabaseConnection, new: NewUser) -> Result<
         password_hash: Set(new.password_hash),
         email: Set(new.email),
         created_at: Set(new.created_at),
+        credential_epoch: Set(INITIAL_CREDENTIAL_EPOCH),
     };
     Ok(active.insert(conn).await?)
 }
@@ -55,16 +68,45 @@ pub async fn require(conn: &sea_orm::DatabaseConnection, id: Uuid) -> Result<Mod
 }
 
 /// Update the display name and password hash fields on a user row.
+///
+/// A supplied password hash is a credential change: the epoch increments in the same transaction,
+/// and the returned model carries the epoch the commit produced.
+/// A display name alone leaves the epoch unchanged.
 pub async fn update_profile(
     conn: &sea_orm::DatabaseConnection,
     id: Uuid,
     display_name: Option<String>,
     password_hash: Option<String>,
 ) -> Result<Model, DbError> {
-    let mut active: ActiveModel = require(conn, id).await?.into();
+    let Some(hash) = password_hash else {
+        let mut active: ActiveModel = require(conn, id).await?.into();
+        active.display_name = Set(display_name);
+        return Ok(active.update(conn).await?);
+    };
+    let txn = conn.begin().await?;
+    let bumped = bump_credential_epoch(&txn, id, CredentialChange::PasswordSet).await?;
+    let mut active: ActiveModel = bumped.into();
     active.display_name = Set(display_name);
-    if let Some(hash) = password_hash {
-        active.password_hash = Set(Some(hash));
-    }
-    Ok(active.update(conn).await?)
+    active.password_hash = Set(Some(hash));
+    let updated = active.update(&txn).await?;
+    txn.commit().await?;
+    Ok(updated)
+}
+
+/// Create a user and its first OAuth link in one transaction, both at the initial credential epoch.
+///
+/// The link always belongs to the created user, whatever `link.user_id` holds.
+/// No increment happens: the account does not exist before this call, so no other session can hold it.
+/// A failing link insert rolls the user back, so a first-time login never leaves a link-less account.
+pub async fn create_with_oauth_link(
+    conn: &sea_orm::DatabaseConnection,
+    new: NewUser,
+    mut link: NewOauthAccount,
+) -> Result<(Model, oauth_account::Model), DbError> {
+    link.user_id = new.id;
+    let txn = conn.begin().await?;
+    let user = insert(&txn, new).await?;
+    let link = oauth_repo::insert(&txn, link).await?;
+    txn.commit().await?;
+    Ok((user, link))
 }

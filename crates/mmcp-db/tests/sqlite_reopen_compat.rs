@@ -101,8 +101,8 @@ async fn sqlite_file_reopen_preserves_migration_bookkeeping_and_data() {
         let versions = migration_rows(db.connection()).await;
         assert_eq!(
             versions.len(),
-            4,
-            "expected exactly the 4 known migrations to be recorded, got {versions:?}"
+            5,
+            "expected exactly the 5 known migrations to be recorded, got {versions:?}"
         );
         let version_names: Vec<&str> = versions.iter().map(|r| r.version.as_str()).collect();
         assert_eq!(
@@ -111,7 +111,8 @@ async fn sqlite_file_reopen_preserves_migration_bookkeeping_and_data() {
                 "m0001_initial",
                 "m0002_auth_methods",
                 "m0003_indexes",
-                "m0004_http_sessions"
+                "m0004_http_sessions",
+                "m0005_user_credential_epoch"
             ]
         );
         versions

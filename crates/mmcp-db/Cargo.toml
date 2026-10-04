@@ -8,6 +8,7 @@ authors.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
+tracing = { workspace = true }
 sea-orm = { workspace = true }
 sea-orm-migration = { workspace = true }
 serde = { workspace = true }

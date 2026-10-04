@@ -1,12 +1,19 @@
 //! Passkey credential repository.
 
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set, TransactionTrait};
 use uuid::Uuid;
 
 use crate::entities::passkey_credential::{ActiveModel, Column, Entity, Model};
+use crate::entities::user;
 use crate::error::DbError;
+use crate::repository::credential_epoch::{
+    CredentialChange, CredentialWrite, bump_credential_epoch,
+};
 
-/// Insert a new passkey credential.
+/// Insert a new passkey credential and increment its owner's credential epoch.
+///
+/// Both writes commit together, and the returned owner carries the epoch the commit produced.
+/// A missing owner is [`DbError::CredentialOwnerMissing`] and leaves no passkey row.
 pub async fn create(
     conn: &sea_orm::DatabaseConnection,
     id: Uuid,
@@ -14,7 +21,9 @@ pub async fn create(
     name: String,
     credential_json: String,
     created_at: i64,
-) -> Result<Model, DbError> {
+) -> Result<CredentialWrite<Model>, DbError> {
+    let txn = conn.begin().await?;
+    let owner = bump_credential_epoch(&txn, user_id, CredentialChange::PasskeyAdded).await?;
     let active = ActiveModel {
         id: Set(id),
         user_id: Set(user_id),
@@ -23,7 +32,9 @@ pub async fn create(
         created_at: Set(created_at),
         last_used_at: Set(None),
     };
-    Ok(active.insert(conn).await?)
+    let credential = active.insert(&txn).await?;
+    txn.commit().await?;
+    Ok(CredentialWrite { credential, owner })
 }
 
 /// All passkey credentials belonging to a user.
@@ -61,8 +72,27 @@ pub async fn update_after_auth(
     Ok(active.update(conn).await?)
 }
 
-/// Delete a credential by id.
-pub async fn delete(conn: &sea_orm::DatabaseConnection, id: Uuid) -> Result<(), DbError> {
-    Entity::delete_by_id(id).exec(conn).await?;
-    Ok(())
+/// Delete a credential by id and increment its owner's credential epoch.
+///
+/// Returns the owner as the commit left it, or `None` when no row was deleted, in which case no epoch changes.
+pub async fn delete(
+    conn: &sea_orm::DatabaseConnection,
+    id: Uuid,
+) -> Result<Option<user::Model>, DbError> {
+    let txn = conn.begin().await?;
+    let Some(row) = Entity::find_by_id(id).one(&txn).await? else {
+        return Ok(None);
+    };
+    // The increment comes first so concurrent changes of one user serialize on the user row.
+    // A delete that removes no row rolls the increment back by dropping the transaction.
+    let owner = bump_credential_epoch(&txn, row.user_id, CredentialChange::PasskeyRemoved).await?;
+    let deleted = Entity::delete_many()
+        .filter(Column::Id.eq(id))
+        .exec(&txn)
+        .await?;
+    if deleted.rows_affected != 1 {
+        return Ok(None);
+    }
+    txn.commit().await?;
+    Ok(Some(owner))
 }

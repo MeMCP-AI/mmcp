@@ -4,6 +4,7 @@
 //! results. Keeps the call sites in `mmcp-server` and `mmcp-client`
 //! free of SeaORM boilerplate.
 
+pub mod credential_epoch;
 pub mod group_repo;
 pub mod http_session_repo;
 pub mod memory_repo;

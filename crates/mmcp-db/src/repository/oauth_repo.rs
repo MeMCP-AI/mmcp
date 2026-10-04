@@ -1,10 +1,15 @@
 //! OAuth account link repository.
 
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, Set, TransactionTrait,
+};
 use uuid::Uuid;
 
 use crate::entities::oauth_account::{ActiveModel, Column, Entity, Model};
 use crate::error::DbError;
+use crate::repository::credential_epoch::{
+    CredentialChange, CredentialWrite, bump_credential_epoch,
+};
 
 /// Parameters for linking a new OAuth account.
 #[derive(Debug, Clone)]
@@ -19,9 +24,26 @@ pub struct NewOauthAccount {
     pub created_at: i64,
 }
 
-/// Insert a new OAuth account link.
+/// Insert a new OAuth account link and increment its owner's credential epoch.
+///
+/// Both writes commit together, and the returned owner carries the epoch the commit produced.
+/// A missing owner is [`DbError::CredentialOwnerMissing`] and leaves no link row.
 pub async fn create(
     conn: &sea_orm::DatabaseConnection,
+    new: NewOauthAccount,
+) -> Result<CredentialWrite<Model>, DbError> {
+    let txn = conn.begin().await?;
+    let owner = bump_credential_epoch(&txn, new.user_id, CredentialChange::OauthLinkAdded).await?;
+    let credential = insert(&txn, new).await?;
+    txn.commit().await?;
+    Ok(CredentialWrite { credential, owner })
+}
+
+/// Insert the link row on `conn` without touching any epoch.
+///
+/// Only the first-time login path uses it: its user row is created in the same transaction at the initial epoch.
+pub(crate) async fn insert<C: ConnectionTrait>(
+    conn: &C,
     new: NewOauthAccount,
 ) -> Result<Model, DbError> {
     let active = ActiveModel {

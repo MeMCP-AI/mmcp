@@ -28,6 +28,10 @@ pub struct Model {
 
     /// Account creation time in milliseconds since Unix epoch.
     pub created_at: i64,
+
+    /// Counter every credential change of this user increments.
+    /// It feeds the session auth hash, so a change signs the user's other sessions out.
+    pub credential_epoch: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

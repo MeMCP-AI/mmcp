@@ -10,6 +10,7 @@ mod m0001_initial;
 mod m0002_auth_methods;
 mod m0003_indexes;
 mod m0004_http_sessions;
+mod m0005_user_credential_epoch;
 
 pub struct Migrator;
 
@@ -21,6 +22,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0002_auth_methods::Migration),
             Box::new(m0003_indexes::Migration),
             Box::new(m0004_http_sessions::Migration),
+            Box::new(m0005_user_credential_epoch::Migration),
         ]
     }
 }
