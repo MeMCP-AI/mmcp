@@ -1,17 +1,13 @@
-//! PASETO v4 local token issuer and verifier.
+//! PASETO v4 local bearer token issuer and verifier.
 //!
 //! We use local tokens (symmetric keyed authenticated encryption)
 //! because mmcp always issues and verifies tokens on the same server
 //! side. Public tokens (asymmetric) would only be necessary if an
 //! external service had to verify tokens without holding the secret.
 
-use rusty_paseto::prelude::*;
-
 use crate::claims::SessionClaims;
 use crate::error::AuthError;
-
-/// Size of the PASETO v4 local key, in bytes.
-pub const V4_LOCAL_KEY_BYTES: usize = 32;
+use crate::token::paseto_local::{self, LocalKey, V4_LOCAL_KEY_BYTES};
 
 /// Issues fresh PASETO v4 local tokens.
 ///
@@ -19,37 +15,26 @@ pub const V4_LOCAL_KEY_BYTES: usize = 32;
 /// keys keep multiple issuers side by side and pick the current one
 /// when issuing, while a pool of verifiers trusts all of them.
 pub struct TokenIssuer {
-    key: PasetoSymmetricKey<V4, Local>,
+    key: LocalKey,
 }
 
 /// Verifies PASETO v4 local tokens against a single key.
 pub struct TokenVerifier {
-    key: PasetoSymmetricKey<V4, Local>,
-}
-
-fn load_key(raw: &[u8; V4_LOCAL_KEY_BYTES]) -> PasetoSymmetricKey<V4, Local> {
-    PasetoSymmetricKey::<V4, Local>::from(Key::from(raw))
+    key: LocalKey,
 }
 
 impl TokenIssuer {
     /// Build an issuer from a pre-existing 32-byte key.
     #[must_use]
     pub fn from_key(raw: &[u8; V4_LOCAL_KEY_BYTES]) -> Self {
-        Self { key: load_key(raw) }
+        Self {
+            key: LocalKey::from_raw(raw),
+        }
     }
 
     /// Issue a token carrying the provided claims.
     pub fn issue(&self, claims: &SessionClaims) -> Result<String, AuthError> {
-        let claims_json =
-            serde_json::to_string(claims).map_err(|e| AuthError::Claims(e.to_string()))?;
-        let token = PasetoBuilder::<V4, Local>::default()
-            .set_claim(
-                CustomClaim::try_from(("claims", claims_json))
-                    .map_err(|e| AuthError::Token(e.to_string()))?,
-            )
-            .build(&self.key)
-            .map_err(|e| AuthError::Token(e.to_string()))?;
-        Ok(token)
+        paseto_local::seal(&self.key, claims, None)
     }
 }
 
@@ -57,23 +42,15 @@ impl TokenVerifier {
     /// Build a verifier from a pre-existing 32-byte key.
     #[must_use]
     pub fn from_key(raw: &[u8; V4_LOCAL_KEY_BYTES]) -> Self {
-        Self { key: load_key(raw) }
+        Self {
+            key: LocalKey::from_raw(raw),
+        }
     }
 
     /// Verify a token and return the parsed claims. The wall clock
     /// `now_secs` is compared against the claims' `exp` field.
     pub fn verify(&self, token: &str, now_secs: i64) -> Result<SessionClaims, AuthError> {
-        let value = PasetoParser::<V4, Local>::default()
-            .parse(token, &self.key)
-            .map_err(|e| AuthError::Token(e.to_string()))?;
-
-        let claims_str = value
-            .get("claims")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| AuthError::Claims("missing claims field".into()))?;
-        let claims: SessionClaims =
-            serde_json::from_str(claims_str).map_err(|e| AuthError::Claims(e.to_string()))?;
-
+        let claims: SessionClaims = paseto_local::open(&self.key, token, None)?;
         if claims.exp <= now_secs {
             return Err(AuthError::Expired);
         }
