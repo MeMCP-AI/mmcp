@@ -716,14 +716,12 @@ const SWEEP_WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(10)
 /// Pause between two looks at the table while waiting for the sweep.
 const SWEEP_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
-#[tokio::test]
-async fn session_survives_server_restart_on_a_persistent_database() {
-    let tmp = TempDir::new().expect("tempdir");
-    let cfg = config_for(&tmp);
+/// Logs `handle` in on a first server, restarts it on the same database, and reuses the cookie on the second.
+async fn assert_session_survives_restart(cfg: &ServerConfig, handle: &str) {
     let client = cookie_client();
 
-    let first = start_server(&cfg).await;
-    register_and_login(&client, first.addr, "alice").await;
+    let first = start_server(cfg).await;
+    register_and_login(&client, first.addr, handle).await;
     assert_eq!(
         passkey_register_start_status(&client, first.addr).await,
         200,
@@ -731,11 +729,103 @@ async fn session_survives_server_restart_on_a_persistent_database() {
     );
     first.stop().await;
 
-    let second = start_server(&cfg).await;
+    let second = start_server(cfg).await;
     assert_eq!(
         passkey_register_start_status(&client, second.addr).await,
         200,
         "the same session cookie must still authenticate after the restart"
     );
     second.stop().await;
+}
+
+#[tokio::test]
+async fn session_survives_server_restart_on_a_persistent_database() {
+    let tmp = TempDir::new().expect("tempdir");
+    assert_session_survives_restart(&config_for(&tmp), "alice").await;
+}
+
+/// Environment variable naming the Postgres database the ignored Postgres test runs against.
+const POSTGRES_TEST_URL_ENV: &str = "POSTGRES_TEST_URL";
+
+/// Restart persistence and the store primitives on a real Postgres server.
+///
+/// Run with `--ignored` and `POSTGRES_TEST_URL` set to a disposable database.
+/// Handles are unique per run, so one database serves repeated runs.
+#[tokio::test]
+#[ignore = "needs a disposable Postgres database named by POSTGRES_TEST_URL"]
+async fn session_survives_server_restart_on_postgres() {
+    let database_url = std::env::var(POSTGRES_TEST_URL_ENV).unwrap_or_else(|_| {
+        panic!("{POSTGRES_TEST_URL_ENV} must name a disposable Postgres database")
+    });
+    let tmp = TempDir::new().expect("tempdir");
+    let cfg = common::TestServerConfigBuilder::new(tmp.path().to_path_buf())
+        .database_url(database_url)
+        .token_key(FIXED_TOKEN_KEY)
+        .build();
+    let handle = format!("alice-{}", uuid::Uuid::now_v7().simple());
+
+    assert_session_survives_restart(&cfg, &handle).await;
+
+    assert_store_primitives_work_on(&cfg.database_url).await;
+}
+
+/// Exercises the conflict, upsert and batched-delete statements the store issues, on the database at `database_url`.
+async fn assert_store_primitives_work_on(database_url: &str) {
+    use time::{Duration, OffsetDateTime};
+    use tower_sessions::SessionStore;
+    use tower_sessions::session::{Id, Record};
+
+    const EXPIRED_RECORDS: usize = 5;
+    const BATCH_SIZE: u64 = 2;
+    let db = mmcp_db::connect(database_url).await.expect("connect");
+    let store = mmcp_server::session_store::DatabaseSessionStore::new(db.connection().clone());
+    let record_expiring_in = |lifetime: Duration| Record {
+        id: Id::default(),
+        data: std::collections::HashMap::new(),
+        expiry_date: OffsetDateTime::now_utc() + lifetime,
+    };
+
+    let mut first = record_expiring_in(Duration::minutes(15));
+    store.create(&mut first).await.expect("create a record");
+    let mut colliding = record_expiring_in(Duration::minutes(15));
+    colliding.id = first.id;
+    store
+        .create(&mut colliding)
+        .await
+        .expect("a colliding create draws a fresh id");
+    assert_ne!(
+        colliding.id, first.id,
+        "a taken id is replaced by a fresh one"
+    );
+    first
+        .data
+        .insert("saved".to_owned(), serde_json::json!(true));
+    store
+        .save(&first)
+        .await
+        .expect("an upsert on an existing key");
+    let reloaded = store.load(&first.id).await.expect("load").expect("present");
+    assert_eq!(reloaded.data, first.data);
+
+    let mut expired_ids = Vec::new();
+    for _ in 0..EXPIRED_RECORDS {
+        let mut expired = record_expiring_in(Duration::minutes(-1));
+        store.create(&mut expired).await.expect("create expired");
+        expired_ids.push(expired.id);
+    }
+    let deleted = store
+        .delete_expired_records(BATCH_SIZE)
+        .await
+        .expect("the batched delete runs on this backend");
+    assert!(
+        deleted >= EXPIRED_RECORDS as u64,
+        "every expired record is deleted across batches, got {deleted}"
+    );
+    assert!(
+        store.load(&first.id).await.expect("load").is_some(),
+        "a live record survives the sweep"
+    );
+    for id in expired_ids {
+        assert!(store.load(&id).await.expect("load").is_none());
+    }
 }
