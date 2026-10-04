@@ -25,9 +25,9 @@ pub(crate) const OAUTH_STATE_TOKEN_BYTES: usize = 32;
 /// The callback handler rejects a mismatched length before comparing values.
 pub(crate) const OAUTH_STATE_TOKEN_LENGTH: usize = (OAUTH_STATE_TOKEN_BYTES * 4).div_ceil(3);
 
-/// Name prefix of the per-provider cookie carrying a pending OAuth flow token,
-/// which [`crate::routes::auth`]'s authorize handler sets and its callback handler consumes.
-/// One cookie per provider, so concurrent flows against two providers never clobber each other.
+/// Name prefix of the per-provider cookie carrying a pending OAuth flow token.
+/// [`crate::routes::auth`]'s authorize handler sets it and its callback handler consumes it.
+/// There is one cookie per provider, so concurrent flows against two providers never clobber each other.
 pub(crate) const OAUTH_FLOW_COOKIE_NAME_PREFIX: &str = "mmcp_oauth_flow_";
 
 /// Cookie name prefix that makes a browser accept the cookie only when it is `Secure`, has path `/` and no `Domain`.
@@ -82,9 +82,9 @@ pub(crate) const MAX_DISPLAY_NAME_LENGTH: usize = 128;
 /// it keeps both ends of the request in sync by construction.
 pub(crate) use mmcp_core::conventions::PUSH_TOKEN_HEADER;
 
-/// Passkey ceremonies (registration or authentication) must complete
-/// within this window; a real browser round-trip takes seconds, not
-/// minutes. A ceremony older than this is refused at finish.
+/// Passkey ceremonies (registration or authentication) must complete within this window.
+/// A real browser round-trip takes seconds, not minutes.
+/// A ceremony older than this is refused at finish.
 /// An abandoned ceremony leaves with its session's expiry and the expired-session sweep.
 pub(crate) const PASSKEY_CEREMONY_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 

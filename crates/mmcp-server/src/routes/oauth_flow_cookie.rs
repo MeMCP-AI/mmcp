@@ -15,8 +15,8 @@ use crate::routes::defaults::{
 
 /// Whether `slug` can be appended to the flow cookie name unchanged.
 ///
-/// The name must stay a cookie token: ASCII letters, digits, `-` and `_` always are, and a configured slug
-/// holding a separator such as `;`, `=` or a space would corrupt the `Set-Cookie` line and the `Cookie` parse.
+/// The name must stay a cookie token, and ASCII letters, digits, `-` and `_` always are.
+/// A slug holding a separator such as `;`, `=` or a space would corrupt the `Set-Cookie` line and the `Cookie` parse.
 pub(crate) fn provider_slug_is_cookie_safe(slug: &str) -> bool {
     !slug.is_empty()
         && slug

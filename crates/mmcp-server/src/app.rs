@@ -15,13 +15,12 @@ use crate::state::ServerState;
 /// layer attached.
 pub fn build_router(state: ServerState) -> Router {
     // tower-sessions defaults `same_site` to `Strict`.
-    // A `Strict` cookie is withheld on the cross-site GET the OAuth redirect performs to the callback route,
-    // so the callback handler would not see the caller's existing session.
+    // A `Strict` cookie is withheld on the cross-site GET the OAuth redirect performs to the callback route.
+    // The callback handler would then not see the caller's existing session.
     // `Lax` is the least permissive tier that survives the redirect while blocking cross-site POST/fetch/XHR CSRF.
     //
-    // tower-sessions also defaults `secure` to `true` unconditionally;
-    // see `origin_uses_https`'s doc comment for why that is tied to
-    // the configured origin instead.
+    // tower-sessions also defaults `secure` to `true` unconditionally.
+    // See `origin_uses_https`'s doc comment for why `secure` is tied to the configured origin instead.
     let session_layer = SessionManagerLayer::new(state.session_store.clone())
         .with_same_site(SameSite::Lax)
         .with_secure(origin_uses_https(&state.origin))
@@ -46,11 +45,10 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    /// Falsification for the bound this constant is meant to enforce:
-    /// too short would fail a real OAuth, passkey or password login round
-    /// trip, too long would let an abandoned anonymous session (see
-    /// `crate::routes::auth::passkey_login_start`) sit in the session
-    /// store far longer than the flow it exists to bound.
+    /// Falsification for the bound this constant is meant to enforce.
+    /// Too short would fail a real OAuth, passkey or password login round trip.
+    /// Too long would keep an abandoned anonymous session beyond the flow it exists to bound.
+    /// See `crate::routes::auth::passkey_login_start` for that session.
     #[test]
     fn session_inactivity_expiry_is_a_short_minutes_scale_window() {
         assert!(SESSION_INACTIVITY_EXPIRY >= time::Duration::minutes(1));

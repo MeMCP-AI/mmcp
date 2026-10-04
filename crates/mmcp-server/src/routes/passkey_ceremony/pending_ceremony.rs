@@ -1,8 +1,7 @@
 //! A passkey ceremony in flight, stored in the caller's session.
 //!
 //! The ceremony state must stay server-side, and the session is the caller's own record of it.
-//! Binding it to the user it was started for keeps a login that lands on the same session
-//! from finishing a ceremony another user started.
+//! Binding it to the user it was started for keeps a login on the same session from finishing another user's ceremony.
 
 use std::time::Duration;
 

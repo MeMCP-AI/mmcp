@@ -2,12 +2,11 @@
 
 /// Whether `origin` names an HTTPS endpoint.
 ///
-/// Decides the `Secure` attribute of every cookie the server sets,
-/// the session cookie ([`crate::app::build_router`]) and the OAuth flow cookie alike:
-/// a browser refuses to store a `Secure` cookie received over plain
-/// HTTP, so tying it to the deployment's actual scheme keeps a
-/// loopback/HTTP dev origin working while still hardening a real
-/// HTTPS deployment, instead of one fixed choice that breaks either.
+/// Decides the `Secure` attribute of every cookie the server sets.
+/// That covers the session cookie ([`crate::app::build_router`]) and the OAuth flow cookie.
+/// A browser refuses to store a `Secure` cookie received over plain HTTP.
+/// Tying the attribute to the deployment's actual scheme keeps a loopback HTTP dev origin working.
+/// It also keeps a real HTTPS deployment hardened, instead of one fixed choice that breaks either.
 pub(crate) fn origin_uses_https(origin: &str) -> bool {
     origin.starts_with("https://")
 }

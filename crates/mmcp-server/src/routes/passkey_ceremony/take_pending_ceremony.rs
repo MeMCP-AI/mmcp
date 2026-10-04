@@ -7,11 +7,12 @@ use crate::routes::passkey_ceremony::PendingCeremony;
 use crate::routes::passkey_ceremony::error::CeremonyTakeError;
 use crate::session_store::DatabaseSessionStore;
 
-/// Take the ceremony stored under `key` out of the session, so the same ceremony never finishes twice.
+/// Take the ceremony stored under `key` out of the session store.
 ///
 /// The removal is written to the session store at once and atomically, whatever the response turns out to be.
-/// Concurrent finishes on one session cookie therefore receive the ceremony once between them:
-/// the session record each request loaded still holds it, but only one removal succeeds in the store.
+/// Concurrent finishes on one session cookie receive the ceremony once between them.
+/// Each of them loaded a session record that still holds it, but only one removal succeeds in the store.
+/// A concurrent request that modifies the same session can still write its own loaded record back afterwards.
 /// `None` means the session holds no such ceremony, which includes a request without a session.
 pub(crate) async fn take_pending_ceremony<T: DeserializeOwned>(
     store: &DatabaseSessionStore,

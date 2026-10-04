@@ -254,14 +254,13 @@ async fn login(
 
 // ── OAuth ───────────────────────────────────────────────────────
 //
-// Authorize-URL construction, CSRF `state` minting, PKCE, and the
-// authorization-code token exchange are all delegated to the `oauth2`
-// crate (see [`crate::oauth_client`] for the per-provider client it
-// builds). What stays hand-rolled here: the cookie transport of the
-// CSRF state and PKCE verifier, `OAuthStateRejection`'s per-cause
-// taxonomy and logging, the provider registry lookup, and the
-// GitHub-specific userinfo fetch (`oauth2` has no generic userinfo
-// step).
+// Authorize-URL construction, CSRF `state` minting, PKCE and the authorization-code token exchange are delegated.
+// The `oauth2` crate does that work (see [`crate::oauth_client`] for the per-provider client it builds).
+// Four pieces stay hand-rolled here.
+// The first is the cookie transport of the CSRF state and PKCE verifier.
+// The second is `OAuthStateRejection`'s per-cause taxonomy and logging.
+// The third is the provider registry lookup.
+// The fourth is the GitHub-specific userinfo fetch, because `oauth2` has no generic userinfo step.
 
 #[derive(Deserialize)]
 struct OAuthCallbackQuery {
@@ -312,23 +311,20 @@ async fn oauth_authorize(
         .into_response())
 }
 
-/// Why an OAuth callback failed to validate against the flow the
-/// matching [`oauth_authorize`] call sealed into the flow cookie.
+/// Why an OAuth callback failed to validate against the flow [`oauth_authorize`] sealed into the flow cookie.
 ///
-/// Every variant maps to the same uniform external
-/// [`AuthHttpError::InvalidOAuthState`] 400 response; [`oauth_callback`]
-/// turns each into its own log line before returning that response.
+/// Every variant maps to the same uniform external [`AuthHttpError::InvalidOAuthState`] 400 response.
+/// [`oauth_callback`] turns each into its own log line before returning that response.
 #[derive(Debug, Error, PartialEq, Eq)]
 enum OAuthStateRejection {
     /// The callback query carried no `state` parameter at all.
     #[error("no state parameter present in the callback query")]
     MissingFromQuery,
-    /// The callback carried no flow cookie for the provider (expired,
-    /// already consumed, never issued, or withheld by the browser).
+    /// The callback carried no flow cookie for the provider.
+    /// The cookie expired, was already consumed, was never issued, or the browser withheld it.
     #[error("no oauth flow cookie found in the callback request")]
     MissingFlowCookie,
-    /// The flow cookie is malformed, tampered with, or sealed for
-    /// another purpose or under another key.
+    /// The flow cookie is malformed, tampered with, or sealed for another purpose or under another key.
     #[error("the oauth flow cookie could not be opened")]
     UnreadableFlowCookie,
     /// The flow cookie opened but its own expiry has passed.
@@ -337,15 +333,14 @@ enum OAuthStateRejection {
     /// The flow cookie opened but was issued for another provider.
     #[error("the oauth flow cookie was issued for another provider")]
     FlowCookieProviderMismatch,
-    /// The received `state` is not exactly [`OAUTH_STATE_TOKEN_LENGTH`]
-    /// characters, rejected before the equality comparison below.
+    /// The received `state` is not exactly [`OAUTH_STATE_TOKEN_LENGTH`] characters.
+    /// It is rejected before the equality comparison below.
     #[error("state length {received_len} does not match the expected {expected_len}")]
     LengthMismatch {
         received_len: usize,
         expected_len: usize,
     },
-    /// The received `state` has the right length but does not equal
-    /// the value sealed at authorize time.
+    /// The received `state` has the right length but does not equal the value sealed at authorize time.
     #[error("state does not match the value issued at authorize time")]
     ValueMismatch,
 }
@@ -353,8 +348,8 @@ enum OAuthStateRejection {
 /// Open the flow cookie token of an OAuth callback for `provider`.
 ///
 /// The opened claims carry both the CSRF state and the PKCE verifier.
-/// Pure like [`validate_oauth_state`], so each refusal cause is
-/// independently unit testable.
+/// Pure like [`validate_oauth_state`].
+/// Each refusal cause is therefore independently unit testable.
 fn open_oauth_flow(
     codec: &OauthFlowTokenCodec,
     token: Option<&str>,
@@ -373,12 +368,10 @@ fn open_oauth_flow(
         })
 }
 
-/// Validate an OAuth callback's `state` against the value sealed in
-/// the flow cookie.
+/// Validate an OAuth callback's `state` against the value sealed in the flow cookie.
 ///
-/// Pure and side-effect-free, unlike [`oauth_callback`] itself, so
-/// each rejection cause is independently unit testable without a
-/// running server.
+/// Pure and side-effect-free, unlike [`oauth_callback`] itself.
+/// Each rejection cause is therefore independently unit testable without a running server.
 fn validate_oauth_state(received: Option<&str>, expected: &str) -> Result<(), OAuthStateRejection> {
     let received = received.ok_or(OAuthStateRejection::MissingFromQuery)?;
     if received.len() != OAUTH_STATE_TOKEN_LENGTH {
@@ -402,12 +395,12 @@ fn validate_oauth_state(received: Option<&str>, expected: &str) -> Result<(), OA
 ///
 /// Every cause collapses to the same 400 body (`AuthHttpError::InvalidOAuthState`),
 /// per `global-coding-rules-errors`'s security-mandated-uniform-response exception.
-/// Each still gets its own log line, so a deployment failure like
-/// "the flow cookie never round-trips" is diagnosable from logs alone.
+/// Each still gets its own log line.
+/// A deployment failure like "the flow cookie never round-trips" is therefore diagnosable from logs alone.
 fn reject_oauth_callback(provider: &str, rejection: &OAuthStateRejection) -> AuthHttpError {
     match rejection {
-        // The caller-controlled query is simply missing the
-        // parameter; not evidence of a server-side problem.
+        // The caller-controlled query is simply missing the parameter.
+        // That is not evidence of a server-side problem.
         OAuthStateRejection::MissingFromQuery => {
             tracing::debug!(provider = %provider, error = %rejection, "oauth callback rejected");
         }
@@ -433,8 +426,8 @@ struct GitHubUser {
 
 /// Complete an OAuth authorization.
 ///
-/// The flow cookie is usable for at most one callback:
-/// the response clears it whatever the outcome.
+/// The flow cookie is usable for at most one callback.
+/// The response clears it whatever the outcome.
 async fn oauth_callback(
     mut auth_session: AuthSession,
     State(state): State<ServerState>,
@@ -442,8 +435,8 @@ async fn oauth_callback(
     Path(provider): Path<String>,
     Query(query): Query<OAuthCallbackQuery>,
 ) -> Result<Response, AuthHttpError> {
-    // An unknown provider answers 404 before any cookie handling,
-    // so the server never names a cookie after an arbitrary path segment.
+    // An unknown provider answers 404 before any cookie handling.
+    // The server therefore never names a cookie after an arbitrary path segment.
     let cfg = state
         .oauth_providers
         .get(&provider)
@@ -545,8 +538,8 @@ async fn oauth_callback(
 
 // ── Passkey ─────────────────────────────────────────────────────
 
-// A ceremony's WebAuthn state must stay server-side (webauthn-rs refuses a client-side carrier),
-// so it lives in the caller's session, bound to the user it was started for.
+// A ceremony's WebAuthn state must stay server-side, because webauthn-rs refuses a client-side carrier.
+// It therefore lives in the caller's session, bound to the user it was started for.
 // See [`crate::routes::passkey_ceremony`].
 
 /// Log why a pending passkey ceremony was refused at finish.
@@ -557,7 +550,8 @@ fn log_ceremony_refusal(user_id: Uuid, refusal: &CeremonyRefusal) {
         CeremonyRefusal::Absent | CeremonyRefusal::Expired { .. } => {
             tracing::debug!(user_id = %user_id, refusal = %refusal, "passkey ceremony refused");
         }
-        // A ceremony another user started surfaces on this session only through a login on a shared browser, or an attack.
+        // A ceremony another user started surfaces on this session only through a login on a shared browser.
+        // Otherwise it is an attack.
         CeremonyRefusal::UserMismatch => {
             tracing::warn!(user_id = %user_id, refusal = %refusal, "passkey ceremony refused");
         }
@@ -628,15 +622,13 @@ struct PasskeyRegFinishRequest {
     response: RegisterPublicKeyCredential,
 }
 
-/// Finish the passkey registration ceremony and attach the new
-/// credential to the CALLER's own authenticated session user; the
-/// identity is never taken from the request body (see
-/// [`passkey_register_start`]).
+/// Finish the passkey registration ceremony and attach the new credential to the CALLER's own session user.
+/// The identity is never taken from the request body (see [`passkey_register_start`]).
 ///
 /// Adding a passkey is a credential change, which signs the account's other sessions out.
 /// The acting session is re-stamped with the credential state the write committed, so it stays signed in.
-/// The write is refused when another session changed a credential after this one was verified,
-/// so this session is never re-stamped past a change that should have signed it out.
+/// The write is refused when another session changed a credential after this one was verified.
+/// This session is therefore never re-stamped past a change that should have signed it out.
 async fn passkey_register_finish(
     mut auth_session: AuthSession,
     State(state): State<ServerState>,
@@ -647,7 +639,8 @@ async fn passkey_register_finish(
         .clone()
         .ok_or(AuthHttpError::Unauthorized("authentication required"))?;
 
-    // The ceremony leaves the session store before any check, so one ceremony finishes at most once.
+    // The ceremony leaves the session store before the ceremony checks below.
+    // Concurrent finishes on one session cookie receive it once between them.
     let pending: Option<PendingCeremony<PasskeyRegistration>> = take_pending_ceremony(
         &state.session_store,
         &auth_session.session,
@@ -720,8 +713,8 @@ async fn login_on_a_fresh_session_id(
 
 /// Stamp the acting session with the credential state `owner` carries.
 ///
-/// `owner` must be the row the credential write returned: a row read earlier holds a stale epoch,
-/// and the very next request would sign the acting session out.
+/// `owner` must be the row the credential write returned.
+/// A row read earlier holds a stale epoch, and the very next request would sign the acting session out.
 async fn restamp_session_after_credential_change(
     auth_session: &mut AuthSession,
     owner: mmcp_db::entities::user::Model,
@@ -837,7 +830,9 @@ async fn passkey_login_finish(
         return Err(AuthHttpError::Unauthorized("invalid credentials"));
     };
 
-    // The ceremony leaves the session store before any check, so one ceremony finishes at most once.
+    // The handle lookup above comes first.
+    // The ceremony then leaves the session store before the ceremony checks below.
+    // Concurrent finishes on one session cookie receive it once between them.
     let pending: Option<PendingCeremony<PasskeyAuthentication>> = take_pending_ceremony(
         &state.session_store,
         &auth_session.session,

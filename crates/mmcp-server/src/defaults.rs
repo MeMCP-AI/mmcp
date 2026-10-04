@@ -1,16 +1,13 @@
 //! Crate-level default values not owned by a more specific submodule.
 
-/// Inactivity window before the shared session-store cookie
-/// (see [`crate::app::build_router`]) expires.
+/// Inactivity window before the shared session-store cookie (see [`crate::app::build_router`]) expires.
 ///
-/// Applies to every session the single shared store issues: the
-/// anonymous ceremony session `passkey_login_start` mints, and every
-/// authenticated `axum-login` session alike, since one
-/// `SessionManagerLayer` covers the whole router.
-/// [`tower_sessions::Expiry::OnInactivity`] resets on each session
-/// write, so an actively used session keeps renewing itself.
-/// Only a session nobody touches again, most concretely an abandoned
-/// passkey login, actually expires.
+/// It applies to every session the single shared store issues.
+/// That covers the anonymous ceremony session `passkey_login_start` mints and every authenticated `axum-login` session.
+/// One `SessionManagerLayer` covers the whole router.
+/// [`tower_sessions::Expiry::OnInactivity`] resets on each session write.
+/// An actively used session therefore keeps renewing itself.
+/// Only a session nobody touches again, most concretely an abandoned passkey login, actually expires.
 /// Minutes-scale: long enough that a slow password, OAuth or passkey login round trip never lapses.
 /// Short enough that abandoned anonymous records stay few until the expired-session sweep deletes them.
 pub(crate) const SESSION_INACTIVITY_EXPIRY: time::Duration = time::Duration::minutes(15);

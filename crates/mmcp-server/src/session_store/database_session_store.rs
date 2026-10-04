@@ -91,9 +91,9 @@ impl DatabaseSessionStore {
 
     /// Remove `key` from the stored data of session `id` and return its value.
     ///
-    /// The removal is atomic across requests and server instances: the stored data is rewritten only while
-    /// it still holds what was read, and a lost race re-reads and retries.
-    /// So of any number of concurrent takers of one value exactly one receives it.
+    /// The removal is atomic across requests and server instances.
+    /// The stored data is rewritten only while it still holds what was read, and a lost race re-reads and retries.
+    /// Of any number of concurrent takers of one value, exactly one receives it.
     /// Nothing is written when the session is unknown or expired, or holds no value under `key`.
     pub async fn take_value(
         &self,
