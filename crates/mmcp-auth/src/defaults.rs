@@ -5,6 +5,10 @@
 /// Lowest-precedence tier: callers resolve the effective bound through `mmcp_server::config` and pass it in.
 pub const MAX_HANDLE_LENGTH: usize = 64;
 
+/// Implicit assertion binding a PASETO token to the OAuth flow purpose.
+/// A bearer token carries no assertion, so neither token kind opens as the other.
+pub(crate) const OAUTH_FLOW_TOKEN_IMPLICIT_ASSERTION: &str = "mmcp:oauth-flow-token:v1";
+
 /// Maximum number of numeric-suffix retries when the preferred
 /// OAuth handle is already taken by an unrelated account, before
 /// giving up with [`crate::error::AuthError::HandleAllocationExhausted`].
