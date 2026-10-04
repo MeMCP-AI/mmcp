@@ -5,12 +5,35 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::io;
+
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 
 /// Length of the SSL request that a client sends before it negotiates TLS.
 const SSL_REQUEST_LENGTH: usize = 8;
+
+/// The protocol code that the SSL request carries where a startup message carries its version.
+const SSL_REQUEST_CODE: u32 = 80_877_103;
+
+/// The tag of an authentication message of the server.
+const AUTHENTICATION_TAG: u8 = b'R';
+
+/// The code of the message that offers SASL mechanisms.
+const AUTHENTICATION_SASL: u32 = 10;
+
+/// The code of the message that carries the server-first-message of a SASL exchange.
+const AUTHENTICATION_SASL_CONTINUE: u32 = 11;
+
+/// The one mechanism the peer offers, with the terminator of the list.
+const SCRAM_MECHANISM_LIST: &[u8] = b"SCRAM-SHA-256\0\0";
+
+/// The salt and the iteration count of the server-first-message.
+const SCRAM_SALT_AND_ITERATIONS: &str = "s=c2FsdA==,i=4096";
+
+/// The attribute that carries the client nonce in the client-first-message.
+const NONCE_ATTRIBUTE: &str = "r=";
 
 /// What the peer does with a connection before it closes it.
 #[derive(Debug, Clone, Copy)]
@@ -20,6 +43,9 @@ pub(super) enum Behavior {
     /// Reads the SSL request, answers `S`, then closes.
     /// The driver then builds its TLS configuration, which is where it raises the errors about client certificates and keys.
     AnswersSslRequestThenCloses,
+    /// Declines TLS, asks for SCRAM authentication, answers the client-first-message, then closes.
+    /// The driver applies SASLprep to the user name before it sends the first message and to the password after it reads the answer.
+    RequestsScram,
 }
 
 /// A listener on a free loopback port, served until it drops.
@@ -34,15 +60,10 @@ impl FakePeer {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let task = tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
+            while let Ok((stream, _)) = listener.accept().await {
                 tokio::spawn(async move {
-                    if matches!(behavior, Behavior::AnswersSslRequestThenCloses) {
-                        let mut request = [0_u8; SSL_REQUEST_LENGTH];
-                        if stream.read_exact(&mut request).await.is_ok() {
-                            let _ = stream.write_all(b"S").await;
-                        }
-                    }
-                    drop(stream);
+                    // The client ends the exchange when it fails, so a read or a write error here is expected.
+                    let _ = serve(stream, behavior).await;
                 });
             }
         });
@@ -58,4 +79,61 @@ impl Drop for FakePeer {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+async fn serve(mut stream: TcpStream, behavior: Behavior) -> io::Result<()> {
+    match behavior {
+        Behavior::Closes => {}
+        Behavior::AnswersSslRequestThenCloses => {
+            let mut request = [0_u8; SSL_REQUEST_LENGTH];
+            stream.read_exact(&mut request).await?;
+            stream.write_all(b"S").await?;
+        }
+        Behavior::RequestsScram => serve_scram(&mut stream).await?,
+    }
+    Ok(())
+}
+
+/// Reads a message that has no tag, and returns its code.
+async fn read_untagged_message(stream: &mut TcpStream) -> io::Result<u32> {
+    let length = stream.read_u32().await?;
+    let mut body = vec![0_u8; length as usize - size_of::<u32>()];
+    stream.read_exact(&mut body).await?;
+    Ok(u32::from_be_bytes(
+        body[..size_of::<u32>()].try_into().unwrap(),
+    ))
+}
+
+/// Writes a tagged message made of `code` and `payload`.
+async fn write_authentication(stream: &mut TcpStream, code: u32, payload: &[u8]) -> io::Result<()> {
+    let length = u32::try_from(size_of::<u32>() * 2 + payload.len()).unwrap();
+    stream.write_u8(AUTHENTICATION_TAG).await?;
+    stream.write_u32(length).await?;
+    stream.write_u32(code).await?;
+    stream.write_all(payload).await
+}
+
+async fn serve_scram(stream: &mut TcpStream) -> io::Result<()> {
+    while read_untagged_message(stream).await? == SSL_REQUEST_CODE {
+        stream.write_all(b"N").await?;
+    }
+    write_authentication(stream, AUTHENTICATION_SASL, SCRAM_MECHANISM_LIST).await?;
+
+    // The SASLInitialResponse: a tag, a length, the mechanism, then the length and the text of the client-first-message.
+    let _tag = stream.read_u8().await?;
+    let length = stream.read_u32().await?;
+    let mut body = vec![0_u8; length as usize - size_of::<u32>()];
+    stream.read_exact(&mut body).await?;
+    let text = String::from_utf8_lossy(&body);
+    let nonce = text
+        .split(',')
+        .find_map(|attribute| attribute.strip_prefix(NONCE_ATTRIBUTE))
+        .unwrap_or_default();
+    let server_first = format!("{NONCE_ATTRIBUTE}{nonce}server,{SCRAM_SALT_AND_ITERATIONS}");
+    write_authentication(
+        stream,
+        AUTHENTICATION_SASL_CONTINUE,
+        server_first.as_bytes(),
+    )
+    .await
 }

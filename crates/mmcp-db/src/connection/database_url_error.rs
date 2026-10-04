@@ -85,16 +85,6 @@ pub enum DatabaseUrlError {
         accepted: &'static [&'static str],
     },
 
-    /// The effective user name is not valid under SASLprep, which SCRAM authentication applies.
-    /// The check follows sqlx's precedence, so no connection can raise the driver error that names the character.
-    #[error("the database user name holds a character that SASLprep does not allow")]
-    UsernameRejectedBySaslprep,
-
-    /// The effective password is not valid under SASLprep, which SCRAM authentication applies.
-    /// The check follows sqlx's precedence, so no connection can raise the driver error that names the character.
-    #[error("the database password holds a character that SASLprep does not allow")]
-    PasswordRejectedBySaslprep,
-
     /// SQLite takes no credential, so a raw `@` can only be a file name character or the userinfo of misplaced text.
     /// sqlx-sqlite decodes the file name, so `%40` is how it holds an `@`.
     #[error("a sqlite URL has an `@`; percent-encode an `@` of the file name as `%40`")]

@@ -212,6 +212,59 @@ async fn connect_error(target: &DatabaseTarget) -> Option<DbError> {
     outcome.err()
 }
 
+/// A URL whose credential fails SASLprep is accepted, and the SCRAM exchange of the driver is where the failure surfaces.
+/// The peer asks for SCRAM, so the production mapping of `connect` names the cause without the driver error that quotes the character.
+#[tokio::test]
+async fn a_credential_that_scram_refuses_is_named_at_connect_without_its_character() {
+    let (capture, _guard) = LogCapture::install();
+    let peer = FakePeer::start(Behavior::RequestsScram).await;
+    let s = SENTINEL;
+    for (userinfo, query, expected) in [
+        (
+            format!("mmcp:p%F0%9F%98%80{s}"),
+            "",
+            DbError::PasswordRejectedBySaslprep,
+        ),
+        (
+            format!("mmcp:abc%D7%A9%D7%9C%D7%95%D7%9D123{s}"),
+            "",
+            DbError::PasswordRejectedBySaslprep,
+        ),
+        (
+            format!("mmcp:p%07{s}"),
+            "?sslmode=disable",
+            DbError::PasswordRejectedBySaslprep,
+        ),
+        (
+            format!("%D7%A9%D7%9C%D7%95%D7%9D:{s}"),
+            "",
+            DbError::UsernameRejectedBySaslprep,
+        ),
+    ] {
+        let url = format!("postgres://{userinfo}@127.0.0.1:{}/app{query}", peer.port());
+        let target = DatabaseTarget::from_str(&url).expect("the URL is accepted");
+
+        let error = connect_error(&target)
+            .await
+            .unwrap_or_else(|| panic!("{url}: the connect must fail"));
+
+        assert_eq!(
+            std::mem::discriminant(&error),
+            std::mem::discriminant(&expected),
+            "{url}: {error:?}"
+        );
+        let printed = chain_text(&error);
+        assert!(!printed.contains(s), "{url}");
+        assert!(
+            !printed.contains('\u{7}') && !printed.contains('\u{1F600}'),
+            "{url}"
+        );
+        assert!(error.source().is_none(), "{url}");
+    }
+
+    assert!(!capture.text().contains(s), "{}", capture.text());
+}
+
 /// The pairing check of the driver runs after the SSL request is answered, so a peer that answers it reaches the mapping of `connect`.
 #[tokio::test]
 async fn a_client_certificate_without_its_key_is_named_and_the_driver_error_is_dropped() {

@@ -43,7 +43,6 @@ impl PostgresTarget {
             return Err(DatabaseUrlError::ParameterWithoutValue);
         }
         let parameters = checked_parameters(url)?;
-        check_saslprep(url)?;
         Ok(Self {
             display: display_of(url, &parameters),
             connection_text: SecretString::from(raw),
@@ -63,15 +62,16 @@ impl PostgresTarget {
     /// The value-free error for a configuration error that sqlx raised while connecting.
     ///
     /// The driver error is dropped, since it may quote a credential or a line of the key file.
-    /// The cause is read from the state that decides it: the client certificate and key the URL or the environment give, and the credentials the environment gives.
+    /// The cause is read from the state that decides it: the client certificate and key, and the user name and password, that the URL or the environment give.
     pub(super) fn explain_configuration_error(&self) -> DbError {
         self.explain_configuration_error_in(&|name| std::env::var(name).ok())
     }
 
     /// [`Self::explain_configuration_error`] with the environment as a lookup, so a test sets none.
     ///
-    /// The URL's own credentials passed the SASLprep check at parse, so only the environment can still fail it.
-    /// It fails after the handshake, and the key checks fail during it, so a failing environment credential beside a client certificate or key leaves the cause unknown.
+    /// SCRAM authentication applies SASLprep to the user name first and to the password later, so a failing user name decides the cause.
+    /// The TLS checks fail during the handshake, which comes before authentication, but a server that declines TLS skips them.
+    /// A TLS cause beside a SASLprep cause therefore leaves the cause unknown.
     fn explain_configuration_error_in(
         &self,
         environment: &dyn Fn(&str) -> Option<String>,
@@ -79,46 +79,54 @@ impl PostgresTarget {
         let Ok(url) = Url::parse(self.exposed_text()) else {
             return DbError::ConnectionConfigurationRejected;
         };
-        let has_parameter =
-            |keys: [&str; 2]| url.query_pairs().any(|(name, _)| keys.contains(&&*name));
-        let has_certificate =
-            has_parameter(["sslcert", "ssl-cert"]) || environment("PGSSLCERT").is_some();
-        let has_key = has_parameter(["sslkey", "ssl-key"]) || environment("PGSSLKEY").is_some();
-        let environment_problem = environment_credential_problem(&url, environment);
-        match (environment_problem, has_certificate || has_key) {
-            (Some(problem), false) => problem,
-            (Some(_), true) => DbError::ConnectionConfigurationRejected,
-            (None, _) => match (has_certificate, has_key) {
-                (true, false) | (false, true) => DbError::ClientCertificateAndKeyNotPaired,
-                (true, true) => DbError::ClientKeyRejected,
-                (false, false) => DbError::ConnectionConfigurationRejected,
-            },
+        let authentication_cause =
+            username_cause(&url, environment).or_else(|| password_cause(&url, environment));
+        let mut causes = [tls_cause(&url, environment), authentication_cause]
+            .into_iter()
+            .flatten();
+        match (causes.next(), causes.next()) {
+            (Some(only), None) => only,
+            _ => DbError::ConnectionConfigurationRejected,
         }
     }
 }
 
-/// The SASLprep failure of a credential that only the environment gives, since the URL gives none of it.
-fn environment_credential_problem(
-    url: &Url,
-    environment: &dyn Fn(&str) -> Option<String>,
-) -> Option<DbError> {
-    let gives_user =
-        !url.username().is_empty() || url.query_pairs().any(|(name, _)| name == "user");
-    let gives_password =
-        url.password().is_some() || url.query_pairs().any(|(name, _)| name == "password");
-    if !gives_user
-        && environment("PGUSER")
-            .is_some_and(|user| stringprep::saslprep(&format!("n={user}")).is_err())
-    {
-        return Some(DbError::UsernameRejectedBySaslprep);
+/// The TLS error that the client certificate and key the URL or the environment give would raise.
+fn tls_cause(url: &Url, environment: &dyn Fn(&str) -> Option<String>) -> Option<DbError> {
+    let has_parameter = |keys: [&str; 2]| url.query_pairs().any(|(name, _)| keys.contains(&&*name));
+    let has_certificate =
+        has_parameter(["sslcert", "ssl-cert"]) || environment("PGSSLCERT").is_some();
+    let has_key = has_parameter(["sslkey", "ssl-key"]) || environment("PGSSLKEY").is_some();
+    match (has_certificate, has_key) {
+        (true, false) | (false, true) => Some(DbError::ClientCertificateAndKeyNotPaired),
+        (true, true) => Some(DbError::ClientKeyRejected),
+        (false, false) => None,
     }
-    if !gives_password
-        && environment("PGPASSWORD")
-            .is_some_and(|password| stringprep::saslprep(&password).is_err())
-    {
-        return Some(DbError::PasswordRejectedBySaslprep);
-    }
-    None
+}
+
+/// The SASLprep failure of the user name that the URL or the environment gives.
+///
+/// SCRAM prepares the user name together with its `n=` prefix.
+fn username_cause(url: &Url, environment: &dyn Fn(&str) -> Option<String>) -> Option<DbError> {
+    let user = effective_value(
+        url,
+        Some(url.username())
+            .filter(|user| !user.is_empty())
+            .map(decoded),
+        "user",
+    )
+    .or_else(|| environment("PGUSER"));
+    user.is_some_and(|user| stringprep::saslprep(&format!("n={user}")).is_err())
+        .then_some(DbError::UsernameRejectedBySaslprep)
+}
+
+/// The SASLprep failure of the password that the URL or the environment gives.
+fn password_cause(url: &Url, environment: &dyn Fn(&str) -> Option<String>) -> Option<DbError> {
+    let password = effective_value(url, url.password().map(decoded), "password")
+        .or_else(|| environment("PGPASSWORD"));
+    password
+        .is_some_and(|password| stringprep::saslprep(&password).is_err())
+        .then_some(DbError::PasswordRejectedBySaslprep)
 }
 
 impl fmt::Display for PostgresTarget {
@@ -181,28 +189,6 @@ fn effective_value(url: &Url, userinfo: Option<String>, key: &str) -> Option<Str
         .map(|(_, value)| value.into_owned())
         .last()
         .or(userinfo)
-}
-
-/// Refuses a user name or a password that SCRAM authentication would refuse, so no connection raises its error.
-///
-/// SCRAM prepares the user name together with its `n=` prefix, and the password alone.
-/// A credential that the environment or a pgpass file supplies is not known here.
-fn check_saslprep(url: &Url) -> Result<(), DatabaseUrlError> {
-    let user = effective_value(
-        url,
-        Some(url.username())
-            .filter(|user| !user.is_empty())
-            .map(decoded),
-        "user",
-    );
-    if user.is_some_and(|user| stringprep::saslprep(&format!("n={user}")).is_err()) {
-        return Err(DatabaseUrlError::UsernameRejectedBySaslprep);
-    }
-    let password = effective_value(url, url.password().map(decoded), "password");
-    if password.is_some_and(|password| stringprep::saslprep(&password).is_err()) {
-        return Err(DatabaseUrlError::PasswordRejectedBySaslprep);
-    }
-    Ok(())
 }
 
 /// Refuses an SSL mode outside sqlx's closed set, whose error would quote the value.
@@ -314,6 +300,101 @@ mod tests {
             );
             assert!(std::error::Error::source(&error).is_none());
         }
+    }
+
+    fn same_variant(left: &DbError, right: &DbError) -> bool {
+        std::mem::discriminant(left) == std::mem::discriminant(right)
+    }
+
+    #[test]
+    fn a_url_credential_that_scram_refuses_is_named_without_its_character() {
+        for (raw, expected) in [
+            (
+                "postgres://u:p%07ss@db/app",
+                DbError::PasswordRejectedBySaslprep,
+            ),
+            (
+                "postgres://db/app?password=p%F0%9F%98%80ss",
+                DbError::PasswordRejectedBySaslprep,
+            ),
+            (
+                "postgres://u:abc%D7%A9%D7%9C%D7%95%D7%9D123@db/app",
+                DbError::PasswordRejectedBySaslprep,
+            ),
+            (
+                "postgres://m%07x:pw@db/app",
+                DbError::UsernameRejectedBySaslprep,
+            ),
+            (
+                "postgres://db/app?user=m%07x",
+                DbError::UsernameRejectedBySaslprep,
+            ),
+            (
+                "postgres://%D7%A9%D7%9C%D7%95%D7%9D:pw@db/app",
+                DbError::UsernameRejectedBySaslprep,
+            ),
+        ] {
+            let error = explained(raw, &[]);
+
+            assert!(same_variant(&error, &expected), "{raw}: {error:?}");
+            let printed = format!("{error} | {error:?}");
+            assert!(
+                !printed.contains('\u{7}')
+                    && !printed.contains('\u{1F600}')
+                    && !printed.contains("\\u{7}"),
+                "{printed}"
+            );
+            assert!(std::error::Error::source(&error).is_none());
+        }
+    }
+
+    #[test]
+    fn the_url_credential_that_decides_follows_the_precedence_sqlx_applies() {
+        // The query overrides the userinfo, and the last occurrence of a parameter wins.
+        for raw in [
+            "postgres://u:p%07x@db/app?password=good",
+            "postgres://m%07x:pw@db/app?user=good",
+            "postgres://u@db/app?password=p%07x&password=good",
+            "postgres://u@db/app?user=m%07x&user=good",
+        ] {
+            assert!(
+                matches!(
+                    explained(raw, &[]),
+                    DbError::ConnectionConfigurationRejected
+                ),
+                "{raw}"
+            );
+        }
+        for (raw, expected) in [
+            (
+                "postgres://u:good@db/app?password=p%07x",
+                DbError::PasswordRejectedBySaslprep,
+            ),
+            (
+                "postgres://u@db/app?password=good&password=p%07x",
+                DbError::PasswordRejectedBySaslprep,
+            ),
+            (
+                "postgres://good:pw@db/app?user=m%07x",
+                DbError::UsernameRejectedBySaslprep,
+            ),
+            (
+                "postgres://u@db/app?user=good&user=m%07x",
+                DbError::UsernameRejectedBySaslprep,
+            ),
+        ] {
+            let error = explained(raw, &[]);
+
+            assert!(same_variant(&error, &expected), "{raw}: {error:?}");
+        }
+    }
+
+    #[test]
+    fn a_failing_user_name_is_named_before_a_failing_password() {
+        assert!(matches!(
+            explained("postgres://m%07x:p%07y@db/app", &[]),
+            DbError::UsernameRejectedBySaslprep
+        ));
     }
 
     #[test]
