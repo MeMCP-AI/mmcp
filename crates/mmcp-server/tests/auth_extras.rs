@@ -390,7 +390,7 @@ async fn oauth_callback_with_missing_state_is_rejected_before_token_exchange() {
     );
 }
 
-// ── OAuth flow cookie (SameSite=Lax survives the provider's cross-site redirect) ──
+// The OAuth flow cookie is SameSite=Lax, so it survives the provider's cross-site redirect.
 
 #[tokio::test]
 async fn oauth_authorize_sets_a_samesite_lax_flow_cookie() {

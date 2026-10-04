@@ -29,8 +29,9 @@ services:
       MMCP_REPO_ROOT: /data/repos
       # Must be set in `.env` (64 hex chars). See .env.example for
       # how to generate one; the server seeds a random key if this
-      # is missing, but that key does not survive restarts so every
-      # reboot would invalidate all live sessions.
+      # is missing, but that key does not survive restarts.
+      # A random key invalidates bearer tokens and pending OAuth sign-ins at every reboot.
+      # Cookie sessions live in the database and do not depend on the key.
       MMCP_TOKEN_KEY_HEX: ${MMCP_TOKEN_KEY_HEX:?set MMCP_TOKEN_KEY_HEX in .env (openssl rand -hex 32)}
       MMCP_ORIGIN: ${MMCP_ORIGIN:-http://localhost:8787}
       MMCP_OAUTH_GITHUB_CLIENT_ID: ${MMCP_OAUTH_GITHUB_CLIENT_ID:-}

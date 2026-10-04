@@ -1044,7 +1044,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    // ── validate_oauth_state: each rejection cause is its own path ──
+    // Each state rejection cause of `validate_oauth_state` is its own path.
 
     #[test]
     fn validate_oauth_state_rejects_a_missing_query_parameter() {
@@ -1088,7 +1088,7 @@ mod tests {
         assert_eq!(validate_oauth_state(Some(&value), &value), Ok(()));
     }
 
-    // ── open_oauth_flow: each flow cookie refusal is its own path ───
+    // Each flow cookie refusal of `open_oauth_flow` is its own path.
 
     const FLOW_NOW_SECS: i64 = 1_000;
     const FLOW_LIFETIME_SECS: i64 = 600;
