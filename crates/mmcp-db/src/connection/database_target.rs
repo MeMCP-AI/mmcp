@@ -27,7 +27,7 @@ impl FromStr for DatabaseTarget {
         let url = Url::parse(raw).map_err(|source| DatabaseUrlError::Unparsable { source })?;
         match url.scheme() {
             "postgres" | "postgresql" => PostgresTarget::parse(raw, &url).map(Self::Postgres),
-            "sqlite" => SqliteTarget::parse(raw, &url).map(Self::Sqlite),
+            "sqlite" => SqliteTarget::parse(raw).map(Self::Sqlite),
             other => Err(DatabaseUrlError::UnsupportedScheme {
                 scheme: other.to_owned(),
             }),
@@ -239,7 +239,7 @@ mod tests {
             ),
             (
                 "sqlite://u:SECRET_17@data/x.db",
-                DatabaseUrlError::SqliteUrlWithCredentials,
+                DatabaseUrlError::SqliteAtSignInFileName,
             ),
         ];
         for (input, expected) in refused {
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn a_sqlite_fragment_is_refused_without_echoing_it() {
         for input in [
-            "sqlite://u:#SECRET_1@host/db",
+            "sqlite://u:#SECRET_1/db",
             "sqlite:data/x.db#SECRET_2",
             "sqlite://data/x.db?mode=rwc#SECRET_3",
             "sqlite://data/x.db#",
@@ -364,18 +364,29 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_misplaced_credentials_are_refused() {
+    fn a_raw_at_sign_in_a_sqlite_url_is_refused_with_the_sqlite_remedy() {
         for input in [
             "sqlite:u:SECRET_1@x.db",
-            "sqlite:data/SECRET_2%40x.db",
-            "sqlite://data/x.db?k=SECRET_3@y",
+            "sqlite://u:SECRET_2@data/x.db",
+            "sqlite://data/x.db?vfs=SECRET_3@y",
+            "sqlite://alice@archive/data.db",
         ] {
-            assert_eq!(
-                input.parse::<DatabaseTarget>().unwrap_err(),
-                DatabaseUrlError::AtSignOutsideUserinfo,
-                "{input}"
-            );
+            let error = input.parse::<DatabaseTarget>().unwrap_err();
+            assert_eq!(error, DatabaseUrlError::SqliteAtSignInFileName, "{input}");
+            assert!(error.to_string().contains("%40"), "{error}");
+            assert!(!error.to_string().contains("dbname"), "{error}");
             printed(input, "SECRET_").unwrap_err();
+        }
+    }
+
+    #[test]
+    fn an_encoded_at_sign_in_a_sqlite_file_name_is_accepted() {
+        for input in [
+            "sqlite:data/alice%40example.db",
+            "sqlite://alice%40archive/data.db",
+            "sqlite://data/backup%402024.db?mode=rwc",
+        ] {
+            assert_eq!(printed(input, "SECRET_").as_deref(), Ok(input));
         }
     }
 

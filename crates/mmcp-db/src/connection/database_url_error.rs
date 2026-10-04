@@ -82,7 +82,8 @@ pub enum DatabaseUrlError {
         accepted: &'static [&'static str],
     },
 
-    /// SQLite takes no credential, so userinfo can only be misplaced text.
-    #[error("a sqlite URL takes no user name and no password")]
-    SqliteUrlWithCredentials,
+    /// SQLite takes no credential, so a raw `@` can only be a file name character or the userinfo of misplaced text.
+    /// sqlx-sqlite decodes the file name, so `%40` is how it holds an `@`.
+    #[error("a sqlite URL has an `@`; percent-encode an `@` of the file name as `%40`")]
+    SqliteAtSignInFileName,
 }

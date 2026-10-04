@@ -5,9 +5,8 @@ use std::str::FromStr;
 
 use sea_orm::sqlx;
 use sea_orm::sqlx::sqlite::SqliteConnectOptions;
-use url::{Url, form_urlencoded};
+use url::form_urlencoded;
 
-use super::at_sign_check::has_at_sign_outside_userinfo;
 use super::database_url_error::DatabaseUrlError;
 use super::parameter_set::ParameterSet;
 use super::sqlite_parameters::{ACCEPTED_KEYS, canonical_by_case, closed_values};
@@ -15,20 +14,18 @@ use super::sqlite_parameters::{ACCEPTED_KEYS, canonical_by_case, closed_values};
 /// The connection text of a SQLite database.
 ///
 /// SQLite takes no credential, so the text is its own display.
-/// A URL that carries userinfo, or an `@` outside it, is refused, since it could only be misplaced password text.
+/// sqlx-sqlite reads the text after the scheme as a file name, percent-decoded.
+/// A raw `@` is refused, since it can be the userinfo of a misplaced credential, and `%40` is how a file name holds one.
 #[derive(Debug, Clone)]
 pub struct SqliteTarget {
     text: String,
 }
 
 impl SqliteTarget {
-    /// Applies the refusal rules to `url`, the parse of `raw`.
-    pub(super) fn parse(raw: &str, url: &Url) -> Result<Self, DatabaseUrlError> {
-        if !url.username().is_empty() || url.password().is_some() {
-            return Err(DatabaseUrlError::SqliteUrlWithCredentials);
-        }
-        if has_at_sign_outside_userinfo(url) {
-            return Err(DatabaseUrlError::AtSignOutsideUserinfo);
+    /// Applies the refusal rules to `raw`, which the URL parser has accepted.
+    pub(super) fn parse(raw: &str) -> Result<Self, DatabaseUrlError> {
+        if raw.contains('@') {
+            return Err(DatabaseUrlError::SqliteAtSignInFileName);
         }
         if raw.contains('#') {
             return Err(DatabaseUrlError::SqliteFragmentPresent);
