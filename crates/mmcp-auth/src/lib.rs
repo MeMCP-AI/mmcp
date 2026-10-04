@@ -1,17 +1,19 @@
 //! Authentication and authorization primitives for mmcp.
 //!
-//! Exposes four cohesive pieces:
+//! Exposes five cohesive pieces:
 //!
 //! - Argon2 password hashing through [`password`].
 //! - PASETO v4 local bearer tokens and OAuth flow tokens through [`token`].
 //! - Typed session claims through [`claims`].
 //! - `axum-login` backend adapter through [`backend`].
+//! - The session auth hash a credential change invalidates through [`session_auth_hash`].
 
 pub mod backend;
 pub mod claims;
 mod defaults;
 pub mod error;
 pub mod password;
+pub mod session_auth_hash;
 pub mod token;
 
 pub use backend::{AuthSession, Credentials, MmcpAuthBackend, MmcpUser};

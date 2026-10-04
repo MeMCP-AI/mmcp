@@ -5,6 +5,10 @@
 /// Lowest-precedence tier: callers resolve the effective bound through `mmcp_server::config` and pass it in.
 pub const MAX_HANDLE_LENGTH: usize = 64;
 
+/// Domain tag opening the session auth hash input, so no other digest in the project can collide with it.
+/// Changing it signs every session out, because every stored hash stops matching.
+pub(crate) const SESSION_AUTH_HASH_DOMAIN: &str = "mmcp-session-auth-hash-v1";
+
 /// Implicit assertion binding a PASETO token to the OAuth flow purpose.
 /// A bearer token carries no assertion, so neither token kind opens as the other.
 pub(crate) const OAUTH_FLOW_TOKEN_IMPLICIT_ASSERTION: &str = "mmcp:oauth-flow-token:v1";

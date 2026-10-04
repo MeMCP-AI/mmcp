@@ -21,7 +21,6 @@ use std::fmt;
 
 use axum_login::{AuthUser, AuthnBackend, UserId};
 use sea_orm::DatabaseConnection;
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 #[cfg(test)]
@@ -29,15 +28,19 @@ use crate::defaults::MAX_HANDLE_LENGTH;
 use crate::defaults::{MAX_OAUTH_HANDLE_COLLISION_ATTEMPTS, SUFFIX_RESERVE_BYTES};
 use crate::error::AuthError;
 use crate::password;
+use crate::session_auth_hash::session_auth_hash;
 use mmcp_db::repository::{oauth_repo, passkey_repo, user_repo};
 
 // ── AuthUser impl ───────────────────────────────────────────────
 
 /// Wrapper around the database user model that carries the session
-/// auth hash (SHA-256 digest of the password hash). `axum-login` requires `Debug +
+/// auth hash. `axum-login` requires `Debug +
 /// Clone + Send + Sync` on the user type and a stable auth hash
 /// the session layer can verify on each request.
-/// The digest keeps the password hash out of every persisted session record.
+/// The hash covers the user's credential epoch and password hash,
+/// so a password, passkey or OAuth link change signs the user's other sessions out.
+/// It is a digest, so the password hash stays out of every persisted session record.
+/// See [`crate::session_auth_hash::session_auth_hash`] for the encoding.
 #[derive(Debug, Clone)]
 pub struct MmcpUser {
     pub id: Uuid,
@@ -49,9 +52,12 @@ pub struct MmcpUser {
 }
 
 impl MmcpUser {
+    /// Build the user from a row.
+    /// The row must be read after any credential write of the same request,
+    /// otherwise the hash is stale and the next request signs the user out.
     pub fn from_db(model: mmcp_db::entities::user::Model) -> Self {
-        let password_hash = model.password_hash.as_deref().unwrap_or("no-password");
-        let auth_hash = Sha256::digest(password_hash.as_bytes()).to_vec();
+        let auth_hash =
+            session_auth_hash(model.credential_epoch, model.password_hash.as_deref()).to_vec();
         Self {
             id: model.id,
             handle: model.handle,
@@ -223,7 +229,9 @@ impl AuthnBackend for MmcpAuthBackend {
                     self.max_handle_length,
                 )
                 .await?;
-                let user = user_repo::create(
+                // One transaction at the initial epoch: the account is new, so the login
+                // signs in with the very row it created and no other session can exist.
+                let (user, _link) = user_repo::create_with_oauth_link(
                     &self.conn,
                     user_repo::NewUser {
                         id: user_id,
@@ -233,11 +241,6 @@ impl AuthnBackend for MmcpAuthBackend {
                         email: email.clone(),
                         created_at: now,
                     },
-                )
-                .await
-                .map_err(|e| AuthError::Claims(e.to_string()))?;
-                let _ = oauth_repo::create(
-                    &self.conn,
                     oauth_repo::NewOauthAccount {
                         id: Uuid::now_v7(),
                         user_id,
@@ -364,7 +367,10 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    fn user_model(password_hash: Option<&str>) -> mmcp_db::entities::user::Model {
+    fn user_model(
+        password_hash: Option<&str>,
+        credential_epoch: i64,
+    ) -> mmcp_db::entities::user::Model {
         mmcp_db::entities::user::Model {
             id: Uuid::now_v7(),
             handle: "alice".to_owned(),
@@ -372,42 +378,96 @@ mod tests {
             password_hash: password_hash.map(str::to_owned),
             email: None,
             created_at: 0,
+            credential_epoch,
         }
     }
 
     #[test]
-    fn session_auth_hash_is_a_digest_of_the_password_hash_and_follows_it() {
+    fn session_auth_hash_follows_the_epoch_and_the_password_hash() {
         const PHC_STRING: &str = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2g";
         const CHANGED_PHC_STRING: &str = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$b3RoZXJoYXNo";
 
-        let auth_hash = MmcpUser::from_db(user_model(Some(PHC_STRING)))
-            .session_auth_hash()
-            .to_vec();
-        let same_hash_again = MmcpUser::from_db(user_model(Some(PHC_STRING)))
-            .session_auth_hash()
-            .to_vec();
-        let changed_hash = MmcpUser::from_db(user_model(Some(CHANGED_PHC_STRING)))
-            .session_auth_hash()
-            .to_vec();
+        let hash_of = |password_hash: Option<&str>, epoch: i64| {
+            MmcpUser::from_db(user_model(password_hash, epoch))
+                .session_auth_hash()
+                .to_vec()
+        };
 
-        assert_ne!(
-            auth_hash,
-            PHC_STRING.as_bytes(),
-            "the session must not carry the password hash itself"
-        );
-        assert!(
-            !auth_hash
-                .windows(PHC_STRING.len())
-                .any(|window| window == PHC_STRING.as_bytes()),
-            "the password hash must not appear inside the session auth hash"
-        );
         assert_eq!(
-            auth_hash, same_hash_again,
-            "one password hash yields one auth hash"
+            hash_of(Some(PHC_STRING), 2),
+            session_auth_hash(2, Some(PHC_STRING)).to_vec(),
+            "the user carries the digest of its own epoch and password hash"
+        );
+        assert_eq!(hash_of(Some(PHC_STRING), 2), hash_of(Some(PHC_STRING), 2));
+        assert_ne!(
+            hash_of(Some(PHC_STRING), 2),
+            hash_of(Some(CHANGED_PHC_STRING), 2),
+            "a password change must change the auth hash so existing sessions are invalidated"
         );
         assert_ne!(
-            auth_hash, changed_hash,
-            "a password change must change the auth hash so existing sessions are invalidated"
+            hash_of(None, 0),
+            hash_of(None, 1),
+            "a credential change of a passwordless user must change the auth hash"
+        );
+    }
+
+    #[tokio::test]
+    async fn first_time_oauth_login_returns_the_hash_the_next_request_computes() {
+        let conn = test_db().await;
+        let backend = MmcpAuthBackend::new(conn, MAX_HANDLE_LENGTH, true);
+
+        let logged_in = backend
+            .authenticate(Credentials::OAuth {
+                provider: "github".to_owned(),
+                provider_user_id: "1001".to_owned(),
+                email: None,
+                access_token: None,
+                refresh_token: None,
+            })
+            .await
+            .expect("authenticate")
+            .expect("first-time login provisions a user");
+        let reloaded = backend
+            .get_user(&logged_in.id)
+            .await
+            .expect("reload")
+            .expect("the user exists");
+
+        assert_eq!(
+            logged_in.session_auth_hash(),
+            reloaded.session_auth_hash(),
+            "a hash stamped at login that differs from the reloaded one signs the user out at once"
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_login_of_an_existing_account_keeps_its_hash() {
+        let conn = test_db().await;
+        let backend = MmcpAuthBackend::new(conn, MAX_HANDLE_LENGTH, true);
+        let credentials = || Credentials::OAuth {
+            provider: "github".to_owned(),
+            provider_user_id: "1001".to_owned(),
+            email: None,
+            access_token: None,
+            refresh_token: None,
+        };
+        let first = backend
+            .authenticate(credentials())
+            .await
+            .expect("first login")
+            .expect("provisioned");
+
+        let second = backend
+            .authenticate(credentials())
+            .await
+            .expect("second login")
+            .expect("existing account");
+
+        assert_eq!(first.id, second.id);
+        assert_eq!(
+            first.session_auth_hash(),
+            second.session_auth_hash(),
+            "logging in again must not sign the first session out"
         );
     }
 
