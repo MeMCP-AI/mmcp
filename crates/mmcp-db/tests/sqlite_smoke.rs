@@ -123,6 +123,50 @@ async fn org_memberships_and_groups_cascade() {
 }
 
 #[tokio::test]
+async fn group_list_all_returns_every_group() {
+    let db = fresh_database().await;
+    let conn = db.connection();
+    assert!(group_repo::list_all(conn).await.unwrap().is_empty());
+
+    let org_id = Uuid::now_v7();
+    org_repo::create(
+        conn,
+        org_repo::NewOrg {
+            id: org_id,
+            slug: "acme".into(),
+            display_name: None,
+            created_at: 1,
+        },
+    )
+    .await
+    .unwrap();
+    for slug in ["first", "second"] {
+        group_repo::create(
+            conn,
+            group_repo::NewGroup {
+                id: Uuid::now_v7(),
+                slug: slug.into(),
+                owner_kind: OwnerKind::Org,
+                owner_id: org_id,
+                display_name: None,
+                created_at: 2,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    let mut slugs: Vec<String> = group_repo::list_all(conn)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|group| group.slug)
+        .collect();
+    slugs.sort();
+    assert_eq!(slugs, ["first", "second"]);
+}
+
+#[tokio::test]
 async fn memory_versions_and_latest_version_update() {
     let db = fresh_database().await;
     let conn = db.connection();

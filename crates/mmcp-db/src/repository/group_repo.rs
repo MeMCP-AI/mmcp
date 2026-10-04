@@ -36,6 +36,11 @@ pub async fn find_by_id(
     Ok(Entity::find_by_id(id).one(conn).await?)
 }
 
+/// List every group.
+pub async fn list_all(conn: &sea_orm::DatabaseConnection) -> Result<Vec<Model>, DbError> {
+    Ok(Entity::find().all(conn).await?)
+}
+
 /// List every group owned by the given user or org.
 pub async fn list_by_owner(
     conn: &sea_orm::DatabaseConnection,
