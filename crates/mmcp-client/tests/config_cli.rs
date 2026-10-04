@@ -73,9 +73,7 @@ fn set_then_get_at_the_project_scope_prints_the_layers_and_the_effective_value()
         .args(["config", "get", "notice.md.project"])
         .assert()
         .success()
-        .stdout(
-            "local: unset\nproject: off\nflag: unset\nenvironment: unset\nuser: unset\neffective: off (project)\n",
-        );
+        .stdout("local: unset\nproject: off\nuser: unset\neffective: off (project)\n");
 }
 
 #[test]

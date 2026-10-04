@@ -80,7 +80,7 @@ impl From<ConfigCliCommand> for ConfigCommand {
 }
 
 /// CLI entry for `mmcp config`.
-/// A serving process holds the launch flag and variable values, which a CLI run never has, so those layers read as unset.
+/// The launch flag and variable values belong to a serving process, which a CLI run is not, so they are never shown.
 pub fn run(args: ConfigCliArgs) -> Result<()> {
     let working_directory = std::env::current_dir().context("reading current working directory")?;
     let home = MmcpHome::discover()?;
@@ -131,23 +131,37 @@ fn diagnostic_lines(outcome: &ConfigOutcome) -> Vec<String> {
 /// The output lines of one outcome.
 fn output_lines(outcome: &ConfigOutcome) -> Vec<String> {
     match outcome {
-        ConfigOutcome::Read { resolution, .. } => resolution
-            .layers
-            .entries()
-            .into_iter()
-            .map(|(source, value)| {
-                format!(
-                    "{}: {}",
-                    source.as_str(),
-                    value.map_or("unset", NoticeValue::as_str)
-                )
-            })
-            .chain(std::iter::once(format!(
+        ConfigOutcome::Read { key, resolution } => {
+            let mut lines: Vec<String> = resolution
+                .layers
+                .entries()
+                .into_iter()
+                .filter(|(source, _)| !source.is_launch())
+                .map(|(source, value)| {
+                    format!(
+                        "{}: {}",
+                        source.as_str(),
+                        value.map_or("unset", NoticeValue::as_str)
+                    )
+                })
+                .collect();
+            let effective = format!(
                 "effective: {} ({})",
                 resolution.effective.as_str(),
                 resolution.source.as_str()
-            )))
-            .collect(),
+            );
+            // A serving process started with a flag or variable decides below the local and project files only.
+            lines.push(if resolution.source.outranks_launch() {
+                effective
+            } else {
+                format!(
+                    "{effective}, unless the server was started with --{} or {}",
+                    key.launch_flag(),
+                    key.launch_variable()
+                )
+            });
+            lines
+        }
         ConfigOutcome::Written(written) => {
             let key = written.key.as_str();
             let scope = written.scope.as_str();
@@ -299,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn get_prints_every_layer_then_the_effective_value_and_its_source() {
+    fn get_prints_the_file_layers_then_the_effective_value_and_its_source() {
         let fixture = ConfigFixture::new();
         run_lines(
             &fixture,
@@ -319,12 +333,67 @@ mod tests {
             [
                 "local: unset",
                 "project: on",
-                "flag: unset",
-                "environment: unset",
                 "user: off",
                 "effective: on (project)",
             ]
         );
+    }
+
+    #[test]
+    fn get_never_shows_a_launch_layer_it_cannot_know() {
+        let fixture = ConfigFixture::new();
+        let lines = run_lines(&fixture, already_excluded, &["get", "notice.md.user"]);
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.starts_with("flag:") && !line.starts_with("environment:")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_value_decided_below_the_launch_layers_says_a_serving_process_may_differ() {
+        let fixture = ConfigFixture::new();
+        run_lines(
+            &fixture,
+            already_excluded,
+            &["set", "notice.md.user", "off", "--scope", "user"],
+        );
+
+        let from_the_user_file = run_lines(&fixture, already_excluded, &["get", "notice.md.user"]);
+        let from_the_default = run_lines(&fixture, already_excluded, &["get", "notice.md.project"]);
+
+        assert_eq!(
+            from_the_user_file.last().unwrap(),
+            "effective: off (user), unless the server was started with --notice-md-user or MMCP_NOTICE_MD_USER"
+        );
+        assert_eq!(
+            from_the_default.last().unwrap(),
+            "effective: on (default), unless the server was started with --notice-md-project or MMCP_NOTICE_MD_PROJECT"
+        );
+    }
+
+    #[test]
+    fn a_value_decided_above_the_launch_layers_is_stated_without_a_caveat() {
+        let fixture = ConfigFixture::new();
+        for scope in ["local", "project"] {
+            run_lines(
+                &fixture,
+                already_excluded,
+                &["set", "notice.md.project", "off", "--scope", scope],
+            );
+            let lines = run_lines(&fixture, already_excluded, &["get", "notice.md.project"]);
+            assert_eq!(
+                lines.last().unwrap(),
+                &format!("effective: off ({scope})"),
+                "{lines:?}"
+            );
+            run_lines(
+                &fixture,
+                already_excluded,
+                &["unset", "notice.md.project", "--scope", scope],
+            );
+        }
     }
 
     #[test]
