@@ -12,7 +12,8 @@ use super::auth_rate_limiter::AuthRateLimiter;
 
 /// Spend one request of the caller's budget, then run the route, or refuse with the limiter's answer.
 ///
-/// It runs before the route's own work, so a refused request costs one map operation and no password hash, database query or outbound request.
+/// It runs before the route handler, so a refused request costs one map operation and no password hash, handler database query or outbound request.
+/// The session layer around it has already run, and may have read the session and its user from the database.
 /// The peer address comes from the connection, which only [`crate::serve::serve_router`] provides.
 /// A request without one fails closed.
 pub async fn enforce_auth_rate_limit(
