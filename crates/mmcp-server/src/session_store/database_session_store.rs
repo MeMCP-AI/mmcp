@@ -453,7 +453,7 @@ mod tests {
     async fn database_session_store_reports_a_stored_expiry_it_cannot_represent() {
         let store = test_store().await;
         let id = Id::default();
-        http_session_repo::upsert(
+        http_session_repo::insert_if_absent(
             &store.conn,
             Model {
                 session_id_sha256: session_id_key(&id),
@@ -474,7 +474,7 @@ mod tests {
     async fn database_session_store_reports_stored_data_it_cannot_decode() {
         let store = test_store().await;
         let id = Id::default();
-        http_session_repo::upsert(
+        http_session_repo::insert_if_absent(
             &store.conn,
             Model {
                 session_id_sha256: session_id_key(&id),

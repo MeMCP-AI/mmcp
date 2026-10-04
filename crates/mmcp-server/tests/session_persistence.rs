@@ -907,7 +907,7 @@ async fn passkey_login_start_rows_are_removed_by_the_sweep_after_expiry() {
         .await
         .expect("connect");
     for row in rows {
-        http_session_repo::upsert(
+        http_session_repo::update_existing(
             db.connection(),
             http_session::Model {
                 expires_at: 0,
