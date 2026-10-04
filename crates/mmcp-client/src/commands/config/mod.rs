@@ -5,6 +5,7 @@
 
 mod config_action;
 mod config_args_error;
+mod config_cli;
 mod config_command;
 mod config_environment;
 #[cfg(test)]
@@ -24,6 +25,7 @@ mod project_location;
 
 pub use config_action::ConfigAction;
 pub use config_args_error::ConfigArgsError;
+pub use config_cli::{ConfigCliArgs, run};
 pub use config_command::ConfigCommand;
 pub use config_environment::ConfigEnvironment;
 pub use config_get::get_key;

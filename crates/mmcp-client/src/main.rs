@@ -179,6 +179,10 @@ enum Command {
     /// cwd-walked project group.
     Bootstrap(commands::bootstrap::BootstrapArgs),
 
+    /// Read or change an mmcp setting.
+    /// Mirrors the config MCP tool.
+    Config(commands::config::ConfigCliArgs),
+
     /// Subscribe the current project to a tag, memory, group, or
     /// language. Edits `[subscriptions]` in `.mmcp/config.toml`.
     /// Mirrors the `subscribe` MCP tool. Idempotent: re-subscribing
@@ -262,6 +266,7 @@ async fn main() -> Result<()> {
         Command::Serve { debug, mode } => {
             commands::serve::run(debug, mode, NoticeLaunch::default()).await?;
         }
+        Command::Config(args) => commands::config::run(args)?,
         Command::Check { group } => commands::health::run_check(group).await?,
         Command::Diagnose { group } => commands::health::run_diagnose(group).await?,
         Command::Init(InitArgs { cmd }) => match cmd {

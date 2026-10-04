@@ -1,0 +1,369 @@
+//! The `mmcp config` CLI: arguments, execution and the output lines.
+
+use std::io::Write;
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+use clap::{Args, Subcommand};
+use mmcp_core::config::{LOCAL_CONFIG_EXCLUDE_PATTERN, NoticeLaunch, NoticeValue};
+use mmcp_store::home::MmcpHome;
+
+use super::{
+    ConfigCommand, ConfigEnvironment, ConfigKeyArg, ConfigOutcome, ConfigScopeArg, NoticeValueArg,
+    ProjectLocation,
+};
+
+/// Arguments of `mmcp config`.
+#[derive(Debug, Args)]
+pub struct ConfigCliArgs {
+    #[command(subcommand)]
+    pub command: ConfigCliCommand,
+
+    /// Project root, defaulting to the one found from the current directory.
+    #[arg(long, global = true)]
+    pub path: Option<PathBuf>,
+}
+
+/// The three operations of `mmcp config`.
+#[derive(Debug, Subcommand)]
+pub enum ConfigCliCommand {
+    /// Show every layer of a setting and its effective value.
+    Get {
+        /// The setting.
+        #[arg(value_enum)]
+        key: ConfigKeyArg,
+    },
+
+    /// Set a setting at a scope.
+    Set {
+        /// The setting.
+        #[arg(value_enum)]
+        key: ConfigKeyArg,
+
+        /// The value to store.
+        #[arg(value_enum)]
+        value: NoticeValueArg,
+
+        /// The file to store it in.
+        #[arg(long, value_enum)]
+        scope: ConfigScopeArg,
+    },
+
+    /// Remove a setting from a scope.
+    Unset {
+        /// The setting.
+        #[arg(value_enum)]
+        key: ConfigKeyArg,
+
+        /// The file to remove it from.
+        #[arg(long, value_enum)]
+        scope: ConfigScopeArg,
+    },
+}
+
+impl From<ConfigCliCommand> for ConfigCommand {
+    fn from(command: ConfigCliCommand) -> Self {
+        match command {
+            ConfigCliCommand::Get { key } => Self::Get { key: key.into() },
+            ConfigCliCommand::Set { key, value, scope } => Self::Set {
+                key: key.into(),
+                value: value.into(),
+                scope: scope.into(),
+            },
+            ConfigCliCommand::Unset { key, scope } => Self::Unset {
+                key: key.into(),
+                scope: scope.into(),
+            },
+        }
+    }
+}
+
+/// CLI entry for `mmcp config`.
+/// A serving process holds the launch flag and variable values, which a CLI run never has, so those layers read as unset.
+pub fn run(args: ConfigCliArgs) -> Result<()> {
+    let working_directory = std::env::current_dir().context("reading current working directory")?;
+    let home = MmcpHome::discover()?;
+    let launch = NoticeLaunch::default();
+    let environment = ConfigEnvironment::new(&home, &launch);
+    run_in(
+        &environment,
+        &working_directory,
+        args,
+        &mut std::io::stdout().lock(),
+    )
+}
+
+/// [`run`] against an explicit environment and output.
+fn run_in(
+    environment: &ConfigEnvironment<'_>,
+    working_directory: &std::path::Path,
+    args: ConfigCliArgs,
+    output: &mut impl Write,
+) -> Result<()> {
+    let location = ProjectLocation::find(args.path.as_deref(), working_directory)?;
+    let outcome = ConfigCommand::from(args.command).execute(environment, &location)?;
+    for line in output_lines(&outcome) {
+        writeln!(output, "{line}").context("writing the result")?;
+    }
+    Ok(())
+}
+
+/// The output lines of one outcome.
+fn output_lines(outcome: &ConfigOutcome) -> Vec<String> {
+    match outcome {
+        ConfigOutcome::Read { resolution, .. } => resolution
+            .layers
+            .entries()
+            .into_iter()
+            .map(|(source, value)| {
+                format!(
+                    "{}: {}",
+                    source.as_str(),
+                    value.map_or("unset", NoticeValue::as_str)
+                )
+            })
+            .chain(std::iter::once(format!(
+                "effective: {} ({})",
+                resolution.effective.as_str(),
+                resolution.source.as_str()
+            )))
+            .collect(),
+        ConfigOutcome::Written(written) => {
+            let key = written.key.as_str();
+            let scope = written.scope.as_str();
+            let file = written.file.display();
+            let mut lines = vec![match (written.value, written.changed) {
+                (Some(value), true) => {
+                    format!("{key} = {} at {scope} in {file}.", value.as_str())
+                }
+                (Some(value), false) => {
+                    format!("{key} already {} at {scope} in {file}.", value.as_str())
+                }
+                (None, true) => format!("{key} removed from {scope} in {file}."),
+                (None, false) => format!("{key} not set at {scope} in {file}."),
+            }];
+            if let Some(excludes) = &written.excluded_in {
+                lines.push(format!(
+                    "Added {LOCAL_CONFIG_EXCLUDE_PATTERN} to {}.",
+                    excludes.display()
+                ));
+            }
+            lines
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use clap::{CommandFactory, Parser};
+
+    use super::super::config_fixture::{
+        ConfigFixture, SCRATCH_EXCLUDES_FILE, already_excluded, appends_to_scratch_excludes,
+    };
+    use super::*;
+
+    #[derive(Parser)]
+    struct Harness {
+        #[command(flatten)]
+        args: ConfigCliArgs,
+    }
+
+    fn parse(arguments: &[&str]) -> Result<ConfigCliArgs, clap::Error> {
+        Harness::try_parse_from(std::iter::once("config").chain(arguments.iter().copied()))
+            .map(|harness| harness.args)
+    }
+
+    fn run_lines(
+        fixture: &ConfigFixture,
+        exclusion: fn(
+            &std::path::Path,
+        ) -> Result<mmcp_git::checkout::Exclusion, mmcp_git::GitError>,
+        arguments: &[&str],
+    ) -> Vec<String> {
+        let mut args = parse(arguments).unwrap();
+        args.path = Some(fixture.project.clone());
+        let mut output = Vec::new();
+        run_in(
+            &fixture.environment(exclusion),
+            &fixture.project,
+            args,
+            &mut output,
+        )
+        .unwrap();
+        String::from_utf8(output)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn set_prints_the_value_the_scope_and_the_file() {
+        let fixture = ConfigFixture::new();
+        let lines = run_lines(
+            &fixture,
+            already_excluded,
+            &["set", "notice.md.project", "off", "--scope", "project"],
+        );
+        assert_eq!(
+            lines,
+            [format!(
+                "notice.md.project = off at project in {}.",
+                fixture.project.join(".mmcp.toml").display()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_repeated_set_prints_already_and_an_unset_prints_removed_then_not_set() {
+        let fixture = ConfigFixture::new();
+        let file = fixture.project.join(".mmcp.toml");
+        let set = ["set", "notice.md.user", "off", "--scope", "project"];
+        run_lines(&fixture, already_excluded, &set);
+
+        assert_eq!(
+            run_lines(&fixture, already_excluded, &set),
+            [format!(
+                "notice.md.user already off at project in {}.",
+                file.display()
+            )]
+        );
+        let unset = ["unset", "notice.md.user", "--scope", "project"];
+        assert_eq!(
+            run_lines(&fixture, already_excluded, &unset),
+            [format!(
+                "notice.md.user removed from project in {}.",
+                file.display()
+            )]
+        );
+        assert_eq!(
+            run_lines(&fixture, already_excluded, &unset),
+            [format!(
+                "notice.md.user not set at project in {}.",
+                file.display()
+            )]
+        );
+    }
+
+    #[test]
+    fn the_first_local_set_also_prints_the_excludes_file_it_appended_to() {
+        let fixture = ConfigFixture::new();
+        let lines = run_lines(
+            &fixture,
+            appends_to_scratch_excludes,
+            &["set", "notice.md.project", "off", "--scope", "local"],
+        );
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(
+            lines[1],
+            format!("Added **/.mmcp.local.toml to {SCRATCH_EXCLUDES_FILE}.")
+        );
+    }
+
+    #[test]
+    fn get_prints_every_layer_then_the_effective_value_and_its_source() {
+        let fixture = ConfigFixture::new();
+        run_lines(
+            &fixture,
+            already_excluded,
+            &["set", "notice.md.project", "off", "--scope", "user"],
+        );
+        run_lines(
+            &fixture,
+            already_excluded,
+            &["set", "notice.md.project", "on", "--scope", "project"],
+        );
+
+        let lines = run_lines(&fixture, already_excluded, &["get", "notice.md.project"]);
+
+        assert_eq!(
+            lines,
+            [
+                "local: unset",
+                "project: on",
+                "flag: unset",
+                "environment: unset",
+                "user: off",
+                "effective: on (project)",
+            ]
+        );
+    }
+
+    #[test]
+    fn set_and_unset_require_a_scope_and_set_requires_a_value() {
+        assert!(parse(&["set", "notice.md.project", "off"]).is_err());
+        assert!(parse(&["unset", "notice.md.project"]).is_err());
+        assert!(parse(&["set", "notice.md.project", "--scope", "local"]).is_err());
+    }
+
+    #[test]
+    fn a_get_takes_neither_a_value_nor_a_scope() {
+        assert!(parse(&["get", "notice.md.project", "off"]).is_err());
+        assert!(parse(&["get", "notice.md.project", "--scope", "local"]).is_err());
+    }
+
+    #[test]
+    fn an_unknown_key_value_or_scope_is_refused() {
+        assert!(parse(&["get", "notice.md.projet"]).is_err());
+        assert!(parse(&["set", "notice.md.user", "maybe", "--scope", "user"]).is_err());
+        assert!(parse(&["unset", "notice.md.user", "--scope", "global"]).is_err());
+    }
+
+    #[test]
+    fn the_path_applies_before_or_after_the_subcommand() {
+        let before = parse(&["--path", "/p", "get", "notice.md.user"]).unwrap();
+        let after = parse(&["get", "notice.md.user", "--path", "/p"]).unwrap();
+        assert_eq!(before.path, Some(PathBuf::from("/p")));
+        assert_eq!(after.path, Some(PathBuf::from("/p")));
+    }
+
+    #[test]
+    fn every_command_converts_to_the_shared_operation() {
+        let set = parse(&["set", "notice.md.user", "on", "--scope", "local"]).unwrap();
+        assert_eq!(
+            ConfigCommand::from(set.command),
+            ConfigCommand::Set {
+                key: mmcp_core::config::ConfigKey::NoticeMdUser,
+                value: NoticeValue::On,
+                scope: mmcp_core::config::ConfigScope::Local,
+            }
+        );
+    }
+
+    #[test]
+    fn help_texts_are_the_approved_ones() {
+        let mut command = Harness::command();
+        let subcommand_help = |command: &mut clap::Command, name: &str| {
+            command
+                .find_subcommand_mut(name)
+                .unwrap()
+                .get_about()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(
+            subcommand_help(&mut command, "get"),
+            "Show every layer of a setting and its effective value"
+        );
+        assert_eq!(
+            subcommand_help(&mut command, "set"),
+            "Set a setting at a scope"
+        );
+        assert_eq!(
+            subcommand_help(&mut command, "unset"),
+            "Remove a setting from a scope"
+        );
+        let path_help = command
+            .get_arguments()
+            .find(|argument| argument.get_id() == "path")
+            .unwrap()
+            .get_help()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            path_help,
+            "Project root, defaulting to the one found from the current directory"
+        );
+    }
+}
