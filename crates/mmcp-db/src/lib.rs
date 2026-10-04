@@ -6,7 +6,6 @@
 //! by the scheme of a database URL, parsed once into a [`DatabaseTarget`].
 
 pub mod connection;
-mod database_url_redaction;
 mod defaults;
 pub mod entities;
 pub mod error;
@@ -16,7 +15,6 @@ pub mod repository;
 pub use connection::{
     Database, DatabaseTarget, DatabaseUrlError, PostgresTarget, SqliteTarget, connect,
 };
-pub use database_url_redaction::redact_database_url;
 pub use defaults::SQLITE_BUSY_TIMEOUT;
 pub use error::DbError;
 
