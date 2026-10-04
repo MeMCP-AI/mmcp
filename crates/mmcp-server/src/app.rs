@@ -7,26 +7,16 @@ use tower_sessions::cookie::SameSite;
 use tower_sessions::{Expiry, SessionManagerLayer};
 
 use crate::defaults::SESSION_INACTIVITY_EXPIRY;
+use crate::origin::origin_uses_https;
 use crate::routes;
 use crate::state::ServerState;
-
-/// Whether `origin` names an HTTPS endpoint.
-///
-/// Decides the session cookie's `Secure` attribute in [`build_router`]:
-/// a browser refuses to store a `Secure` cookie received over plain
-/// HTTP, so tying it to the deployment's actual scheme keeps a
-/// loopback/HTTP dev origin working while still hardening a real
-/// HTTPS deployment, instead of one fixed choice that breaks either.
-fn origin_uses_https(origin: &str) -> bool {
-    origin.starts_with("https://")
-}
 
 /// Build the top-level HTTP router with every route and middleware
 /// layer attached.
 pub fn build_router(state: ServerState) -> Router {
     // tower-sessions defaults `same_site` to `Strict`.
-    // A `Strict` cookie is withheld on the cross-site GET the OAuth redirect performs to this callback route,
-    // so it never carries the CSRF state through to the callback handler.
+    // A `Strict` cookie is withheld on the cross-site GET the OAuth redirect performs to the callback route,
+    // so the callback handler would not see the caller's existing session.
     // `Lax` is the least permissive tier that survives the redirect while blocking cross-site POST/fetch/XHR CSRF.
     //
     // tower-sessions also defaults `secure` to `true` unconditionally;
@@ -55,13 +45,6 @@ pub fn build_router(state: ServerState) -> Router {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-
-    #[test]
-    fn origin_uses_https_matches_only_the_https_scheme() {
-        assert!(origin_uses_https("https://mmcp.example.com"));
-        assert!(!origin_uses_https("http://localhost:8787"));
-        assert!(!origin_uses_https("http://mmcp.example.com"));
-    }
 
     /// Falsification for the bound this constant is meant to enforce:
     /// too short would fail a real OAuth or password login round
