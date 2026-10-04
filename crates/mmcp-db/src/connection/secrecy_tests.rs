@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use sea_orm::sqlx::postgres::PgConnectOptions;
+use uuid::Uuid;
 
 use super::connect::connect;
 use super::database_target::DatabaseTarget;
@@ -22,6 +23,7 @@ use super::parameter_set::ParameterSet;
 use super::postgres_parameters::{ACCEPTED_KEYS, OPTIONS_FAMILY_PREFIX, SSL_MODE_KEYS};
 use super::sqlite_parameters::{CACHE_VALUES, MODE_VALUES};
 use crate::error::DbError;
+use crate::repository::group_repo;
 
 const SENTINEL: &str = "SENTINEL_PASSWORD";
 
@@ -263,6 +265,43 @@ async fn a_credential_that_scram_refuses_is_named_at_connect_without_its_charact
     }
 
     assert!(!capture.text().contains(s), "{}", capture.text());
+}
+
+/// A pool opens a new connection whenever it has none idle, and the SCRAM exchange of that connection can fail on SASLprep long after the first connect.
+/// The peer trusts the first connection and asks for SCRAM on the next, so the repository call below meets the driver error that quotes the character.
+#[tokio::test]
+async fn a_later_pool_connection_that_scram_refuses_leaves_no_character_in_any_error() {
+    let (capture, _guard) = LogCapture::install();
+    let peer = FakePeer::start(Behavior::TrustsFirstThenRequestsScram).await;
+    let url = format!(
+        "postgres://mmcp:p%F0%9F%98%80{SENTINEL}@127.0.0.1:{}/app?sslmode=disable",
+        peer.port()
+    );
+    let target = DatabaseTarget::from_str(&url).expect("the URL is accepted");
+    let database = connect(&target)
+        .await
+        .expect("the first connection needs no password");
+
+    let outcome = tokio::time::timeout(
+        CONNECT_WAIT,
+        group_repo::find_by_id(database.connection(), Uuid::nil()),
+    )
+    .await
+    .expect("the repository call ends within the wait");
+
+    let error = outcome.expect_err("the second connection meets SCRAM");
+    assert!(
+        matches!(error, DbError::ConnectionConfigurationRejected),
+        "{error:?}"
+    );
+    let printed = chain_text(&error);
+    assert!(!printed.contains(SENTINEL), "{printed}");
+    assert!(
+        !printed.contains('\u{1F600}') && !printed.contains("ProhibitedCharacter"),
+        "{printed}"
+    );
+    assert!(error.source().is_none());
+    assert!(!capture.text().contains(SENTINEL), "{}", capture.text());
 }
 
 /// Under `sslmode=disable` the driver never reads a certificate or a key, so a SASLprep failure is no TLS failure.

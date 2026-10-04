@@ -7,8 +7,9 @@ use uuid::Uuid;
 #[derive(Debug, Error)]
 pub enum DbError {
     /// Underlying SeaORM / sqlx error.
+    /// Built only by the conversion from [`sea_orm::DbErr`], which keeps a driver configuration error out of it.
     #[error("database error: {0}")]
-    Orm(#[from] sea_orm::DbErr),
+    Orm(#[source] sea_orm::DbErr),
 
     /// The driver rejected the connection options that a database target spells.
     /// The parse errors left after the target's own checks carry no value of the URL.
@@ -41,7 +42,7 @@ pub enum DbError {
     #[error("the database client key could not be read as a private key in PEM form")]
     ClientKeyRejected,
 
-    /// The driver rejected the connection configuration for a reason this crate does not know.
+    /// The driver rejected the connection configuration, at the first connection or at a later one, for a reason this crate does not know.
     /// The driver error is dropped, since it may quote a value.
     #[error("the database connection configuration was rejected")]
     ConnectionConfigurationRejected,
@@ -72,4 +73,75 @@ pub enum DbError {
     /// stopped advancing instead of silently losing turn-order fidelity.
     #[error("session {session_id} turn counter overflowed at {current}")]
     TurnCounterOverflow { session_id: String, current: i32 },
+}
+
+impl From<sea_orm::DbErr> for DbError {
+    /// The one conversion from a SeaORM error, so every repository crosses it.
+    ///
+    /// A pool opens a new connection whenever it has none idle, and the driver configuration error of that connection can quote a credential.
+    /// SeaORM wraps it as a connection, execution or query error, so each of the three is matched by its variant, never by its text.
+    /// Such an error becomes [`DbError::ConnectionConfigurationRejected`] without its source.
+    fn from(error: sea_orm::DbErr) -> Self {
+        if carries_configuration_error(&error) {
+            Self::ConnectionConfigurationRejected
+        } else {
+            Self::Orm(error)
+        }
+    }
+}
+
+fn carries_configuration_error(error: &sea_orm::DbErr) -> bool {
+    use sea_orm::sqlx::Error::Configuration;
+    use sea_orm::{DbErr, RuntimeErr};
+    matches!(
+        error,
+        DbErr::Conn(RuntimeErr::SqlxError(source))
+            | DbErr::Exec(RuntimeErr::SqlxError(source))
+            | DbErr::Query(RuntimeErr::SqlxError(source))
+            if matches!(source.as_ref(), Configuration(_))
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+    use std::sync::Arc;
+
+    use sea_orm::sqlx::Error::{Configuration, PoolTimedOut};
+    use sea_orm::{DbErr, RuntimeErr};
+
+    use super::*;
+
+    const SENTINEL: &str = "SENTINEL_CONFIGURATION_TEXT";
+
+    fn sqlx_error(error: sea_orm::sqlx::Error) -> RuntimeErr {
+        RuntimeErr::SqlxError(Arc::new(error))
+    }
+
+    #[test]
+    fn a_configuration_error_in_any_seaorm_wrapper_loses_its_text_and_its_source() {
+        for wrapped in [
+            DbErr::Conn(sqlx_error(Configuration(SENTINEL.into()))),
+            DbErr::Exec(sqlx_error(Configuration(SENTINEL.into()))),
+            DbErr::Query(sqlx_error(Configuration(SENTINEL.into()))),
+        ] {
+            let error = DbError::from(wrapped);
+
+            assert!(matches!(error, DbError::ConnectionConfigurationRejected));
+            assert!(error.source().is_none());
+            assert!(!format!("{error} | {error:?}").contains(SENTINEL));
+        }
+    }
+
+    #[test]
+    fn every_other_seaorm_error_stays_an_orm_error() {
+        for other in [
+            DbErr::Conn(sqlx_error(PoolTimedOut)),
+            DbErr::Exec(sqlx_error(PoolTimedOut)),
+            DbErr::Query(RuntimeErr::Internal(SENTINEL.to_owned())),
+            DbErr::Custom(SENTINEL.to_owned()),
+        ] {
+            assert!(matches!(DbError::from(other), DbError::Orm(_)));
+        }
+    }
 }

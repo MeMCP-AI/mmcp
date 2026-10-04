@@ -20,6 +20,14 @@ const SSL_REQUEST_CODE: u32 = 80_877_103;
 /// The tag of an authentication message of the server.
 const AUTHENTICATION_TAG: u8 = b'R';
 
+/// The code of the message that ends the authentication successfully.
+const AUTHENTICATION_OK: u32 = 0;
+
+/// The tag, the length (the length field and one status byte) and the idle status of `ReadyForQuery`.
+const READY_FOR_QUERY_TAG: u8 = b'Z';
+const READY_FOR_QUERY_LENGTH: u32 = 5;
+const TRANSACTION_STATUS_IDLE: u8 = b'I';
+
 /// The code of the message that offers SASL mechanisms.
 const AUTHENTICATION_SASL: u32 = 10;
 
@@ -46,6 +54,9 @@ pub(super) enum Behavior {
     /// Declines TLS, asks for SCRAM authentication, answers the client-first-message, then closes.
     /// The driver applies SASLprep to the user name before it sends the first message and to the password after it reads the answer.
     RequestsScram,
+    /// Accepts the first connection with trust authentication and closes it after the start-up, then asks for SCRAM on every later one.
+    /// A pool that finds its idle connection closed opens a new one, which meets SCRAM, as it does when the server changes its method between two connections.
+    TrustsFirstThenRequestsScram,
 }
 
 /// A listener on a free loopback port, served until it drops.
@@ -60,10 +71,13 @@ impl FakePeer {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let task = tokio::spawn(async move {
+            let mut accepted = 0_usize;
             while let Ok((stream, _)) = listener.accept().await {
+                let first = accepted == 0;
+                accepted += 1;
                 tokio::spawn(async move {
                     // The client ends the exchange when it fails, so a read or a write error here is expected.
-                    let _ = serve(stream, behavior).await;
+                    let _ = serve(stream, behavior, first).await;
                 });
             }
         });
@@ -81,7 +95,8 @@ impl Drop for FakePeer {
     }
 }
 
-async fn serve(mut stream: TcpStream, behavior: Behavior) -> io::Result<()> {
+/// Serves one connection, which is the first one of the listener when `first` is set.
+async fn serve(mut stream: TcpStream, behavior: Behavior, first: bool) -> io::Result<()> {
     match behavior {
         Behavior::Closes => {}
         Behavior::AnswersSslRequestThenCloses => {
@@ -90,8 +105,27 @@ async fn serve(mut stream: TcpStream, behavior: Behavior) -> io::Result<()> {
             stream.write_all(b"S").await?;
         }
         Behavior::RequestsScram => serve_scram(&mut stream).await?,
+        Behavior::TrustsFirstThenRequestsScram if first => serve_trust(&mut stream).await?,
+        Behavior::TrustsFirstThenRequestsScram => serve_scram(&mut stream).await?,
     }
     Ok(())
+}
+
+/// Declines every SSL request, then returns once the start-up message is read.
+async fn read_startup(stream: &mut TcpStream) -> io::Result<()> {
+    while read_untagged_message(stream).await? == SSL_REQUEST_CODE {
+        stream.write_all(b"N").await?;
+    }
+    Ok(())
+}
+
+/// Answers the start-up with `AuthenticationOk` and `ReadyForQuery`.
+async fn serve_trust(stream: &mut TcpStream) -> io::Result<()> {
+    read_startup(stream).await?;
+    write_authentication(stream, AUTHENTICATION_OK, &[]).await?;
+    stream.write_u8(READY_FOR_QUERY_TAG).await?;
+    stream.write_u32(READY_FOR_QUERY_LENGTH).await?;
+    stream.write_u8(TRANSACTION_STATUS_IDLE).await
 }
 
 /// Reads a message that has no tag, and returns its code.
@@ -114,9 +148,7 @@ async fn write_authentication(stream: &mut TcpStream, code: u32, payload: &[u8])
 }
 
 async fn serve_scram(stream: &mut TcpStream) -> io::Result<()> {
-    while read_untagged_message(stream).await? == SSL_REQUEST_CODE {
-        stream.write_all(b"N").await?;
-    }
+    read_startup(stream).await?;
     write_authentication(stream, AUTHENTICATION_SASL, SCRAM_MECHANISM_LIST).await?;
 
     // The SASLInitialResponse: a tag, a length, the mechanism, then the length and the text of the client-first-message.
