@@ -186,6 +186,11 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 tower-http = { version = "0.6", features = ["trace", "cors", "fs"] }
 # URL parsing: redacts the database URL password for the startup log and validates CORS origins.
 url = "2"
+# Per-client rate limit of the unauthenticated auth routes, GCRA over a concurrent keyed store.
+# Only `std` and `dashmap`: the default features pull a random jitter source and a second clock.
+governor = { version = "0.10", default-features = false, features = ["std", "dashmap"] }
+# Client address behind trusted reverse proxies, read from X-Forwarded-For only.
+axum-client-addr = "0.2"
 
 # Async stream <-> AsyncRead bridging (used by git smart-HTTP streaming)
 tokio-util = { version = "0.7", features = ["io", "io-util"] }
