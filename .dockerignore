@@ -32,6 +32,6 @@ mcp/
 
 # Secrets and local-only files
 *.log
-.env
-.env.*
-!.env.example
+**/.env
+**/.env.*
+!**/.env.example
