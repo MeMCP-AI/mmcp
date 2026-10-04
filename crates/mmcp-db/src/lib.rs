@@ -6,12 +6,14 @@
 //! from a `database_url`.
 
 pub mod connection;
+mod defaults;
 pub mod entities;
 pub mod error;
 pub mod migration;
 pub mod repository;
 
 pub use connection::{Database, connect};
+pub use defaults::SQLITE_BUSY_TIMEOUT;
 pub use error::DbError;
 
 /// Re-export of the SeaORM connection type so downstream crates do
