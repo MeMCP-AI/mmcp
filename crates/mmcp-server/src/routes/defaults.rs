@@ -84,10 +84,15 @@ pub(crate) use mmcp_core::conventions::PUSH_TOKEN_HEADER;
 
 /// Passkey ceremonies (registration or authentication) must complete
 /// within this window; a real browser round-trip takes seconds, not
-/// minutes. An entry older than this is stale and is purged on the
-/// next insert into the same map, bounding memory growth from
-/// ceremonies an authenticated user started but never finished.
+/// minutes. A ceremony older than this is refused at finish.
+/// An abandoned ceremony leaves with its session's expiry and the expired-session sweep.
 pub(crate) const PASSKEY_CEREMONY_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// Session key holding the pending passkey registration ceremony.
+pub(crate) const PASSKEY_REGISTRATION_SESSION_KEY: &str = "passkey_registration_ceremony";
+
+/// Session key holding the pending passkey authentication ceremony.
+pub(crate) const PASSKEY_AUTHENTICATION_SESSION_KEY: &str = "passkey_authentication_ceremony";
 
 /// Lifetime, in seconds, of the bearer token issued on a successful password login.
 /// `crate::routes::auth::login` is the handler that issues it.

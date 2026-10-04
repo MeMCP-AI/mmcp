@@ -17,8 +17,6 @@
 //!
 //! All flows issue an `axum-login` session cookie on success.
 
-use std::sync::Arc;
-
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
@@ -38,7 +36,6 @@ use oauth2::{
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
-use tokio::sync::Mutex;
 use uuid::Uuid;
 use webauthn_rs::prelude::*;
 
@@ -46,9 +43,10 @@ use crate::origin::origin_uses_https;
 use crate::routes::defaults::{
     AUTH_REQUEST_BODY_LIMIT_BYTES, BEARER_TOKEN_LIFETIME_SECS, MAX_DISPLAY_NAME_LENGTH,
     MAX_EMAIL_LENGTH, OAUTH_FLOW_LIFETIME, OAUTH_STATE_TOKEN_BYTES, OAUTH_STATE_TOKEN_LENGTH,
-    PASSKEY_CEREMONY_TTL,
+    PASSKEY_AUTHENTICATION_SESSION_KEY, PASSKEY_REGISTRATION_SESSION_KEY,
 };
 use crate::routes::oauth_flow_cookie;
+use crate::routes::passkey_ceremony::{CeremonyRefusal, PendingCeremony, accept_pending_ceremony};
 use crate::routes::registration_limits::RegistrationLimits;
 use crate::routes::response::{self, FromInternalError, into_generic_response};
 use crate::state::ServerState;
@@ -545,48 +543,23 @@ async fn oauth_callback(
 
 // ── Passkey ─────────────────────────────────────────────────────
 
-/// In-flight passkey registration state, keyed by user id and
-/// timestamped so [`purge_stale_ceremonies`] can evict entries past
-/// [`PASSKEY_CEREMONY_TTL`]. In production this would live in the
-/// session store or a short-lived cache; for now we use a global
-/// mutex.
-type PasskeyRegState =
-    Arc<Mutex<std::collections::HashMap<Uuid, (std::time::Instant, PasskeyRegistration)>>>;
-type PasskeyAuthState =
-    Arc<Mutex<std::collections::HashMap<Uuid, (std::time::Instant, PasskeyAuthentication)>>>;
+// A ceremony's WebAuthn state must stay server-side (webauthn-rs refuses a client-side carrier),
+// so it lives in the caller's session, bound to the user it was started for.
+// See [`crate::routes::passkey_ceremony`].
 
-/// Lazily initialized global registration state.
-fn reg_state() -> &'static PasskeyRegState {
-    static STATE: std::sync::OnceLock<PasskeyRegState> = std::sync::OnceLock::new();
-    STATE.get_or_init(|| Arc::new(Mutex::new(std::collections::HashMap::new())))
-}
-
-fn auth_state() -> &'static PasskeyAuthState {
-    static STATE: std::sync::OnceLock<PasskeyAuthState> = std::sync::OnceLock::new();
-    STATE.get_or_init(|| Arc::new(Mutex::new(std::collections::HashMap::new())))
-}
-
-/// Remove entries older than [`PASSKEY_CEREMONY_TTL`] from `map`.
-/// Called immediately before every insert into
-/// [`reg_state`]/[`auth_state`], so an abandoned ceremony never lives
-/// past its natural completion window instead of accumulating for
-/// the process lifetime.
-fn purge_stale_ceremonies<T>(map: &mut std::collections::HashMap<Uuid, (std::time::Instant, T)>) {
-    map.retain(|_, (inserted_at, _)| inserted_at.elapsed() < PASSKEY_CEREMONY_TTL);
-}
-
-/// Remove and return the ceremony state for `user_id`, but only when
-/// it has not aged past [`PASSKEY_CEREMONY_TTL`]. An entry that is
-/// present but stale (not yet reached by [`purge_stale_ceremonies`]'s
-/// next insert-time sweep) is treated the same as absent: the
-/// ceremony window has already closed, so `finish` must not complete
-/// it.
-fn take_ceremony<T>(
-    map: &mut std::collections::HashMap<Uuid, (std::time::Instant, T)>,
-    user_id: Uuid,
-) -> Option<T> {
-    let (inserted_at, value) = map.remove(&user_id)?;
-    (inserted_at.elapsed() < PASSKEY_CEREMONY_TTL).then_some(value)
+/// Log why a pending passkey ceremony was refused at finish.
+///
+/// Each cause keeps its own line; the response stays the one the route always returns.
+fn log_ceremony_refusal(user_id: Uuid, refusal: &CeremonyRefusal) {
+    match refusal {
+        CeremonyRefusal::Absent | CeremonyRefusal::Expired { .. } => {
+            tracing::debug!(user_id = %user_id, refusal = %refusal);
+        }
+        // A ceremony another user started surfaces on this session only through a login on a shared browser, or an attack.
+        CeremonyRefusal::UserMismatch => {
+            tracing::warn!(user_id = %user_id, refusal = %refusal);
+        }
+    }
 }
 
 /// Start the passkey registration ceremony.
@@ -630,15 +603,19 @@ async fn passkey_register_start(
         )
         .map_err(into_generic_response)?;
 
-    // Stash the registration state so `finish` can complete it.
-    {
-        let mut pending = reg_state().lock().await;
-        purge_stale_ceremonies(&mut pending);
-        pending.insert(
-            session_user.id,
-            (std::time::Instant::now(), reg_state_value),
-        );
-    }
+    // Stash the registration state in the caller's session so `finish` can complete it.
+    auth_session
+        .session
+        .insert(
+            PASSKEY_REGISTRATION_SESSION_KEY,
+            PendingCeremony::new(
+                reg_state_value,
+                session_user.id,
+                Timestamp::now().as_millisecond(),
+            ),
+        )
+        .await
+        .map_err(into_generic_response)?;
 
     Ok(Json(ccr))
 }
@@ -662,13 +639,22 @@ async fn passkey_register_finish(
         .user
         .ok_or(AuthHttpError::Unauthorized("authentication required"))?;
 
-    let pending = take_ceremony(&mut *reg_state().lock().await, session_user.id).ok_or(
-        AuthHttpError::BadRequest("no pending registration for this user"),
-    )?;
+    // Removing the ceremony from the session makes it usable once, whatever the checks below decide.
+    let pending: Option<PendingCeremony<PasskeyRegistration>> = auth_session
+        .session
+        .remove(PASSKEY_REGISTRATION_SESSION_KEY)
+        .await
+        .map_err(into_generic_response)?;
+    let registration =
+        accept_pending_ceremony(pending, session_user.id, Timestamp::now().as_millisecond())
+            .map_err(|refusal| {
+                log_ceremony_refusal(session_user.id, &refusal);
+                AuthHttpError::BadRequest("no pending registration for this user")
+            })?;
 
     let passkey = state
         .webauthn
-        .finish_passkey_registration(&req.response, &pending)
+        .finish_passkey_registration(&req.response, &registration)
         .map_err(into_generic_response)?;
 
     let cred_json = serde_json::to_string(&passkey).map_err(into_generic_response)?;
@@ -715,7 +701,11 @@ async fn resolve_login_passkeys(
     Ok(Some(passkeys))
 }
 
+/// Start the passkey login ceremony for the handle in the request.
+///
+/// The ceremony is stored in the caller's session, so the caller is the one who can finish it.
 async fn passkey_login_start(
+    auth_session: AuthSession,
     State(state): State<ServerState>,
     Json(req): Json<PasskeyLoginStartRequest>,
 ) -> Result<Json<RequestChallengeResponse>, AuthHttpError> {
@@ -748,11 +738,14 @@ async fn passkey_login_start(
         .start_passkey_authentication(&passkeys)
         .map_err(into_generic_response)?;
 
-    {
-        let mut pending = auth_state().lock().await;
-        purge_stale_ceremonies(&mut pending);
-        pending.insert(user.id, (std::time::Instant::now(), auth_state_value));
-    }
+    auth_session
+        .session
+        .insert(
+            PASSKEY_AUTHENTICATION_SESSION_KEY,
+            PendingCeremony::new(auth_state_value, user.id, Timestamp::now().as_millisecond()),
+        )
+        .await
+        .map_err(into_generic_response)?;
 
     Ok(Json(rcr))
 }
@@ -788,17 +781,24 @@ async fn passkey_login_finish(
         return Err(AuthHttpError::Unauthorized("invalid credentials"));
     };
 
-    let Some(pending) = take_ceremony(&mut *auth_state().lock().await, user.id) else {
-        tracing::debug!(
-            user_id = %user.id,
-            "passkey login finish: no pending or expired authentication ceremony"
-        );
-        return Err(AuthHttpError::Unauthorized("invalid credentials"));
-    };
+    // Removing the ceremony from the session makes it usable once, whatever the checks below decide.
+    let pending: Option<PendingCeremony<PasskeyAuthentication>> = auth_session
+        .session
+        .remove(PASSKEY_AUTHENTICATION_SESSION_KEY)
+        .await
+        .map_err(into_generic_response)?;
+    let authentication =
+        match accept_pending_ceremony(pending, user.id, Timestamp::now().as_millisecond()) {
+            Ok(authentication) => authentication,
+            Err(refusal) => {
+                log_ceremony_refusal(user.id, &refusal);
+                return Err(AuthHttpError::Unauthorized("invalid credentials"));
+            }
+        };
 
     let auth_result = match state
         .webauthn
-        .finish_passkey_authentication(&req.response, &pending)
+        .finish_passkey_authentication(&req.response, &authentication)
     {
         Ok(result) => result,
         Err(e) => {
@@ -1343,51 +1343,5 @@ mod tests {
                 ..
             })
         ));
-    }
-
-    /// Build a ceremony-state map with one entry aged past
-    /// [`PASSKEY_CEREMONY_TTL`] and one fresh entry, keyed by the ids
-    /// returned as `(stale_id, fresh_id)`.
-    fn map_with_a_stale_and_a_fresh_entry() -> (
-        std::collections::HashMap<Uuid, (std::time::Instant, ())>,
-        Uuid,
-        Uuid,
-    ) {
-        let stale_id = Uuid::now_v7();
-        let fresh_id = Uuid::now_v7();
-        let mut map = std::collections::HashMap::new();
-        let stale_insert_time = std::time::Instant::now()
-            .checked_sub(PASSKEY_CEREMONY_TTL + std::time::Duration::from_secs(1))
-            .expect("test clock has more than TTL + 1s of headroom behind now");
-        map.insert(stale_id, (stale_insert_time, ()));
-        map.insert(fresh_id, (std::time::Instant::now(), ()));
-        (map, stale_id, fresh_id)
-    }
-
-    #[test]
-    fn purge_stale_ceremonies_evicts_only_entries_past_the_ttl() {
-        let (mut map, stale_id, fresh_id) = map_with_a_stale_and_a_fresh_entry();
-        purge_stale_ceremonies(&mut map);
-        assert!(
-            !map.contains_key(&stale_id),
-            "an entry older than PASSKEY_CEREMONY_TTL must be purged"
-        );
-        assert!(
-            map.contains_key(&fresh_id),
-            "an entry within PASSKEY_CEREMONY_TTL must survive the purge"
-        );
-    }
-
-    #[test]
-    fn take_ceremony_refuses_a_stale_entry_but_returns_a_fresh_one() {
-        let (mut map, stale_id, fresh_id) = map_with_a_stale_and_a_fresh_entry();
-        assert!(
-            take_ceremony(&mut map, stale_id).is_none(),
-            "a stale entry must not be handed back to finish the ceremony"
-        );
-        assert!(
-            take_ceremony(&mut map, fresh_id).is_some(),
-            "a fresh entry must still be usable to finish the ceremony"
-        );
     }
 }

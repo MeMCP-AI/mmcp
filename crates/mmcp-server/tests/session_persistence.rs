@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 
 use mmcp_db::entities::http_session;
-use mmcp_db::repository::user_repo;
+use mmcp_db::repository::{http_session_repo, passkey_repo, user_repo};
 use mmcp_server::config::{OAuthProviderConfig, ServerConfig};
 use mmcp_server::state::ServerState;
 use sea_orm::EntityTrait;
@@ -454,6 +454,267 @@ async fn session_cookie_max_age_after_login_is_the_inactivity_window() {
     assert!(oauth_cookie.contains(&expected_max_age), "{oauth_cookie}");
     server.stop().await;
 }
+
+/// Session data key the passkey authentication ceremony is stored under.
+/// Mirrors the server's own key: the test reads the stored ceremony back.
+const PASSKEY_AUTHENTICATION_SESSION_KEY: &str = "passkey_authentication_ceremony";
+
+/// Body of a registration finish whose response is well-formed JSON but carries no real attestation.
+fn unsigned_registration_finish_body() -> serde_json::Value {
+    json!({
+        "credential_name": "laptop",
+        "response": {
+            "id": "AAAA",
+            "rawId": "AAAA",
+            "type": "public-key",
+            "response": { "attestationObject": "AAAA", "clientDataJSON": "AAAA" }
+        }
+    })
+}
+
+/// Body the server answers a registration finish with when the session holds no ceremony for the caller.
+const NO_PENDING_REGISTRATION_BODY: &str = "no pending registration for this user";
+
+/// A stored passkey credential of an authenticator no test controls: enough for a login to start, never to finish.
+fn enrolled_passkey_json() -> serde_json::Value {
+    const ZERO_COORDINATE_BASE64URL: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let passkey = json!({
+        "cred": {
+            "cred_id": "AAAAAAAAAAAAAAAAAAAAAA",
+            "cred": {
+                "type_": "ES256",
+                "key": { "EC_EC2": {
+                    "curve": "SECP256R1",
+                    "x": ZERO_COORDINATE_BASE64URL,
+                    "y": ZERO_COORDINATE_BASE64URL
+                } }
+            },
+            "counter": 0,
+            "transports": null,
+            "user_verified": false,
+            "backup_eligible": false,
+            "backup_state": false,
+            "registration_policy": "preferred",
+            "extensions": {},
+            "attestation": { "data": "None", "metadata": "None" },
+            "attestation_format": "none"
+        }
+    });
+    serde_json::from_value::<webauthn_rs::prelude::Passkey>(passkey.clone())
+        .expect("the passkey fixture must deserialize as a real Passkey");
+    passkey
+}
+
+/// Registers `handle` through the API and enrolls the fixture passkey on the account.
+async fn register_user_with_passkey(
+    cfg: &ServerConfig,
+    addr: SocketAddr,
+    handle: &str,
+) -> uuid::Uuid {
+    let register = reqwest::Client::new()
+        .post(format!("http://{addr}/auth/register"))
+        .json(&json!({ "handle": handle, "password": "hunter22hunter22" }))
+        .send()
+        .await
+        .expect("register");
+    assert_eq!(register.status(), 201);
+    let body: serde_json::Value = register.json().await.expect("register body");
+    let user_id: uuid::Uuid = body["user_id"]
+        .as_str()
+        .expect("user_id string")
+        .parse()
+        .expect("user_id uuid");
+
+    let db = mmcp_db::connect(&cfg.database_url).await.expect("connect");
+    passkey_repo::create(
+        db.connection(),
+        uuid::Uuid::now_v7(),
+        user_id,
+        "fixture".to_owned(),
+        enrolled_passkey_json().to_string(),
+        0,
+    )
+    .await
+    .expect("enroll the fixture passkey");
+    user_id
+}
+
+async fn passkey_login_start(client: &reqwest::Client, addr: SocketAddr, handle: &str) {
+    let response = client
+        .post(format!("http://{addr}/auth/passkey/login/start"))
+        .json(&json!({ "handle": handle }))
+        .send()
+        .await
+        .expect("passkey login start");
+    assert_eq!(
+        response.status(),
+        200,
+        "a handle with an enrolled passkey must start a login ceremony"
+    );
+}
+
+async fn passkey_credential_count(cfg: &ServerConfig, user_id: uuid::Uuid) -> usize {
+    let db = mmcp_db::connect(&cfg.database_url).await.expect("connect");
+    passkey_repo::find_by_user(db.connection(), user_id)
+        .await
+        .expect("read credentials")
+        .len()
+}
+
+#[tokio::test]
+async fn passkey_registration_ceremony_survives_server_restart() {
+    let tmp = TempDir::new().expect("tempdir");
+    let cfg = config_for(&tmp);
+    let client = cookie_client();
+
+    let first = start_server(&cfg).await;
+    register_and_login(&client, first.addr, "alice").await;
+    assert_eq!(
+        passkey_register_start_status(&client, first.addr).await,
+        200
+    );
+    first.stop().await;
+
+    let second = start_server(&cfg).await;
+    let finish = client
+        .post(format!(
+            "http://{}/auth/passkey/register/finish",
+            second.addr
+        ))
+        .json(&unsigned_registration_finish_body())
+        .send()
+        .await
+        .expect("passkey register finish");
+    let body = finish.text().await.unwrap_or_default();
+    assert_ne!(
+        body, NO_PENDING_REGISTRATION_BODY,
+        "the ceremony started before the restart must reach webauthn verification after it"
+    );
+    second.stop().await;
+}
+
+#[tokio::test]
+async fn passkey_registration_ceremony_is_refused_for_a_different_session_user() {
+    let tmp = TempDir::new().expect("tempdir");
+    let cfg = config_for(&tmp);
+    let server = start_server(&cfg).await;
+    let client = cookie_client();
+
+    register_and_login(&client, server.addr, "alice").await;
+    assert_eq!(
+        passkey_register_start_status(&client, server.addr).await,
+        200,
+        "alice starts a registration ceremony"
+    );
+    // The same browser then logs in as bob: a login keeps the session data.
+    register_and_login(&client, server.addr, "bob").await;
+
+    let finish = client
+        .post(format!(
+            "http://{}/auth/passkey/register/finish",
+            server.addr
+        ))
+        .json(&unsigned_registration_finish_body())
+        .send()
+        .await
+        .expect("passkey register finish");
+    assert_eq!(finish.status(), 400);
+    assert_eq!(
+        finish.text().await.unwrap_or_default(),
+        NO_PENDING_REGISTRATION_BODY,
+        "bob must be refused alice's ceremony before any webauthn call"
+    );
+
+    let db = mmcp_db::connect(&cfg.database_url).await.expect("connect");
+    for handle in ["alice", "bob"] {
+        let user = user_repo::find_by_handle(db.connection(), handle)
+            .await
+            .expect("find user")
+            .expect("user exists");
+        assert_eq!(
+            passkey_credential_count(&cfg, user.id).await,
+            0,
+            "no credential row may be written for {handle}"
+        );
+    }
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn concurrent_passkey_login_starts_for_one_handle_keep_both_ceremonies() {
+    let tmp = TempDir::new().expect("tempdir");
+    let cfg = config_for(&tmp);
+    let server = start_server(&cfg).await;
+    let alice = register_user_with_passkey(&cfg, server.addr, "alice").await;
+
+    passkey_login_start(&cookie_client(), server.addr, "alice").await;
+    passkey_login_start(&cookie_client(), server.addr, "alice").await;
+
+    let rows = http_session_rows(&cfg.database_url).await;
+    assert_eq!(
+        rows.len(),
+        2,
+        "each caller's session holds its own ceremony"
+    );
+    for row in &rows {
+        let data: serde_json::Value = serde_json::from_str(&row.data).expect("session data json");
+        let bound_user = data[PASSKEY_AUTHENTICATION_SESSION_KEY]["user_id"]
+            .as_str()
+            .expect("the session holds an authentication ceremony bound to a user");
+        assert_eq!(bound_user, alice.to_string());
+    }
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn passkey_login_start_rows_are_removed_by_the_sweep_after_expiry() {
+    const LOGIN_STARTS: usize = 3;
+    let tmp = TempDir::new().expect("tempdir");
+    let cfg = config_for(&tmp);
+    let server = start_server(&cfg).await;
+    register_user_with_passkey(&cfg, server.addr, "alice").await;
+    for _ in 0..LOGIN_STARTS {
+        passkey_login_start(&cookie_client(), server.addr, "alice").await;
+    }
+    let rows = http_session_rows(&cfg.database_url).await;
+    assert!(
+        rows.len() <= LOGIN_STARTS && !rows.is_empty(),
+        "N anonymous starts create at most N rows, got {}",
+        rows.len()
+    );
+
+    // Expire every row through the repository, then let the sweeper the server runs delete them.
+    let db = mmcp_db::connect(&cfg.database_url).await.expect("connect");
+    for row in rows {
+        http_session_repo::upsert(
+            db.connection(),
+            http_session::Model {
+                expires_at: 0,
+                ..row
+            },
+        )
+        .await
+        .expect("expire the row");
+    }
+    let sweeper = mmcp_server::session_store::spawn_expired_session_sweeper(
+        mmcp_server::session_store::DatabaseSessionStore::new(db.connection().clone()),
+    );
+    tokio::time::timeout(SWEEP_WAIT_LIMIT, async {
+        while !http_session_rows(&cfg.database_url).await.is_empty() {
+            tokio::time::sleep(SWEEP_POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .expect("the sweep must delete every expired row");
+    sweeper.abort();
+    server.stop().await;
+}
+
+/// Upper bound on the wait for a sweep, never a pause an assertion depends on.
+const SWEEP_WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Pause between two looks at the table while waiting for the sweep.
+const SWEEP_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
 #[tokio::test]
 async fn session_survives_server_restart_on_a_persistent_database() {

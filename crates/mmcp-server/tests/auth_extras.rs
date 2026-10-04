@@ -674,7 +674,7 @@ async fn passkey_register_finish_without_pending_state_returns_400() {
     let (addr, _tmp) = start_server_with_oauth(vec![]).await;
     // An authenticated caller (session identity resolves the pending
     // registration, not a body field) that never called register/start
-    // has no entry in the in-memory pending map.
+    // has no pending ceremony in its session.
     let client = register_and_login(addr, "alice", "hunter22").await;
 
     // The `response` field must still be a well-formed JSON object
