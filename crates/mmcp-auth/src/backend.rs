@@ -21,6 +21,7 @@ use std::fmt;
 
 use axum_login::{AuthUser, AuthnBackend, UserId};
 use sea_orm::DatabaseConnection;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 #[cfg(test)]
@@ -33,9 +34,10 @@ use mmcp_db::repository::{oauth_repo, passkey_repo, user_repo};
 // ── AuthUser impl ───────────────────────────────────────────────
 
 /// Wrapper around the database user model that carries the session
-/// auth hash (password hash bytes). `axum-login` requires `Debug +
+/// auth hash (SHA-256 digest of the password hash). `axum-login` requires `Debug +
 /// Clone + Send + Sync` on the user type and a stable auth hash
 /// the session layer can verify on each request.
+/// The digest keeps the password hash out of every persisted session record.
 #[derive(Debug, Clone)]
 pub struct MmcpUser {
     pub id: Uuid,
@@ -48,12 +50,8 @@ pub struct MmcpUser {
 
 impl MmcpUser {
     pub fn from_db(model: mmcp_db::entities::user::Model) -> Self {
-        let auth_hash = model
-            .password_hash
-            .as_deref()
-            .unwrap_or("no-password")
-            .as_bytes()
-            .to_vec();
+        let password_hash = model.password_hash.as_deref().unwrap_or("no-password");
+        let auth_hash = Sha256::digest(password_hash.as_bytes()).to_vec();
         Self {
             id: model.id,
             handle: model.handle,
@@ -365,6 +363,53 @@ pub type AuthSession = axum_login::AuthSession<MmcpAuthBackend>;
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    fn user_model(password_hash: Option<&str>) -> mmcp_db::entities::user::Model {
+        mmcp_db::entities::user::Model {
+            id: Uuid::now_v7(),
+            handle: "alice".to_owned(),
+            display_name: None,
+            password_hash: password_hash.map(str::to_owned),
+            email: None,
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn session_auth_hash_is_a_digest_of_the_password_hash_and_follows_it() {
+        const PHC_STRING: &str = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2g";
+        const CHANGED_PHC_STRING: &str = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$b3RoZXJoYXNo";
+
+        let auth_hash = MmcpUser::from_db(user_model(Some(PHC_STRING)))
+            .session_auth_hash()
+            .to_vec();
+        let same_hash_again = MmcpUser::from_db(user_model(Some(PHC_STRING)))
+            .session_auth_hash()
+            .to_vec();
+        let changed_hash = MmcpUser::from_db(user_model(Some(CHANGED_PHC_STRING)))
+            .session_auth_hash()
+            .to_vec();
+
+        assert_ne!(
+            auth_hash,
+            PHC_STRING.as_bytes(),
+            "the session must not carry the password hash itself"
+        );
+        assert!(
+            !auth_hash
+                .windows(PHC_STRING.len())
+                .any(|window| window == PHC_STRING.as_bytes()),
+            "the password hash must not appear inside the session auth hash"
+        );
+        assert_eq!(
+            auth_hash, same_hash_again,
+            "one password hash yields one auth hash"
+        );
+        assert_ne!(
+            auth_hash, changed_hash,
+            "a password change must change the auth hash so existing sessions are invalidated"
+        );
+    }
 
     #[test]
     fn truncate_to_byte_length_keeps_short_values_unchanged() {
