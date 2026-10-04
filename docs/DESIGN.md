@@ -381,6 +381,13 @@ memories = []
 tags = ["git", "testing"]
 ```
 
+`[notice.md]` keys `project` and `user` take `on` or `off`, default `on`, and turn off the notices proposing the mmcp block for the project CLAUDE.md and for `~/.claude/CLAUDE.md`.  
+They are read from `~/.mmcp/config.toml`, `.mmcp.toml` and `.mmcp.local.toml`.  
+Precedence runs `.mmcp.local.toml`, `.mmcp.toml`, `mmcp serve --notice-md-*`, `MMCP_NOTICE_MD_*`, `~/.mmcp/config.toml`, then the default.  
+`.mmcp.local.toml` sits at the project root, or at the main checkout's root inside a linked worktree.  
+mmcp adds it to the global git excludes file on its first write.  
+Older mmcp versions cannot read a `.mmcp.toml` carrying `[notice]`.
+
 ### 9.3 Resolution rules
 
 On session start, the client computes the effective group load set:
@@ -463,6 +470,7 @@ Tools exposed by `mmcp-client` to the AI. Every memory-addressed tool accepts an
 | `create_group`  | Bootstrap a standalone `~/.mmcp/repos/<uuid>.git` with a manifest. Use `init_project` instead when the group is the project's own backing store. |
 | `init_project`  | Create or adopt `.mmcp.toml` + bare repo for the project's group.        |
 | `init_claude`   | Manage the fenced mmcp block in `CLAUDE.md`.                             |
+| `config`        | Read or change an mmcp setting at the user, project or local scope.      |
 | `check_health`  | Surface-level validation (manifest readable, memories parse).            |
 | `diagnose`      | Deep structural analysis (empty bodies, cross-group slug collisions, config gaps). |
 
