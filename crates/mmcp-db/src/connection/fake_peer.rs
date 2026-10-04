@@ -17,6 +17,15 @@ const SSL_REQUEST_LENGTH: usize = 8;
 /// The protocol code that the SSL request carries where a startup message carries its version.
 const SSL_REQUEST_CODE: u32 = 80_877_103;
 
+/// The size of the length field of a message, which counts itself.
+const LENGTH_FIELD_SIZE: usize = size_of::<u32>();
+
+/// The size of the code field of an authentication message.
+const CODE_FIELD_SIZE: usize = size_of::<u32>();
+
+/// What an authentication message counts besides its payload: the length field and the code field.
+const AUTHENTICATION_HEADER_LENGTH: usize = LENGTH_FIELD_SIZE + CODE_FIELD_SIZE;
+
 /// The tag of an authentication message of the server.
 const AUTHENTICATION_TAG: u8 = b'R';
 
@@ -131,16 +140,16 @@ async fn serve_trust(stream: &mut TcpStream) -> io::Result<()> {
 /// Reads a message that has no tag, and returns its code.
 async fn read_untagged_message(stream: &mut TcpStream) -> io::Result<u32> {
     let length = stream.read_u32().await?;
-    let mut body = vec![0_u8; length as usize - size_of::<u32>()];
+    let mut body = vec![0_u8; length as usize - LENGTH_FIELD_SIZE];
     stream.read_exact(&mut body).await?;
     Ok(u32::from_be_bytes(
-        body[..size_of::<u32>()].try_into().unwrap(),
+        body[..CODE_FIELD_SIZE].try_into().unwrap(),
     ))
 }
 
 /// Writes a tagged message made of `code` and `payload`.
 async fn write_authentication(stream: &mut TcpStream, code: u32, payload: &[u8]) -> io::Result<()> {
-    let length = u32::try_from(size_of::<u32>() * 2 + payload.len()).unwrap();
+    let length = u32::try_from(AUTHENTICATION_HEADER_LENGTH + payload.len()).unwrap();
     stream.write_u8(AUTHENTICATION_TAG).await?;
     stream.write_u32(length).await?;
     stream.write_u32(code).await?;
@@ -154,7 +163,7 @@ async fn serve_scram(stream: &mut TcpStream) -> io::Result<()> {
     // The SASLInitialResponse: a tag, a length, the mechanism, then the length and the text of the client-first-message.
     let _tag = stream.read_u8().await?;
     let length = stream.read_u32().await?;
-    let mut body = vec![0_u8; length as usize - size_of::<u32>()];
+    let mut body = vec![0_u8; length as usize - LENGTH_FIELD_SIZE];
     stream.read_exact(&mut body).await?;
     let text = String::from_utf8_lossy(&body);
     let nonce = text
