@@ -5,9 +5,9 @@ import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 const config = {
   preprocess: vitePreprocess(),
   kit: {
-    // Pure SPA emitted into `build/`. The mmcp server administrator
-    // serves this behind any static host; client-side routing covers
-    // every in-app navigation via the SPA fallback.
+    // Pure SPA emitted into `build/`, served by mmcp-server on its own origin
+    // (`serve --webui-dir`); client-side routing covers every in-app
+    // navigation via the SPA fallback.
     adapter: adapter({
       pages: 'build',
       assets: 'build',

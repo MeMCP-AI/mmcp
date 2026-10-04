@@ -2,8 +2,8 @@ import { sveltekit } from '@sveltejs/kit/vite';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 
-// `VITE_MMCP_SERVER_URL` picks the upstream mmcp-server during dev.
-// Falls back to the value wired into the layout when unset.
+// `VITE_MMCP_SERVER_URL` picks the mmcp-server the dev server calls.
+// The server must list `http://127.0.0.1:3000` in `MMCP_CORS_ALLOWED_ORIGINS`.
 export default defineConfig({
   plugins: [tailwindcss(), sveltekit()],
   clearScreen: false,

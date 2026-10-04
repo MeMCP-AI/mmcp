@@ -3,7 +3,7 @@
 
   import StatusBar from '$lib/components/StatusBar.svelte';
   import TopNav from '$lib/components/TopNav.svelte';
-  import { serverBaseUrl } from '$lib/api/client';
+  import { serverOrigin } from '$lib/api/client';
   import { authStore } from '$lib/stores/auth.svelte';
   import { healthStore } from '$lib/stores/health.svelte';
 
@@ -18,7 +18,7 @@
   });
 
   const authed = $derived(authStore.token !== null);
-  const serverUrl = serverBaseUrl();
+  const serverUrl = serverOrigin();
 </script>
 
 <div class="flex h-full w-full flex-col overflow-hidden bg-zinc-950 text-zinc-100">

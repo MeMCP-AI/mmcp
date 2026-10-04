@@ -1,16 +1,18 @@
 import { authStore } from '$lib/stores/auth.svelte';
 
 // Resolution order for the mmcp-server base URL:
-//   1. `VITE_MMCP_SERVER_URL` baked in at build time.
-//   2. `/mmcp` on the same origin, for deployments that reverse-proxy
-//      the server behind the webui.
-//   3. `http://127.0.0.1:8787`, the local-dev default from `.mmcp.toml`.
-const FALLBACK_URL = 'http://127.0.0.1:8787';
-
+//   1. `VITE_MMCP_SERVER_URL` baked in at build time, for a web UI hosted apart from the server.
+//      The server must list the origin serving this page in `MMCP_CORS_ALLOWED_ORIGINS`.
+//   2. Empty, so each request goes to the origin that served this page: the server itself.
 export function serverBaseUrl(): string {
   const fromEnv = import.meta.env.VITE_MMCP_SERVER_URL;
   if (typeof fromEnv === 'string' && fromEnv.length > 0) return fromEnv.replace(/\/$/, '');
-  return FALLBACK_URL;
+  return '';
+}
+
+/** Origin of the server the requests reach: the configured base URL, else this page's origin. */
+export function serverOrigin(): string {
+  return serverBaseUrl() || window.location.origin;
 }
 
 /** JSON-bearing HTTP error with the server's raw body for diagnostics. */
