@@ -386,6 +386,7 @@ They are read from `~/.mmcp/config.toml`, `.mmcp.toml` and `.mmcp.local.toml`.
 Precedence runs `.mmcp.local.toml`, `.mmcp.toml`, `mmcp serve --notice-md-*`, `MMCP_NOTICE_MD_*`, `~/.mmcp/config.toml`, then the default.  
 `.mmcp.local.toml` sits at the project root, or at the same path under the main checkout inside a linked worktree.  
 mmcp adds it to the global git excludes file on its first write.  
+mmcp refuses to write it while git tracks it, because no ignore rule keeps a tracked file out of git.  
 Older mmcp versions cannot read a `.mmcp.toml` carrying `[notice]`.
 
 ### 9.3 Resolution rules
