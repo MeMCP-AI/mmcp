@@ -49,6 +49,8 @@ jiff = { workspace = true }
 sea-orm = { workspace = true }
 axum-login = { workspace = true }
 tower-sessions = { workspace = true }
+async-trait = { workspace = true }
+sha2 = { workspace = true }
 webauthn-rs = { workspace = true }
 time = { workspace = true }
 reqwest = { workspace = true }

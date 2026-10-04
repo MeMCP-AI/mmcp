@@ -17,6 +17,7 @@ serde_json = "1"
 jiff = { workspace = true }
 axum-login = { workspace = true }
 sea-orm = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
