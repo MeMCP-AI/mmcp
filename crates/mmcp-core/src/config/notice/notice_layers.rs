@@ -41,19 +41,26 @@ impl NoticeLayers {
         }
     }
 
+    /// Every layer with its value, in precedence order, highest first.
+    #[must_use]
+    pub const fn entries(self) -> [(NoticeSource, Option<NoticeValue>); 5] {
+        [
+            (NoticeSource::Local, self.local),
+            (NoticeSource::Project, self.project),
+            (NoticeSource::Flag, self.flag),
+            (NoticeSource::Environment, self.environment),
+            (NoticeSource::User, self.user),
+        ]
+    }
+
     /// Resolve the effective value of `key` and the layer it comes from.
     #[must_use]
     pub fn resolve(self, key: ConfigKey) -> NoticeResolution {
-        let (effective, source) = [
-            (self.local, NoticeSource::Local),
-            (self.project, NoticeSource::Project),
-            (self.flag, NoticeSource::Flag),
-            (self.environment, NoticeSource::Environment),
-            (self.user, NoticeSource::User),
-        ]
-        .into_iter()
-        .find_map(|(value, source)| value.map(|value| (value, source)))
-        .unwrap_or((key.default_value(), NoticeSource::Default));
+        let (effective, source) = self
+            .entries()
+            .into_iter()
+            .find_map(|(source, value)| value.map(|value| (value, source)))
+            .unwrap_or((key.default_value(), NoticeSource::Default));
         NoticeResolution {
             effective,
             source,
@@ -128,6 +135,27 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn entries_list_every_layer_with_its_value_in_precedence_order() {
+        let layers = NoticeLayers {
+            local: ON,
+            project: OFF,
+            flag: ON,
+            environment: OFF,
+            user: None,
+        };
+        assert_eq!(
+            layers.entries(),
+            [
+                (NoticeSource::Local, ON),
+                (NoticeSource::Project, OFF),
+                (NoticeSource::Flag, ON),
+                (NoticeSource::Environment, OFF),
+                (NoticeSource::User, None),
+            ]
+        );
     }
 
     #[test]
