@@ -111,6 +111,14 @@ toml = "1.1"
 # Database (SeaORM with sqlx backend)
 sea-orm = { version = "2.0", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls", "macros", "with-uuid"] }
 sea-orm-migration = { version = "2.0", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls", "with-uuid"] }
+# Holds the database connection text, so a Debug print of it shows a redaction marker.
+secrecy = "0.10"
+# The SASLprep check of a database password, the one sqlx applies at connect time.
+stringprep = "0.1"
+# Percent-decoding of a database URL path, to look for a credential hidden in it.
+percent-encoding = "2"
+# The statement log level type that sqlx connect options take.
+log = "0.4"
 
 # Raw sqlx (same backend sea-orm already pulls in) for mmcp-store's
 # local content cache. The cache is a small, fully-owned, freely
