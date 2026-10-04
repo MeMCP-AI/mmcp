@@ -1,7 +1,9 @@
 //! Axum router assembly.
 
 use axum::Router;
+use axum::http::{HeaderValue, Method, header};
 use axum_login::AuthManagerLayerBuilder;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tower_sessions::cookie::SameSite;
 use tower_sessions::{Expiry, SessionManagerLayer};
@@ -41,11 +43,39 @@ pub fn build_router(state: ServerState) -> Router {
         Some(webui) => api.fallback_service(webui),
         None => api,
     };
+    let cors_layer = cors_layer(&state.cors_allowed_origins);
 
-    routed
+    let router = routed
         .with_state(state)
         .layer(auth_layer)
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http());
+    match cors_layer {
+        Some(cors_layer) => router.layer(cors_layer),
+        None => router,
+    }
+}
+
+/// CORS layer admitting exactly `allowed_origins`; `None` for an empty list,
+/// which leaves the server answering same-origin requests only.
+///
+/// A cross-origin web UI authenticates with the bearer token, so credentials
+/// (the session cookie) are never allowed.
+fn cors_layer(allowed_origins: &[HeaderValue]) -> Option<CorsLayer> {
+    if allowed_origins.is_empty() {
+        return None;
+    }
+    Some(
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::list(allowed_origins.iter().cloned()))
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PATCH,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
+            .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT]),
+    )
 }
 
 #[cfg(test)]
