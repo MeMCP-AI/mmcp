@@ -33,13 +33,12 @@ use mmcp_db::repository::{oauth_repo, passkey_repo, user_repo};
 
 // ── AuthUser impl ───────────────────────────────────────────────
 
-/// Wrapper around the database user model that carries the session
-/// auth hash. `axum-login` requires `Debug +
-/// Clone + Send + Sync` on the user type and a stable auth hash
-/// the session layer can verify on each request.
-/// The hash covers the user's credential epoch and password hash,
-/// so a password, passkey or OAuth link change signs the user's other sessions out.
-/// It is a digest, so the password hash stays out of every persisted session record.
+/// Wrapper around the database user model that carries the session auth hash.
+/// `axum-login` requires `Debug + Clone + Send + Sync` on the user type.
+/// It also requires a stable auth hash that the session layer verifies on each request.
+/// The hash covers the user's credential epoch and password hash.
+/// A password, passkey or OAuth link change therefore signs the user's other sessions out.
+/// The hash is a digest, so the password hash stays out of every persisted session record.
 /// See [`crate::session_auth_hash::session_auth_hash`] for the encoding.
 #[derive(Debug, Clone)]
 pub struct MmcpUser {
@@ -56,8 +55,8 @@ pub struct MmcpUser {
 
 impl MmcpUser {
     /// Build the user from a row.
-    /// The row must be read after any credential write of the same request,
-    /// otherwise the hash is stale and the next request signs the user out.
+    /// The row must be read after any credential write of the same request.
+    /// An earlier row gives a stale hash, and the next request signs the user out.
     pub fn from_db(model: mmcp_db::entities::user::Model) -> Self {
         let auth_hash =
             session_auth_hash(model.credential_epoch, model.password_hash.as_deref()).to_vec();
@@ -233,8 +232,8 @@ impl AuthnBackend for MmcpAuthBackend {
                     self.max_handle_length,
                 )
                 .await?;
-                // One transaction at the initial epoch: the account is new, so the login
-                // signs in with the very row it created and no other session can exist.
+                // One transaction creates the account at the initial epoch.
+                // The login signs in with the very row it created, and no other session can exist.
                 let (user, _link) = user_repo::create_with_oauth_link(
                     &self.conn,
                     user_repo::NewUser {

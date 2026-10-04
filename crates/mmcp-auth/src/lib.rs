@@ -1,6 +1,6 @@
 //! Authentication and authorization primitives for mmcp.
 //!
-//! Exposes five cohesive pieces:
+//! Exposes five cohesive pieces, listed below.
 //!
 //! - Argon2 password hashing through [`password`].
 //! - PASETO v4 local bearer tokens and OAuth flow tokens through [`token`].
