@@ -2,45 +2,47 @@
 
 use std::time::Duration;
 
-use tokio::task::JoinHandle;
-
+use crate::background::{PeriodicTaskHandle, spawn_periodic_task};
 use crate::defaults::{EXPIRED_SESSION_SWEEP_BATCH_SIZE, EXPIRED_SESSION_SWEEP_INTERVAL};
-use crate::session_store::DatabaseSessionStore;
+use crate::session_store::{DatabaseSessionStore, DatabaseSessionStoreError};
+
+/// Name under which the sweep reports a failed tick.
+const SWEEPER_TASK_NAME: &str = "expired session sweep";
 
 /// Spawn the sweep with the production period and batch size.
 ///
-/// The caller aborts the returned handle when the server stops.
+/// The caller drops the returned handle when the server stops, which aborts the sweep.
 /// Abort is safe at any point, because each batch is one atomic `DELETE`.
-pub fn spawn_expired_session_sweeper(store: DatabaseSessionStore) -> JoinHandle<()> {
+pub fn spawn_expired_session_sweeper(store: DatabaseSessionStore) -> PeriodicTaskHandle {
     tracing::info!(
         sweep_period_secs = EXPIRED_SESSION_SWEEP_INTERVAL.as_secs(),
         sweep_batch_size = EXPIRED_SESSION_SWEEP_BATCH_SIZE,
         "expired session sweeper started"
     );
-    tokio::spawn(run_expired_session_sweeper(
+    spawn_sweeper(
         store,
         EXPIRED_SESSION_SWEEP_INTERVAL,
         EXPIRED_SESSION_SWEEP_BATCH_SIZE,
-    ))
+    )
 }
 
 /// Delete expired records every `period`, forever.
 ///
 /// The first sweep runs at once, which clears records that expired while the server was down.
 /// A failed sweep is logged and retried at the next tick, so it never stops the server.
-async fn run_expired_session_sweeper(
+fn spawn_sweeper(
     store: DatabaseSessionStore,
     period: Duration,
     batch_size: u64,
-) {
-    let mut interval = tokio::time::interval(period);
-    loop {
-        interval.tick().await;
-        match store.delete_expired_records(batch_size).await {
-            Ok(deleted_rows) => tracing::debug!(deleted_rows, "expired session sweep finished"),
-            Err(error) => tracing::error!(error = ?error, "expired session sweep failed"),
+) -> PeriodicTaskHandle {
+    spawn_periodic_task(SWEEPER_TASK_NAME, period, move || {
+        let store = store.clone();
+        async move {
+            let deleted_rows = store.delete_expired_records(batch_size).await?;
+            tracing::debug!(deleted_rows, "expired session sweep finished");
+            Ok::<(), DatabaseSessionStoreError>(())
         }
-    }
+    })
 }
 
 #[cfg(test)]
@@ -94,11 +96,7 @@ mod tests {
         store.create(&mut live).await.unwrap();
         assert_eq!(row_count(&conn).await, EXPIRED_RECORDS as u64 + 1);
 
-        let sweeper = tokio::spawn(run_expired_session_sweeper(
-            store.clone(),
-            SWEEP_PERIOD,
-            SWEEP_BATCH_SIZE,
-        ));
+        let sweeper = spawn_sweeper(store.clone(), SWEEP_PERIOD, SWEEP_BATCH_SIZE);
         tokio::time::timeout(SWEEP_WAIT_LIMIT, async {
             while row_count(&conn).await > 1 {
                 tokio::time::sleep(SWEEP_PERIOD).await;
@@ -106,7 +104,7 @@ mod tests {
         })
         .await
         .expect("the sweep must delete every expired row");
-        sweeper.abort();
+        drop(sweeper);
 
         assert_eq!(row_count(&conn).await, 1);
         assert!(store.load(&live.id).await.unwrap().is_some());
@@ -139,11 +137,7 @@ mod tests {
         store.create(&mut live).await.unwrap();
         set_sessions_table_available(&conn, false).await;
 
-        let sweeper = tokio::spawn(run_expired_session_sweeper(
-            store.clone(),
-            SWEEP_PERIOD,
-            SWEEP_BATCH_SIZE,
-        ));
+        let sweeper = spawn_sweeper(store.clone(), SWEEP_PERIOD, SWEEP_BATCH_SIZE);
         tokio::time::sleep(FAILING_SWEEPS_DURATION).await;
         assert!(
             !sweeper.is_finished(),
@@ -158,7 +152,7 @@ mod tests {
         })
         .await
         .expect("a later tick must sweep the expired row once the table is back");
-        sweeper.abort();
+        drop(sweeper);
 
         assert!(store.load(&live.id).await.unwrap().is_some());
     }

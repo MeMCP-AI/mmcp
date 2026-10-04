@@ -135,10 +135,9 @@ async fn run_server(overrides: config::ServerConfigOverrides) -> Result<()> {
 
     let listener = tokio::net::TcpListener::bind::<SocketAddr>(cfg.bind).await?;
     tracing::info!(address = %cfg.bind, "listening");
-    let sweeper = session_store::spawn_expired_session_sweeper(session_store);
-    let served = serve::serve_router(listener, app).await;
-    sweeper.abort();
-    served?;
+    // Held until the server stops, when dropping it aborts the sweep.
+    let _sweeper = session_store::spawn_expired_session_sweeper(session_store);
+    serve::serve_router(listener, app).await?;
     Ok(())
 }
 

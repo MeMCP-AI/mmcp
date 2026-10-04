@@ -4,6 +4,7 @@
 //! entry point both need.
 
 pub mod app;
+pub mod background;
 pub mod config;
 mod defaults;
 mod oauth_client;

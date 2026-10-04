@@ -916,7 +916,7 @@ async fn passkey_login_start_rows_are_removed_by_the_sweep_after_expiry() {
     })
     .await
     .expect("the sweep must delete every expired row");
-    sweeper.abort();
+    drop(sweeper);
     server.stop().await;
 }
 
