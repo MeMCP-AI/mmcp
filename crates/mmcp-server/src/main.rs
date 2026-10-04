@@ -46,9 +46,15 @@ struct ServeArgs {
     #[arg(long)]
     max_handle_length: Option<usize>,
 
+    /// Directory holding the built web UI, served on every path the API does not own.
+    /// It must contain only the built web UI, since every file in it is public.
+    /// Overrides MMCP_WEBUI_DIR.
     #[arg(long, env = config::WEBUI_DIR_ENV)]
     webui_dir: Option<OsString>,
 
+    /// Comma-separated origins allowed to call the API from a browser on another origin.
+    /// Empty disables CORS.
+    /// Overrides MMCP_CORS_ALLOWED_ORIGINS.
     #[arg(long, env = config::CORS_ALLOWED_ORIGINS_ENV)]
     cors_allowed_origins: Option<String>,
 }
@@ -86,6 +92,8 @@ enum Command {
     /// that need an in-image tool to hit the health route without
     /// shipping curl or wget in the runtime layer.
     Healthcheck,
+    /// Print a random 256-bit secret as 64 hexadecimal characters.
+    /// Suitable for MMCP_TOKEN_KEY_HEX and POSTGRES_PASSWORD.
     GenerateSecret,
 }
 
@@ -191,6 +199,18 @@ mod tests {
             serve_arg_env("cors_allowed_origins").as_deref(),
             Some(config::CORS_ALLOWED_ORIGINS_ENV)
         );
+    }
+
+    #[test]
+    fn web_ui_dir_help_warns_that_every_file_in_the_directory_is_public() {
+        let command = Cli::command();
+        let serve = command.find_subcommand("serve").expect("serve subcommand");
+        let arg = serve
+            .get_arguments()
+            .find(|arg| arg.get_id() == "webui_dir")
+            .expect("serve argument");
+        let help = arg.get_help().expect("webui_dir has help").to_string();
+        assert!(help.contains("every file in it is public"), "{help}");
     }
 
     #[test]

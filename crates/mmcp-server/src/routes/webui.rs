@@ -29,10 +29,13 @@ use crate::routes::defaults::{
 pub fn service(webui_dir: &Path) -> Option<Router> {
     let index_file = webui_dir.join(WEBUI_INDEX_FILE_NAME);
     if !index_file.is_file() {
-        tracing::warn!(webui_dir = %webui_dir.display(), missing_file = WEBUI_INDEX_FILE_NAME);
+        tracing::warn!(
+            "web UI directory {} has no {WEBUI_INDEX_FILE_NAME}, serving the API only",
+            webui_dir.display()
+        );
         return None;
     }
-    tracing::info!(webui_dir = %webui_dir.display());
+    tracing::info!("web UI served from {}", webui_dir.display());
     let files = ServeDir::new(webui_dir).fallback(ServeFile::new(index_file));
     Some(
         Router::new()

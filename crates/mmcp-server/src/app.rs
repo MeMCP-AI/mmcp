@@ -39,7 +39,14 @@ pub fn build_router(state: ServerState) -> Router {
     let api = mount_under_prefix(api, routes::auth::PREFIX, routes::auth::router());
     let api = mount_under_prefix(api, routes::sync::PREFIX, routes::sync::router());
     let api = mount_under_prefix(api, routes::git_http::PREFIX, routes::git_http::router());
-    let routed = match state.webui_dir.as_deref().and_then(routes::webui::service) {
+    let webui = match state.webui_dir.as_deref() {
+        Some(webui_dir) => routes::webui::service(webui_dir),
+        None => {
+            tracing::info!("web UI not served: no web UI directory configured");
+            None
+        }
+    };
+    let routed = match webui {
         Some(webui) => api.fallback_service(webui),
         None => api,
     };
@@ -62,8 +69,15 @@ pub fn build_router(state: ServerState) -> Router {
 /// Credentials (the session cookie) are therefore never allowed.
 fn cors_layer(allowed_origins: &[HeaderValue]) -> Option<CorsLayer> {
     if allowed_origins.is_empty() {
+        tracing::info!("CORS disabled: no allowed origins configured");
         return None;
     }
+    let listed_origins = allowed_origins
+        .iter()
+        .filter_map(|origin| origin.to_str().ok())
+        .collect::<Vec<_>>()
+        .join(", ");
+    tracing::info!("CORS allowed origins: {listed_origins}");
     Some(
         CorsLayer::new()
             .allow_origin(AllowOrigin::list(allowed_origins.iter().cloned()))

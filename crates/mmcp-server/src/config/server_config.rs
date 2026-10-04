@@ -219,14 +219,12 @@ impl ServerConfig {
             }
             (Some(_), None) => {
                 tracing::warn!(
-                    provider_disabled = "github",
-                    missing_variable = GITHUB_OAUTH_CLIENT_SECRET_ENV
+                    "GitHub OAuth disabled: {GITHUB_OAUTH_CLIENT_ID_ENV} is set but {GITHUB_OAUTH_CLIENT_SECRET_ENV} is empty"
                 );
             }
             (None, Some(_)) => {
                 tracing::warn!(
-                    provider_disabled = "github",
-                    missing_variable = GITHUB_OAUTH_CLIENT_ID_ENV
+                    "GitHub OAuth disabled: {GITHUB_OAUTH_CLIENT_SECRET_ENV} is set but {GITHUB_OAUTH_CLIENT_ID_ENV} is empty"
                 );
             }
             (None, None) => {}
@@ -254,7 +252,7 @@ impl ServerConfig {
             .map(|raw| parse_cors_origins(&raw))
             .unwrap_or_default();
         for rejected_cors_origin in &cors_allowed_origins.rejected {
-            tracing::warn!(rejected_cors_origin = %rejected_cors_origin);
+            tracing::warn!("ignoring CORS origin {rejected_cors_origin}: not a valid origin");
         }
 
         Ok(Self {
