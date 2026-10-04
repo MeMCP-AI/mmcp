@@ -1,8 +1,9 @@
 //! Facts about the git checkout a file lives in.
 //!
-//! Serves a personal file that belongs next to a project but never in its history:
-//! where the file sits inside a linked worktree, whether the repository already ignores it,
-//! and how it gets excluded through the user's global excludes file.
+//! Serves a personal file that belongs next to a project but never in its history.
+//! It answers where the file sits inside a linked worktree.
+//! It answers whether the repository tracks or already ignores the file.
+//! It excludes the file through the user's global excludes file.
 //! Every operation goes through `gix`, never a `git` subprocess.
 
 mod exclude_path;

@@ -281,8 +281,10 @@ export interface UserLimitsConfig {
 /** Value of a `notice.*` key. */
 export type NoticeValue = 'on' | 'off';
 
-/** Mirrors `mmcp_core::config::NoticeConfig`, the `[notice]` table shared
- * by the user, project and local configuration files. */
+/**
+ * Mirrors `mmcp_core::config::NoticeConfig`.
+ * It is the `[notice]` table shared by the user, project and local configuration files.
+ */
 export interface NoticeConfig {
   md?: {
     /** `notice.md.project`: the notices for the project's CLAUDE.md. */

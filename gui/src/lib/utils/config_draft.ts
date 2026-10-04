@@ -1,8 +1,10 @@
 import type { ProjectConfig, UserConfig } from '$lib/types';
 import { fromDraft, type DraftRemote } from '$lib/utils/remotes_draft';
 
-/** Values the Settings panel's user form edits. Every key of `UserConfig`
- * the form does not list is carried from the loaded config untouched. */
+/**
+ * Values the Settings panel's user form edits.
+ * Every key of `UserConfig` the form does not list is carried from the loaded config untouched.
+ */
 export interface UserForm {
   name: string;
   email: string;
@@ -12,9 +14,10 @@ export interface UserForm {
   remotes: DraftRemote[];
 }
 
-/** Values the Settings panel's project form edits. Every key of
- * `ProjectConfig` the form does not list is carried from the loaded
- * config untouched. */
+/**
+ * Values the Settings panel's project form edits.
+ * Every key of `ProjectConfig` the form does not list is carried from the loaded config untouched.
+ */
 export interface ProjectForm {
   slug: string;
   syncServerUrl: string;
@@ -48,9 +51,11 @@ function gitFallbackValue(choice: UserForm['gitFallback']): boolean | null {
   return null;
 }
 
-/** The `UserConfig` a user-form save sends to the backend.
- * Starts from the loaded config and overrides only the fields the form edits, so every other key
- * (`limits`, `notice`, and any key a later version adds to the type) survives the save. */
+/**
+ * The `UserConfig` a user-form save sends to the backend.
+ * It starts from the loaded config and overrides only the fields the form edits.
+ * Every other key survives the save, `limits`, `notice` and any key a later version adds to the type.
+ */
 export function buildUserConfig(loaded: UserConfig | null, form: UserForm): UserConfig {
   const name = emptyToNull(form.name);
   const email = emptyToNull(form.email);
@@ -59,8 +64,8 @@ export function buildUserConfig(loaded: UserConfig | null, form: UserForm): User
   const hasAuthor = name !== null || email !== null || fallback !== null;
   return {
     ...loaded,
-    // Always sent as a complete object (never dropped for emptiness):
-    // a partial reconstruction would silently lose `remotes`.
+    // Always sent as a complete object, never dropped for emptiness.
+    // A partial reconstruction would silently lose `remotes`.
     sync: {
       server_url: emptyToNull(form.syncServerUrl),
       remotes: form.remotes.map(fromDraft)
@@ -71,9 +76,11 @@ export function buildUserConfig(loaded: UserConfig | null, form: UserForm): User
   };
 }
 
-/** The `ProjectConfig` a project-form save sends to the backend.
- * Starts from the loaded config and overrides only the fields the form edits, so `notice`, the
- * `memories` and `tags` subscriptions, and any key a later version adds to the type survive the save. */
+/**
+ * The `ProjectConfig` a project-form save sends to the backend.
+ * It starts from the loaded config and overrides only the fields the form edits.
+ * `notice`, the `memories` and `tags` subscriptions and any key a later version adds to the type survive the save.
+ */
 export function buildProjectConfig(loaded: ProjectConfig, form: ProjectForm): ProjectConfig {
   return {
     ...loaded,

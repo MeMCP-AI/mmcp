@@ -18,8 +18,8 @@ bytes = { workspace = true }
 moka = { workspace = true }
 tracing = { workspace = true }
 
-# Optional, pulled in only when the `testing` feature is enabled,
-# so downstream consumers can activate the fixture without paying the tempfile compile cost at release time.
+# Optional, pulled in only when the `testing` feature is enabled.
+# Downstream consumers can activate the fixture without paying the tempfile compile cost at release time.
 tempfile = { version = "3", optional = true }
 
 [dev-dependencies]
