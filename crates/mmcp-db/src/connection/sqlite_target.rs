@@ -13,9 +13,10 @@ use super::sqlite_parameters::{ACCEPTED_KEYS, canonical_by_case, closed_values};
 
 /// The connection text of a SQLite database.
 ///
-/// SQLite takes no credential, so the text is its own display.
-/// sqlx-sqlite reads the text after the scheme as a file name, percent-decoded.
-/// A raw `@` is refused, since it can be the userinfo of a misplaced credential, and `%40` is how a file name holds one.
+/// SQLite takes no credential, so the text is shown as written.
+/// sqlx-sqlite reads the text after the scheme, up to the first `?`, as a file name, percent-decoded, and the rest as parameters.
+/// A raw `@` anywhere in the text is refused, since it can only be a misplaced credential, and `%40` is how a file name holds one.
+/// A raw `#` is refused for the same reason, and `%23` is how a file name holds one.
 #[derive(Debug, Clone)]
 pub struct SqliteTarget {
     text: String,

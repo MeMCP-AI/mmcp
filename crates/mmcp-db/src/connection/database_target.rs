@@ -9,11 +9,14 @@ use super::database_url_error::DatabaseUrlError;
 use super::postgres_target::PostgresTarget;
 use super::sqlite_target::SqliteTarget;
 
-/// A database URL that passed every refusal rule, by backend.
+/// A database URL that passed every refusal rule of mmcp, by backend.
 ///
-/// The URL is parsed once, here.
-/// A URL with the credential in a place the URL grammar does not expect one is refused, so no part of a password reaches a dependency or a log.
-/// Display shows the target without any credential, and Debug shows the same.
+/// The rules run here, at parse, on the text as written.
+/// sqlx reads the text again at connect, so the rules mirror what sqlx would accept, ignore or log.
+/// They refuse the forms that put a credential where the URL grammar does not expect one, and the parameters that sqlx would log with their value.
+/// A refusal quotes no part of the text beyond its scheme.
+/// Display and Debug show the target without its password.
+/// What a dependency does with a text that no rule refuses is outside these guarantees.
 #[derive(Debug, Clone)]
 pub enum DatabaseTarget {
     Postgres(PostgresTarget),
