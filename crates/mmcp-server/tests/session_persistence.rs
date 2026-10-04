@@ -15,6 +15,9 @@ use tokio::task::JoinHandle;
 
 mod common;
 
+/// Key under which `axum-login` stores the user id and auth hash in the session data.
+const AXUM_LOGIN_DATA_KEY: &str = "axum-login.data";
+
 /// Token key shared by every server instance of one test, so signed values outlive a restart.
 const FIXED_TOKEN_KEY: [u8; 32] = [11u8; 32];
 
@@ -176,11 +179,57 @@ async fn session_rows_hold_neither_the_cookie_id_nor_the_password_hash() {
         .expect("find user")
         .expect("registered user exists");
     let password_hash = user.password_hash.expect("a password user has a hash");
-    assert!(
-        !rows[0].data.contains(&password_hash),
-        "the password hash must not be stored in the session data"
-    );
+    assert_stored_auth_hash_is_the_digest(&rows[0].data, &password_hash, user.credential_epoch);
     server.stop().await;
+}
+
+/// The session data holds the digest of the credential state as its auth hash, never the password hash.
+///
+/// `axum-login` stores the auth hash as a JSON array of byte values, so a raw password hash is not found as text:
+/// the check compares the stored bytes.
+fn assert_stored_auth_hash_is_the_digest(
+    session_data: &str,
+    password_hash: &str,
+    credential_epoch: i64,
+) {
+    assert!(
+        !session_data.contains(password_hash),
+        "the password hash must not be stored in the session data as text"
+    );
+    let data: serde_json::Value = serde_json::from_str(session_data).expect("session data json");
+    let stored_auth_hash: Vec<u8> = data[AXUM_LOGIN_DATA_KEY]["auth_hash"]
+        .as_array()
+        .expect("the session stores the auth hash as an array")
+        .iter()
+        .map(|byte| u8::try_from(byte.as_u64().expect("a byte value")).expect("a byte"))
+        .collect();
+    assert_ne!(
+        stored_auth_hash,
+        password_hash.as_bytes(),
+        "the password hash bytes must not be the stored auth hash"
+    );
+    assert_eq!(
+        stored_auth_hash,
+        mmcp_auth::session_auth_hash::session_auth_hash(credential_epoch, Some(password_hash)),
+        "the stored auth hash is the digest of the credential state"
+    );
+}
+
+/// Session data whose auth hash is the raw password hash bytes, the defect the digest check guards.
+#[test]
+#[should_panic(expected = "the password hash bytes must not be the stored auth hash")]
+fn the_auth_hash_check_rejects_raw_password_hash_bytes() {
+    let password_hash = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2g";
+    let session_data = json!({
+        (AXUM_LOGIN_DATA_KEY): { "auth_hash": password_hash.as_bytes() }
+    })
+    .to_string();
+    assert!(
+        !session_data.contains(password_hash),
+        "the earlier text check passes on this data, which is why it was vacuous"
+    );
+
+    assert_stored_auth_hash_is_the_digest(&session_data, password_hash, 0);
 }
 
 #[tokio::test]
@@ -586,7 +635,13 @@ async fn passkey_registration_ceremony_survives_server_restart() {
         .send()
         .await
         .expect("passkey register finish");
+    let status = finish.status();
     let body = finish.text().await.unwrap_or_default();
+    assert_ne!(
+        status,
+        reqwest::StatusCode::UNAUTHORIZED,
+        "the session itself must survive the restart"
+    );
     assert_ne!(
         body, NO_PENDING_REGISTRATION_BODY,
         "the ceremony started before the restart must reach webauthn verification after it"
@@ -838,7 +893,7 @@ async fn passkey_login_start_rows_are_removed_by_the_sweep_after_expiry() {
         rows.len()
     );
 
-    // Expire every row through the repository, then let the sweeper the server runs delete them.
+    // Expire every row through the repository, then spawn the production sweeper over the same database.
     let db = mmcp_db::connect(&cfg.database_url).await.expect("connect");
     for row in rows {
         http_session_repo::upsert(
