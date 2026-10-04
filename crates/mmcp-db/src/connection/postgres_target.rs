@@ -71,11 +71,13 @@ impl PostgresTarget {
 
     /// [`Self::explain_configuration_error`] with the environment as a lookup, so a test sets none.
     ///
-    /// SCRAM authentication applies SASLprep to the user name first and to the password later, so a failing user name decides the cause.
+    /// SCRAM authentication applies SASLprep to the user name first and to the password later, so a failing user name decides among the SASLprep causes.
     /// Under the SSL modes `disable` and `allow` sqlx never reads a certificate or a key, so no TLS cause exists.
-    /// Under the other modes the TLS checks fail during the handshake, which comes before authentication, but a server that declines TLS skips them.
-    /// A TLS cause beside a SASLprep cause therefore leaves the cause unknown.
-    /// A password that a pgpass file supplies is not known here, so a failure of it is named by no variant of its own.
+    /// Under the modes `require`, `verify-ca` and `verify-full` a server that declines TLS ends the connect with a TLS error, so a configuration error means the handshake ran.
+    /// The handshake comes before authentication, so a lone certificate or key is then the cause, whatever the credentials.
+    /// Otherwise a TLS cause is a candidate only: a server that declines TLS under `prefer` skips the checks, and a complete pair can fail after a handshake that succeeded.
+    /// A candidate is named only when every SASLprep alternative is excluded: the user name passes, and a password that the URL or `PGPASSWORD` gives passes.
+    /// A password that a pgpass file supplies is not known here, so without a given password a candidate leaves the cause unknown.
     fn explain_configuration_error_in(
         &self,
         options: &PgConnectOptions,
@@ -86,37 +88,55 @@ impl PostgresTarget {
         };
         let authentication_cause =
             username_cause(options).or_else(|| password_cause(&url, environment));
-        let mut causes = [
-            tls_cause(&url, options.get_ssl_mode(), environment),
-            authentication_cause,
-        ]
-        .into_iter()
-        .flatten();
-        match (causes.next(), causes.next()) {
-            (Some(only), None) => only,
-            _ => DbError::ConnectionConfigurationRejected,
+        match tls_cause(&url, options.get_ssl_mode(), environment) {
+            Some(TlsCause {
+                error,
+                certain: true,
+            }) => error,
+            Some(TlsCause { error, .. })
+                if authentication_cause.is_none()
+                    && given_password(&url, environment).is_some() =>
+            {
+                error
+            }
+            Some(_) => DbError::ConnectionConfigurationRejected,
+            None => authentication_cause.unwrap_or(DbError::ConnectionConfigurationRejected),
         }
     }
 }
 
-/// The TLS error that the client certificate and key the URL or the environment give would raise.
+/// A TLS error that the client certificate and key the URL or the environment give would raise.
+struct TlsCause {
+    error: DbError,
+    /// Whether the handshake must have raised it, for any credentials and any server answer.
+    certain: bool,
+}
+
+/// The TLS cause of the client certificate and key the URL or the environment give.
 ///
 /// sqlx returns the socket before it reads either file under the SSL modes `disable` and `allow`.
 fn tls_cause(
     url: &Url,
     ssl_mode: PgSslMode,
     environment: &dyn Fn(&str) -> Option<String>,
-) -> Option<DbError> {
+) -> Option<TlsCause> {
     if matches!(ssl_mode, PgSslMode::Disable | PgSslMode::Allow) {
         return None;
     }
+    let tls_is_required = !matches!(ssl_mode, PgSslMode::Prefer);
     let has_parameter = |keys: [&str; 2]| url.query_pairs().any(|(name, _)| keys.contains(&&*name));
     let has_certificate =
         has_parameter(["sslcert", "ssl-cert"]) || environment("PGSSLCERT").is_some();
     let has_key = has_parameter(["sslkey", "ssl-key"]) || environment("PGSSLKEY").is_some();
     match (has_certificate, has_key) {
-        (true, false) | (false, true) => Some(DbError::ClientCertificateAndKeyNotPaired),
-        (true, true) => Some(DbError::ClientKeyRejected),
+        (true, false) | (false, true) => Some(TlsCause {
+            error: DbError::ClientCertificateAndKeyNotPaired,
+            certain: tls_is_required,
+        }),
+        (true, true) => Some(TlsCause {
+            error: DbError::ClientKeyRejected,
+            certain: false,
+        }),
         (false, false) => None,
     }
 }
@@ -130,11 +150,17 @@ fn username_cause(options: &PgConnectOptions) -> Option<DbError> {
         .then_some(DbError::UsernameRejectedBySaslprep)
 }
 
+/// The password that the URL or `PGPASSWORD` gives, in sqlx's precedence.
+///
+/// A given password keeps sqlx from reading a pgpass file, so `None` leaves the password unknown.
+fn given_password(url: &Url, environment: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    effective_value(url, url.password().map(decoded), "password")
+        .or_else(|| environment("PGPASSWORD"))
+}
+
 /// The SASLprep failure of the password that the URL or the environment gives.
 fn password_cause(url: &Url, environment: &dyn Fn(&str) -> Option<String>) -> Option<DbError> {
-    let password = effective_value(url, url.password().map(decoded), "password")
-        .or_else(|| environment("PGPASSWORD"));
-    password
+    given_password(url, environment)
         .is_some_and(|password| stringprep::saslprep(&password).is_err())
         .then_some(DbError::PasswordRejectedBySaslprep)
 }
@@ -280,13 +306,15 @@ mod tests {
         explained_with(raw, &options_for(raw, variables), variables)
     }
 
+    /// A password that the URL gives suppresses pgpass, and it passes SASLprep, so every SASLprep alternative is excluded.
     #[test]
-    fn a_client_certificate_without_its_key_is_named() {
+    fn a_client_certificate_without_its_key_is_named_where_the_password_is_given() {
         for raw in [
-            "postgres://db/app?sslmode=require&sslcert=/c.pem",
-            "postgres://db/app?ssl-cert=/c.pem",
-            "postgres://db/app?sslkey=/k.pem",
-            "postgres://db/app?ssl-key=/k.pem",
+            "postgres://u:pw@db/app?sslmode=require&sslcert=/c.pem",
+            "postgres://u:pw@db/app?ssl-cert=/c.pem",
+            "postgres://u:pw@db/app?sslkey=/k.pem",
+            "postgres://u:pw@db/app?ssl-key=/k.pem",
+            "postgres://u@db/app?sslkey=/k.pem&password=pw",
         ] {
             assert!(
                 matches!(
@@ -299,16 +327,19 @@ mod tests {
     }
 
     #[test]
-    fn the_environment_can_complete_the_pair() {
+    fn the_environment_can_complete_the_pair_and_give_the_password() {
         assert!(matches!(
             explained(
-                "postgres://db/app?sslcert=/c.pem",
+                "postgres://u:pw@db/app?sslcert=/c.pem",
                 &[("PGSSLKEY", "/k.pem")]
             ),
             DbError::ClientKeyRejected
         ));
         assert!(matches!(
-            explained("postgres://db/app", &[("PGSSLCERT", "/c.pem")]),
+            explained(
+                "postgres://u@db/app",
+                &[("PGSSLCERT", "/c.pem"), ("PGPASSWORD", "pw")]
+            ),
             DbError::ClientCertificateAndKeyNotPaired
         ));
     }
@@ -316,13 +347,56 @@ mod tests {
     #[test]
     fn a_complete_pair_that_still_fails_is_a_key_failure_without_its_source() {
         for raw in [
-            "postgres://db/app?sslcert=/c.pem&sslkey=/k.pem",
-            "postgres://db/app?ssl-cert=/c.pem&ssl-key=/k.pem",
+            "postgres://u:pw@db/app?sslcert=/c.pem&sslkey=/k.pem",
+            "postgres://u:pw@db/app?ssl-cert=/c.pem&ssl-key=/k.pem",
+            "postgres://u:pw@db/app?sslmode=require&sslcert=/c.pem&sslkey=/k.pem",
         ] {
             let error = explained(raw, &[]);
 
             assert!(matches!(error, DbError::ClientKeyRejected), "{raw}");
             assert!(std::error::Error::source(&error).is_none());
+        }
+    }
+
+    /// Where TLS is required, a server that declines it ends the connect with a TLS error, so a configuration error means the handshake ran.
+    /// The handshake checks the pair before authentication starts, so the credentials cannot be the cause.
+    #[test]
+    fn a_lone_certificate_or_key_is_certain_where_tls_is_required() {
+        for mode in ["require", "verify-ca", "verify-full"] {
+            for query in ["sslcert=/c.pem", "sslkey=/k.pem"] {
+                for credentials in ["", "u:pw@", "m%07x:p%07y@"] {
+                    let raw = format!("postgres://{credentials}db/app?sslmode={mode}&{query}");
+
+                    assert!(
+                        matches!(
+                            explained(&raw, &[]),
+                            DbError::ClientCertificateAndKeyNotPaired
+                        ),
+                        "{raw}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A pgpass file may supply the password, and sqlx exposes neither the file nor the password.
+    /// A server that declines TLS under `prefer` skips the checks, and a complete pair can fail after a handshake that succeeded.
+    #[test]
+    fn a_tls_candidate_beside_an_opaque_password_leaves_the_cause_unknown() {
+        for raw in [
+            "postgres://u@db/app?sslcert=/c.pem",
+            "postgres://u@db/app?sslkey=/k.pem",
+            "postgres://u@db/app?sslcert=/c.pem&sslkey=/k.pem",
+            "postgres://u@db/app?sslmode=require&sslcert=/c.pem&sslkey=/k.pem",
+            "postgres://u@db/app?sslmode=verify-full&sslcert=/c.pem&sslkey=/k.pem",
+        ] {
+            assert!(
+                matches!(
+                    explained(raw, &[]),
+                    DbError::ConnectionConfigurationRejected
+                ),
+                "{raw}"
+            );
         }
     }
 
