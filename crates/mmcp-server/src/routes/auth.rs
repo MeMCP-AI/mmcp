@@ -230,8 +230,7 @@ async fn login(
         .map_err(into_generic_response)?
         .ok_or(AuthHttpError::Unauthorized("invalid credentials"))?;
 
-    auth_session
-        .login(&user)
+    login_on_a_fresh_session_id(&mut auth_session, &user)
         .await
         .map_err(into_generic_response)?;
 
@@ -523,8 +522,7 @@ async fn oauth_callback(
             Err(other) => return Err(into_generic_response(other)),
         };
 
-        auth_session
-            .login(&user)
+        login_on_a_fresh_session_id(&mut auth_session, &user)
             .await
             .map_err(into_generic_response)?;
 
@@ -700,6 +698,24 @@ async fn passkey_register_finish(
         .map_err(into_generic_response)?;
 
     Ok(Json(serde_json::json!({ "status": "registered" })))
+}
+
+/// Log `user` in on a new session id, whatever the session held before.
+///
+/// `AuthSession::login` keeps the id of a session that already holds an authenticated user.
+/// A cookie planted in the browser would then keep working after the victim's login.
+/// The old id is deleted from the store and the session data moves to the new id.
+/// Every login of a user who proved a credential goes through here.
+async fn login_on_a_fresh_session_id(
+    auth_session: &mut AuthSession,
+    user: &MmcpUser,
+) -> Result<(), axum_login::Error<mmcp_auth::MmcpAuthBackend>> {
+    auth_session
+        .session
+        .cycle_id()
+        .await
+        .map_err(axum_login::Error::Session)?;
+    auth_session.login(user).await
 }
 
 /// Stamp the acting session with the credential state `owner` carries.
@@ -908,8 +924,7 @@ async fn passkey_login_finish(
         Err(e) => return Err(into_generic_response(e)),
     };
 
-    auth_session
-        .login(&authed_user)
+    login_on_a_fresh_session_id(&mut auth_session, &authed_user)
         .await
         .map_err(into_generic_response)?;
 

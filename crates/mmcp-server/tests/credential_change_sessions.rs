@@ -206,6 +206,153 @@ async fn link_oauth_account(server: &TestServer, user_id: Uuid) {
     .expect("link the oauth account");
 }
 
+/// Value of the session cookie a response sets, if it sets one.
+fn session_cookie_value(response: &reqwest::Response) -> Option<String> {
+    response
+        .headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .filter_map(|header| header.to_str().ok())
+        .find_map(|header| header.strip_prefix("id="))
+        .and_then(|rest| rest.split(';').next())
+        .map(str::to_owned)
+}
+
+/// Status of the authenticated route for a request carrying exactly the session cookie `value`.
+async fn status_with_session_cookie(server: &TestServer, value: &str) -> reqwest::StatusCode {
+    reqwest::Client::new()
+        .post(format!(
+            "http://{}/auth/passkey/register/start",
+            server.addr
+        ))
+        .header(reqwest::header::COOKIE, format!("id={value}"))
+        .send()
+        .await
+        .expect("authenticated route")
+        .status()
+}
+
+/// Password login as `handle` on a fresh client; returns the session cookie value the login response sets.
+async fn password_login_cookie(server: &TestServer, handle: &str, planted: Option<&str>) -> String {
+    let mut request = reqwest::Client::new()
+        .post(format!("http://{}/auth/login", server.addr))
+        .json(&json!({ "handle": handle, "password": PASSWORD }));
+    if let Some(planted) = planted {
+        request = request.header(reqwest::header::COOKIE, format!("id={planted}"));
+    }
+    let response = request.send().await.expect("login");
+    assert_eq!(response.status(), 200, "password login of {handle}");
+    session_cookie_value(&response).expect("a login response carries its session cookie")
+}
+
+/// A browser that holds `planted` as its session cookie completes the OAuth login and receives the new cookie.
+async fn oauth_login_cookie(server: &TestServer, planted: &str) -> String {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+    let authorize = client
+        .get(format!(
+            "http://{}/auth/oauth/github/authorize",
+            server.addr
+        ))
+        .send()
+        .await
+        .expect("oauth authorize");
+    let location = authorize
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .expect("Location header")
+        .to_str()
+        .expect("utf-8")
+        .to_owned();
+    let state = location
+        .split("state=")
+        .nth(1)
+        .expect("a state query parameter")
+        .split('&')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let flow_cookie = authorize
+        .headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .filter_map(|header| header.to_str().ok())
+        .find_map(|header| {
+            header
+                .split(';')
+                .next()
+                .filter(|pair| pair.contains("flow"))
+        })
+        .expect("authorize sets the flow cookie")
+        .to_owned();
+    let callback = client
+        .get(format!(
+            "http://{}/auth/oauth/github/callback?code=fake-code&state={state}",
+            server.addr
+        ))
+        .header(
+            reqwest::header::COOKIE,
+            format!("id={planted}; {flow_cookie}"),
+        )
+        .send()
+        .await
+        .expect("oauth callback");
+    assert_eq!(callback.status(), 200, "oauth login");
+    session_cookie_value(&callback).expect("a login response carries its session cookie")
+}
+
+#[tokio::test]
+async fn password_login_replaces_the_session_id_of_a_planted_cookie() {
+    let server = TestServer::start().await;
+    register(&server, "alice").await;
+    register(&server, "bob").await;
+    let attackers_cookie = password_login_cookie(&server, "alice", None).await;
+    assert_eq!(
+        status_with_session_cookie(&server, &attackers_cookie).await,
+        200
+    );
+
+    // The attacker plants its own authenticated cookie in the victim's browser; the victim logs in as bob.
+    let victims_cookie = password_login_cookie(&server, "bob", Some(&attackers_cookie)).await;
+
+    assert_ne!(victims_cookie, attackers_cookie, "a login issues a new id");
+    assert_eq!(
+        status_with_session_cookie(&server, &victims_cookie).await,
+        200
+    );
+    assert_eq!(
+        status_with_session_cookie(&server, &attackers_cookie).await,
+        401,
+        "the planted id must not authenticate the victim's login"
+    );
+}
+
+#[tokio::test]
+async fn oauth_login_replaces_the_session_id_of_a_planted_cookie() {
+    let server = TestServer::start().await;
+    register(&server, "alice").await;
+    let attackers_cookie = password_login_cookie(&server, "alice", None).await;
+    assert_eq!(
+        status_with_session_cookie(&server, &attackers_cookie).await,
+        200
+    );
+
+    let victims_cookie = oauth_login_cookie(&server, &attackers_cookie).await;
+
+    assert_ne!(victims_cookie, attackers_cookie, "a login issues a new id");
+    assert_eq!(
+        status_with_session_cookie(&server, &victims_cookie).await,
+        200
+    );
+    assert_eq!(
+        status_with_session_cookie(&server, &attackers_cookie).await,
+        401,
+        "the planted id must not authenticate the victim's login"
+    );
+}
+
 #[tokio::test]
 async fn adding_a_passkey_signs_out_the_other_sessions_of_an_oauth_only_user() {
     let server = TestServer::start().await;
