@@ -9,6 +9,7 @@ pub mod config;
 mod defaults;
 mod oauth_client;
 mod origin;
+pub mod rate_limit;
 pub mod routes;
 pub mod serve;
 pub mod session_store;
