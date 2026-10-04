@@ -9,7 +9,7 @@
     "skipLibCheck": true,
     "sourceMap": true,
     "strict": true,
-    "moduleResolution": "bundler"
-  },
-  "exclude": ["node_modules/**", "src/**/*.test.ts"]
+    "moduleResolution": "bundler",
+    "types": ["bun-types"]
+  }
 }
