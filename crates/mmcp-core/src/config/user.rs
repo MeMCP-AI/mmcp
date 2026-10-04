@@ -94,6 +94,14 @@ pub struct LimitsConfig {
     /// Overrides `mmcp_auth::backend::MAX_HANDLE_LENGTH`, in bytes, the maximum accepted account handle length.
     /// Same precedence cascade as [`LimitsConfig::min_password_length`].
     pub max_handle_length: Option<usize>,
+
+    /// Overrides the server default number of sign-in and registration requests one client may send per minute.
+    /// Beaten by a CLI `--auth-rate-limit-per-minute` override or the `MMCP_AUTH_RATE_LIMIT_PER_MINUTE` environment variable.
+    pub auth_rate_limit_per_minute: Option<usize>,
+
+    /// Overrides the server default number of sign-in and registration requests one client may send at once.
+    /// Same precedence cascade as [`LimitsConfig::auth_rate_limit_per_minute`].
+    pub auth_rate_limit_burst: Option<usize>,
 }
 
 impl UserConfig {
@@ -178,6 +186,21 @@ max_handle_length = 32
         assert!(cfg.limits.as_ref().unwrap().min_password_length.is_none());
         assert!(cfg.limits.as_ref().unwrap().max_password_length.is_none());
         assert!(cfg.limits.as_ref().unwrap().max_handle_length.is_none());
+    }
+
+    #[test]
+    fn limits_config_parses_the_rate_limit_keys() {
+        let text = "[limits]\nauth_rate_limit_per_minute = 30\nauth_rate_limit_burst = 5\n";
+        let limits = UserConfig::from_toml(text).unwrap().limits.unwrap();
+        assert_eq!(limits.auth_rate_limit_per_minute, Some(30));
+        assert_eq!(limits.auth_rate_limit_burst, Some(5));
+
+        let omitted = UserConfig::from_toml("[limits]\nmax_auto_slug_length = 80\n")
+            .unwrap()
+            .limits
+            .unwrap();
+        assert!(omitted.auth_rate_limit_per_minute.is_none());
+        assert!(omitted.auth_rate_limit_burst.is_none());
     }
 
     #[test]
