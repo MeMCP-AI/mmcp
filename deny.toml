@@ -1,18 +1,15 @@
 # cargo-deny configuration for the mmcp workspace.
 # Docs: https://embarkstudios.github.io/cargo-deny/
 
-# Advisories stay on cargo-deny's strict default: any unresolved
-# RUSTSEC advisory is a hard error. This is the load-bearing check.
 [advisories]
+# Advisories stay on cargo-deny's strict default.
+# Any unresolved RUSTSEC advisory is a hard error.
 ignore = []
 
 [licenses]
-# Every SPDX license actually present in the resolved dependency
-# graph, confirmed via `cargo deny check licenses` against the
-# built-in strict default before this file existed.
-# BSL-1.0 (xxhash-rust) joined the list afterwards.
-# It is permissive, approved by the OSI and the FSF, and asks for no notice in a binary distribution.
-# AGPL-3.0-only is deliberately NOT allow-listed here.
+# Every SPDX license present in the resolved dependency graph is listed.
+# BSL-1.0 (xxhash-rust) is permissive, approved by the OSI and the FSF, and asks for no notice in a binary distribution.
+# AGPL-3.0-only is deliberately not allow-listed here.
 # The one crate that carries it, evalexpr, has its own exception below.
 allow = [
     "0BSD",
@@ -32,16 +29,15 @@ allow = [
 ]
 
 # evalexpr (AGPL-3.0-only) is pulled in transitively via the acdc-parser fork.
-# The operator decided to keep it, on 2026-10-04: a project's license affects neither ours nor the projects we use.
+# The operator decided to keep it: the license of a dependency affects neither our license nor the projects we use.
 # The exception names this one crate, so no other AGPL-3.0-only crate passes unnoticed.
 [[licenses.exceptions]]
 name = "evalexpr"
 allow = ["AGPL-3.0-only"]
 
 [sources]
-# The two deliberately-pinned git forks this workspace tracks (see
-# the root Cargo.toml `git =` dependency and `[patch.crates-io]`
-# entries for the reasoning behind each pin).
+# The two deliberately pinned git forks this workspace tracks.
+# The root Cargo.toml `git =` dependency and `[patch.crates-io]` entries hold the reasoning behind each pin.
 allow-git = [
     "https://github.com/nlopes/acdc.git",
     "https://github.com/GGLinnk/gitoxide.git",
