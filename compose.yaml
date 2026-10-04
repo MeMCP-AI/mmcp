@@ -1,12 +1,20 @@
+# mmcp server deployment from the published image ghcr.io/memcp-ai/mmcp-server.
+# Copy .env.example to .env beside this file and fill in the required values.
+# Start with: docker compose up -d --wait
+# To build the image from this repository, run: docker compose -f compose.yaml -f compose.build.yaml up -d --build
+# To join an existing reverse proxy network, run: docker compose -f compose.yaml -f compose.proxy.yaml up -d
+
 name: mmcp
 
 services:
+  # PostgreSQL holds accounts and metadata and is reachable only on the internal backend network.
+  # The password is applied only when the database volume is first created.
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-mmcp}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env, for example with: docker run --rm ghcr.io/memcp-ai/mmcp-server:nightly generate-secret}"
       POSTGRES_DB: ${POSTGRES_DB:-mmcp}
     volumes:
       - postgres-data:/var/lib/postgresql/data
@@ -18,6 +26,7 @@ services:
       timeout: 5s
       retries: 5
 
+  # The server serves the API, the git endpoints and the web UI on one origin.
   mmcp-server:
     image: ${MMCP_IMAGE:-ghcr.io/memcp-ai/mmcp-server}:${MMCP_IMAGE_TAG:-nightly}
     pull_policy: ${MMCP_PULL_POLICY:-missing}
@@ -26,7 +35,7 @@ services:
       MMCP_BIND: 0.0.0.0:8787
       MMCP_DATABASE_URL: postgres://${POSTGRES_USER:-mmcp}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-mmcp}
       MMCP_REPO_ROOT: /data/repos
-      MMCP_TOKEN_KEY_HEX: ${MMCP_TOKEN_KEY_HEX:?}
+      MMCP_TOKEN_KEY_HEX: "${MMCP_TOKEN_KEY_HEX:?set MMCP_TOKEN_KEY_HEX in .env, for example with: docker run --rm ghcr.io/memcp-ai/mmcp-server:nightly generate-secret}"
       MMCP_ORIGIN: ${MMCP_ORIGIN:-http://localhost:${MMCP_PORT:-8787}}
       MMCP_CORS_ALLOWED_ORIGINS: ${MMCP_CORS_ALLOWED_ORIGINS:-}
       MMCP_ALLOW_SELF_REGISTRATION: ${MMCP_ALLOW_SELF_REGISTRATION:-false}
@@ -38,11 +47,16 @@ services:
       MMCP_MAX_HANDLE_LENGTH: ${MMCP_MAX_HANDLE_LENGTH:-}
     volumes:
       - mmcp-repos:/data/repos
+    # Published on 127.0.0.1 by default, so the plain HTTP port is reachable from this host only.
+    # Set MMCP_PUBLISH_ADDRESS=0.0.0.0 to expose it on every interface, preferably behind a TLS reverse proxy.
     ports:
       - "${MMCP_PUBLISH_ADDRESS:-127.0.0.1}:${MMCP_PORT:-8787}:8787"
+    # backend is internal, so PostgreSQL has no connectivity outside this project.
+    # The server also joins the default network to publish its port and reach OAuth providers.
     networks:
       - backend
       - default
+    # The image has no shell and no curl, so the server binary probes its own /health endpoint.
     healthcheck:
       test: ["CMD", "/usr/local/bin/mmcp-server", "healthcheck"]
       interval: 10s

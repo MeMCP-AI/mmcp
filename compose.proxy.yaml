@@ -1,3 +1,7 @@
+# Attaches the server to an existing reverse proxy network named by MMCP_PROXY_NETWORK.
+# Use it with: docker compose -f compose.yaml -f compose.proxy.yaml up -d
+# Point the reverse proxy at http://mmcp-server:8787 and set MMCP_ORIGIN to the public URL it serves.
+
 services:
   mmcp-server:
     networks:
@@ -6,4 +10,4 @@ services:
 networks:
   proxy:
     external: true
-    name: ${MMCP_PROXY_NETWORK:?}
+    name: "${MMCP_PROXY_NETWORK:?set MMCP_PROXY_NETWORK in .env to the name of the reverse proxy network}"
