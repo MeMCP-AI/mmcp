@@ -184,6 +184,8 @@ sha2 = "0.11"
 # HTTP framework
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "macros", "query"] }
 tower-http = { version = "0.6", features = ["trace", "cors"] }
+# URL parsing: redacts the database URL password for the startup log and validates CORS origins.
+url = "2"
 
 # Async stream <-> AsyncRead bridging (used by git smart-HTTP streaming)
 tokio-util = { version = "0.7", features = ["io", "io-util"] }
