@@ -113,7 +113,8 @@ sea-orm = { version = "2.0", default-features = false, features = ["sqlx-sqlite"
 sea-orm-migration = { version = "2.0", default-features = false, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls", "with-uuid"] }
 # Holds the database connection text, so a Debug print of it shows a redaction marker.
 secrecy = "0.10"
-# The SASLprep check of a database password, the one sqlx applies at connect time.
+# The SASLprep check that sqlx applies to the user name and the password of a SCRAM exchange.
+# Run on a connect error to tell which of the two the driver refused, without the driver's text.
 stringprep = "0.1"
 # Percent-decoding of a database URL path, to look for a credential hidden in it.
 percent-encoding = "2"
