@@ -52,8 +52,8 @@ use super::trusted_proxies::TrustedProxies;
 /// | `MMCP_AUTH_RATE_LIMIT_BURST`      | `serve --auth-rate-limit-burst` | `10`, see the cascade below |
 /// | `MMCP_AUTH_RATE_LIMIT_IPV6_CLIENT_PREFIX_LENGTH` | `serve --auth-rate-limit-ipv6-client-prefix-length` | `64` |
 /// | `MMCP_AUTH_RATE_LIMIT_IPV6_NETWORK_PREFIX_LENGTH` | `serve --auth-rate-limit-ipv6-network-prefix-length` | `48`, `0` = no network budget |
-/// | `MMCP_AUTH_RATE_LIMIT_IPV6_NETWORK_PER_MINUTE` | `serve --auth-rate-limit-ipv6-network-per-minute` | 10 times the client value, `200` |
-/// | `MMCP_AUTH_RATE_LIMIT_IPV6_NETWORK_BURST` | `serve --auth-rate-limit-ipv6-network-burst` | 10 times the client value, `100` |
+/// | `MMCP_AUTH_RATE_LIMIT_IPV6_NETWORK_PER_MINUTE` | `serve --auth-rate-limit-ipv6-network-per-minute` | the client value times `IPV6_NETWORK_QUOTA_MULTIPLE`, `200` |
+/// | `MMCP_AUTH_RATE_LIMIT_IPV6_NETWORK_BURST` | `serve --auth-rate-limit-ipv6-network-burst` | the client value times `IPV6_NETWORK_QUOTA_MULTIPLE`, `100` |
 /// | `MMCP_TRUSTED_PROXIES`            | `serve --trusted-proxies`       | (absent = clients connect directly) |
 ///
 /// They reach this type through [`ServerConfigOverrides`].

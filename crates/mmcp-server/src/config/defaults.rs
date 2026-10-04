@@ -106,7 +106,7 @@ pub(crate) const DEFAULT_AUTH_RATE_LIMIT_IPV6_NETWORK_PREFIX_LENGTH: u8 = 48;
 
 /// How many times the client quota the default quota of the IPv6 network budget is.
 /// The network budget exists to bound the password hashing work one network holder can force.
-/// Ten times the client quota keeps a whole network at about three hashes per second with the default quota.
+/// With the default client quota, this multiple keeps a whole network at about three hashes per second.
 pub(crate) const IPV6_NETWORK_QUOTA_MULTIPLE: u32 = 10;
 
 /// Largest number of leading bits an IPv6 prefix holds.
