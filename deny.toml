@@ -28,7 +28,7 @@ allow = [
     "Zlib",
 ]
 
-# evalexpr (AGPL-3.0-only) is pulled in transitively via the acdc-parser fork.
+# evalexpr (AGPL-3.0-only) is pulled in transitively via acdc-parser, an upstream git dependency pinned by revision.
 # The operator decided to keep it: the license of a dependency affects neither our license nor the projects we use.
 # The exception names this one crate, so no other AGPL-3.0-only crate passes unnoticed.
 [[licenses.exceptions]]
@@ -36,8 +36,8 @@ name = "evalexpr"
 allow = ["AGPL-3.0-only"]
 
 [sources]
-# The two deliberately pinned git forks this workspace tracks.
-# The root Cargo.toml `git =` dependency and `[patch.crates-io]` entries hold the reasoning behind each pin.
+# Two git sources are allowed, both pinned by revision: the upstream acdc repository and the GGLinnk fork of gitoxide.
+# The root Cargo.toml `git =` dependencies and `[patch.crates-io]` entries hold the reasoning behind each pin.
 allow-git = [
     "https://github.com/nlopes/acdc.git",
     "https://github.com/GGLinnk/gitoxide.git",
