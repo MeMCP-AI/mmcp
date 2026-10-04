@@ -32,9 +32,12 @@ jobs:
           echo "cache-image=ghcr.io/${owner}/${CACHE_IMAGE_NAME}" >> "$GITHUB_OUTPUT"
 
   build:
+    name: build ${{ matrix.platform }}
     needs: prepare
     runs-on: ${{ matrix.runner }}
     strategy:
+      # Each platform builds on its own runner and pushes its image by digest.
+      # The publish job joins the digests under every tag.
       fail-fast: false
       matrix:
         include:
@@ -69,10 +72,13 @@ jobs:
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', needs.prepare.outputs.image) || '' }}
+          # Each platform keeps its own build cache, so the two platforms never overwrite each other.
+          # Pull requests read the cache and never write it.
           cache-from: type=registry,ref=${{ needs.prepare.outputs.cache-image }}:${{ matrix.slug }}
           cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}:{1},mode=max,ignore-error=true', needs.prepare.outputs.cache-image, matrix.slug) || '' }}
 
       - if: github.event_name != 'pull_request'
+        name: Export the image digest
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
@@ -80,6 +86,7 @@ jobs:
           touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
 
       - if: github.event_name != 'pull_request'
+        name: Upload the image digest
         uses: actions/upload-artifact@v4
         with:
           name: digests-${{ matrix.slug }}
@@ -88,11 +95,13 @@ jobs:
           retention-days: 1
 
   merge:
+    name: publish multi-platform image
     if: github.event_name != 'pull_request'
     needs: [prepare, build]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download the image digests
+        uses: actions/download-artifact@v4
         with:
           path: ${{ runner.temp }}/digests
           pattern: digests-*
@@ -118,7 +127,8 @@ jobs:
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=nightly,enable=${{ github.ref == 'refs/heads/dev' }}
 
-      - working-directory: ${{ runner.temp }}/digests
+      - name: Create the multi-platform image
+        working-directory: ${{ runner.temp }}/digests
         env:
           IMAGE: ${{ needs.prepare.outputs.image }}
         run: |
@@ -126,7 +136,8 @@ jobs:
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf "${IMAGE}@sha256:%s " *)
 
-      - env:
+      - name: Inspect the multi-platform image
+        env:
           IMAGE: ${{ needs.prepare.outputs.image }}
           VERSION: ${{ steps.meta.outputs.version }}
         run: docker buildx imagetools inspect "${IMAGE}:${VERSION}"
