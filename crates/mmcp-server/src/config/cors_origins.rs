@@ -47,6 +47,7 @@ fn canonical_origin(entry: &str) -> Option<HeaderValue> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     fn accepted_strings(parsed: &ParsedCorsOrigins) -> Vec<&str> {
