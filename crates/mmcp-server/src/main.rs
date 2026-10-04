@@ -10,6 +10,7 @@ use clap::{Args, Parser, Subcommand};
 
 use mmcp_server::app;
 use mmcp_server::config;
+use mmcp_server::rate_limit;
 use mmcp_server::serve;
 use mmcp_server::session_store;
 use mmcp_server::state;
@@ -151,12 +152,20 @@ async fn run_server(overrides: config::ServerConfigOverrides) -> Result<()> {
 
     let state = state::ServerState::initialize(&cfg).await?;
     let session_store = state.session_store.clone();
+    let rate_limiter = state.auth_rate_limiter.clone();
+    tracing::info!(
+        per_minute = cfg.auth_rate_limit.per_minute.get(),
+        burst = cfg.auth_rate_limit.burst.get(),
+        trusted_proxies = %cfg.trusted_proxies,
+        "auth rate limit active"
+    );
     let app = app::build_router(state);
 
     let listener = tokio::net::TcpListener::bind::<SocketAddr>(cfg.bind).await?;
     tracing::info!(address = %cfg.bind, "listening");
     // Held until the server stops, when dropping it aborts the sweep.
-    let _sweeper = session_store::spawn_expired_session_sweeper(session_store);
+    let _session_sweeper = session_store::spawn_expired_session_sweeper(session_store);
+    let _rate_limit_sweeper = rate_limit::spawn_auth_rate_limit_sweeper(rate_limiter);
     serve::serve_router(listener, app).await?;
     Ok(())
 }

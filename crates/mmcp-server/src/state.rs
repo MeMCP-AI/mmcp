@@ -16,6 +16,7 @@ use webauthn_rs::prelude::*;
 
 use crate::config::{OAuthProviderConfig, ServerConfig};
 use crate::oauth_client::{OauthClient, build_oauth_client, build_oauth_exchange_http_client};
+use crate::rate_limit::{AuthRateLimiter, ClientAddressResolver};
 use crate::routes::oauth_flow_cookie::provider_slug_is_cookie_safe;
 use crate::session_store::DatabaseSessionStore;
 
@@ -67,6 +68,9 @@ pub struct ServerStateInner {
     pub webui_dir: Option<PathBuf>,
     /// Origins allowed to call the API cross-origin; see [`crate::config::ServerConfig::cors_allowed_origins`].
     pub cors_allowed_origins: Vec<HeaderValue>,
+    /// Per-client budget of the unauthenticated auth routes; see [`crate::config::ServerConfig::auth_rate_limit`].
+    /// It is built once, so every route it guards and the sweep share one budget per client.
+    pub auth_rate_limiter: Arc<AuthRateLimiter>,
 
     /// Per-group async mutex set used to serialize writes (git
     /// `receive-pack`) against the same bare repository. Reads
@@ -141,6 +145,10 @@ impl ServerState {
             allow_self_registration: cfg.allow_self_registration,
             webui_dir: cfg.webui_dir.clone(),
             cors_allowed_origins: cfg.cors_allowed_origins.clone(),
+            auth_rate_limiter: Arc::new(AuthRateLimiter::new(
+                &cfg.auth_rate_limit,
+                ClientAddressResolver::new(&cfg.trusted_proxies),
+            )),
             repo_locks: KeyedLockRegistry::new(PrunePolicy::Always, || AsyncMutex::new(())),
         })))
     }

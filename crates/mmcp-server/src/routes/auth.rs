@@ -16,11 +16,17 @@
 //!   `POST /auth/passkey/login/finish` for authentication.
 //!
 //! All flows issue an `axum-login` session cookie on success.
+//!
+//! The six routes a caller reaches without a session share one per-client request budget, see [`crate::rate_limit`].
+//! A refused request answers 429 before any handler work.
+
+use std::sync::Arc;
 
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, StatusCode, header::SET_COOKIE},
+    middleware::from_fn_with_state,
     response::{AppendHeaders, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
@@ -41,6 +47,7 @@ use uuid::Uuid;
 use webauthn_rs::prelude::*;
 
 use crate::origin::origin_uses_https;
+use crate::rate_limit::{AuthRateLimiter, enforce_auth_rate_limit};
 use crate::routes::defaults::{
     AUTH_REQUEST_BODY_LIMIT_BYTES, BEARER_TOKEN_LIFETIME_SECS, MAX_DISPLAY_NAME_LENGTH,
     MAX_EMAIL_LENGTH, OAUTH_FLOW_LIFETIME, OAUTH_STATE_TOKEN_BYTES, OAUTH_STATE_TOKEN_LENGTH,
@@ -59,8 +66,11 @@ pub const PREFIX: &str = "/auth";
 
 /// Routes relative to [`PREFIX`]; mounted with
 /// [`crate::routes::api_prefix::mount_under_prefix`].
-pub fn router() -> Router<ServerState> {
-    Router::new()
+///
+/// The six routes a caller reaches without a session share one per-client budget kept by `rate_limiter`.
+/// The two routes that require a session are not limited.
+pub fn router(rate_limiter: Arc<AuthRateLimiter>) -> Router<ServerState> {
+    let unauthenticated = Router::new()
         // Password
         .route("/register", post(register))
         .route("/login", post(login))
@@ -68,10 +78,15 @@ pub fn router() -> Router<ServerState> {
         .route("/oauth/{provider}/authorize", get(oauth_authorize))
         .route("/oauth/{provider}/callback", get(oauth_callback))
         // Passkey
-        .route("/passkey/register/start", post(passkey_register_start))
-        .route("/passkey/register/finish", post(passkey_register_finish))
         .route("/passkey/login/start", post(passkey_login_start))
         .route("/passkey/login/finish", post(passkey_login_finish))
+        .route_layer(from_fn_with_state(rate_limiter, enforce_auth_rate_limit));
+    let session_required = Router::new()
+        // Passkey
+        .route("/passkey/register/start", post(passkey_register_start))
+        .route("/passkey/register/finish", post(passkey_register_finish));
+    unauthenticated
+        .merge(session_required)
         .layer(DefaultBodyLimit::max(AUTH_REQUEST_BODY_LIMIT_BYTES))
 }
 

@@ -36,7 +36,11 @@ pub fn build_router(state: ServerState) -> Router {
     // Only a path outside every prefix reaches the web UI fallback.
     let api = Router::new().merge(routes::health::router());
     let api = mount_under_prefix(api, routes::mcp::PREFIX, routes::mcp::router());
-    let api = mount_under_prefix(api, routes::auth::PREFIX, routes::auth::router());
+    let api = mount_under_prefix(
+        api,
+        routes::auth::PREFIX,
+        routes::auth::router(state.auth_rate_limiter.clone()),
+    );
     let api = mount_under_prefix(api, routes::sync::PREFIX, routes::sync::router());
     let api = mount_under_prefix(api, routes::git_http::PREFIX, routes::git_http::router());
     let webui = match state.webui_dir.as_deref() {
