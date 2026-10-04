@@ -13,6 +13,7 @@ use crate::session_store::DatabaseSessionStore;
 /// Concurrent finishes on one session cookie receive the ceremony once between them.
 /// Each of them loaded a session record that still holds it, but only one removal succeeds in the store.
 /// A concurrent request that modifies the same session can still write its own loaded record back afterwards.
+/// That write never recreates a session deleted in the meantime, because the store only updates existing rows.
 /// `None` means the session holds no such ceremony, which includes a request without a session.
 pub(crate) async fn take_pending_ceremony<T: DeserializeOwned>(
     store: &DatabaseSessionStore,

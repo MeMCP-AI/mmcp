@@ -139,8 +139,13 @@ impl DatabaseSessionStore {
         })
     }
 
+    /// Update the row of `record`, never inserting one.
+    ///
+    /// A request that loaded a session before it was deleted saves its copy afterwards.
+    /// Writing nothing for a missing row keeps a deleted session deleted, so a logout is final.
+    /// A record whose row is gone is not an error: the next request treats its cookie as anonymous.
     async fn save_record(&self, record: &Record) -> Result<(), DatabaseSessionStoreError> {
-        http_session_repo::upsert(&self.conn, row_for(record)?).await?;
+        http_session_repo::update_existing(&self.conn, row_for(record)?).await?;
         Ok(())
     }
 
@@ -243,6 +248,39 @@ mod tests {
 
         store.delete(&record.id).await.unwrap();
         assert!(store.load(&record.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_save_after_a_delete_does_not_bring_the_session_back() {
+        let store = test_store().await;
+        let mut record = record_expiring_in(Duration::minutes(15));
+        store.create(&mut record).await.unwrap();
+
+        // Request A loads the session, request B ends it, then A saves its copy.
+        let mut loaded_by_a = store.load(&record.id).await.unwrap().unwrap();
+        store.delete(&record.id).await.unwrap();
+        loaded_by_a
+            .data
+            .insert("ceremony".to_owned(), serde_json::json!(1));
+        store.save(&loaded_by_a).await.unwrap();
+
+        assert!(
+            store.load(&record.id).await.unwrap().is_none(),
+            "the deleted session stays deleted"
+        );
+        assert!(stored_rows(&store).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_save_of_an_id_the_store_never_held_writes_nothing() {
+        let store = test_store().await;
+
+        store
+            .save(&record_expiring_in(Duration::minutes(15)))
+            .await
+            .unwrap();
+
+        assert!(stored_rows(&store).await.is_empty());
     }
 
     #[tokio::test]
