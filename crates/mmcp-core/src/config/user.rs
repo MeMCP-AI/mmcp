@@ -70,7 +70,7 @@ pub struct DefaultsConfig {
 /// to a compiled-in constant. Each field names the constant it
 /// overrides in its own doc comment so the override and its fallback
 /// stay discoverable from either side.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LimitsConfig {
     /// Overrides `mmcp_store::memory::DEFAULT_MAX_AUTO_SLUG_LENGTH`,
     /// the cap applied to a slug auto-derived from a title
@@ -102,6 +102,23 @@ pub struct LimitsConfig {
     /// Overrides the server default number of sign-in and registration requests one client may send at once.
     /// Same precedence cascade as [`LimitsConfig::auth_rate_limit_per_minute`].
     pub auth_rate_limit_burst: Option<usize>,
+
+    /// Overrides the server default number of leading bits of an IPv6 address that identify one client for the auth rate limit.
+    /// Same precedence cascade as [`LimitsConfig::auth_rate_limit_per_minute`].
+    pub auth_rate_limit_ipv6_client_prefix_length: Option<usize>,
+
+    /// Overrides the server default number of leading bits of an IPv6 address that identify one network for the second auth rate limit.
+    /// `0` switches that second limit off.
+    /// Same precedence cascade as [`LimitsConfig::auth_rate_limit_per_minute`].
+    pub auth_rate_limit_ipv6_network_prefix_length: Option<usize>,
+
+    /// Overrides the server default number of sign-in and registration requests one IPv6 network may send per minute.
+    /// Same precedence cascade as [`LimitsConfig::auth_rate_limit_per_minute`].
+    pub auth_rate_limit_ipv6_network_per_minute: Option<usize>,
+
+    /// Overrides the server default number of sign-in and registration requests one IPv6 network may send at once.
+    /// Same precedence cascade as [`LimitsConfig::auth_rate_limit_per_minute`].
+    pub auth_rate_limit_ipv6_network_burst: Option<usize>,
 }
 
 impl UserConfig {
@@ -201,6 +218,29 @@ max_handle_length = 32
             .unwrap();
         assert!(omitted.auth_rate_limit_per_minute.is_none());
         assert!(omitted.auth_rate_limit_burst.is_none());
+    }
+
+    #[test]
+    fn limits_config_parses_the_ipv6_network_rate_limit_keys() {
+        let text = "[limits]\n\
+            auth_rate_limit_ipv6_client_prefix_length = 56\n\
+            auth_rate_limit_ipv6_network_prefix_length = 40\n\
+            auth_rate_limit_ipv6_network_per_minute = 300\n\
+            auth_rate_limit_ipv6_network_burst = 150\n";
+        let limits = UserConfig::from_toml(text).unwrap().limits.unwrap();
+        assert_eq!(limits.auth_rate_limit_ipv6_client_prefix_length, Some(56));
+        assert_eq!(limits.auth_rate_limit_ipv6_network_prefix_length, Some(40));
+        assert_eq!(limits.auth_rate_limit_ipv6_network_per_minute, Some(300));
+        assert_eq!(limits.auth_rate_limit_ipv6_network_burst, Some(150));
+
+        let omitted = UserConfig::from_toml("[limits]\nmax_auto_slug_length = 80\n")
+            .unwrap()
+            .limits
+            .unwrap();
+        assert!(omitted.auth_rate_limit_ipv6_client_prefix_length.is_none());
+        assert!(omitted.auth_rate_limit_ipv6_network_prefix_length.is_none());
+        assert!(omitted.auth_rate_limit_ipv6_network_per_minute.is_none());
+        assert!(omitted.auth_rate_limit_ipv6_network_burst.is_none());
     }
 
     #[test]
