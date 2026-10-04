@@ -18,7 +18,7 @@
 //! All flows issue an `axum-login` session cookie on success.
 //! `POST /auth/logout` ends that session.
 //!
-//! The six routes a caller reaches without a session share one per-client request budget, see [`crate::rate_limit`].
+//! The six registration and sign-in routes share one per-client request budget, see [`crate::rate_limit`].
 //! A refused request answers 429 before any handler work.
 
 use std::sync::Arc;
@@ -68,10 +68,10 @@ pub const PREFIX: &str = "/auth";
 /// Routes relative to [`PREFIX`]; mounted with
 /// [`crate::routes::api_prefix::mount_under_prefix`].
 ///
-/// The six routes a caller reaches without a session share one per-client budget kept by `rate_limiter`.
+/// The six registration and sign-in routes share one per-client budget kept by `rate_limiter`.
 /// The three routes that act on the caller's own session are not limited.
 pub fn router(rate_limiter: Arc<AuthRateLimiter>) -> Router<ServerState> {
-    let unauthenticated = Router::new()
+    let limited = Router::new()
         // Password
         .route("/register", post(register))
         .route("/login", post(login))
@@ -82,14 +82,14 @@ pub fn router(rate_limiter: Arc<AuthRateLimiter>) -> Router<ServerState> {
         .route("/passkey/login/start", post(passkey_login_start))
         .route("/passkey/login/finish", post(passkey_login_finish))
         .route_layer(from_fn_with_state(rate_limiter, enforce_auth_rate_limit));
-    let session_required = Router::new()
+    let own_session = Router::new()
         // Session
         .route("/logout", post(logout))
         // Passkey
         .route("/passkey/register/start", post(passkey_register_start))
         .route("/passkey/register/finish", post(passkey_register_finish));
-    unauthenticated
-        .merge(session_required)
+    limited
+        .merge(own_session)
         .layer(DefaultBodyLimit::max(AUTH_REQUEST_BODY_LIMIT_BYTES))
 }
 
