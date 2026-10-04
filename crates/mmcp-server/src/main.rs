@@ -58,6 +58,23 @@ struct ServeArgs {
     /// Overrides MMCP_CORS_ALLOWED_ORIGINS.
     #[arg(long, env = config::CORS_ALLOWED_ORIGINS_ENV)]
     cors_allowed_origins: Option<String>,
+
+    /// Sign-in and registration requests one client may send per minute once its burst is spent.
+    /// Highest-precedence tier: beats `MMCP_AUTH_RATE_LIMIT_PER_MINUTE`, the `~/.mmcp/config.toml` `[limits]` tier, and the compiled-in default.
+    #[arg(long, env = config::AUTH_RATE_LIMIT_PER_MINUTE_ENV)]
+    auth_rate_limit_per_minute: Option<String>,
+
+    /// Sign-in and registration requests one client may send at once before the per-minute rate applies.
+    /// Same precedence as `--auth-rate-limit-per-minute`.
+    #[arg(long, env = config::AUTH_RATE_LIMIT_BURST_ENV)]
+    auth_rate_limit_burst: Option<String>,
+
+    /// Comma-separated IP addresses or CIDR ranges of the reverse proxies in front of this server.
+    /// A request coming from one of them is attributed to the client address its X-Forwarded-For header gives.
+    /// List only proxies that clients cannot bypass, and leave it unset when clients connect to the server directly.
+    /// Beats MMCP_TRUSTED_PROXIES.
+    #[arg(long, env = config::TRUSTED_PROXIES_ENV)]
+    trusted_proxies: Option<String>,
 }
 
 impl From<ServeArgs> for config::ServerConfigOverrides {
@@ -68,6 +85,9 @@ impl From<ServeArgs> for config::ServerConfigOverrides {
             max_handle_length: args.max_handle_length,
             webui_dir: args.webui_dir.map(PathBuf::from),
             cors_allowed_origins: args.cors_allowed_origins,
+            auth_rate_limit_per_minute: args.auth_rate_limit_per_minute,
+            auth_rate_limit_burst: args.auth_rate_limit_burst,
+            trusted_proxies: args.trusted_proxies,
         }
     }
 }
@@ -202,6 +222,69 @@ mod tests {
     }
 
     #[test]
+    fn serve_auth_rate_limit_and_trusted_proxies_are_bound_to_their_environment_variables() {
+        assert_eq!(
+            serve_arg_env("auth_rate_limit_per_minute").as_deref(),
+            Some(config::AUTH_RATE_LIMIT_PER_MINUTE_ENV)
+        );
+        assert_eq!(
+            serve_arg_env("auth_rate_limit_burst").as_deref(),
+            Some(config::AUTH_RATE_LIMIT_BURST_ENV)
+        );
+        assert_eq!(
+            serve_arg_env("trusted_proxies").as_deref(),
+            Some(config::TRUSTED_PROXIES_ENV)
+        );
+    }
+
+    #[test]
+    fn serve_rate_limit_flags_reach_the_config_override_tier() {
+        let cli = Cli::try_parse_from([
+            BINARY_NAME,
+            "serve",
+            "--auth-rate-limit-per-minute",
+            "30",
+            "--auth-rate-limit-burst",
+            "5",
+            "--trusted-proxies",
+            "10.0.0.0/8,192.0.2.1",
+        ])
+        .unwrap();
+        let Some(Command::Serve(args)) = cli.command else {
+            panic!("expected the serve subcommand");
+        };
+        let overrides = config::ServerConfigOverrides::from(args);
+        assert_eq!(overrides.auth_rate_limit_per_minute.as_deref(), Some("30"));
+        assert_eq!(overrides.auth_rate_limit_burst.as_deref(), Some("5"));
+        assert_eq!(
+            overrides.trusted_proxies.as_deref(),
+            Some("10.0.0.0/8,192.0.2.1")
+        );
+    }
+
+    #[test]
+    fn blank_rate_limit_and_trusted_proxy_flags_are_accepted_rather_than_rejected_at_startup() {
+        let cli = Cli::try_parse_from([
+            BINARY_NAME,
+            "serve",
+            "--auth-rate-limit-per-minute",
+            "",
+            "--auth-rate-limit-burst",
+            "",
+            "--trusted-proxies",
+            "",
+        ])
+        .unwrap();
+        let Some(Command::Serve(args)) = cli.command else {
+            panic!("expected the serve subcommand");
+        };
+        let overrides = config::ServerConfigOverrides::from(args);
+        assert_eq!(overrides.auth_rate_limit_per_minute.as_deref(), Some(""));
+        assert_eq!(overrides.auth_rate_limit_burst.as_deref(), Some(""));
+        assert_eq!(overrides.trusted_proxies.as_deref(), Some(""));
+    }
+
+    #[test]
     fn web_ui_dir_help_warns_that_every_file_in_the_directory_is_public() {
         let command = Cli::command();
         let serve = command.find_subcommand("serve").expect("serve subcommand");
@@ -216,7 +299,13 @@ mod tests {
     #[test]
     fn the_no_subcommand_parser_exposes_the_same_serve_arguments() {
         let command = ServeOnlyCli::command();
-        for arg_id in ["webui_dir", "cors_allowed_origins"] {
+        for arg_id in [
+            "webui_dir",
+            "cors_allowed_origins",
+            "auth_rate_limit_per_minute",
+            "auth_rate_limit_burst",
+            "trusted_proxies",
+        ] {
             let arg = command
                 .get_arguments()
                 .find(|arg| arg.get_id() == arg_id)

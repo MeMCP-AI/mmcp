@@ -8,6 +8,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::net::SocketAddr;
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,7 +19,7 @@ use axum::{
     routing::{get, post},
 };
 use mmcp_server::config::test_support::minimal_server_config;
-use mmcp_server::config::{OAuthProviderConfig, ServerConfig};
+use mmcp_server::config::{AuthRateLimitConfig, OAuthProviderConfig, ServerConfig, TrustedProxies};
 use serde_json::json;
 
 /// Form fields [`start_fake_oauth_provider`]'s `/token` route observed on
@@ -222,6 +223,26 @@ impl TestServerConfigBuilder {
             .iter()
             .map(|origin| origin.parse().expect("valid origin header value"))
             .collect();
+        self
+    }
+
+    /// Overrides the per-client budget of the unauthenticated auth routes (`ServerConfig::auth_rate_limit`).
+    /// [`minimal_server_config`] defaults this to the production limits.
+    /// A test that sends many auth requests raises it, and a test of the limit lowers it.
+    #[allow(dead_code)] // Live in sibling test binaries; each tests/*.rs compiles common as its own crate.
+    pub fn auth_rate_limit(mut self, per_minute: u32, burst: u32) -> Self {
+        self.config.auth_rate_limit = AuthRateLimitConfig {
+            per_minute: NonZeroU32::new(per_minute).expect("a non-zero rate"),
+            burst: NonZeroU32::new(burst).expect("a non-zero burst"),
+        };
+        self
+    }
+
+    /// Overrides the trusted reverse proxies (`ServerConfig::trusted_proxies`) with a comma-separated list.
+    /// [`minimal_server_config`] defaults this to none.
+    #[allow(dead_code)] // Live in sibling test binaries; each tests/*.rs compiles common as its own crate.
+    pub fn trusted_proxies(mut self, trusted_proxies: &str) -> Self {
+        self.config.trusted_proxies = TrustedProxies::parse(trusted_proxies);
         self
     }
 

@@ -13,7 +13,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use super::ServerConfig;
+use super::{AuthRateLimitConfig, ServerConfig, TrustedProxies};
 
 /// Loopback bind address used by every in-crate unit-test fixture.
 /// Never actually bound: `ServerState::initialize` only parses it.
@@ -51,6 +51,8 @@ pub fn minimal_server_config(repo_root: PathBuf) -> ServerConfig {
         allow_self_registration: true,
         webui_dir: None,
         cors_allowed_origins: vec![],
+        auth_rate_limit: AuthRateLimitConfig::default(),
+        trusted_proxies: TrustedProxies::default(),
     }
 }
 

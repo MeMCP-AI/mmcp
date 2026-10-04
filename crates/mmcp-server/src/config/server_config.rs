@@ -5,9 +5,10 @@ use std::path::PathBuf;
 
 use axum::http::HeaderValue;
 
+use super::auth_rate_limit::AuthRateLimitConfig;
 use super::cascade::{
-    load_user_limits, resolve_max_handle_length, resolve_max_password_length,
-    resolve_min_password_length,
+    load_user_limits, resolve_auth_rate_limit_burst, resolve_auth_rate_limit_per_minute,
+    resolve_max_handle_length, resolve_max_password_length, resolve_min_password_length,
 };
 use super::cors_origins::parse_cors_origins;
 use super::database_url_redaction::redact_database_url;
@@ -19,6 +20,7 @@ use super::env_value::non_blank;
 use super::error::ConfigError;
 use super::oauth_provider::OAuthProviderConfig;
 use super::overrides::ServerConfigOverrides;
+use super::trusted_proxies::TrustedProxies;
 
 /// Server configuration.
 ///
@@ -40,9 +42,18 @@ use super::overrides::ServerConfigOverrides;
 /// | `MMCP_MAX_HANDLE_LENGTH`          | see `max_handle_length` cascade below |
 /// | `MMCP_ALLOW_SELF_REGISTRATION`    | `false` (self-registration disabled) |
 ///
-/// `MMCP_WEBUI_DIR` and `MMCP_CORS_ALLOWED_ORIGINS` are collected by the argument parser.
-/// It binds them to `serve --webui-dir` and `serve --cors-allowed-origins`.
+/// These variables are collected by the argument parser instead:
+///
+/// | Variable                          | Flag                            | Default                  |
+/// | --------------------------------- | ------------------------------- | ------------------------ |
+/// | `MMCP_WEBUI_DIR`                  | `serve --webui-dir`             | (absent = API only)      |
+/// | `MMCP_CORS_ALLOWED_ORIGINS`       | `serve --cors-allowed-origins`  | (absent = no CORS layer) |
+/// | `MMCP_AUTH_RATE_LIMIT_PER_MINUTE` | `serve --auth-rate-limit-per-minute` | `20`, see the cascade below |
+/// | `MMCP_AUTH_RATE_LIMIT_BURST`      | `serve --auth-rate-limit-burst` | `10`, see the cascade below |
+/// | `MMCP_TRUSTED_PROXIES`            | `serve --trusted-proxies`       | (absent = clients connect directly) |
+///
 /// They reach this type through [`ServerConfigOverrides`].
+/// The two auth rate limit values also read `~/.mmcp/config.toml` `[limits]`, below the flag and the variable and above the default.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub bind: SocketAddr,
@@ -103,6 +114,11 @@ pub struct ServerConfig {
     /// It is the default when `--cors-allowed-origins` and `MMCP_CORS_ALLOWED_ORIGINS` are absent or blank.
     /// Entries that are not an exact `http` or `https` origin are dropped.
     pub cors_allowed_origins: Vec<HeaderValue>,
+    /// Per-client budget of the unauthenticated auth routes, resolved through the override/config-file/default cascade.
+    pub auth_rate_limit: AuthRateLimitConfig,
+    /// Reverse proxies whose `X-Forwarded-For` header the server believes.
+    /// Empty by default, which attributes every request to its TCP peer.
+    pub trusted_proxies: TrustedProxies,
 }
 
 impl ServerConfig {
@@ -254,6 +270,21 @@ impl ServerConfig {
         for rejected_cors_origin in &cors_allowed_origins.rejected {
             tracing::warn!("ignoring CORS origin {rejected_cors_origin}: not a valid origin");
         }
+        let auth_rate_limit = AuthRateLimitConfig {
+            per_minute: resolve_auth_rate_limit_per_minute(
+                overrides.auth_rate_limit_per_minute.as_deref(),
+                user_limits.as_ref(),
+            ),
+            burst: resolve_auth_rate_limit_burst(
+                overrides.auth_rate_limit_burst.as_deref(),
+                user_limits.as_ref(),
+            ),
+        };
+        let trusted_proxies = overrides
+            .trusted_proxies
+            .as_deref()
+            .map(TrustedProxies::parse)
+            .unwrap_or_default();
 
         Ok(Self {
             bind,
@@ -269,6 +300,8 @@ impl ServerConfig {
             allow_self_registration,
             webui_dir,
             cors_allowed_origins: cors_allowed_origins.accepted,
+            auth_rate_limit,
+            trusted_proxies,
         })
     }
 }
@@ -969,6 +1002,47 @@ mod tests {
         });
         assert_eq!(cors_origin_strings(&cfg), ["http://ok.example"]);
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn auth_rate_limit_overrides_are_carried_into_the_config() {
+        let cfg = from_overrides(ServerConfigOverrides {
+            auth_rate_limit_per_minute: Some("45".to_string()),
+            auth_rate_limit_burst: Some("6".to_string()),
+            ..ServerConfigOverrides::default()
+        });
+        assert_eq!(cfg.auth_rate_limit.per_minute.get(), 45);
+        assert_eq!(cfg.auth_rate_limit.burst.get(), 6);
+    }
+
+    #[test]
+    fn blank_auth_rate_limit_overrides_leave_the_lower_tiers_in_charge() {
+        let blank = from_overrides(ServerConfigOverrides {
+            auth_rate_limit_per_minute: Some(String::new()),
+            auth_rate_limit_burst: Some("  ".to_string()),
+            ..ServerConfigOverrides::default()
+        });
+        let absent = from_overrides(ServerConfigOverrides::default());
+        assert_eq!(blank.auth_rate_limit, absent.auth_rate_limit);
+    }
+
+    #[test]
+    fn trusted_proxies_are_empty_when_not_given_or_blank() {
+        assert!(from_map(&[]).trusted_proxies.is_empty());
+        let blank = from_overrides(ServerConfigOverrides {
+            trusted_proxies: Some("  ".to_string()),
+            ..ServerConfigOverrides::default()
+        });
+        assert!(blank.trusted_proxies.is_empty());
+    }
+
+    #[test]
+    fn trusted_proxies_override_is_parsed_into_ranges() {
+        let cfg = from_overrides(ServerConfigOverrides {
+            trusted_proxies: Some("10.0.0.0/8, 192.0.2.1".to_string()),
+            ..ServerConfigOverrides::default()
+        });
+        assert_eq!(cfg.trusted_proxies.to_string(), "10.0.0.0/8, 192.0.2.1");
     }
 
     // allow_self_registration: defaults closed.

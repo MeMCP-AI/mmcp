@@ -43,6 +43,8 @@ tracing-subscriber = { workspace = true }
 axum = { workspace = true }
 tower-http = { workspace = true }
 url = { workspace = true }
+governor = { workspace = true }
+axum-client-addr = { workspace = true }
 serde ={ workspace = true }
 serde_json = "1"
 uuid = { workspace = true }

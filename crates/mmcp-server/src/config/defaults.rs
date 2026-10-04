@@ -58,5 +58,28 @@ pub const WEBUI_DIR_ENV: &str = "MMCP_WEBUI_DIR";
 /// Unset or blank attaches no CORS layer.
 pub const CORS_ALLOWED_ORIGINS_ENV: &str = "MMCP_CORS_ALLOWED_ORIGINS";
 
+/// Environment variable naming the sign-in and registration requests one client may send per minute once its burst is spent.
+/// The argument parser binds it to `serve --auth-rate-limit-per-minute`, and the flag beats it.
+/// Unset or blank leaves the next tier of the cascade in charge.
+pub const AUTH_RATE_LIMIT_PER_MINUTE_ENV: &str = "MMCP_AUTH_RATE_LIMIT_PER_MINUTE";
+
+/// Environment variable naming the sign-in and registration requests one client may send at once.
+/// The argument parser binds it to `serve --auth-rate-limit-burst`, and the flag beats it.
+/// Unset or blank leaves the next tier of the cascade in charge.
+pub const AUTH_RATE_LIMIT_BURST_ENV: &str = "MMCP_AUTH_RATE_LIMIT_BURST";
+
+/// Environment variable listing, comma-separated, the reverse proxies in front of the server.
+/// The argument parser binds it to `serve --trusted-proxies`, and the flag beats it.
+/// Unset or blank trusts no proxy, so every client is its TCP peer.
+pub const TRUSTED_PROXIES_ENV: &str = "MMCP_TRUSTED_PROXIES";
+
+/// Default requests per minute one client may send to the unauthenticated auth routes once its burst is spent.
+/// One argon2 hash every three seconds at most, per client key.
+pub(crate) const DEFAULT_AUTH_RATE_LIMIT_PER_MINUTE: u32 = 20;
+
+/// Default requests one client may send to the unauthenticated auth routes at once.
+/// Covers a real sign-in with a few retries and an OAuth round trip.
+pub(crate) const DEFAULT_AUTH_RATE_LIMIT_BURST: u32 = 10;
+
 /// Floor for the password-length tunables: a zero-byte bound is never legitimate.
 pub(crate) const MIN_VALID_LENGTH_LIMIT: usize = 1;
