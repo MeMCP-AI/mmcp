@@ -28,5 +28,9 @@ pub(crate) const EXPIRED_SESSION_SWEEP_BATCH_SIZE: u64 = 1000;
 /// A 128-bit random id makes the first retry astronomically unlikely, so exhaustion signals a broken id source.
 pub(crate) const SESSION_ID_COLLISION_MAX_ATTEMPTS: u32 = 8;
 
+/// Reads a `take_value` makes before reporting that concurrent writers kept changing the session record.
+/// Each lost race means another request changed the same record in the same instant, so a few attempts suffice.
+pub(crate) const SESSION_VALUE_TAKE_MAX_ATTEMPTS: u32 = 8;
+
 /// Nanoseconds in one millisecond, converting a session expiry to the stored epoch milliseconds.
 pub(crate) const NANOSECONDS_PER_MILLISECOND: i128 = 1_000_000;

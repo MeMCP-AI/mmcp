@@ -5,6 +5,8 @@
 //! `load` rebuilds the record id from its argument, because the row holds no id.
 //! The following `save` then writes under the same key.
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use mmcp_db::entities::http_session::Model;
 use mmcp_db::repository::http_session_repo::{self, HttpSessionInsertOutcome};
@@ -17,7 +19,7 @@ use tower_sessions::session_store::{self, ExpiredDeletion};
 
 use crate::defaults::{
     EXPIRED_SESSION_SWEEP_BATCH_SIZE, NANOSECONDS_PER_MILLISECOND,
-    SESSION_ID_COLLISION_MAX_ATTEMPTS,
+    SESSION_ID_COLLISION_MAX_ATTEMPTS, SESSION_VALUE_TAKE_MAX_ATTEMPTS,
 };
 use crate::session_store::error::DatabaseSessionStoreError;
 
@@ -85,6 +87,44 @@ impl DatabaseSessionStore {
                 return Ok(total_deleted);
             }
         }
+    }
+
+    /// Remove `key` from the stored data of session `id` and return its value.
+    ///
+    /// The removal is atomic across requests and server instances: the stored data is rewritten only while
+    /// it still holds what was read, and a lost race re-reads and retries.
+    /// So of any number of concurrent takers of one value exactly one receives it.
+    /// Nothing is written when the session is unknown or expired, or holds no value under `key`.
+    pub async fn take_value(
+        &self,
+        id: &Id,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>, DatabaseSessionStoreError> {
+        let row_key = session_id_key(id);
+        for _ in 0..SESSION_VALUE_TAKE_MAX_ATTEMPTS {
+            let now = jiff::Timestamp::now().as_millisecond();
+            let Some(row) = http_session_repo::find_unexpired(&self.conn, &row_key, now).await?
+            else {
+                return Ok(None);
+            };
+            let mut data: HashMap<String, serde_json::Value> =
+                serde_json::from_str(&row.data).map_err(DatabaseSessionStoreError::Decode)?;
+            let Some(value) = data.remove(key) else {
+                return Ok(None);
+            };
+            let remaining =
+                serde_json::to_string(&data).map_err(DatabaseSessionStoreError::Encode)?;
+            if http_session_repo::replace_data_if_unchanged(
+                &self.conn, &row_key, &row.data, remaining,
+            )
+            .await?
+            {
+                return Ok(Some(value));
+            }
+        }
+        Err(DatabaseSessionStoreError::ValueTakeContended {
+            attempts: SESSION_VALUE_TAKE_MAX_ATTEMPTS,
+        })
     }
 
     async fn create_record(&self, record: &mut Record) -> Result<(), DatabaseSessionStoreError> {
@@ -283,6 +323,92 @@ mod tests {
             "an expired record is not served even before the sweep deletes it"
         );
         assert_eq!(stored_rows(&store).await.len(), 1);
+    }
+
+    fn record_holding(key: &str, value: serde_json::Value) -> Record {
+        let mut record = record_expiring_in(Duration::minutes(15));
+        record.data.insert(key.to_owned(), value);
+        record
+    }
+
+    #[tokio::test]
+    async fn take_value_returns_the_value_and_removes_only_that_key() {
+        let store = test_store().await;
+        let mut record = record_holding("ceremony", serde_json::json!({ "state": 1 }));
+        store.create(&mut record).await.unwrap();
+
+        let taken = store.take_value(&record.id, "ceremony").await.unwrap();
+
+        assert_eq!(taken, Some(serde_json::json!({ "state": 1 })));
+        let reloaded = store.load(&record.id).await.unwrap().unwrap();
+        assert!(!reloaded.data.contains_key("ceremony"));
+        assert_eq!(
+            reloaded.data.get("user"),
+            Some(&serde_json::json!("alice")),
+            "the other keys of the record stay"
+        );
+        assert_eq!(
+            store.take_value(&record.id, "ceremony").await.unwrap(),
+            None,
+            "a value is taken once"
+        );
+    }
+
+    #[tokio::test]
+    async fn take_value_of_an_absent_key_or_session_writes_nothing() {
+        let store = test_store().await;
+        let mut record = record_expiring_in(Duration::minutes(15));
+        store.create(&mut record).await.unwrap();
+        let before = stored_rows(&store).await;
+
+        assert_eq!(store.take_value(&record.id, "absent").await.unwrap(), None);
+        assert_eq!(
+            store.take_value(&Id::default(), "user").await.unwrap(),
+            None,
+            "an unknown session holds nothing"
+        );
+
+        assert_eq!(stored_rows(&store).await, before);
+    }
+
+    #[tokio::test]
+    async fn take_value_of_an_expired_session_returns_none() {
+        let store = test_store().await;
+        let mut record = record_holding("ceremony", serde_json::json!(1));
+        record.expiry_date = OffsetDateTime::now_utc() - Duration::minutes(1);
+        store.create(&mut record).await.unwrap();
+
+        assert_eq!(
+            store.take_value(&record.id, "ceremony").await.unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn take_value_reaches_exactly_one_of_many_concurrent_takers() {
+        const TAKERS: usize = 16;
+        let store = test_store().await;
+        let mut record = record_holding("ceremony", serde_json::json!("state"));
+        store.create(&mut record).await.unwrap();
+
+        let takers: Vec<_> = (0..TAKERS)
+            .map(|_| {
+                let store = store.clone();
+                let id = record.id;
+                tokio::spawn(async move { store.take_value(&id, "ceremony").await.unwrap() })
+            })
+            .collect();
+        let mut winners = 0;
+        for taker in takers {
+            if taker.await.unwrap().is_some() {
+                winners += 1;
+            }
+        }
+
+        assert_eq!(
+            winners, 1,
+            "a value must reach one taker, however many race"
+        );
     }
 
     #[tokio::test]

@@ -38,6 +38,10 @@ pub enum DatabaseSessionStoreError {
     /// Every fresh session id drawn by a `create` collided with an existing row.
     #[error("no free session id found after {attempts} attempts")]
     IdCollisionRetriesExhausted { attempts: u32 },
+
+    /// Concurrent writers changed the session record on every read of a `take_value`.
+    #[error("session record kept changing across {attempts} reads")]
+    ValueTakeContended { attempts: u32 },
 }
 
 impl From<DatabaseSessionStoreError> for session_store::Error {
@@ -51,7 +55,8 @@ impl From<DatabaseSessionStoreError> for session_store::Error {
             DatabaseSessionStoreError::Database(_)
             | DatabaseSessionStoreError::ExpiryOutOfRange { .. }
             | DatabaseSessionStoreError::StoredExpiryOutOfRange { .. }
-            | DatabaseSessionStoreError::IdCollisionRetriesExhausted { .. } => Self::Backend(text),
+            | DatabaseSessionStoreError::IdCollisionRetriesExhausted { .. }
+            | DatabaseSessionStoreError::ValueTakeContended { .. } => Self::Backend(text),
         }
     }
 }

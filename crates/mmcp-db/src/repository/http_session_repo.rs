@@ -3,7 +3,7 @@
 //! Every function takes the SHA-256 digest key of a session id, never a raw id.
 //! Instants are epoch milliseconds supplied by the caller, so tests drive time without a clock seam.
 
-use sea_orm::sea_query::{OnConflict, Query};
+use sea_orm::sea_query::{Expr, OnConflict, Query};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, TryInsertResult};
 
 use crate::entities::http_session::{ActiveModel, Column, Entity, Model};
@@ -44,6 +44,25 @@ pub async fn upsert(conn: &DatabaseConnection, row: Model) -> Result<(), DbError
         .exec_without_returning(conn)
         .await?;
     Ok(())
+}
+
+/// Overwrite `data` of the row under `session_id_sha256` only while it still holds `expected_data`.
+///
+/// Returns whether the row changed.
+/// A concurrent writer that changed the row first makes this return `false`, which lets the caller re-read and retry.
+pub async fn replace_data_if_unchanged(
+    conn: &DatabaseConnection,
+    session_id_sha256: &str,
+    expected_data: &str,
+    new_data: String,
+) -> Result<bool, DbError> {
+    let updated = Entity::update_many()
+        .col_expr(Column::Data, Expr::value(new_data))
+        .filter(Column::SessionIdSha256.eq(session_id_sha256))
+        .filter(Column::Data.eq(expected_data))
+        .exec(conn)
+        .await?;
+    Ok(updated.rows_affected == 1)
 }
 
 /// The row under `session_id_sha256`, only when its expiry is strictly after `now`.

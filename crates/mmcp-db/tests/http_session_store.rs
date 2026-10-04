@@ -8,7 +8,7 @@ use mmcp_db::entities::http_session::{Entity, Model};
 use mmcp_db::migration::Migrator;
 use mmcp_db::repository::http_session_repo::{
     HttpSessionInsertOutcome, delete, delete_expired_batch, find_unexpired, insert_if_absent,
-    upsert,
+    replace_data_if_unchanged, upsert,
 };
 use sea_orm::{
     ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, PaginatorTrait, Statement,
@@ -134,6 +134,40 @@ async fn upsert_inserts_then_overwrites_data_and_expiry_under_one_key() {
     let stored = find_unexpired(&conn, "key", 0).await.unwrap().unwrap();
     assert_eq!(stored, row("key", "second", 200));
     assert_eq!(row_count(&conn).await, 1);
+}
+
+#[tokio::test]
+async fn replace_data_if_unchanged_applies_only_to_the_expected_data() {
+    let conn = migrated_connection().await;
+    upsert(&conn, row("key", "first", 100)).await.unwrap();
+
+    assert!(
+        !replace_data_if_unchanged(&conn, "key", "stale", "lost".to_owned())
+            .await
+            .unwrap(),
+        "data that moved since the read must refuse the write"
+    );
+    assert_eq!(
+        find_unexpired(&conn, "key", 0).await.unwrap().unwrap(),
+        row("key", "first", 100)
+    );
+
+    assert!(
+        replace_data_if_unchanged(&conn, "key", "first", "second".to_owned())
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        find_unexpired(&conn, "key", 0).await.unwrap().unwrap(),
+        row("key", "second", 100),
+        "the expiry stays as it was"
+    );
+    assert!(
+        !replace_data_if_unchanged(&conn, "absent", "first", "x".to_owned())
+            .await
+            .unwrap(),
+        "an unknown key changes no row"
+    );
 }
 
 #[tokio::test]
