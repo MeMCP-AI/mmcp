@@ -555,11 +555,11 @@ async fn oauth_callback(
 fn log_ceremony_refusal(user_id: Uuid, refusal: &CeremonyRefusal) {
     match refusal {
         CeremonyRefusal::Absent | CeremonyRefusal::Expired { .. } => {
-            tracing::debug!(user_id = %user_id, refusal = %refusal);
+            tracing::debug!(user_id = %user_id, refusal = %refusal, "passkey ceremony refused");
         }
         // A ceremony another user started surfaces on this session only through a login on a shared browser, or an attack.
         CeremonyRefusal::UserMismatch => {
-            tracing::warn!(user_id = %user_id, refusal = %refusal);
+            tracing::warn!(user_id = %user_id, refusal = %refusal, "passkey ceremony refused");
         }
     }
 }

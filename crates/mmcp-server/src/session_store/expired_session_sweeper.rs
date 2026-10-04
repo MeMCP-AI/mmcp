@@ -15,6 +15,7 @@ pub fn spawn_expired_session_sweeper(store: DatabaseSessionStore) -> JoinHandle<
     tracing::info!(
         sweep_period_secs = EXPIRED_SESSION_SWEEP_INTERVAL.as_secs(),
         sweep_batch_size = EXPIRED_SESSION_SWEEP_BATCH_SIZE,
+        "expired session sweeper started"
     );
     tokio::spawn(run_expired_session_sweeper(
         store,
@@ -36,8 +37,8 @@ async fn run_expired_session_sweeper(
     loop {
         interval.tick().await;
         match store.delete_expired_records(batch_size).await {
-            Ok(deleted_rows) => tracing::debug!(deleted_rows),
-            Err(error) => tracing::error!(error = ?error),
+            Ok(deleted_rows) => tracing::debug!(deleted_rows, "expired session sweep finished"),
+            Err(error) => tracing::error!(error = ?error, "expired session sweep failed"),
         }
     }
 }

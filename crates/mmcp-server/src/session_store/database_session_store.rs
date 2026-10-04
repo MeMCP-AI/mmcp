@@ -60,7 +60,7 @@ fn row_for(record: &Record) -> Result<Model, DatabaseSessionStoreError> {
 
 /// Logs a store failure with its source chain and maps it to the trait's string-carrying error.
 fn surface(error: DatabaseSessionStoreError) -> session_store::Error {
-    tracing::error!(error = ?error);
+    tracing::error!(error = ?error, "session store operation failed");
     error.into()
 }
 
