@@ -8,7 +8,7 @@ use mmcp_db::entities::http_session::{Entity, Model};
 use mmcp_db::migration::Migrator;
 use mmcp_db::repository::http_session_repo::{
     HttpSessionInsertOutcome, delete, delete_expired_batch, find_unexpired, insert_if_absent,
-    replace_data_if_unchanged, update_existing, upsert,
+    replace_data_if_unchanged, update_existing,
 };
 use sea_orm::{
     ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, PaginatorTrait, Statement,
@@ -125,21 +125,11 @@ async fn insert_if_absent_reports_id_taken_without_overwriting() {
 }
 
 #[tokio::test]
-async fn upsert_inserts_then_overwrites_data_and_expiry_under_one_key() {
-    let conn = migrated_connection().await;
-
-    upsert(&conn, row("key", "first", 100)).await.unwrap();
-    upsert(&conn, row("key", "second", 200)).await.unwrap();
-
-    let stored = find_unexpired(&conn, "key", 0).await.unwrap().unwrap();
-    assert_eq!(stored, row("key", "second", 200));
-    assert_eq!(row_count(&conn).await, 1);
-}
-
-#[tokio::test]
 async fn update_existing_overwrites_a_held_key_and_inserts_nothing_for_a_missing_one() {
     let conn = migrated_connection().await;
-    upsert(&conn, row("key", "first", 100)).await.unwrap();
+    insert_if_absent(&conn, row("key", "first", 100))
+        .await
+        .unwrap();
 
     assert!(
         update_existing(&conn, row("key", "second", 200))
@@ -164,7 +154,9 @@ async fn update_existing_overwrites_a_held_key_and_inserts_nothing_for_a_missing
 #[tokio::test]
 async fn replace_data_if_unchanged_applies_only_to_the_expected_data() {
     let conn = migrated_connection().await;
-    upsert(&conn, row("key", "first", 100)).await.unwrap();
+    insert_if_absent(&conn, row("key", "first", 100))
+        .await
+        .unwrap();
 
     assert!(
         !replace_data_if_unchanged(&conn, "key", "stale", "lost".to_owned())
@@ -198,7 +190,9 @@ async fn replace_data_if_unchanged_applies_only_to_the_expected_data() {
 #[tokio::test]
 async fn find_unexpired_returns_none_for_a_row_past_its_expiry() {
     let conn = migrated_connection().await;
-    upsert(&conn, row("key", "data", 1_000)).await.unwrap();
+    insert_if_absent(&conn, row("key", "data", 1_000))
+        .await
+        .unwrap();
 
     assert!(find_unexpired(&conn, "key", 999).await.unwrap().is_some());
     assert!(
@@ -215,7 +209,9 @@ async fn find_unexpired_returns_none_for_a_row_past_its_expiry() {
 #[tokio::test]
 async fn delete_removes_the_row_and_tolerates_an_absent_key() {
     let conn = migrated_connection().await;
-    upsert(&conn, row("key", "data", 1_000)).await.unwrap();
+    insert_if_absent(&conn, row("key", "data", 1_000))
+        .await
+        .unwrap();
 
     delete(&conn, "key").await.unwrap();
     delete(&conn, "key").await.unwrap();
@@ -229,11 +225,13 @@ async fn delete_expired_batch_deletes_at_most_the_batch_size_and_only_expired_ro
     const BATCH_SIZE: u64 = 3;
     let conn = migrated_connection().await;
     for index in 0..EXPIRED_ROWS {
-        upsert(&conn, row(&format!("expired-{index}"), "data", 100))
+        insert_if_absent(&conn, row(&format!("expired-{index}"), "data", 100))
             .await
             .unwrap();
     }
-    upsert(&conn, row("live", "data", 10_000)).await.unwrap();
+    insert_if_absent(&conn, row("live", "data", 10_000))
+        .await
+        .unwrap();
     let now = 5_000;
 
     let first = delete_expired_batch(&conn, now, BATCH_SIZE).await.unwrap();

@@ -3,7 +3,7 @@
 //! Every function takes the SHA-256 digest key of a session id, never a raw id.
 //! Instants are epoch milliseconds supplied by the caller, so tests drive time without a clock seam.
 
-use sea_orm::sea_query::{Expr, OnConflict, Query};
+use sea_orm::sea_query::{Expr, Query};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, TryInsertResult};
 
 use crate::entities::http_session::{ActiveModel, Column, Entity, Model};
@@ -31,19 +31,6 @@ pub async fn insert_if_absent(
         TryInsertResult::Inserted(_) => HttpSessionInsertOutcome::Inserted,
         TryInsertResult::Conflicted | TryInsertResult::Empty => HttpSessionInsertOutcome::IdTaken,
     })
-}
-
-/// Insert `row`, or overwrite `data` and `expires_at` of the row holding the same key.
-pub async fn upsert(conn: &DatabaseConnection, row: Model) -> Result<(), DbError> {
-    Entity::insert(ActiveModel::from(row))
-        .on_conflict(
-            OnConflict::column(Column::SessionIdSha256)
-                .update_columns([Column::Data, Column::ExpiresAt])
-                .to_owned(),
-        )
-        .exec_without_returning(conn)
-        .await?;
-    Ok(())
 }
 
 /// Overwrite `data` and `expires_at` of the row holding the key of `row`, inserting nothing.

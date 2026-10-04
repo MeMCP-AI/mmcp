@@ -8,7 +8,9 @@ use std::time::Duration;
 use mmcp_db::connect;
 use mmcp_db::entities::http_session::Model;
 use mmcp_db::migration::Migrator;
-use mmcp_db::repository::http_session_repo::{delete_expired_batch, find_unexpired, upsert};
+use mmcp_db::repository::http_session_repo::{
+    delete_expired_batch, find_unexpired, insert_if_absent,
+};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement, TransactionTrait};
 use sea_orm_migration::MigratorTrait;
 use uuid::Uuid;
@@ -53,7 +55,7 @@ async fn sweep_keeps_a_session_extended_while_the_sweep_waits_on_its_row() {
         .expect("apply migrations");
     let conn = db.connection().clone();
     let key = format!("sweep-race-{}", Uuid::now_v7().simple());
-    upsert(
+    insert_if_absent(
         &conn,
         Model {
             session_id_sha256: key.clone(),
