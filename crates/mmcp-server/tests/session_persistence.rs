@@ -4,6 +4,7 @@
 use std::net::SocketAddr;
 use std::path::Path;
 
+use mmcp_db::DatabaseTarget;
 use mmcp_db::entities::http_session;
 use mmcp_db::repository::{http_session_repo, passkey_repo, user_repo};
 use mmcp_server::config::{OAuthProviderConfig, ServerConfig};
@@ -114,8 +115,8 @@ async fn passkey_register_start_status(
 }
 
 /// Rows currently in `http_sessions`, read through the test's own connection to the database file.
-async fn http_session_rows(db_url: &str) -> Vec<http_session::Model> {
-    let db = mmcp_db::connect(db_url).await.expect("connect to the file");
+async fn http_session_rows(target: &DatabaseTarget) -> Vec<http_session::Model> {
+    let db = mmcp_db::connect(target).await.expect("connect to the file");
     http_session::Entity::find()
         .all(db.connection())
         .await
@@ -167,13 +168,15 @@ async fn session_rows_hold_neither_the_cookie_id_nor_the_password_hash() {
     assert_eq!(login.status(), 200);
     let cookie_id = set_cookie_value(&login, "id").expect("login sets the session cookie");
 
-    let rows = http_session_rows(&cfg.database_url).await;
+    let rows = http_session_rows(&cfg.database_target).await;
     assert_eq!(rows.len(), 1, "one login stores one session row");
     assert_ne!(
         rows[0].session_id_sha256, cookie_id,
         "the cookie value must never be a row key"
     );
-    let db = mmcp_db::connect(&cfg.database_url).await.expect("connect");
+    let db = mmcp_db::connect(&cfg.database_target)
+        .await
+        .expect("connect");
     let user = user_repo::find_by_handle(db.connection(), "alice")
         .await
         .expect("find user")
@@ -259,7 +262,7 @@ async fn oauth_authorize_writes_no_session_row() {
     }
 
     assert!(
-        http_session_rows(&cfg.database_url).await.is_empty(),
+        http_session_rows(&cfg.database_target).await.is_empty(),
         "an anonymous authorize must not write a session row"
     );
     server.stop().await;
@@ -574,7 +577,9 @@ async fn register_user_with_passkey(
         .parse()
         .expect("user_id uuid");
 
-    let db = mmcp_db::connect(&cfg.database_url).await.expect("connect");
+    let db = mmcp_db::connect(&cfg.database_target)
+        .await
+        .expect("connect");
     passkey_repo::create(
         db.connection(),
         uuid::Uuid::now_v7(),
@@ -604,7 +609,9 @@ async fn passkey_login_start(client: &reqwest::Client, addr: SocketAddr, handle:
 }
 
 async fn passkey_credential_count(cfg: &ServerConfig, user_id: uuid::Uuid) -> usize {
-    let db = mmcp_db::connect(&cfg.database_url).await.expect("connect");
+    let db = mmcp_db::connect(&cfg.database_target)
+        .await
+        .expect("connect");
     passkey_repo::find_by_user(db.connection(), user_id)
         .await
         .expect("read credentials")
@@ -681,7 +688,9 @@ async fn passkey_registration_ceremony_is_refused_for_a_different_session_user()
         "bob must be refused alice's ceremony before any webauthn call"
     );
 
-    let db = mmcp_db::connect(&cfg.database_url).await.expect("connect");
+    let db = mmcp_db::connect(&cfg.database_target)
+        .await
+        .expect("connect");
     for handle in ["alice", "bob"] {
         let user = user_repo::find_by_handle(db.connection(), handle)
             .await
@@ -808,7 +817,7 @@ async fn passkey_login_ceremony_is_consumed_when_the_finish_fails() {
     let client = cookie_client();
     passkey_login_start(&client, server.addr, "alice").await;
     assert!(
-        http_session_rows(&cfg.database_url)
+        http_session_rows(&cfg.database_target)
             .await
             .iter()
             .any(|row| row.data.contains(PASSKEY_AUTHENTICATION_SESSION_KEY)),
@@ -822,7 +831,7 @@ async fn passkey_login_ceremony_is_consumed_when_the_finish_fails() {
     );
 
     assert!(
-        http_session_rows(&cfg.database_url)
+        http_session_rows(&cfg.database_target)
             .await
             .iter()
             .all(|row| !row.data.contains(PASSKEY_AUTHENTICATION_SESSION_KEY)),
@@ -844,7 +853,7 @@ async fn anonymous_passkey_login_finish_writes_no_session_row() {
     );
 
     assert!(
-        http_session_rows(&cfg.database_url).await.is_empty(),
+        http_session_rows(&cfg.database_target).await.is_empty(),
         "a finish without a session must not create one"
     );
     server.stop().await;
@@ -860,7 +869,7 @@ async fn concurrent_passkey_login_starts_for_one_handle_keep_both_ceremonies() {
     passkey_login_start(&cookie_client(), server.addr, "alice").await;
     passkey_login_start(&cookie_client(), server.addr, "alice").await;
 
-    let rows = http_session_rows(&cfg.database_url).await;
+    let rows = http_session_rows(&cfg.database_target).await;
     assert_eq!(
         rows.len(),
         2,
@@ -886,7 +895,7 @@ async fn passkey_login_start_rows_are_removed_by_the_sweep_after_expiry() {
     for _ in 0..LOGIN_STARTS {
         passkey_login_start(&cookie_client(), server.addr, "alice").await;
     }
-    let rows = http_session_rows(&cfg.database_url).await;
+    let rows = http_session_rows(&cfg.database_target).await;
     assert!(
         rows.len() <= LOGIN_STARTS && !rows.is_empty(),
         "N anonymous starts create at most N rows, got {}",
@@ -894,7 +903,9 @@ async fn passkey_login_start_rows_are_removed_by_the_sweep_after_expiry() {
     );
 
     // Expire every row through the repository, then spawn the production sweeper over the same database.
-    let db = mmcp_db::connect(&cfg.database_url).await.expect("connect");
+    let db = mmcp_db::connect(&cfg.database_target)
+        .await
+        .expect("connect");
     for row in rows {
         http_session_repo::upsert(
             db.connection(),
@@ -910,7 +921,7 @@ async fn passkey_login_start_rows_are_removed_by_the_sweep_after_expiry() {
         mmcp_server::session_store::DatabaseSessionStore::new(db.connection().clone()),
     );
     tokio::time::timeout(SWEEP_WAIT_LIMIT, async {
-        while !http_session_rows(&cfg.database_url).await.is_empty() {
+        while !http_session_rows(&cfg.database_target).await.is_empty() {
             tokio::time::sleep(SWEEP_POLL_INTERVAL).await;
         }
     })
@@ -976,18 +987,18 @@ async fn session_survives_server_restart_on_postgres() {
 
     assert_session_survives_restart(&cfg, &handle).await;
 
-    assert_store_primitives_work_on(&cfg.database_url).await;
+    assert_store_primitives_work_on(&cfg.database_target).await;
 }
 
-/// Exercises the conflict, upsert and batched-delete statements the store issues, on the database at `database_url`.
-async fn assert_store_primitives_work_on(database_url: &str) {
+/// Exercises the conflict, upsert and batched-delete statements the store issues, on the database at `target`.
+async fn assert_store_primitives_work_on(target: &DatabaseTarget) {
     use time::{Duration, OffsetDateTime};
     use tower_sessions::SessionStore;
     use tower_sessions::session::{Id, Record};
 
     const EXPIRED_RECORDS: usize = 5;
     const BATCH_SIZE: u64 = 2;
-    let db = mmcp_db::connect(database_url).await.expect("connect");
+    let db = mmcp_db::connect(target).await.expect("connect");
     let store = mmcp_server::session_store::DatabaseSessionStore::new(db.connection().clone());
     let record_expiring_in = |lifetime: Duration| Record {
         id: Id::default(),

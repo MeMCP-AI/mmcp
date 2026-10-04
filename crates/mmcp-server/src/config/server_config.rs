@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use axum::http::HeaderValue;
-use mmcp_db::redact_database_url;
+use mmcp_db::DatabaseTarget;
 
 use super::auth_rate_limit::AuthRateLimitConfig;
 use super::cascade::{
@@ -61,7 +61,9 @@ use super::trusted_proxies::TrustedProxies;
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub bind: SocketAddr,
-    pub database_url: String,
+    /// The database to use, parsed from `MMCP_DATABASE_URL`.
+    /// Its Display and Debug show no credential, so the startup line and a Debug print of the config stay free of the password.
+    pub database_target: DatabaseTarget,
     pub repo_root: PathBuf,
     pub token_key: [u8; 32],
     pub oauth_providers: Vec<OAuthProviderConfig>,
@@ -126,12 +128,6 @@ pub struct ServerConfig {
 }
 
 impl ServerConfig {
-    /// [`ServerConfig::database_url`] without its password, safe to write to a log.
-    #[must_use]
-    pub fn redacted_database_url(&self) -> String {
-        redact_database_url(&self.database_url)
-    }
-
     /// Build a config from the process environment using sensible
     /// defaults, with no CLI override tier. Thin wrapper over
     /// [`from_env_with_overrides`](Self::from_env_with_overrides).
@@ -206,8 +202,11 @@ impl ServerConfig {
                     .expect("DEFAULT_BIND is a hardcoded, always-valid SocketAddr literal")
             }
         };
-        let database_url =
-            get("MMCP_DATABASE_URL").unwrap_or_else(|| DEFAULT_DATABASE_URL.to_string());
+        let database_target = get("MMCP_DATABASE_URL")
+            .as_deref()
+            .unwrap_or(DEFAULT_DATABASE_URL)
+            .parse::<DatabaseTarget>()
+            .map_err(ConfigError::InvalidDatabaseUrl)?;
         let repo_root = get("MMCP_REPO_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_REPO_ROOT));
@@ -284,7 +283,7 @@ impl ServerConfig {
 
         Ok(Self {
             bind,
-            database_url,
+            database_target,
             repo_root,
             token_key,
             oauth_providers,
@@ -397,7 +396,7 @@ mod tests {
     fn from_source_applies_defaults_when_nothing_is_set() {
         let cfg = from_map(&[]);
         assert_eq!(cfg.bind.to_string(), "127.0.0.1:8787");
-        assert_eq!(cfg.database_url, "sqlite::memory:");
+        assert_eq!(cfg.database_target.to_string(), "sqlite::memory:");
         assert_eq!(cfg.repo_root, PathBuf::from("data/repos"));
         assert_eq!(cfg.origin, "http://localhost:8787");
         assert!(cfg.oauth_providers.is_empty());
@@ -418,21 +417,8 @@ mod tests {
             ("MMCP_REPO_ROOT", "/srv/mmcp/repos"),
         ]);
         assert_eq!(cfg.bind.to_string(), "0.0.0.0:9000");
-        assert_eq!(cfg.database_url, "postgres://x:y@db/app");
+        assert_eq!(cfg.database_target.to_string(), "postgres://x@db/app");
         assert_eq!(cfg.repo_root, PathBuf::from("/srv/mmcp/repos"));
-    }
-
-    #[test]
-    fn redacted_database_url_hides_the_configured_password() {
-        let cfg = from_map(&[(
-            "MMCP_DATABASE_URL",
-            "postgres://mmcp:s3cr3t@postgres:5432/mmcp",
-        )]);
-        assert!(!cfg.redacted_database_url().contains("s3cr3t"));
-        assert_eq!(
-            cfg.database_url,
-            "postgres://mmcp:s3cr3t@postgres:5432/mmcp"
-        );
     }
 
     #[test]

@@ -67,7 +67,7 @@ impl TestServer {
     }
 
     async fn database(&self) -> mmcp_db::Database {
-        mmcp_db::connect(&self.cfg.database_url)
+        mmcp_db::connect(&self.cfg.database_target)
             .await
             .expect("connect to the server's database")
     }

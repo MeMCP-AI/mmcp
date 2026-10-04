@@ -8,7 +8,7 @@ use crate::session_store::DatabaseSessionStore;
 
 /// Connection to a fresh, migrated in-memory database.
 pub(super) async fn test_connection() -> DatabaseConnection {
-    let db = mmcp_db::connect("sqlite::memory:")
+    let db = mmcp_db::connect(&"sqlite::memory:".parse().expect("a valid database URL"))
         .await
         .expect("connect in-memory sqlite");
     db.migrate().await.expect("run migrations");

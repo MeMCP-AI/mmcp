@@ -13,6 +13,8 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use mmcp_db::DatabaseTarget;
+
 use super::{AuthRateLimitConfig, ServerConfig, TrustedProxies};
 
 /// Loopback bind address used by every in-crate unit-test fixture.
@@ -39,7 +41,9 @@ pub fn minimal_server_config(repo_root: PathBuf) -> ServerConfig {
         bind: TEST_BIND
             .parse::<SocketAddr>()
             .expect("valid loopback addr"),
-        database_url: "sqlite::memory:".to_string(),
+        database_target: "sqlite::memory:"
+            .parse::<DatabaseTarget>()
+            .expect("valid in-memory sqlite URL"),
         repo_root,
         token_key: [0u8; 32],
         oauth_providers: vec![],

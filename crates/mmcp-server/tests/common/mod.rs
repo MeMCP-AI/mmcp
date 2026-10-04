@@ -154,12 +154,15 @@ impl TestServerConfigBuilder {
         }
     }
 
-    /// Overrides the database URL (`ServerConfig::database_url`).
+    /// Overrides the database by its URL (`ServerConfig::database_target`).
     /// [`minimal_server_config`] defaults to an in-memory SQLite database, which loses every row when the state drops.
     /// A persistence test points two successive states at one file database here.
     #[allow(dead_code)] // Live in sibling test binaries; each tests/*.rs compiles common as its own crate.
-    pub fn database_url(mut self, database_url: impl Into<String>) -> Self {
-        self.config.database_url = database_url.into();
+    pub fn database_url(mut self, database_url: impl AsRef<str>) -> Self {
+        self.config.database_target = database_url
+            .as_ref()
+            .parse()
+            .expect("the test database URL is accepted");
         self
     }
 

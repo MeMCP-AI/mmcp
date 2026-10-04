@@ -67,4 +67,9 @@ pub enum ConfigError {
          password validation"
     )]
     MinPasswordLengthExceedsMax { min: usize, max: usize },
+
+    /// `MMCP_DATABASE_URL` was refused.
+    /// The reason is the source, which holds no text of the URL: the value may carry the database password.
+    #[error("MMCP_DATABASE_URL was rejected")]
+    InvalidDatabaseUrl(#[source] mmcp_db::DatabaseUrlError),
 }

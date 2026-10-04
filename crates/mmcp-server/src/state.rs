@@ -83,7 +83,7 @@ pub struct ServerStateInner {
 impl ServerState {
     /// Initialize every subsystem and run migrations.
     pub async fn initialize(cfg: &ServerConfig) -> Result<Self> {
-        let database = connect(&cfg.database_url).await?;
+        let database = connect(&cfg.database_target).await?;
         database.migrate().await?;
         let git = NativeBackend::new(&cfg.repo_root)?;
         let token_issuer = TokenIssuer::from_key(&cfg.token_key);
