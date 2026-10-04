@@ -1,49 +1,12 @@
-//! Database connection handle.
+//! [`connect`], which opens the connection.
 
+use sea_orm::ConnectOptions;
 use sea_orm::sqlx::sqlite::SqliteJournalMode;
-use sea_orm::{ConnectOptions, DatabaseConnection};
-use sea_orm_migration::MigratorTrait;
 
+use super::database::Database;
 use crate::database_url_redaction::redact_database_url;
 use crate::defaults::SQLITE_BUSY_TIMEOUT;
 use crate::error::DbError;
-use crate::migration::Migrator;
-
-/// Wrapper around a SeaORM [`DatabaseConnection`] exposing the
-/// migration and teardown helpers mmcp needs.
-#[derive(Debug, Clone)]
-pub struct Database {
-    conn: DatabaseConnection,
-}
-
-impl Database {
-    /// Borrow the inner SeaORM connection handle.
-    #[must_use]
-    pub fn connection(&self) -> &DatabaseConnection {
-        &self.conn
-    }
-
-    /// Take ownership of the inner connection.
-    #[must_use]
-    pub fn into_connection(self) -> DatabaseConnection {
-        self.conn
-    }
-
-    /// Run every pending migration against the connected database.
-    pub async fn migrate(&self) -> Result<(), DbError> {
-        Migrator::up(&self.conn, None)
-            .await
-            .map_err(|e: sea_orm::DbErr| DbError::Migration(e.to_string()))
-    }
-
-    /// Drop every mmcp-managed table. Used by tests and by the
-    /// `mmcp server reset` admin command (not yet wired).
-    pub async fn reset(&self) -> Result<(), DbError> {
-        Migrator::down(&self.conn, None)
-            .await
-            .map_err(|e: sea_orm::DbErr| DbError::Migration(e.to_string()))
-    }
-}
 
 /// Schemes the compiled-in SeaORM drivers serve, as SeaORM matches them.
 const SUPPORTED_URL_SCHEMES: [&str; 3] = ["postgres", "postgresql", "sqlite"];
@@ -84,5 +47,5 @@ pub async fn connect(database_url: &str) -> Result<Database, DbError> {
             .busy_timeout(SQLITE_BUSY_TIMEOUT)
     });
     let conn = sea_orm::Database::connect(opts).await?;
-    Ok(Database { conn })
+    Ok(Database::new(conn))
 }
