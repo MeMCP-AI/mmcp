@@ -26,7 +26,7 @@ use axum::{
 };
 use jiff::Timestamp;
 use mmcp_auth::{
-    AuthSession, Credentials, OauthFlowClaims, OauthFlowOpenError, OauthFlowTokenCodec,
+    AuthSession, Credentials, MmcpUser, OauthFlowClaims, OauthFlowOpenError, OauthFlowTokenCodec,
     hash_password, validate_password_policy,
 };
 use mmcp_db::repository::{passkey_repo, user_repo};
@@ -631,13 +631,17 @@ struct PasskeyRegFinishRequest {
 /// credential to the CALLER's own authenticated session user; the
 /// identity is never taken from the request body (see
 /// [`passkey_register_start`]).
+///
+/// Adding a passkey is a credential change, which signs the account's other sessions out.
+/// The acting session is re-stamped with the credential state the write committed, so it stays signed in.
 async fn passkey_register_finish(
-    auth_session: AuthSession,
+    mut auth_session: AuthSession,
     State(state): State<ServerState>,
     Json(req): Json<PasskeyRegFinishRequest>,
 ) -> Result<Json<serde_json::Value>, AuthHttpError> {
     let session_user = auth_session
         .user
+        .clone()
         .ok_or(AuthHttpError::Unauthorized("authentication required"))?;
 
     // Removing the ceremony from the session makes it usable once, whatever the checks below decide.
@@ -660,7 +664,7 @@ async fn passkey_register_finish(
 
     let cred_json = serde_json::to_string(&passkey).map_err(into_generic_response)?;
     let now = Timestamp::now().as_millisecond();
-    passkey_repo::create(
+    let written = passkey_repo::create(
         state.database.connection(),
         Uuid::now_v7(),
         session_user.id,
@@ -671,7 +675,23 @@ async fn passkey_register_finish(
     .await
     .map_err(into_generic_response)?;
 
+    // The passkey stays stored when the re-stamp fails: the acting session then signs out at its next request.
+    restamp_session_after_credential_change(&mut auth_session, written.owner)
+        .await
+        .map_err(into_generic_response)?;
+
     Ok(Json(serde_json::json!({ "status": "registered" })))
+}
+
+/// Stamp the acting session with the credential state `owner` carries.
+///
+/// `owner` must be the row the credential write returned: a row read earlier holds a stale epoch,
+/// and the very next request would sign the acting session out.
+async fn restamp_session_after_credential_change(
+    auth_session: &mut AuthSession,
+    owner: mmcp_db::entities::user::Model,
+) -> Result<(), axum_login::Error<mmcp_auth::MmcpAuthBackend>> {
+    auth_session.login(&MmcpUser::from_db(owner)).await
 }
 
 #[derive(Deserialize)]
