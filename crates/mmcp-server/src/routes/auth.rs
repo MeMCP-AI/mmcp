@@ -393,8 +393,8 @@ fn validate_oauth_state(received: Option<&str>, expected: &str) -> Result<(), OA
 
 /// Log why an OAuth callback was rejected and return the uniform external response.
 ///
-/// Every cause collapses to the same 400 body (`AuthHttpError::InvalidOAuthState`),
-/// per `global-coding-rules-errors`'s security-mandated-uniform-response exception.
+/// Every cause collapses to the same 400 body (`AuthHttpError::InvalidOAuthState`).
+/// That follows `global-coding-rules-errors`'s security-mandated-uniform-response exception.
 /// Each still gets its own log line.
 /// A deployment failure like "the flow cookie never round-trips" is therefore diagnosable from logs alone.
 fn reject_oauth_callback(provider: &str, rejection: &OAuthStateRejection) -> AuthHttpError {
