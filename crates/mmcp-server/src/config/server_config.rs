@@ -13,7 +13,7 @@ use super::cors_origins::parse_cors_origins;
 use super::database_url_redaction::redact_database_url;
 use super::defaults::{
     ALLOW_SELF_REGISTRATION_ENV, CORS_ALLOWED_ORIGINS_ENV, DEFAULT_BIND, DEFAULT_DATABASE_URL,
-    DEFAULT_REPO_ROOT, WEBUI_DIR_ENV,
+    DEFAULT_REPO_ROOT, GITHUB_OAUTH_CLIENT_ID_ENV, GITHUB_OAUTH_CLIENT_SECRET_ENV, WEBUI_DIR_ENV,
 };
 use super::env_value::non_blank;
 use super::error::ConfigError;
@@ -207,14 +207,29 @@ impl ServerConfig {
         let push_token = non_blank(get("MMCP_PUSH_TOKEN").as_deref()).map(str::to_owned);
 
         let mut oauth_providers = Vec::new();
-        if let (Some(id), Some(secret)) = (
-            non_blank(get("MMCP_OAUTH_GITHUB_CLIENT_ID").as_deref()),
-            non_blank(get("MMCP_OAUTH_GITHUB_CLIENT_SECRET").as_deref()),
+        match (
+            non_blank(get(GITHUB_OAUTH_CLIENT_ID_ENV).as_deref()),
+            non_blank(get(GITHUB_OAUTH_CLIENT_SECRET_ENV).as_deref()),
         ) {
-            oauth_providers.push(OAuthProviderConfig::github(
-                id.to_owned(),
-                secret.to_owned(),
-            ));
+            (Some(id), Some(secret)) => {
+                oauth_providers.push(OAuthProviderConfig::github(
+                    id.to_owned(),
+                    secret.to_owned(),
+                ));
+            }
+            (Some(_), None) => {
+                tracing::warn!(
+                    provider_disabled = "github",
+                    missing_variable = GITHUB_OAUTH_CLIENT_SECRET_ENV
+                );
+            }
+            (None, Some(_)) => {
+                tracing::warn!(
+                    provider_disabled = "github",
+                    missing_variable = GITHUB_OAUTH_CLIENT_ID_ENV
+                );
+            }
+            (None, None) => {}
         }
 
         let user_limits = load_user_limits();
@@ -331,8 +346,8 @@ mod tests {
     use super::*;
     use crate::config::test_support::WarnCounter;
     use crate::config::{
-        CORS_ALLOWED_ORIGINS_ENV, MAX_HANDLE_LENGTH_ENV, MAX_PASSWORD_LENGTH_ENV,
-        MIN_PASSWORD_LENGTH_ENV, WEBUI_DIR_ENV,
+        CORS_ALLOWED_ORIGINS_ENV, GITHUB_OAUTH_CLIENT_ID_ENV, GITHUB_OAUTH_CLIENT_SECRET_ENV,
+        MAX_HANDLE_LENGTH_ENV, MAX_PASSWORD_LENGTH_ENV, MIN_PASSWORD_LENGTH_ENV, WEBUI_DIR_ENV,
     };
     use std::collections::HashMap;
 
@@ -550,6 +565,22 @@ mod tests {
             ("MMCP_OAUTH_GITHUB_CLIENT_SECRET", "xyz"),
         ]);
         assert!(blank_id.oauth_providers.is_empty());
+    }
+
+    #[test]
+    fn github_oauth_warns_only_when_exactly_one_credential_is_set() {
+        let warnings_for = |entries: &[(&str, &str)]| {
+            let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let subscriber = WarnCounter(count.clone());
+            tracing::subscriber::with_default(subscriber, || from_map(entries));
+            count.load(std::sync::atomic::Ordering::SeqCst)
+        };
+        let id = (GITHUB_OAUTH_CLIENT_ID_ENV, "abc");
+        let secret = (GITHUB_OAUTH_CLIENT_SECRET_ENV, "xyz");
+        assert_eq!(warnings_for(&[]), 0);
+        assert_eq!(warnings_for(&[id, (GITHUB_OAUTH_CLIENT_SECRET_ENV, "")]), 1);
+        assert_eq!(warnings_for(&[(GITHUB_OAUTH_CLIENT_ID_ENV, ""), secret]), 1);
+        assert_eq!(warnings_for(&[id, secret]), 0);
     }
 
     #[test]

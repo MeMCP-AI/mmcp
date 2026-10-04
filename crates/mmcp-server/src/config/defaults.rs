@@ -41,6 +41,14 @@ pub const MAX_HANDLE_LENGTH_ENV: &str = "MMCP_MAX_HANDLE_LENGTH";
 /// why the default is closed.
 pub const ALLOW_SELF_REGISTRATION_ENV: &str = "MMCP_ALLOW_SELF_REGISTRATION";
 
+/// Environment variable carrying the GitHub OAuth application client id.
+/// The GitHub provider is enabled only when this and
+/// [`GITHUB_OAUTH_CLIENT_SECRET_ENV`] are both non-blank.
+pub const GITHUB_OAUTH_CLIENT_ID_ENV: &str = "MMCP_OAUTH_GITHUB_CLIENT_ID";
+
+/// Environment variable carrying the GitHub OAuth application client secret.
+pub const GITHUB_OAUTH_CLIENT_SECRET_ENV: &str = "MMCP_OAUTH_GITHUB_CLIENT_SECRET";
+
 /// Environment variable naming the directory of the built web UI.
 /// Second in precedence behind an explicit `--webui-dir` CLI override.
 /// Unset or blank means the server answers the API only.
