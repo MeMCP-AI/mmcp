@@ -91,7 +91,7 @@ async fn run_server(overrides: config::ServerConfigOverrides) -> Result<()> {
     let cfg = config::ServerConfig::from_env_with_overrides(overrides)?;
     tracing::info!(
         address = %cfg.bind,
-        database = %cfg.database_url,
+        database = %cfg.redacted_database_url(),
         repo_root = %cfg.repo_root.display(),
         "mmcp-server starting"
     );

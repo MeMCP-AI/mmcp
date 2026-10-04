@@ -7,6 +7,7 @@ use super::cascade::{
     load_user_limits, resolve_max_handle_length, resolve_max_password_length,
     resolve_min_password_length,
 };
+use super::database_url_redaction::redact_database_url;
 use super::defaults::{
     ALLOW_SELF_REGISTRATION_ENV, DEFAULT_BIND, DEFAULT_DATABASE_URL, DEFAULT_REPO_ROOT,
 };
@@ -88,6 +89,12 @@ pub struct ServerConfig {
 }
 
 impl ServerConfig {
+    /// [`ServerConfig::database_url`] without its password, safe to write to a log.
+    #[must_use]
+    pub fn redacted_database_url(&self) -> String {
+        redact_database_url(&self.database_url)
+    }
+
     /// Build a config from the process environment using sensible
     /// defaults, with no CLI override tier. Thin wrapper over
     /// [`from_env_with_overrides`](Self::from_env_with_overrides).
@@ -328,6 +335,19 @@ mod tests {
         assert_eq!(cfg.bind.to_string(), "0.0.0.0:9000");
         assert_eq!(cfg.database_url, "postgres://x:y@db/app");
         assert_eq!(cfg.repo_root, PathBuf::from("/srv/mmcp/repos"));
+    }
+
+    #[test]
+    fn redacted_database_url_hides_the_configured_password() {
+        let cfg = from_map(&[(
+            "MMCP_DATABASE_URL",
+            "postgres://mmcp:s3cr3t@postgres:5432/mmcp",
+        )]);
+        assert!(!cfg.redacted_database_url().contains("s3cr3t"));
+        assert_eq!(
+            cfg.database_url,
+            "postgres://mmcp:s3cr3t@postgres:5432/mmcp"
+        );
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! Server configuration loaded from environment variables.
 
 mod cascade;
+mod database_url_redaction;
 mod defaults;
 mod env_value;
 mod error;
