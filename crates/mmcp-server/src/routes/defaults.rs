@@ -94,6 +94,33 @@ pub(crate) const PASSKEY_REGISTRATION_SESSION_KEY: &str = "passkey_registration_
 /// Session key holding the pending passkey authentication ceremony.
 pub(crate) const PASSKEY_AUTHENTICATION_SESSION_KEY: &str = "passkey_authentication_ceremony";
 
+/// Entry document of the single-page application, also the answer to every
+/// path the web UI directory holds no file for.
+pub(crate) const WEBUI_INDEX_FILE_NAME: &str = "index.html";
+
+/// Path prefix of the content-hashed assets the web UI build emits.
+pub(crate) const WEBUI_IMMUTABLE_ASSET_PATH_PREFIX: &str = "/_app/immutable/";
+
+/// One year, the longest lifetime caches honour; the content hash in the
+/// file name makes it safe for [`WEBUI_IMMUTABLE_ASSET_PATH_PREFIX`] assets.
+pub(crate) const WEBUI_IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
+
+/// The entry document names the current hashed assets, so a cache must revalidate it.
+pub(crate) const WEBUI_REVALIDATE_CACHE_CONTROL: &str = "no-cache";
+
+/// `X-Content-Type-Options` value on every static response.
+pub(crate) const WEBUI_NO_SNIFF: &str = "nosniff";
+
+/// `Referrer-Policy` value on every static response.
+pub(crate) const WEBUI_NO_REFERRER: &str = "no-referrer";
+
+/// `Content-Security-Policy` value on HTML responses: the login page lives on
+/// the API origin, so no site may frame it.
+pub(crate) const WEBUI_FRAME_ANCESTORS_NONE: &str = "frame-ancestors 'none'";
+
+/// Media type prefix identifying an HTML response.
+pub(crate) const HTML_MEDIA_TYPE_PREFIX: &str = "text/html";
+
 /// Lifetime, in seconds, of the bearer token issued on a successful password login.
 /// `crate::routes::auth::login` is the handler that issues it.
 /// Matches [`mmcp_auth::SessionClaims::new_with_lifetime`]'s `lifetime_secs` type, `i64`.
