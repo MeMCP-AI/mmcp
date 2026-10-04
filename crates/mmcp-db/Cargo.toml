@@ -15,6 +15,7 @@ sea-orm = { workspace = true }
 sea-orm-migration = { workspace = true }
 serde = { workspace = true }
 uuid = { workspace = true }
+url = { workspace = true }
 async-trait = { workspace = true }
 # Force the `bundled` feature of libsqlite3-sys into the dep graph so
 # the transitive sqlx-sqlite driver statically links libsqlite3, which

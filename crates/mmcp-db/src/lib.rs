@@ -6,6 +6,7 @@
 //! from a `database_url`.
 
 pub mod connection;
+mod database_url_redaction;
 mod defaults;
 pub mod entities;
 pub mod error;
@@ -13,6 +14,7 @@ pub mod migration;
 pub mod repository;
 
 pub use connection::{Database, connect};
+pub use database_url_redaction::redact_database_url;
 pub use defaults::SQLITE_BUSY_TIMEOUT;
 pub use error::DbError;
 
