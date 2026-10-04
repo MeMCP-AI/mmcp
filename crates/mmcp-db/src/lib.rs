@@ -13,7 +13,7 @@ pub mod migration;
 pub mod repository;
 
 pub use connection::{
-    Database, DatabaseTarget, DatabaseUrlError, PostgresTarget, SqliteTarget, connect,
+    Database, DatabaseTarget, DatabaseUrlError, ParameterSet, PostgresTarget, SqliteTarget, connect,
 };
 pub use defaults::SQLITE_BUSY_TIMEOUT;
 pub use error::DbError;

@@ -11,6 +11,7 @@ use url::Url;
 
 use super::at_sign_check::has_at_sign_outside_userinfo;
 use super::database_url_error::DatabaseUrlError;
+use super::parameter_set::ParameterSet;
 use super::postgres_parameters::{
     SSL_MODE_KEYS, SSL_MODE_VALUES, accepted_constant, canonical_by_case,
 };
@@ -120,11 +121,16 @@ fn checked_parameters(url: &Url) -> Result<Vec<&'static str>, DatabaseUrlError> 
         let Some(constant) = accepted_constant(&key) else {
             return Err(match canonical_by_case(&key) {
                 Some(canonical) => DatabaseUrlError::ParameterWrongCase {
+                    set: ParameterSet::Postgres,
                     position,
                     count,
                     canonical,
                 },
-                None => DatabaseUrlError::UnrecognizedParameter { position, count },
+                None => DatabaseUrlError::UnrecognizedParameter {
+                    set: ParameterSet::Postgres,
+                    position,
+                    count,
+                },
             });
         };
         if SSL_MODE_KEYS.contains(&constant) {

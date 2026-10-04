@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-use super::postgres_parameters::accepted_keys_text;
+use super::parameter_set::ParameterSet;
 
 /// Why a database URL is refused.
 ///
@@ -34,6 +34,10 @@ pub enum DatabaseUrlError {
     )]
     FragmentPresent,
 
+    /// A SQLite URL carries no fragment, and sqlx-sqlite reads a `#` as part of the file name, so a `#` can only be misplaced text.
+    #[error("a sqlite URL has a `#`; percent-encode a `#` of the file name as `%23`")]
+    SqliteFragmentPresent,
+
     /// The userinfo of a URL ends at its last `@` before the first `/`, `?` or `#`, so an `@` further on follows misplaced password text.
     #[error(
         "the database URL has an `@` outside its userinfo; percent-encode it as `%40`, give a database name holding one through `dbname=` with `%40`, and avoid `/`, `?` and `#` in a password, in `POSTGRES_PASSWORD` of the compose too"
@@ -48,22 +52,27 @@ pub enum DatabaseUrlError {
 
     /// A parameter that equals an accepted one except for its case.
     #[error(
-        "parameter {position} of {count} of the database URL must be written `{canonical}`, in lowercase"
+        "parameter {position} of {count} of the {set} URL must be written `{canonical}`, in lowercase"
     )]
     ParameterWrongCase {
+        set: ParameterSet,
         position: usize,
         count: usize,
         canonical: &'static str,
     },
 
-    /// A parameter that sqlx would log at warn with its value and ignore.
+    /// A parameter that the driver would log with its value and ignore, or refuse at connect.
     #[error(
-        "parameter {position} of {count} of the database URL is not accepted; the accepted ones are {}",
-        accepted_keys_text()
+        "parameter {position} of {count} of the {set} URL is not accepted; the accepted ones are {}",
+        set.accepted_text()
     )]
-    UnrecognizedParameter { position: usize, count: usize },
+    UnrecognizedParameter {
+        set: ParameterSet,
+        position: usize,
+        count: usize,
+    },
 
-    /// A value outside the closed set of an accepted parameter, which sqlx would quote in its error.
+    /// A value outside the closed set of an accepted parameter, which the driver would quote in its error.
     #[error(
         "the value of the `{key}` parameter of the database URL must be one of {}",
         accepted.join(", ")

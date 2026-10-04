@@ -50,6 +50,7 @@ mod tests {
     use std::error::Error;
 
     use super::*;
+    use crate::connection::ParameterSet;
 
     /// The text of `error` and of every source behind it, in Display and Debug form.
     fn chain_text(error: &(dyn Error + 'static)) -> String {
@@ -194,6 +195,7 @@ mod tests {
             (
                 "postgres://db/app?password=ab&SECRET_12=ef",
                 DatabaseUrlError::UnrecognizedParameter {
+                    set: ParameterSet::Postgres,
                     position: 2,
                     count: 2,
                 },
@@ -201,6 +203,7 @@ mod tests {
             (
                 "postgres://mmcp@db/app?PassWord=SECRET_13",
                 DatabaseUrlError::ParameterWrongCase {
+                    set: ParameterSet::Postgres,
                     position: 1,
                     count: 1,
                     canonical: "password",
@@ -209,6 +212,7 @@ mod tests {
             (
                 "postgres://mmcp@db/app?sslpassword=SECRET_14",
                 DatabaseUrlError::UnrecognizedParameter {
+                    set: ParameterSet::Postgres,
                     position: 1,
                     count: 1,
                 },
@@ -258,6 +262,104 @@ mod tests {
             );
             assert!(error.source().is_some());
             printed(input, "SECRET_").unwrap_err();
+        }
+    }
+
+    #[test]
+    fn a_sqlite_query_key_outside_the_accepted_set_is_refused_without_echoing_it() {
+        let refused = [
+            (
+                "sqlite::memory:?password=SECRET_1",
+                DatabaseUrlError::UnrecognizedParameter {
+                    set: ParameterSet::Sqlite,
+                    position: 1,
+                    count: 1,
+                },
+            ),
+            (
+                "sqlite:data/x.db?passwd=SECRET_2",
+                DatabaseUrlError::UnrecognizedParameter {
+                    set: ParameterSet::Sqlite,
+                    position: 1,
+                    count: 1,
+                },
+            ),
+            (
+                "sqlite://data/x.db?mode=rwc&token=SECRET_3",
+                DatabaseUrlError::UnrecognizedParameter {
+                    set: ParameterSet::Sqlite,
+                    position: 2,
+                    count: 2,
+                },
+            ),
+            (
+                "sqlite://data/x.db?SECRET_4",
+                DatabaseUrlError::UnrecognizedParameter {
+                    set: ParameterSet::Sqlite,
+                    position: 1,
+                    count: 1,
+                },
+            ),
+            (
+                "sqlite://data/x.db?Mode=SECRET_5",
+                DatabaseUrlError::ParameterWrongCase {
+                    set: ParameterSet::Sqlite,
+                    position: 1,
+                    count: 1,
+                    canonical: "mode",
+                },
+            ),
+        ];
+        for (input, expected) in refused {
+            assert_eq!(
+                input.parse::<DatabaseTarget>().unwrap_err(),
+                expected,
+                "{input}"
+            );
+            printed(input, "SECRET_").unwrap_err();
+        }
+    }
+
+    #[test]
+    fn a_sqlite_value_outside_the_closed_set_of_its_key_is_refused_without_echoing_it() {
+        for input in [
+            "sqlite://data/x.db?mode=SECRET_1",
+            "sqlite://data/x.db?cache=SECRET_2",
+            "sqlite://data/x.db?immutable=SECRET_3",
+            "sqlite://data/x.db?mode=",
+        ] {
+            let error = input.parse::<DatabaseTarget>().unwrap_err();
+            assert!(
+                matches!(error, DatabaseUrlError::InvalidParameterValue { .. }),
+                "{input}"
+            );
+            printed(input, "SECRET_").unwrap_err();
+        }
+    }
+
+    #[test]
+    fn a_sqlite_fragment_is_refused_without_echoing_it() {
+        for input in [
+            "sqlite://u:#SECRET_1@host/db",
+            "sqlite:data/x.db#SECRET_2",
+            "sqlite://data/x.db?mode=rwc#SECRET_3",
+            "sqlite://data/x.db#",
+        ] {
+            let error = input.parse::<DatabaseTarget>().unwrap_err();
+            assert_eq!(error, DatabaseUrlError::SqliteFragmentPresent, "{input}");
+            assert!(error.to_string().contains("%23"), "{error}");
+            printed(input, "SECRET_").unwrap_err();
+        }
+    }
+
+    #[test]
+    fn every_accepted_sqlite_key_and_value_stays_accepted() {
+        for input in [
+            "sqlite://data/x.db?mode=ro&cache=shared&immutable=1&vfs=unix",
+            "sqlite://data/x.db?mode=memory&cache=private&immutable=false",
+            "sqlite://data/x.db?mode=rw&immutable=true&immutable=0",
+        ] {
+            assert_eq!(printed(input, "SECRET_").as_deref(), Ok(input));
         }
     }
 
