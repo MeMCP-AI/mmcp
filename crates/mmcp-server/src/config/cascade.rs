@@ -339,7 +339,7 @@ fn resolve_ipv6_network_tier(
 fn warn_unusable_network_prefix(prefix_length: usize) {
     tracing::warn!(
         prefix_length,
-        "the IPv6 network prefix length is not between 1 and 128; the IPv6 network budget is off"
+        "the IPv6 network prefix length is not between 1 and {IPV6_ADDRESS_BITS}; the IPv6 network budget is off"
     );
 }
 
