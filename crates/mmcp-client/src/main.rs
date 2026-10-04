@@ -18,10 +18,13 @@ mod notes;
 mod state;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Subcommand};
 use mmcp_core::config::NoticeLaunch;
 
-#[derive(Parser)]
+/// Name of the `serve` subcommand, the one clap derives from [`Command::Serve`].
+const SERVE_SUBCOMMAND: &str = "serve";
+
+#[derive(clap::Parser)]
 #[command(name = "mmcp", version, about = "mmcp memory client")]
 struct Cli {
     #[command(subcommand)]
@@ -245,17 +248,15 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let cli = Cli::parse();
+    let matches = cli_command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
 
-    // Best-effort: start the local content cache's process-global
-    // pool before dispatching to the resolved subcommand, so every
-    // write path (CLI `mmcp memory` / `mmcp feature` / ... commands,
-    // all of which eventually call `write_file_at_path`) gets the
-    // write-trigger hook for free. A failure here (e.g. an unwritable
-    // home directory) never blocks the CLI itself: the cache is a
-    // derived artifact, not source-of-truth state. Runs after
-    // `Cli::parse()` so `--help` / bad-arg invocations never touch
-    // the filesystem at all.
+    // Best-effort: start the local content cache's process-global pool before dispatching to the resolved subcommand.
+    // Every write path then gets the write-trigger hook for free.
+    // The CLI `mmcp memory` / `mmcp feature` / ... commands all eventually call `write_file_at_path`.
+    // A failure here (e.g. an unwritable home directory) never blocks the CLI itself.
+    // The cache is a derived artifact, not source-of-truth state.
+    // Runs after argument parsing so `--help` / bad-arg invocations never touch the filesystem at all.
     if let Ok(home) = mmcp_store::home::MmcpHome::discover()
         && let Err(err) = mmcp_store::cache::init_from_home(&home).await
     {
@@ -264,7 +265,10 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Serve { debug, mode } => {
-            commands::serve::run(debug, mode, NoticeLaunch::default()).await?;
+            let notice_launch = matches
+                .subcommand_matches(SERVE_SUBCOMMAND)
+                .map_or_else(NoticeLaunch::default, commands::config::notice_launch_from);
+            commands::serve::run(debug, mode, notice_launch).await?;
         }
         Command::Config(args) => commands::config::run(args)?,
         Command::Check { group } => commands::health::run_check(group).await?,
@@ -317,18 +321,54 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// The whole command tree: the derived commands plus the notice flags of `serve`.
+fn cli_command() -> clap::Command {
+    Cli::command().mut_subcommand(SERVE_SUBCOMMAND, commands::config::with_notice_flags)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use clap::CommandFactory;
 
     /// clap's own graph self-check: catches a `conflicts_with` /
     /// `requires` reference to an unknown arg id, a duplicate flag,
     /// and similar wiring mistakes across the whole command tree.
     #[test]
     fn cli_graph_is_valid() {
-        Cli::command().debug_assert();
+        cli_command().debug_assert();
+    }
+
+    /// The notice flags land on `serve` itself, under the name clap derived for it.
+    #[test]
+    fn serve_carries_the_notice_flags_of_every_key() {
+        let command = cli_command();
+        let serve = command.find_subcommand(SERVE_SUBCOMMAND).unwrap();
+        for key in mmcp_core::config::ConfigKey::ALL {
+            assert!(
+                serve
+                    .get_arguments()
+                    .any(|argument| argument.get_long() == Some(key.launch_flag())),
+                "serve must accept --{}",
+                key.launch_flag()
+            );
+        }
+    }
+
+    /// A flag given to `serve` reaches the launch values of its key.
+    #[test]
+    fn a_serve_flag_is_parsed_into_the_flag_layer_of_the_launch_values() {
+        let matches = cli_command()
+            .try_get_matches_from(["mmcp", "serve", "--notice-md-user", "off"])
+            .unwrap();
+        let launch = commands::config::notice_launch_from(
+            matches.subcommand_matches(SERVE_SUBCOMMAND).unwrap(),
+        );
+        assert_eq!(
+            launch.md_user.flag,
+            Some(mmcp_core::config::NoticeValue::Off)
+        );
+        assert!(Cli::from_arg_matches(&matches).is_ok());
     }
 
     /// `commands::tools::build_rows` against the real, live tool

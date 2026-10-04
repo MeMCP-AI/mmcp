@@ -159,3 +159,32 @@ fn config_help_is_the_approved_text() {
         .stdout(predicate::str::contains("Set a setting at a scope"))
         .stdout(predicate::str::contains("Remove a setting from a scope"));
 }
+
+#[test]
+fn serve_help_names_each_notice_flag_its_variable_and_what_outranks_it() {
+    mmcp()
+        .args(["serve", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--notice-md-project"))
+        .stdout(predicate::str::contains("MMCP_NOTICE_MD_PROJECT"))
+        .stdout(predicate::str::contains("--notice-md-user"))
+        .stdout(predicate::str::contains("MMCP_NOTICE_MD_USER"))
+        .stdout(predicate::str::contains(
+            "Show or hide the project CLAUDE.md block notices for this run, unless a local or project setting decides",
+        ))
+        .stdout(predicate::str::contains(
+            "Show or hide the ~/.claude/CLAUDE.md block notice for this run, unless a local or project setting decides",
+        ));
+}
+
+#[test]
+fn a_notice_variable_that_is_not_on_or_off_stops_serve_before_it_starts() {
+    mmcp()
+        .arg("serve")
+        .env("MMCP_NOTICE_MD_PROJECT", "maybe")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--notice-md-project"))
+        .stderr(predicate::str::contains("maybe"));
+}
