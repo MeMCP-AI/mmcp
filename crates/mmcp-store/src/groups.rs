@@ -143,18 +143,29 @@ impl GroupIndex {
     /// Safe to call from an async worker with no `block_on` bridge available.
     /// Returns an empty vector when the lock is held by a writer.
     /// Callers treat that as "no groups" and retry on the next tick.
+    /// Ordered as [`Self::list`] orders its entries.
     #[must_use]
     pub fn try_list_ids(&self) -> Vec<Uuid> {
         self.inner
             .try_read()
             .ok()
-            .map(|guard| guard.keys().map(|gid| *gid.as_uuid()).collect())
+            .map(|guard| {
+                sorted_entries(&guard)
+                    .into_iter()
+                    .map(|entry| *entry.manifest.group_id.as_uuid())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
-    /// Snapshot of every entry in the index.
+    /// Snapshot of every entry in the index, ordered by manifest slug, then by group UUID.
+    ///
+    /// The order is total and independent of insertion order and of refreshes.
+    /// A slug is not unique across owners, so the UUID breaks ties.
+    /// A caller that pages over the snapshot sees one stable sequence while the set of groups is unchanged.
     pub async fn list(&self) -> Vec<GroupEntry> {
-        self.inner.read().await.values().cloned().collect()
+        let guard = self.inner.read().await;
+        sorted_entries(&guard).into_iter().cloned().collect()
     }
 
     /// Number of groups currently indexed.
@@ -183,6 +194,17 @@ impl GroupIndex {
         }
         Ok(())
     }
+}
+
+/// Entries of `groups` in the order [`GroupIndex::list`] documents: manifest slug, then group UUID.
+fn sorted_entries(groups: &HashMap<GroupId, GroupEntry>) -> Vec<&GroupEntry> {
+    let mut entries: Vec<&GroupEntry> = groups.values().collect();
+    entries.sort_by(|left, right| {
+        let left_key = (&left.manifest.slug, left.manifest.group_id.as_uuid());
+        let right_key = (&right.manifest.slug, right.manifest.group_id.as_uuid());
+        left_key.cmp(&right_key)
+    });
+    entries
 }
 
 /// Walk `repos_root` and return one [`GroupEntry`] per `<uuid>.git`
@@ -290,6 +312,77 @@ mod tests {
     use super::*;
     use mmcp_core::id::UserId;
     use tempfile::TempDir;
+
+    /// Distinct slugs seeded by the ordering test: enough that an unordered map matching slug order by chance is negligible.
+    const DISTINCT_SLUG_COUNT: usize = 16;
+
+    /// Coprime with [`DISTINCT_SLUG_COUNT`], so stepping by it visits every slug exactly once in a non-sorted order.
+    const CREATION_SLUG_STRIDE: usize = 7;
+
+    /// Slug carried by two groups of the ordering test, to exercise the UUID tie-break.
+    const SHARED_SLUG: &str = "group-03";
+
+    /// Create `slug`'s group repository under `backend`; returns its id.
+    async fn create_group(backend: &NativeBackend, slug: &str) -> GroupId {
+        let group_id = GroupId::new();
+        let manifest = GroupManifest::new_user_owned(group_id, slug, UserId::new());
+        backend
+            .create_group_repo(&manifest)
+            .await
+            .expect("create group repo");
+        group_id
+    }
+
+    /// `list` and `try_list_ids` order entries by slug, then UUID, whatever the creation order,
+    /// and a refresh that rescans the same groups leaves that order untouched.
+    #[tokio::test]
+    async fn list_orders_by_slug_then_uuid_across_refreshes() {
+        let tmp = TempDir::new().expect("tempdir");
+        let repos_root = tmp.path().join("repos");
+        let backend = NativeBackend::new(&repos_root).expect("backend");
+
+        let mut expected_order: Vec<(String, Uuid)> = Vec::new();
+        for step in 0..DISTINCT_SLUG_COUNT {
+            let slug = format!(
+                "group-{:02}",
+                (step * CREATION_SLUG_STRIDE) % DISTINCT_SLUG_COUNT
+            );
+            let group_id = create_group(&backend, &slug).await;
+            expected_order.push((slug, *group_id.as_uuid()));
+        }
+        let duplicate_id = create_group(&backend, SHARED_SLUG).await;
+        expected_order.push((SHARED_SLUG.to_owned(), *duplicate_id.as_uuid()));
+        expected_order.sort();
+
+        let index = GroupIndex::build(repos_root, Arc::new(backend))
+            .await
+            .expect("build");
+
+        let listed_order = |entries: Vec<GroupEntry>| -> Vec<(String, Uuid)> {
+            entries
+                .into_iter()
+                .map(|entry| (entry.manifest.slug, *entry.manifest.group_id.as_uuid()))
+                .collect()
+        };
+        assert_eq!(
+            listed_order(index.list().await),
+            expected_order,
+            "list must be ordered by slug, then UUID"
+        );
+        let expected_ids: Vec<Uuid> = expected_order.iter().map(|(_, uuid)| *uuid).collect();
+        assert_eq!(
+            index.try_list_ids(),
+            expected_ids,
+            "try_list_ids must follow the order of list"
+        );
+
+        index.refresh().await.expect("refresh");
+        assert_eq!(
+            listed_order(index.list().await),
+            expected_order,
+            "a refresh over the same groups must not reorder the listing"
+        );
+    }
 
     /// A directory shaped like a group repo (`<uuid>.git`) but with no
     /// git repo inside it at all: `read_manifest` fails, and the
