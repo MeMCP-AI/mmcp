@@ -208,14 +208,17 @@ impl GroupIndex {
     }
 }
 
-/// Entries of `groups` in the order [`GroupIndex::list`] documents: manifest slug, then group UUID.
+/// Position of `left` relative to `right` in [`GroupIndex::list`]: manifest slug, then group UUID.
+fn compare_group_entries(left: &GroupEntry, right: &GroupEntry) -> std::cmp::Ordering {
+    let left_key = (&left.manifest.slug, left.manifest.group_id.as_uuid());
+    let right_key = (&right.manifest.slug, right.manifest.group_id.as_uuid());
+    left_key.cmp(&right_key)
+}
+
+/// Entries of `groups` in the order [`GroupIndex::list`] documents.
 fn sorted_entries(groups: &HashMap<GroupId, GroupEntry>) -> Vec<&GroupEntry> {
     let mut entries: Vec<&GroupEntry> = groups.values().collect();
-    entries.sort_by(|left, right| {
-        let left_key = (&left.manifest.slug, left.manifest.group_id.as_uuid());
-        let right_key = (&right.manifest.slug, right.manifest.group_id.as_uuid());
-        left_key.cmp(&right_key)
-    });
+    entries.sort_by(|left, right| compare_group_entries(left, right));
     entries
 }
 
