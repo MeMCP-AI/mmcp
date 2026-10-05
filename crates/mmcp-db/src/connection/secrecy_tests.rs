@@ -17,7 +17,7 @@ use uuid::Uuid;
 use super::connect::connect;
 use super::database_target::DatabaseTarget;
 use super::database_url_error::DatabaseUrlError;
-use super::fake_peer::{Behavior, FakePeer};
+use super::fake_peer::{Behavior, FakePeer, SASLPREP_FAILURE_MARKERS};
 use super::log_capture::LogCapture;
 use super::parameter_set::ParameterSet;
 use super::postgres_parameters::{ACCEPTED_KEYS, OPTIONS_FAMILY_PREFIX, SSL_MODE_KEYS};
@@ -214,22 +214,10 @@ async fn connect_error(target: &DatabaseTarget) -> Option<DbError> {
     outcome.err()
 }
 
-/// What the SASLprep failure of the driver holds: its text, the error name, the character and its escaped Debug form.
-const SASLPREP_FAILURE_MARKERS: [&str; 5] = [
-    "Failed to saslprep",
-    "ProhibitedCharacter",
-    "\u{1F600}",
-    "\\u{1f600}",
-    "\\u{7}",
-];
-
 /// The captured tracing holds neither the sentinel nor any part of the driver's SASLprep failure.
 fn assert_log_holds_no_credential_text(capture: &LogCapture) {
-    let logged = capture.text();
-    assert!(!logged.contains(SENTINEL), "{logged}");
-    for marker in SASLPREP_FAILURE_MARKERS {
-        assert!(!logged.contains(marker), "{marker}: {logged}");
-    }
+    capture.assert_holds_none_of(&[SENTINEL]);
+    capture.assert_holds_none_of(&SASLPREP_FAILURE_MARKERS);
 }
 
 /// A URL whose credential fails SASLprep is accepted, and the SCRAM exchange of the driver is where the failure surfaces.

@@ -52,9 +52,19 @@ const SCRAM_SALT_AND_ITERATIONS: &str = "s=c2FsdA==,i=4096";
 /// The attribute that carries the client nonce in the client-first-message.
 const NONCE_ATTRIBUTE: &str = "r=";
 
+/// What the SASLprep failure of the driver holds when it fails on a credential of the SCRAM peer: its text, the error name, the character U+1F600 and its escaped Debug forms.
+/// A log that holds none of them holds none of the failure.
+pub const SASLPREP_FAILURE_MARKERS: [&str; 5] = [
+    "Failed to saslprep",
+    "ProhibitedCharacter",
+    "\u{1F600}",
+    "\\u{1f600}",
+    "\\u{7}",
+];
+
 /// What the peer does with a connection before it closes it.
 #[derive(Debug, Clone, Copy)]
-pub(super) enum Behavior {
+pub enum Behavior {
     /// Closes at once, so a client that sent an SSL request or a startup message reads the end of the stream.
     Closes,
     /// Reads the SSL request, answers `S`, then closes.
@@ -69,14 +79,14 @@ pub(super) enum Behavior {
 }
 
 /// A listener on a free loopback port, served until it drops.
-pub(super) struct FakePeer {
+pub struct FakePeer {
     port: u16,
     task: JoinHandle<()>,
 }
 
 impl FakePeer {
     /// Binds a free loopback port and serves it on the current runtime.
-    pub(super) async fn start(behavior: Behavior) -> Self {
+    pub async fn start(behavior: Behavior) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let task = tokio::spawn(async move {
@@ -93,7 +103,7 @@ impl FakePeer {
         Self { port, task }
     }
 
-    pub(super) fn port(&self) -> u16 {
+    pub fn port(&self) -> u16 {
         self.port
     }
 }

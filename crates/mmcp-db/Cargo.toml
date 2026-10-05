@@ -8,9 +8,17 @@ authors.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# Exposes the fake Postgres peer and the tracing capture of `connection`
+# to the tests of other crates, which drive a later pool connection that
+# SCRAM refuses without a Postgres server.
+test-support = ["dep:tokio", "dep:tracing-subscriber"]
+
 [dependencies]
 thiserror = { workspace = true }
 tracing = { workspace = true }
+tokio = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 sea-orm = { workspace = true }
 sea-orm-migration = { workspace = true }
 serde = { workspace = true }

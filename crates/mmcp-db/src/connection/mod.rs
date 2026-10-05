@@ -5,10 +5,10 @@ mod connect;
 mod database;
 mod database_target;
 mod database_url_error;
-#[cfg(test)]
-mod fake_peer;
-#[cfg(test)]
-mod log_capture;
+#[cfg(any(test, feature = "test-support"))]
+pub mod fake_peer;
+#[cfg(any(test, feature = "test-support"))]
+pub mod log_capture;
 mod parameter_set;
 mod pool_policy;
 mod postgres_parameters;

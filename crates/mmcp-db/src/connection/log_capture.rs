@@ -10,7 +10,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 
 /// A buffer that a tracing subscriber writes every event and span event into.
 #[derive(Clone, Default)]
-pub(super) struct LogCapture {
+pub struct LogCapture {
     buffer: Arc<Mutex<Vec<u8>>>,
 }
 
@@ -19,7 +19,7 @@ impl LogCapture {
     ///
     /// The subscriber enables every level, and prints the fields of a span with its enter, exit and close events.
     /// A test that awaits runs on a current-thread runtime, so every future it polls reports to this subscriber.
-    pub(super) fn install() -> (Self, tracing::subscriber::DefaultGuard) {
+    pub fn install() -> (Self, tracing::subscriber::DefaultGuard) {
         let capture = Self::default();
         let subscriber = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::TRACE)
@@ -32,8 +32,18 @@ impl LogCapture {
     }
 
     /// Everything written so far.
-    pub(super) fn text(&self) -> String {
+    pub fn text(&self) -> String {
         String::from_utf8_lossy(&self.buffer.lock().unwrap()).into_owned()
+    }
+
+    /// Panics when the capture holds any of `forbidden`, showing the first line that holds it.
+    pub fn assert_holds_none_of(&self, forbidden: &[&str]) {
+        let logged = self.text();
+        for text in forbidden {
+            if let Some(line) = logged.lines().find(|line| line.contains(text)) {
+                panic!("the log holds `{text}`: {line}");
+            }
+        }
     }
 }
 
