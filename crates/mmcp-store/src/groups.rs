@@ -10,9 +10,9 @@
 //! can share ownership without cloning the whole map.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures_util::StreamExt;
 use futures_util::stream;
@@ -20,7 +20,7 @@ use jiff::Timestamp;
 use mmcp_core::id::GroupId;
 use mmcp_core::manifest::GroupManifest;
 use mmcp_git::{GitBackend, NativeBackend, RepoHandle};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::defaults::MAX_CONCURRENT_MANIFEST_SCANS;
@@ -66,23 +66,15 @@ impl GroupEntry {
     }
 }
 
-/// Entries installed by one scan, with the ticket its refresh call took.
-#[derive(Default)]
-struct IndexedGroups {
-    /// Ticket of the installed scan; `None` until the first scan installs.
-    scan_ticket: Option<u64>,
-    by_id: HashMap<GroupId, GroupEntry>,
-}
-
 /// Thread-safe map from [`GroupId`] to [`GroupEntry`].
 #[derive(Clone)]
 pub struct GroupIndex {
     repos_root: PathBuf,
     backend: Arc<NativeBackend>,
-    inner: Arc<RwLock<IndexedGroups>>,
-    /// Source of scan tickets, one per refresh call.
-    /// A higher ticket belongs to a later call, whose scan reads the repos root after that earlier call began.
-    next_scan_ticket: Arc<AtomicU64>,
+    inner: Arc<RwLock<HashMap<GroupId, GroupEntry>>>,
+    /// Held by a refresh from the start of its scan to the end of its install.
+    /// Never held by a reader, and distinct from `inner`, which is never held across an await point.
+    refresh_serializer: Arc<Mutex<()>>,
 }
 
 impl GroupIndex {
@@ -101,8 +93,8 @@ impl GroupIndex {
         let index = Self {
             repos_root,
             backend,
-            inner: Arc::new(RwLock::new(IndexedGroups::default())),
-            next_scan_ticket: Arc::new(AtomicU64::new(0)),
+            inner: Arc::new(RwLock::new(HashMap::new())),
+            refresh_serializer: Arc::new(Mutex::new(())),
         };
         index.refresh().await?;
         Ok(index)
@@ -110,7 +102,7 @@ impl GroupIndex {
 
     /// Return the entry for `group_id` if the local mirror has it.
     pub async fn get(&self, group_id: &GroupId) -> Option<GroupEntry> {
-        self.inner.read().await.by_id.get(group_id).cloned()
+        self.inner.read().await.get(group_id).cloned()
     }
 
     /// Non-blocking scope lookup for use from sync contexts.
@@ -126,7 +118,7 @@ impl GroupIndex {
         self.inner
             .try_read()
             .ok()
-            .and_then(|guard| guard.by_id.get(group_id).map(|entry| entry.manifest.scope))
+            .and_then(|guard| guard.get(group_id).map(|entry| entry.manifest.scope))
     }
 
     /// Non-blocking entry lookup for use from sync contexts.
@@ -146,7 +138,7 @@ impl GroupIndex {
     pub fn try_get(&self, group_id: &GroupId) -> Result<Option<GroupEntry>, GroupIndexContended> {
         self.inner
             .try_read()
-            .map(|guard| guard.by_id.get(group_id).cloned())
+            .map(|guard| guard.get(group_id).cloned())
             .map_err(|_| GroupIndexContended)
     }
 
@@ -163,7 +155,7 @@ impl GroupIndex {
             .try_read()
             .ok()
             .map(|guard| {
-                sorted_entries(&guard.by_id)
+                sorted_entries(&guard)
                     .into_iter()
                     .map(|entry| *entry.manifest.group_id.as_uuid())
                     .collect()
@@ -178,38 +170,42 @@ impl GroupIndex {
     /// A caller that pages over the snapshot sees one stable sequence while the set of groups is unchanged.
     pub async fn list(&self) -> Vec<GroupEntry> {
         let guard = self.inner.read().await;
-        sorted_entries(&guard.by_id).into_iter().cloned().collect()
+        sorted_entries(&guard).into_iter().cloned().collect()
     }
 
     /// Number of groups currently indexed.
     #[allow(dead_code)] // consumed by `mmcp status` and test helpers landing in later phases.
     pub async fn len(&self) -> usize {
-        self.inner.read().await.by_id.len()
+        self.inner.read().await.len()
     }
 
     /// True if the index is empty.
     #[allow(dead_code)]
     pub async fn is_empty(&self) -> bool {
-        self.inner.read().await.by_id.is_empty()
+        self.inner.read().await.is_empty()
     }
 
     /// Rebuild the index from the filesystem.
     /// Called on startup and whenever the watcher reports that the repos root changed.
     ///
-    /// Refreshes may overlap, and each takes a ticket when it is called.
-    /// A scan finishing after a scan with a later ticket installed is discarded.
-    /// The index never goes back to the view of an earlier refresh call.
+    /// Refreshes are serialized end to end: a refresh starts its scan only after the previous one installed.
+    /// An older scan therefore never installs after a newer one.
+    /// Readers are not blocked while a scan runs.
     pub async fn refresh(&self) -> Result<(), StoreError> {
-        let ticket = self.next_scan_ticket.fetch_add(1, Ordering::SeqCst);
-        let entries = scan_repos_root(&self.repos_root, self.backend.as_ref()).await?;
-        self.install_scan(ticket, entries).await;
-        Ok(())
+        self.refresh_with(|| scan_repos_root(&self.repos_root, self.backend.as_ref()))
+            .await
     }
 
-    /// Replace the indexed groups with `entries` unless a scan with a later ticket already installed.
-    /// Returns whether `entries` were installed.
-    async fn install_scan(&self, ticket: u64, entries: Vec<GroupEntry>) -> bool {
-        let by_id = entries
+    /// [`Self::refresh`] with the scan supplied by the caller.
+    /// `scan` runs only once the serializer is held, and its result replaces the indexed groups.
+    async fn refresh_with<Scan, Scanning>(&self, scan: Scan) -> Result<(), StoreError>
+    where
+        Scan: FnOnce() -> Scanning,
+        Scanning: Future<Output = Result<Vec<GroupEntry>, StoreError>>,
+    {
+        let _serialized = self.refresh_serializer.lock().await;
+        let by_id = scan()
+            .await?
             .into_iter()
             .map(|entry| {
                 (
@@ -218,22 +214,8 @@ impl GroupIndex {
                 )
             })
             .collect();
-        let mut guard = self.inner.write().await;
-        if let Some(installed_ticket) = guard.scan_ticket
-            && ticket < installed_ticket
-        {
-            tracing::debug!(
-                ticket,
-                installed_ticket,
-                "discarding a group scan superseded by a later one"
-            );
-            return false;
-        }
-        *guard = IndexedGroups {
-            scan_ticket: Some(ticket),
-            by_id,
-        };
-        true
+        *self.inner.write().await = by_id;
+        Ok(())
     }
 }
 
@@ -351,8 +333,10 @@ async fn scan_repos_root(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use futures_util::FutureExt;
     use mmcp_core::id::UserId;
     use tempfile::TempDir;
+    use tokio::sync::oneshot;
 
     /// Distinct slugs seeded by the ordering test.
     /// Enough that an unordered map matching slug order by chance is negligible.
@@ -427,39 +411,54 @@ mod tests {
         );
     }
 
-    /// A scan whose ticket predates an installed refresh is discarded.
-    /// A scan with a later ticket still replaces the indexed groups.
+    /// A refresh called while another one is scanning waits for that one to install.
+    /// The earlier call's view is installed first, so the later call's view is the one left in the index.
+    /// Both refreshes run the production `refresh` body, with scans that need no filesystem.
+    /// The slow scan is held at a channel, and the later refresh is polled once: no sleep, no timing.
     #[tokio::test]
-    async fn a_scan_superseded_by_a_later_one_never_replaces_it() {
+    async fn a_refresh_called_during_a_scan_installs_after_it() {
         let tmp = TempDir::new().expect("tempdir");
         let repos_root = tmp.path().join("repos");
         let backend = Arc::new(NativeBackend::new(&repos_root).expect("backend"));
-        let index = GroupIndex::build(repos_root, Arc::clone(&backend))
-            .await
-            .expect("build");
+        let index = GroupIndex::build(repos_root, backend).await.expect("build");
 
-        // A scan begins on the still-empty root and is slow to finish.
-        let slow_scan_ticket = index.next_scan_ticket.fetch_add(1, Ordering::SeqCst);
-        let group_id = create_group(&backend, "created-after-slow-scan-began").await;
-        index.refresh().await.expect("refresh");
+        let (scan_reached_sender, mut scan_reached_receiver) = oneshot::channel::<()>();
+        let (scan_release_sender, scan_release_receiver) = oneshot::channel::<()>();
+        let slow_refresh = index.refresh_with(move || async move {
+            scan_reached_sender
+                .send(())
+                .expect("test holds the receiver");
+            scan_release_receiver.await.expect("test sends the release");
+            Ok(Vec::new())
+        });
+        tokio::pin!(slow_refresh);
         assert!(
-            index.get(&group_id).await.is_some(),
-            "the refresh that began later indexes the new group"
+            slow_refresh.as_mut().now_or_never().is_none(),
+            "the slow scan is held at its channel"
+        );
+        assert!(
+            scan_reached_receiver.try_recv().is_ok(),
+            "the slow scan has started"
         );
 
-        let installed = index.install_scan(slow_scan_ticket, Vec::new()).await;
-        assert!(!installed, "the superseded scan must be discarded");
+        let group_id = GroupId::new();
+        let manifest =
+            GroupManifest::new_user_owned(group_id, "seen-by-the-later-call", UserId::new());
+        let handle = RepoHandle::new(*group_id.as_uuid(), String::new());
+        let later_view = vec![GroupEntry::new(handle, manifest, 0)];
+        let later_refresh = index.refresh_with(move || async move { Ok(later_view) });
+        tokio::pin!(later_refresh);
         assert!(
-            index.get(&group_id).await.is_some(),
-            "a superseded scan must never remove a group a later scan indexed"
+            later_refresh.as_mut().now_or_never().is_none(),
+            "a refresh called during a scan must wait for it to install"
         );
 
-        let later_ticket = index.next_scan_ticket.fetch_add(1, Ordering::SeqCst);
-        let installed = index.install_scan(later_ticket, Vec::new()).await;
-        assert!(installed, "a scan with a later ticket is installed");
+        scan_release_sender.send(()).expect("slow scan is waiting");
+        slow_refresh.await.expect("slow refresh");
+        later_refresh.await.expect("later refresh");
         assert!(
-            index.is_empty().await,
-            "the later scan's view replaces the indexed groups"
+            index.get(&group_id).await.is_some(),
+            "the later call's view must be the one left in the index"
         );
     }
 
