@@ -351,6 +351,54 @@ mod tests {
         group_id
     }
 
+    /// An index entry carrying `slug` and a fresh group id, with no repository behind it.
+    fn entry_with_slug(slug: &str) -> GroupEntry {
+        let group_id = GroupId::new();
+        let manifest = GroupManifest::new_user_owned(group_id, slug, UserId::new());
+        GroupEntry::new(
+            RepoHandle::new(*group_id.as_uuid(), String::new()),
+            manifest,
+            0,
+        )
+    }
+
+    /// Two entries in ascending group UUID order, both carrying `slug`.
+    fn entry_pair_by_ascending_uuid(slug: &str) -> [GroupEntry; 2] {
+        let mut pair = [entry_with_slug(slug), entry_with_slug(slug)];
+        pair.sort_by_key(|entry| *entry.manifest.group_id.as_uuid());
+        pair
+    }
+
+    /// Entries with equal slugs are ordered by ascending group UUID.
+    #[test]
+    fn compare_group_entries_breaks_a_slug_tie_by_uuid() {
+        let [lower_uuid, higher_uuid] = entry_pair_by_ascending_uuid(SHARED_SLUG);
+        assert_eq!(
+            compare_group_entries(&lower_uuid, &higher_uuid),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_group_entries(&higher_uuid, &lower_uuid),
+            std::cmp::Ordering::Greater
+        );
+    }
+
+    /// The slug decides before the UUID: the entry with the lower slug comes first even with the higher UUID.
+    #[test]
+    fn compare_group_entries_ranks_the_slug_before_the_uuid() {
+        let [mut lower_uuid, mut higher_uuid] = entry_pair_by_ascending_uuid(SHARED_SLUG);
+        lower_uuid.manifest.slug = "group-99".to_owned();
+        higher_uuid.manifest.slug = "group-00".to_owned();
+        assert_eq!(
+            compare_group_entries(&higher_uuid, &lower_uuid),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_group_entries(&lower_uuid, &higher_uuid),
+            std::cmp::Ordering::Greater
+        );
+    }
+
     /// `list` and `try_list_ids` order entries by slug, then UUID, whatever the creation order.
     /// A refresh that rescans the same groups leaves that order untouched.
     #[tokio::test]
