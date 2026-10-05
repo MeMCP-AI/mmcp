@@ -337,7 +337,6 @@ mod tests {
     use futures_util::FutureExt;
     use mmcp_core::id::UserId;
     use tempfile::TempDir;
-    use tokio::sync::oneshot;
 
     /// Distinct slugs seeded by the ordering test.
     /// Enough that an unordered map matching slug order by chance is negligible.
@@ -412,55 +411,70 @@ mod tests {
         );
     }
 
-    /// A refresh called while another one is scanning waits for that one to install.
-    /// The earlier call's view is installed first, so the later call's view is the one left in the index.
-    /// Both refreshes run the production `refresh` body, with scans that need no filesystem.
-    /// The slow scan is held at a channel, and the later refresh is polled once: no sleep, no timing.
-    #[tokio::test]
-    async fn a_refresh_called_during_a_scan_installs_after_it() {
-        let tmp = TempDir::new().expect("tempdir");
-        let repos_root = tmp.path().join("repos");
-        let backend = Arc::new(NativeBackend::new(&repos_root).expect("backend"));
-        let index = GroupIndex::build(repos_root, backend).await.expect("build");
+    /// Blocking threads of the runtime built by the overlapping-refresh test.
+    /// With one, a task holding it keeps every later `spawn_blocking` task queued.
+    const SINGLE_BLOCKING_THREAD: usize = 1;
 
-        let (scan_reached_sender, mut scan_reached_receiver) = oneshot::channel::<()>();
-        let (scan_release_sender, scan_release_receiver) = oneshot::channel::<()>();
-        let slow_refresh = index.refresh_with(move || async move {
-            scan_reached_sender
+    /// Two production `refresh` calls overlap: the later one still indexes a group created after it was called.
+    /// The test occupies its runtime's only blocking thread, so the manifest read of the earlier call stays queued.
+    /// The earlier call is then held in its scan, holding the serializer, with the root listed.
+    /// The later call is polled once and a second group is created afterwards.
+    /// Both calls then run to completion and the second group must be indexed:
+    /// the later call must scan only after the earlier one finished.
+    /// No sleep and no timing: every step is a single poll or a release of the held thread.
+    #[test]
+    fn overlapping_refreshes_scan_one_after_the_other() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(SINGLE_BLOCKING_THREAD)
+            .build()
+            .expect("current-thread runtime");
+        runtime.block_on(async {
+            let tmp = TempDir::new().expect("tempdir");
+            let repos_root = tmp.path().join("repos");
+            let backend = Arc::new(NativeBackend::new(&repos_root).expect("backend"));
+            let first_group = create_group(&backend, "first-group").await;
+            let index = GroupIndex::build(repos_root, Arc::clone(&backend))
+                .await
+                .expect("build");
+
+            // A dropped sender also ends the held task, so a failed assertion never hangs the runtime shutdown.
+            let (release_blocking_thread, held_blocking_thread) = std::sync::mpsc::channel::<()>();
+            let blocking_thread_holder = tokio::task::spawn_blocking(move || {
+                let _ = held_blocking_thread.recv();
+            });
+
+            let earlier_refresh = index.refresh();
+            tokio::pin!(earlier_refresh);
+            assert!(
+                earlier_refresh.as_mut().now_or_never().is_none(),
+                "the earlier refresh is held at its queued manifest read"
+            );
+            let later_refresh = index.refresh();
+            tokio::pin!(later_refresh);
+            assert!(
+                later_refresh.as_mut().now_or_never().is_none(),
+                "the later refresh cannot finish before the earlier one"
+            );
+
+            release_blocking_thread
                 .send(())
-                .expect("test holds the receiver");
-            scan_release_receiver.await.expect("test sends the release");
-            Ok(Vec::new())
+                .expect("the holder is waiting");
+            blocking_thread_holder.await.expect("holder task");
+            let second_group = create_group(&backend, "second-group").await;
+
+            let (earlier_result, later_result) = tokio::join!(earlier_refresh, later_refresh);
+            earlier_result.expect("earlier refresh");
+            later_result.expect("later refresh");
+            assert!(
+                index.get(&first_group).await.is_some(),
+                "the group created before both calls is indexed"
+            );
+            assert!(
+                index.get(&second_group).await.is_some(),
+                "the later refresh must scan after the earlier one finished"
+            );
         });
-        tokio::pin!(slow_refresh);
-        assert!(
-            slow_refresh.as_mut().now_or_never().is_none(),
-            "the slow scan is held at its channel"
-        );
-        assert!(
-            scan_reached_receiver.try_recv().is_ok(),
-            "the slow scan has started"
-        );
-
-        let group_id = GroupId::new();
-        let manifest =
-            GroupManifest::new_user_owned(group_id, "seen-by-the-later-call", UserId::new());
-        let handle = RepoHandle::new(*group_id.as_uuid(), String::new());
-        let later_view = vec![GroupEntry::new(handle, manifest, 0)];
-        let later_refresh = index.refresh_with(move || async move { Ok(later_view) });
-        tokio::pin!(later_refresh);
-        assert!(
-            later_refresh.as_mut().now_or_never().is_none(),
-            "a refresh called during a scan must wait for it to install"
-        );
-
-        scan_release_sender.send(()).expect("slow scan is waiting");
-        slow_refresh.await.expect("slow refresh");
-        later_refresh.await.expect("later refresh");
-        assert!(
-            index.get(&group_id).await.is_some(),
-            "the later call's view must be the one left in the index"
-        );
     }
 
     /// A directory shaped like a group repo (`<uuid>.git`) but with no
