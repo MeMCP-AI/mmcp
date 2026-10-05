@@ -141,14 +141,7 @@ fn from_push_token_rejection(err: GitHttpError) -> SyncErrorResponse {
     }
 }
 
-/// Return the caller's effective group manifest.
-///
-/// Today this is every group the server knows about, once the caller
-/// is authenticated. A later phase filters this list by the
-/// authenticated caller's effective role using
-/// `mmcp_core::acl::resolve_effective_role`. The request/response
-/// shape stays the same, so the upgrade is a behavior-only
-/// change.
+/// Return every group the server knows about, to any holder of a valid bearer token.
 async fn get_manifest(
     State(state): State<ServerState>,
     _caller: AuthenticatedUser,
