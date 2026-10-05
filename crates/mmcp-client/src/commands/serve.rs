@@ -9966,17 +9966,19 @@ mod tests {
         );
     }
 
-    /// Distinct groups seeded by the paging test: enough that an unordered listing matching slug order by chance is negligible.
+    /// Distinct groups seeded by the paging test.
+    /// Enough that an unordered listing matching slug order by chance is negligible.
     const PAGED_GROUP_COUNT: usize = 12;
 
-    /// Coprime with [`PAGED_GROUP_COUNT`], so stepping by it seeds every slug once in a non-sorted order.
+    /// Coprime with [`PAGED_GROUP_COUNT`].
+    /// Stepping by it seeds every slug once in a non-sorted order.
     const PAGED_SEED_STRIDE: usize = 5;
 
     /// Page size of the paging test: leaves a short last page.
     const PAGED_PAGE_SIZE: usize = 5;
 
-    /// Paging through `list_groups` with an index refresh between every two pages
-    /// returns each group exactly once, in slug order.
+    /// Paging through `list_groups` returns each group exactly once, in slug order.
+    /// The index is refreshed between every two pages.
     #[tokio::test]
     async fn list_groups_pages_cover_every_group_once_across_index_refreshes() {
         let (state, _tmp) = test_state().await;
