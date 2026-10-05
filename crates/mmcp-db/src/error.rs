@@ -80,7 +80,7 @@ impl From<sea_orm::DbErr> for DbError {
     /// The one conversion from a SeaORM error, so every repository crosses it.
     ///
     /// A pool opens a new connection whenever it has none idle, and the driver configuration error of that connection can quote a credential.
-    /// SeaORM wraps it as a connection, execution or query error, so each of the three is matched by its variant, never by its text.
+    /// SeaORM wraps a driver error as a connection, execution or query error, so each of the three is matched by its variant, never by its text.
     /// Such an error becomes [`DbError::ConnectionConfigurationRejected`] without its source.
     fn from(error: sea_orm::DbErr) -> Self {
         if carries_configuration_error(&error) {
