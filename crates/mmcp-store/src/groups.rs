@@ -66,7 +66,7 @@ impl GroupEntry {
     }
 }
 
-/// Entries installed by one scan, with the ticket that scan took before it read the filesystem.
+/// Entries installed by one scan, with the ticket its refresh call took.
 #[derive(Default)]
 struct IndexedGroups {
     /// Ticket of the installed scan; `None` until the first scan installs.
@@ -80,7 +80,8 @@ pub struct GroupIndex {
     repos_root: PathBuf,
     backend: Arc<NativeBackend>,
     inner: Arc<RwLock<IndexedGroups>>,
-    /// Source of scan tickets: a higher ticket means the scan began its filesystem read later.
+    /// Source of scan tickets, one per refresh call.
+    /// A higher ticket belongs to a later call, whose scan reads the repos root after that earlier call began.
     next_scan_ticket: Arc<AtomicU64>,
 }
 
@@ -195,9 +196,9 @@ impl GroupIndex {
     /// Rebuild the index from the filesystem.
     /// Called on startup and whenever the watcher reports that the repos root changed.
     ///
-    /// Refreshes may overlap; the scan that began later wins.
-    /// A scan that finishes after a later-starting one has installed is discarded,
-    /// so the index never goes back to an older view of the filesystem.
+    /// Refreshes may overlap, and each takes a ticket when it is called.
+    /// A scan finishing after a scan with a later ticket installed is discarded.
+    /// The index never goes back to the view of an earlier refresh call.
     pub async fn refresh(&self) -> Result<(), StoreError> {
         let ticket = self.next_scan_ticket.fetch_add(1, Ordering::SeqCst);
         let entries = scan_repos_root(&self.repos_root, self.backend.as_ref()).await?;
@@ -353,10 +354,12 @@ mod tests {
     use mmcp_core::id::UserId;
     use tempfile::TempDir;
 
-    /// Distinct slugs seeded by the ordering test: enough that an unordered map matching slug order by chance is negligible.
+    /// Distinct slugs seeded by the ordering test.
+    /// Enough that an unordered map matching slug order by chance is negligible.
     const DISTINCT_SLUG_COUNT: usize = 16;
 
-    /// Coprime with [`DISTINCT_SLUG_COUNT`], so stepping by it visits every slug exactly once in a non-sorted order.
+    /// Coprime with [`DISTINCT_SLUG_COUNT`].
+    /// Stepping by it visits every slug exactly once in a non-sorted order.
     const CREATION_SLUG_STRIDE: usize = 7;
 
     /// Slug carried by two groups of the ordering test, to exercise the UUID tie-break.
@@ -373,8 +376,8 @@ mod tests {
         group_id
     }
 
-    /// `list` and `try_list_ids` order entries by slug, then UUID, whatever the creation order,
-    /// and a refresh that rescans the same groups leaves that order untouched.
+    /// `list` and `try_list_ids` order entries by slug, then UUID, whatever the creation order.
+    /// A refresh that rescans the same groups leaves that order untouched.
     #[tokio::test]
     async fn list_orders_by_slug_then_uuid_across_refreshes() {
         let tmp = TempDir::new().expect("tempdir");
@@ -424,8 +427,8 @@ mod tests {
         );
     }
 
-    /// A scan that took its ticket before a refresh and finishes after it installs is discarded,
-    /// while a scan with a later ticket still replaces the indexed groups.
+    /// A scan whose ticket predates an installed refresh is discarded.
+    /// A scan with a later ticket still replaces the indexed groups.
     #[tokio::test]
     async fn a_scan_superseded_by_a_later_one_never_replaces_it() {
         let tmp = TempDir::new().expect("tempdir");
