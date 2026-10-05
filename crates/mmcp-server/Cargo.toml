@@ -79,7 +79,7 @@ serde_json = "1"
 axum = { workspace = true }
 mmcp-core = { workspace = true }
 mmcp-git = { workspace = true }
-mmcp-db = { workspace = true }
+mmcp-db = { workspace = true, features = ["test-support"] }
 mmcp-auth = { workspace = true }
 jiff = { workspace = true }
 uuid = { workspace = true }
