@@ -166,7 +166,8 @@ impl GroupIndex {
     ///
     /// The order is total and independent of insertion order.
     /// A slug is not unique across owners, so the UUID breaks ties.
-    /// A refresh changes the order only when a group is added, removed or renamed.
+    /// A refresh changes the order only when the set of indexed groups or a slug changes.
+    /// A group whose manifest cannot be read is not indexed, so it leaves the set until a refresh reads it again.
     /// Offset paging over successive snapshots can repeat or skip a group across such a change.
     pub async fn list(&self) -> Vec<GroupEntry> {
         let guard = self.inner.read().await;
@@ -188,7 +189,7 @@ impl GroupIndex {
     /// Rebuild the index from the filesystem.
     /// Called on startup and whenever the watcher reports that the repos root changed.
     ///
-    /// Refreshes are serialized end to end: a refresh starts its scan only after the previous one installed.
+    /// Refreshes are serialized end to end: a refresh starts its scan only after the previous one finished.
     /// An older scan therefore never installs after a newer one.
     /// Readers are not blocked while a scan runs.
     pub async fn refresh(&self) -> Result<(), StoreError> {
