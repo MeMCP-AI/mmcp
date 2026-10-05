@@ -10,7 +10,6 @@
 //! can share ownership without cloning the whole map.
 
 use std::collections::HashMap;
-use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -193,19 +192,8 @@ impl GroupIndex {
     /// An older scan therefore never installs after a newer one.
     /// Readers are not blocked while a scan runs.
     pub async fn refresh(&self) -> Result<(), StoreError> {
-        self.refresh_with(|| scan_repos_root(&self.repos_root, self.backend.as_ref()))
-            .await
-    }
-
-    /// [`Self::refresh`] with the scan supplied by the caller.
-    /// `scan` runs only once the serializer is held, and its result replaces the indexed groups.
-    async fn refresh_with<Scan, Scanning>(&self, scan: Scan) -> Result<(), StoreError>
-    where
-        Scan: FnOnce() -> Scanning,
-        Scanning: Future<Output = Result<Vec<GroupEntry>, StoreError>>,
-    {
         let _serialized = self.refresh_serializer.lock().await;
-        let by_id = scan()
+        let by_id = scan_repos_root(&self.repos_root, self.backend.as_ref())
             .await?
             .into_iter()
             .map(|entry| {
