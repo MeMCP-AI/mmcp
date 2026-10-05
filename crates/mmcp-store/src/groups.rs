@@ -165,9 +165,10 @@ impl GroupIndex {
 
     /// Snapshot of every entry in the index, ordered by manifest slug, then by group UUID.
     ///
-    /// The order is total and independent of insertion order and of refreshes.
+    /// The order is total and independent of insertion order.
     /// A slug is not unique across owners, so the UUID breaks ties.
-    /// A caller that pages over the snapshot sees one stable sequence while the set of groups is unchanged.
+    /// A refresh changes the order only when a group is added, removed or renamed.
+    /// Offset paging over successive snapshots can repeat or skip a group across such a change.
     pub async fn list(&self) -> Vec<GroupEntry> {
         let guard = self.inner.read().await;
         sorted_entries(&guard).into_iter().cloned().collect()
