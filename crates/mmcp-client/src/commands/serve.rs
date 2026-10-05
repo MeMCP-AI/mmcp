@@ -9966,6 +9966,76 @@ mod tests {
         );
     }
 
+    /// Distinct groups seeded by the paging test: enough that an unordered listing matching slug order by chance is negligible.
+    const PAGED_GROUP_COUNT: usize = 12;
+
+    /// Coprime with [`PAGED_GROUP_COUNT`], so stepping by it seeds every slug once in a non-sorted order.
+    const PAGED_SEED_STRIDE: usize = 5;
+
+    /// Page size of the paging test: leaves a short last page.
+    const PAGED_PAGE_SIZE: usize = 5;
+
+    /// Paging through `list_groups` with an index refresh between every two pages
+    /// returns each group exactly once, in slug order.
+    #[tokio::test]
+    async fn list_groups_pages_cover_every_group_once_across_index_refreshes() {
+        let (state, _tmp) = test_state().await;
+        let mut expected_slugs = Vec::new();
+        for step in 0..PAGED_GROUP_COUNT {
+            let slug = format!("team-{:02}", (step * PAGED_SEED_STRIDE) % PAGED_GROUP_COUNT);
+            seed_group_with_memory(&state, &slug, "rules", SAMPLE_MEMORY).await;
+            expected_slugs.push(slug);
+        }
+        expected_slugs.sort();
+        let server = McpServer::new(state, ServeMode::Full);
+
+        let page_count = PAGED_GROUP_COUNT.div_ceil(PAGED_PAGE_SIZE);
+        let mut paged_slugs: Vec<String> = Vec::new();
+        for page_index in 0..page_count {
+            let page = server
+                .list_groups(Parameters(ListGroupsArgs {
+                    offset: Some(page_index * PAGED_PAGE_SIZE),
+                    limit: Some(PAGED_PAGE_SIZE),
+                }))
+                .await
+                .expect("list_groups page");
+            let parsed = parse_ok_json(page);
+            let groups = parsed
+                .get("groups")
+                .and_then(|v| v.as_array())
+                .expect("groups array");
+            paged_slugs.extend(
+                groups
+                    .iter()
+                    .filter_map(|g| g.get("slug").and_then(|v| v.as_str()))
+                    .map(str::to_owned),
+            );
+            let envelope = parsed
+                .get("envelope")
+                .expect("envelope present when paginating");
+            let is_last_page = page_index + 1 == page_count;
+            assert_eq!(
+                envelope
+                    .get("next_offset")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|offset| usize::try_from(offset).ok()),
+                (!is_last_page).then_some((page_index + 1) * PAGED_PAGE_SIZE),
+                "next_offset must point at the following page until the last one"
+            );
+            server
+                .state
+                .groups
+                .refresh()
+                .await
+                .expect("refresh between pages");
+        }
+
+        assert_eq!(
+            paged_slugs, expected_slugs,
+            "the pages must cover every group once, in slug order"
+        );
+    }
+
     #[tokio::test]
     async fn read_memory_returns_frontmatter_and_body() {
         let (state, _tmp) = test_state().await;
