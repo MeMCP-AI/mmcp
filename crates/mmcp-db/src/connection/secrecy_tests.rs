@@ -214,6 +214,24 @@ async fn connect_error(target: &DatabaseTarget) -> Option<DbError> {
     outcome.err()
 }
 
+/// What the SASLprep failure of the driver holds: its text, the error name, the character and its escaped Debug form.
+const SASLPREP_FAILURE_MARKERS: [&str; 5] = [
+    "Failed to saslprep",
+    "ProhibitedCharacter",
+    "\u{1F600}",
+    "\\u{1f600}",
+    "\\u{7}",
+];
+
+/// The captured tracing holds neither the sentinel nor any part of the driver's SASLprep failure.
+fn assert_log_holds_no_credential_text(capture: &LogCapture) {
+    let logged = capture.text();
+    assert!(!logged.contains(SENTINEL), "{logged}");
+    for marker in SASLPREP_FAILURE_MARKERS {
+        assert!(!logged.contains(marker), "{marker}: {logged}");
+    }
+}
+
 /// A URL whose credential fails SASLprep is accepted, and the SCRAM exchange of the driver is where the failure surfaces.
 /// The peer asks for SCRAM, so the production mapping of `connect` names the cause without the driver error that quotes the character.
 #[tokio::test]
@@ -260,7 +278,7 @@ async fn a_credential_that_scram_refuses_is_named_at_connect_without_its_charact
         assert!(error.source().is_none(), "{url}");
     }
 
-    assert!(!capture.text().contains(s), "{}", capture.text());
+    assert_log_holds_no_credential_text(&capture);
 }
 
 /// A pool opens a new connection whenever it has none idle, and the SCRAM exchange of that connection can fail on SASLprep long after the first connect.
@@ -297,7 +315,7 @@ async fn a_later_pool_connection_that_scram_refuses_leaves_no_character_in_any_e
         "{printed}"
     );
     assert!(error.source().is_none());
-    assert!(!capture.text().contains(SENTINEL), "{}", capture.text());
+    assert_log_holds_no_credential_text(&capture);
 }
 
 /// A migration run opens its own connection, and its error crosses the same boundary as a repository error.
@@ -328,7 +346,7 @@ async fn a_migration_on_a_later_pool_connection_that_scram_refuses_leaves_no_cha
         !printed.contains(SENTINEL) && !printed.contains('\u{1F600}'),
         "{printed}"
     );
-    assert!(!capture.text().contains(SENTINEL), "{}", capture.text());
+    assert_log_holds_no_credential_text(&capture);
 }
 
 /// Under `sslmode=disable` the driver never reads a certificate or a key, so a SASLprep failure is no TLS failure.
@@ -358,7 +376,7 @@ async fn a_scram_failure_is_not_named_a_client_key_failure_where_tls_never_runs(
         assert!(!chain_text(&error).contains(SENTINEL), "{url}");
     }
 
-    assert!(!capture.text().contains(SENTINEL), "{}", capture.text());
+    assert_log_holds_no_credential_text(&capture);
 }
 
 /// The pairing check of the driver runs after the SSL request is answered, so a peer that answers it reaches the mapping of `connect`.
