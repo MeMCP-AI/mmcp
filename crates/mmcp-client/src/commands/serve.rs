@@ -1084,7 +1084,7 @@ const MAX_LIST_GROUPS_LIMIT: usize = 2000;
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 struct ListGroupsArgs {
-    /// Zero-based offset into the listing.
+    /// Zero-based offset into the listing, ordered by slug then uuid.
     /// Setting either `offset` or `limit` activates pagination: the
     /// response adds an `envelope` field `{truncated, total, returned,
     /// next_offset}`. Leaving both unset returns every mirrored group
@@ -2287,7 +2287,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Enumerate every group the local mirror holds. Returns `{groups: [{slug, uuid, memory_count, protected, is_project}]}`: cheap manifest-only walk, no memory bodies. `is_project` is true for the group whose UUID matches the current cwd's `.mmcp.toml`; false for every other group including cases where no project is in scope. Pure-local, no network. Set `offset` and/or `limit` to page through a large mirror instead of one unbounded call; doing so reshapes the response to `{groups, envelope}` where `envelope` reports `{truncated, total, returned, next_offset}` for the returned page.",
+        description = "Enumerate every group the local mirror holds. Returns `{groups: [{slug, uuid, memory_count, protected, is_project}]}`: cheap manifest-only walk, no memory bodies. Groups are ordered by slug, then uuid, so `offset` and `limit` page over one stable sequence. `is_project` is true for the group whose UUID matches the current cwd's `.mmcp.toml`; false for every other group including cases where no project is in scope. Pure-local, no network. Set `offset` and/or `limit` to page through a large mirror instead of one unbounded call; doing so reshapes the response to `{groups, envelope}` where `envelope` reports `{truncated, total, returned, next_offset}` for the returned page.",
         annotations(
             title = "List mirrored groups",
             read_only_hint = true,
