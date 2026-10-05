@@ -2287,7 +2287,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Enumerate every group the local mirror holds. Returns `{groups: [{slug, uuid, memory_count, protected, is_project}]}`: cheap manifest-only walk, no memory bodies. Groups are ordered by slug, then uuid, so `offset` and `limit` page over one stable sequence. `is_project` is true for the group whose UUID matches the current cwd's `.mmcp.toml`; false for every other group including cases where no project is in scope. Pure-local, no network. Set `offset` and/or `limit` to page through a large mirror instead of one unbounded call; doing so reshapes the response to `{groups, envelope}` where `envelope` reports `{truncated, total, returned, next_offset}` for the returned page.",
+        description = "Enumerate every group the local mirror holds. Returns `{groups: [{slug, uuid, memory_count, protected, is_project}]}`: cheap manifest-only walk, no memory bodies. Groups are ordered by slug, then uuid, and the order stays the same on every call while no group is added, removed or renamed. Offset paging across such a change can repeat or skip a group. `is_project` is true for the group whose UUID matches the current cwd's `.mmcp.toml`; false for every other group including cases where no project is in scope. Pure-local, no network. Set `offset` and/or `limit` to page through a large mirror instead of one unbounded call; doing so reshapes the response to `{groups, envelope}` where `envelope` reports `{truncated, total, returned, next_offset}` for the returned page.",
         annotations(
             title = "List mirrored groups",
             read_only_hint = true,
