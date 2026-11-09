@@ -26,7 +26,7 @@ use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
         CallToolResult, ContentBlock, Implementation, ProtocolVersion, ServerCapabilities,
-        ServerInfo,
+        ServerConfig,
     },
     schemars::JsonSchema,
     service::ElicitationError,
@@ -7603,7 +7603,7 @@ fn map_memory_edit_error_to_mcp(err: mmcp_store::MemoryEditError) -> McpError {
 
 #[tool_handler]
 impl ServerHandler for McpServer {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let mut instructions = SESSION_INSTRUCTIONS.to_string();
         if !matches!(self.mode, ServeMode::Full) {
             // Filtered modes drop tools at registration time, so an
@@ -7616,7 +7616,7 @@ impl ServerHandler for McpServer {
                 label = self.mode.as_label(),
             ));
         }
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
             .with_instructions(instructions)
