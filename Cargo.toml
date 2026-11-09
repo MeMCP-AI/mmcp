@@ -134,7 +134,11 @@ ndarray = "0.16"
 # runtime image (which ships no shared sqlite) can open `sqlite::`
 # URLs. Features are additive, so pulling this in from mmcp-db is
 # enough to force bundled linking across every transitive use.
-libsqlite3-sys = { version = "0.37", features = ["bundled"] }
+# Leave SQLite version selection to the intersection with SQLx.
+# SQLx 0.9.0 currently allows <0.38; upstream has already raised the ceiling,
+# and libsqlite3-sys >=0.39 is needed for RUSTSEC-2026-0459.
+# Keep bundled linking so deployment requires no SQLite installation.
+libsqlite3-sys = { version = ">=0.37, <0.40", features = ["bundled"] }
 
 # Git backend (gitoxide). Transport features enable clone/fetch/push
 # over HTTP via reqwest+rustls, and the `serve-*` features light up the
@@ -161,7 +165,10 @@ argon2 = "0.5"
 rusty_paseto = { version = "0.10", default-features = false, features = ["v4_local", "batteries_included"] }
 axum-login = "0.18"
 tower-sessions = "0.14"
-webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
+# Passkey ceremony state remains in server memory, so its dangerous
+# serialisation feature is unnecessary. 0.6 uses RustCrypto rather than
+# OpenSSL for WebAuthn signature and attestation verification.
+webauthn-rs = { version = "0.6.2", default-features = false }
 # tower-sessions' own `Expiry` variants take this crate's `Duration`
 # directly; declared explicitly rather than relying on the transitive
 # pull-in so the version is pinned at the workspace level like every
@@ -177,7 +184,7 @@ tokio-util = { version = "0.7", features = ["io", "io-util"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 # MCP SDK (official Rust implementation)
-rmcp = { version = "=3.1.1", features = ["server", "macros", "transport-io", "elicitation", "schemars"] }
+rmcp = { version = "3.9", features = ["server", "macros", "transport-io", "elicitation", "schemars"] }
 
 # HTTP client (for sync engine talking to mmcp-server)
 reqwest = { version = "0.13", default-features = false, features = ["json", "form", "rustls"] }
