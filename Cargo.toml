@@ -134,7 +134,11 @@ ndarray = "0.16"
 # runtime image (which ships no shared sqlite) can open `sqlite::`
 # URLs. Features are additive, so pulling this in from mmcp-db is
 # enough to force bundled linking across every transitive use.
-libsqlite3-sys = { version = "0.37", features = ["bundled"] }
+# Leave SQLite version selection to the intersection with SQLx.
+# SQLx 0.9.0 currently allows <0.38; upstream has already raised the ceiling,
+# and libsqlite3-sys >=0.39 is needed for RUSTSEC-2026-0459.
+# Keep bundled linking so deployment requires no SQLite installation.
+libsqlite3-sys = { version = ">=0.37, <0.40", features = ["bundled"] }
 
 # Git backend (gitoxide). Transport features enable clone/fetch/push
 # over HTTP via reqwest+rustls, and the `serve-*` features light up the
